@@ -29,10 +29,13 @@ Claude acts as the **orchestrator**, not the implementer. Frameworks like LangGr
 
 ## Tech Stack
 
-- **Language:** Python
-- **Database:** Local-first, portable to VPS — consult before choosing the engine
-- **Version control:** Git (from day one)
-- **DB migrations:** Required from the start; every schema change needs a migration script
+- **Language:** Python 3.12+
+- **ORM:** SQLAlchemy 2.x (database-agnostic; start SQLite, migrate to PostgreSQL on VPS)
+- **Migrations:** Alembic (autogenerate enabled, every schema change needs a migration script)
+- **Auth:** passlib[bcrypt] for password hashing, JWT for sessions
+- **Testing:** pytest with in-memory SQLite fixtures
+- **Config:** python-dotenv (`.env` for `DATABASE_URL`, `SECRET_KEY`)
+- **Version control:** Git
 
 ## Naming Convention
 
