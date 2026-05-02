@@ -59,10 +59,12 @@ def list_audit(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
-    if current_user.role != UserRole.admin:
+    if current_user.role not in (UserRole.admin, UserRole.sysadmin):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only.")
 
-    q = db.query(AuditLog).filter(AuditLog.workspace_id == current_user.workspace_id)
+    q = db.query(AuditLog)
+    if current_user.role == UserRole.admin:
+        q = q.filter(AuditLog.workspace_id == current_user.workspace_id)
     if action:
         q = q.filter(AuditLog.action == action)
     q = q.order_by(AuditLog.created_at.desc())

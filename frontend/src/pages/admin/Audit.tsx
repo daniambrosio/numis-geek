@@ -6,6 +6,7 @@ import AppLayout from '../../components/AppLayout'
 const ACTION_OPTIONS = [
   '', 'auth.login', 'user.invited', 'user.role_changed', 'user.deactivated',
   'profile.name_changed', 'profile.password_changed',
+  'financial_institution.created', 'financial_institution.updated', 'financial_institution.deactivated',
 ]
 
 function actionLabel(action: string): string {
@@ -16,6 +17,9 @@ function actionLabel(action: string): string {
     'user.deactivated': 'Usuário desativado',
     'profile.name_changed': 'Nome alterado',
     'profile.password_changed': 'Senha alterada',
+    'financial_institution.created': 'IF criada',
+    'financial_institution.updated': 'IF atualizada',
+    'financial_institution.deactivated': 'IF desativada',
   }
   return map[action] ?? action
 }
@@ -24,6 +28,7 @@ function actionColor(action: string): string {
   if (action.startsWith('auth.')) return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
   if (action.startsWith('user.')) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
   if (action.startsWith('profile.')) return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+  if (action.startsWith('financial_institution.')) return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
   return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
 }
 
@@ -40,12 +45,13 @@ export default function AdminAudit() {
   }, [navigate])
 
   useEffect(() => {
+    if (!me) return
     setLoading(true)
     api.listAudit(page, actionFilter || undefined)
       .then(setData)
-      .catch(() => navigate('/login'))
+      .catch(() => {})
       .finally(() => setLoading(false))
-  }, [page, actionFilter, navigate])
+  }, [me, page, actionFilter])
 
   function handleFilterChange(action: string) {
     setActionFilter(action)
