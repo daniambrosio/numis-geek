@@ -1,20 +1,24 @@
-export type Theme = 'dark' | 'light'
+export type Theme = 'dark' | 'light' | 'system'
 
-function getSystemTheme(): Theme {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+const CYCLE: Theme[] = ['dark', 'light', 'system']
+
+function systemIsDark(): boolean {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
 export function getTheme(): Theme {
-  return (localStorage.getItem('theme') as Theme) ?? getSystemTheme()
+  return (localStorage.getItem('theme') as Theme) ?? 'system'
 }
 
 export function applyTheme(theme: Theme) {
-  document.documentElement.classList.toggle('dark', theme === 'dark')
+  const dark = theme === 'dark' || (theme === 'system' && systemIsDark())
+  document.documentElement.classList.toggle('dark', dark)
   localStorage.setItem('theme', theme)
 }
 
-export function toggleTheme(): Theme {
-  const next = getTheme() === 'dark' ? 'light' : 'dark'
+export function cycleTheme(): Theme {
+  const current = getTheme()
+  const next = CYCLE[(CYCLE.indexOf(current) + 1) % CYCLE.length]
   applyTheme(next)
   return next
 }
