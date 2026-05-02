@@ -45,6 +45,16 @@ export interface UserOut {
   created_at: string
 }
 
+export interface FinancialInstitutionOut {
+  id: string
+  long_name: string
+  short_name: string
+  logo_slug: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface AuditLogOut {
   id: string
   user_email: string
@@ -96,4 +106,16 @@ export const api = {
     if (action) params.set('action', action)
     return request<AuditPage>(`/audit?${params}`)
   },
+
+  listFinancialInstitutions: () =>
+    request<FinancialInstitutionOut[]>('/financial-institutions'),
+
+  createFinancialInstitution: (data: { long_name: string; short_name: string; logo_slug?: string }) =>
+    request<FinancialInstitutionOut>('/financial-institutions', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateFinancialInstitution: (id: string, data: { long_name: string; short_name: string; logo_slug?: string }) =>
+    request<FinancialInstitutionOut>(`/financial-institutions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deactivateFinancialInstitution: (id: string) =>
+    request<FinancialInstitutionOut>(`/financial-institutions/${id}/deactivate`, { method: 'PUT' }),
 }

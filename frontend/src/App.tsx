@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import Profile from './pages/Profile'
 import AdminUsers from './pages/admin/Users'
 import AdminAudit from './pages/admin/Audit'
+import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
 
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />
         <Route path="/admin/audit" element={<PrivateRoute><AdminAudit /></PrivateRoute>} />
+        <Route path="/sysadmin/financial-institutions" element={<PrivateRoute><SysAdminFinancialInstitutions /></PrivateRoute>} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>

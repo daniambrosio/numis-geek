@@ -14,6 +14,10 @@ const NAV_ITEMS = [
   { label: 'Auditoria', href: '/admin/audit', icon: '📋', adminOnly: true },
 ]
 
+const SYSADMIN_NAV_ITEMS = [
+  { label: 'Inst. Financeiras', href: '/sysadmin/financial-institutions', icon: '🏦' },
+]
+
 export default function AppLayout({ user, children }: Props) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -55,7 +59,8 @@ export default function AppLayout({ user, children }: Props) {
     ? user.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()
     : user.email[0].toUpperCase()
 
-  const navItems = NAV_ITEMS.filter(item => !item.adminOnly || user.role === 'admin')
+  const navItems = NAV_ITEMS.filter(item => !item.adminOnly || user.role === 'admin' || user.role === 'sysadmin')
+  const sysadminNavItems = user.role === 'sysadmin' ? SYSADMIN_NAV_ITEMS : []
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-950">
@@ -164,6 +169,30 @@ export default function AppLayout({ user, children }: Props) {
                   </Link>
                 )
               })}
+              {sysadminNavItems.length > 0 && (
+                <>
+                  <div className="pt-3 pb-1 px-3">
+                    <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Sistema</span>
+                  </div>
+                  {sysadminNavItems.map(item => {
+                    const active = location.pathname === item.href
+                    return (
+                      <Link
+                        key={item.href}
+                        to={item.href}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                          active
+                            ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 font-medium'
+                            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <span className="text-base">{item.icon}</span>
+                        {item.label}
+                      </Link>
+                    )
+                  })}
+                </>
+              )}
             </nav>
           </aside>
         )}

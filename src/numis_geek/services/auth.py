@@ -17,7 +17,7 @@ _TOKEN_TTL_LONG_DAYS = 30
 @dataclass
 class UserContext:
     user_id: str
-    workspace_id: str
+    workspace_id: str | None
     role: UserRole
 
 
