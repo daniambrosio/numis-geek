@@ -57,7 +57,7 @@ class ChangePasswordRequest(BaseModel):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _require_admin(current_user: UserContext) -> None:
-    if current_user.role != UserRole.admin:
+    if current_user.role not in (UserRole.admin, UserRole.sysadmin):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only.")
 
 
@@ -76,8 +76,10 @@ def list_users(
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
-    users = db.query(User).filter(User.workspace_id == current_user.workspace_id).all()
-    return [UserOut.from_orm(u) for u in users]
+    q = db.query(User)
+    if current_user.role != UserRole.sysadmin:
+        q = q.filter(User.workspace_id == current_user.workspace_id)
+    return [UserOut.from_orm(u) for u in q.all()]
 
 
 @router.post("/invite", response_model=UserOut, status_code=status.HTTP_201_CREATED)

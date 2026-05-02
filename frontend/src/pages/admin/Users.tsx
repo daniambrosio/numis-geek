@@ -16,11 +16,18 @@ export default function AdminUsers() {
   const [inviteSaving, setInviteSaving] = useState(false)
 
   useEffect(() => {
-    Promise.all([api.me(), api.listUsers()])
-      .then(([me, users]) => { setMe(me); setUsers(users) })
+    api.me()
+      .then(u => setMe(u))
       .catch(() => navigate('/login'))
-      .finally(() => setLoading(false))
   }, [navigate])
+
+  useEffect(() => {
+    if (!me) return
+    api.listUsers()
+      .then(u => setUsers(u))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [me])
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
