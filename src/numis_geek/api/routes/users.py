@@ -54,6 +54,10 @@ class UpdateMeRequest(BaseModel):
     name: str
 
 
+class UpdateNameRequest(BaseModel):
+    name: str
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -165,6 +169,30 @@ def deactivate_user(
         details={"target_email": target.email},
     )
     return UserOut.from_orm(_get_user_or_404(db, user_id))
+
+
+@router.put("/{user_id}/name", response_model=UserOut)
+def update_user_name(
+    user_id: str,
+    body: UpdateNameRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    acting = _get_user_or_404(db, current_user.user_id)
+    target = _get_user_or_404(db, user_id)
+    target.name = body.name
+    db.flush()
+    AuditService(db).log(
+        user_email=acting.email,
+        action="user.name_changed",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=user_id,
+        details={"name": body.name},
+    )
+    return UserOut.from_orm(target)
 
 
 # ── current user routes ───────────────────────────────────────────────────────

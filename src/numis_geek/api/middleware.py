@@ -21,8 +21,8 @@ def _is_explicit(path: str) -> bool:
     if path in _EXPLICIT_PATHS:
         return True
     parts = path.strip("/").split("/")
-    # /users/{id}/role  and /users/{id}/deactivate
-    if len(parts) == 3 and parts[0] == "users" and parts[2] in ("role", "deactivate"):
+    # /users/{id}/role, /users/{id}/deactivate, /users/{id}/name
+    if len(parts) == 3 and parts[0] == "users" and parts[2] in ("role", "deactivate", "name"):
         return True
     # /financial-institutions and /financial-institutions/{id}[/deactivate]
     if parts[0] == "financial-institutions":

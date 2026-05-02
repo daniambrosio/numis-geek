@@ -103,6 +103,9 @@ export const api = {
   deactivateUser: (userId: string) =>
     request<UserOut>(`/users/${userId}/deactivate`, { method: 'PUT' }),
 
+  updateUserName: (userId: string, name: string) =>
+    request<UserOut>(`/users/${userId}/name`, { method: 'PUT', body: JSON.stringify({ name }) }),
+
   listAudit: (page = 1, action?: string) => {
     const params = new URLSearchParams({ page: String(page), limit: '50' })
     if (action) params.set('action', action)

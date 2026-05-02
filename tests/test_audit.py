@@ -1,3 +1,7 @@
+import uuid
+from datetime import datetime, timezone
+
+import bcrypt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,7 +12,7 @@ from numis_geek.api.app import app
 from numis_geek.api.deps import get_db
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401
-from numis_geek.models.user import UserRole
+from numis_geek.models.user import User, UserRole
 from numis_geek.services.auth import AuthService
 from numis_geek.services.user import UserService
 from numis_geek.services.workspace import WorkspaceService
@@ -54,15 +58,30 @@ def seed():
     ws = WorkspaceService(db).create("Audit WS")
     admin = UserService(db).create(ws.id, "audit_admin@test.com", "adminpass", UserRole.admin)
     member = UserService(db).create(ws.id, "audit_member@test.com", "memberpass", UserRole.member)
+
+    now = datetime.now(timezone.utc)
+    sysadmin = User(
+        id=str(uuid.uuid4()),
+        workspace_id=None,
+        email="audit_sysadmin@test.internal",
+        name="SysAdmin",
+        password_hash=bcrypt.hashpw(b"syspass", bcrypt.gensalt()).decode(),
+        role=UserRole.sysadmin,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(sysadmin)
     db.commit()
-    db.refresh(ws); db.refresh(admin); db.refresh(member)
-    ws_id, admin_id, member_id = ws.id, admin.id, member.id
+    db.refresh(ws); db.refresh(admin); db.refresh(member); db.refresh(sysadmin)
+    ws_id, admin_id, member_id, sysadmin_id = ws.id, admin.id, member.id, sysadmin.id
     admin_token = AuthService(db).login("audit_admin@test.com", "adminpass")
     member_token = AuthService(db).login("audit_member@test.com", "memberpass")
+    sysadmin_token = AuthService(db).login("audit_sysadmin@test.internal", "syspass")
     db.close()
     return {
-        "ws_id": ws_id, "admin_id": admin_id, "member_id": member_id,
-        "admin_token": admin_token, "member_token": member_token,
+        "ws_id": ws_id, "admin_id": admin_id, "member_id": member_id, "sysadmin_id": sysadmin_id,
+        "admin_token": admin_token, "member_token": member_token, "sysadmin_token": sysadmin_token,
     }
 
 
@@ -115,3 +134,33 @@ def test_audit_filter_by_action(client, seed):
     assert r.status_code == 200
     for item in r.json()["items"]:
         assert item["action"] == "auth.login"
+
+
+# ── Regression tests for role/access bugs ─────────────────────────────────────
+
+def test_sysadmin_can_access_audit(client, seed):
+    r = client.get("/audit", headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+
+
+def test_sysadmin_audit_has_no_workspace_filter(client, seed):
+    # Sysadmin sees all logs, not just one workspace
+    r = client.get("/audit", headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    assert r.json()["total"] >= r.json()["total"]  # sysadmin total >= admin total (tautology guards against 0)
+    r_admin = client.get("/audit", headers=auth_header(seed["admin_token"]))
+    assert r.json()["total"] >= r_admin.json()["total"]
+
+
+def test_explicit_audit_entry_has_resource_type(client, seed):
+    # Regression: route-level audit entries must have resource_type set
+    # (was broken when middleware commit raced with route db session commit)
+    r = client.post("/users/invite", json={
+        "email": "resource_check@test.com", "password": "pass",
+    }, headers=auth_header(seed["admin_token"]))
+    assert r.status_code == 201
+    logs = client.get("/audit?action=user.invited", headers=auth_header(seed["admin_token"])).json()
+    assert logs["total"] > 0
+    entry = logs["items"][0]
+    assert entry["resource_type"] == "user"
+    assert entry["resource_id"] is not None

@@ -1,3 +1,7 @@
+import uuid
+from datetime import datetime, timezone
+
+import bcrypt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,7 +12,7 @@ from numis_geek.api.app import app
 from numis_geek.api.deps import get_db
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401
-from numis_geek.models.user import UserRole
+from numis_geek.models.user import User, UserRole
 from numis_geek.services.auth import AuthService
 from numis_geek.services.user import UserService
 from numis_geek.services.workspace import WorkspaceService
@@ -55,20 +59,38 @@ def seed():
     ws = WorkspaceService(db).create("Test WS")
     admin = UserService(db).create(ws.id, "admin@test.com", "adminpass", UserRole.admin)
     member = UserService(db).create(ws.id, "member@test.com", "memberpass", UserRole.member)
+
+    now = datetime.now(timezone.utc)
+    sysadmin = User(
+        id=str(uuid.uuid4()),
+        workspace_id=None,
+        email="sysadmin@test.internal",
+        name="SysAdmin",
+        password_hash=bcrypt.hashpw(b"syspass", bcrypt.gensalt()).decode(),
+        role=UserRole.sysadmin,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(sysadmin)
     db.commit()
     db.refresh(ws)
     db.refresh(admin)
     db.refresh(member)
-    ws_id, admin_id, member_id = ws.id, admin.id, member.id
+    db.refresh(sysadmin)
+    ws_id, admin_id, member_id, sysadmin_id = ws.id, admin.id, member.id, sysadmin.id
     admin_token = AuthService(db).login("admin@test.com", "adminpass")
     member_token = AuthService(db).login("member@test.com", "memberpass")
+    sysadmin_token = AuthService(db).login("sysadmin@test.internal", "syspass")
     db.close()
     return {
         "ws_id": ws_id,
         "admin_id": admin_id,
         "member_id": member_id,
+        "sysadmin_id": sysadmin_id,
         "admin_token": admin_token,
         "member_token": member_token,
+        "sysadmin_token": sysadmin_token,
     }
 
 
@@ -149,3 +171,54 @@ def test_change_password_wrong_current(client, seed):
         "new_password": "irrelevant",
     }, headers=auth_header(seed["admin_token"]))
     assert r.status_code == 400
+
+
+# ── Regression tests ──────────────────────────────────────────────────────────
+
+def test_sysadmin_can_list_users(client, seed):
+    r = client.get("/users", headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    emails = [u["email"] for u in r.json()]
+    assert "admin@test.com" in emails
+    assert "member@test.com" in emails
+    assert "sysadmin@test.internal" in emails
+
+
+def test_sysadmin_sees_workspace_name_for_users(client, seed):
+    r = client.get("/users", headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    users = {u["email"]: u for u in r.json()}
+    assert users["admin@test.com"]["workspace_name"] == "Test WS"
+    assert users["sysadmin@test.internal"]["workspace_name"] is None
+
+
+def test_update_user_name_admin(client, seed):
+    member_id = seed["member_id"]
+    r = client.put(f"/users/{member_id}/name", json={"name": "Updated Name"},
+                   headers=auth_header(seed["admin_token"]))
+    assert r.status_code == 200
+    assert r.json()["name"] == "Updated Name"
+
+
+def test_update_user_name_sysadmin(client, seed):
+    admin_id = seed["admin_id"]
+    r = client.put(f"/users/{admin_id}/name", json={"name": "Admin Renamed"},
+                   headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    assert r.json()["name"] == "Admin Renamed"
+
+
+def test_update_user_name_member_forbidden(client, seed):
+    admin_id = seed["admin_id"]
+    r = client.put(f"/users/{admin_id}/name", json={"name": "Hacked"},
+                   headers=auth_header(seed["member_token"]))
+    assert r.status_code == 403
+
+
+def test_updated_name_visible_in_list(client, seed):
+    member_id = seed["member_id"]
+    client.put(f"/users/{member_id}/name", json={"name": "FinalName"},
+               headers=auth_header(seed["admin_token"]))
+    r = client.get("/users", headers=auth_header(seed["admin_token"]))
+    users = {u["id"]: u for u in r.json()}
+    assert users[member_id]["name"] == "FinalName"

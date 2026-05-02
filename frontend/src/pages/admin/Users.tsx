@@ -14,6 +14,7 @@ export default function AdminUsers() {
   const [form, setForm] = useState<InviteForm>({ email: '', name: '', password: '', role: 'member' })
   const [inviteError, setInviteError] = useState('')
   const [inviteSaving, setInviteSaving] = useState(false)
+  const [editingName, setEditingName] = useState<{ userId: string; value: string } | null>(null)
 
   useEffect(() => {
     api.me()
@@ -56,6 +57,12 @@ export default function AdminUsers() {
     setUsers(prev => prev.map(x => x.id === userId ? u : x))
   }
 
+  async function handleSaveName(userId: string, name: string) {
+    const u = await api.updateUserName(userId, name)
+    setUsers(prev => prev.map(x => x.id === userId ? u : x))
+    setEditingName(null)
+  }
+
   if (loading || !me) return null
 
   return (
@@ -89,8 +96,38 @@ export default function AdminUsers() {
               {users.map(u => (
                 <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
                   <td className="px-4 py-3">
-                    <p className="font-medium text-gray-900 dark:text-white">{u.name ?? '—'}</p>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs">{u.email}</p>
+                    {editingName?.userId === u.id ? (
+                      <form
+                        onSubmit={e => { e.preventDefault(); handleSaveName(u.id, editingName.value) }}
+                        className="flex items-center gap-2"
+                      >
+                        <input
+                          autoFocus
+                          type="text"
+                          value={editingName.value}
+                          onChange={e => setEditingName({ userId: u.id, value: e.target.value })}
+                          className="text-sm px-2 py-1 rounded-lg border border-indigo-400 dark:border-indigo-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 w-36"
+                        />
+                        <button type="submit" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Salvar</button>
+                        <button type="button" onClick={() => setEditingName(null)} className="text-xs text-gray-400 hover:underline">✕</button>
+                      </form>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">{u.name ?? '—'}</p>
+                          <p className="text-gray-500 dark:text-gray-400 text-xs">{u.email}</p>
+                        </div>
+                        {u.role !== 'sysadmin' && (
+                          <button
+                            onClick={() => setEditingName({ userId: u.id, value: u.name ?? '' })}
+                            className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 dark:text-gray-600 hover:text-indigo-500 dark:hover:text-indigo-400 transition-opacity"
+                            title="Editar nome"
+                          >
+                            ✎
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </td>
                   {me.role === 'sysadmin' && (
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
