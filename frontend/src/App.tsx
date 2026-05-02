@@ -3,13 +3,15 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Profile from './pages/Profile'
 import AdminUsers from './pages/admin/Users'
+import AdminAudit from './pages/admin/Audit'
 import { applyTheme, getTheme } from './lib/theme'
+import { getToken } from './lib/api'
 
 // Apply saved theme before first render
 applyTheme(getTheme())
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  return localStorage.getItem('token') ? <>{children}</> : <Navigate to="/login" replace />
+  return getToken() ? <>{children}</> : <Navigate to="/login" replace />
 }
 
 export default function App() {
@@ -20,6 +22,7 @@ export default function App() {
         <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />
+        <Route path="/admin/audit" element={<PrivateRoute><AdminAudit /></PrivateRoute>} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>

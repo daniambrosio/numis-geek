@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, setToken } from '../lib/api'
 
 export default function Login() {
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -14,8 +15,8 @@ export default function Login() {
     setError('')
     setLoading(true)
     try {
-      const { access_token } = await api.login(email, password)
-      localStorage.setItem('token', access_token)
+      const { access_token } = await api.login(email, password, rememberMe)
+      setToken(access_token, rememberMe)
       navigate('/dashboard')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro ao fazer login')
@@ -64,6 +65,16 @@ export default function Login() {
               placeholder="••••••••"
             />
           </div>
+
+          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-sm text-gray-600 dark:text-gray-400">Lembrar de mim por 30 dias</span>
+          </label>
 
           {error && (
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>

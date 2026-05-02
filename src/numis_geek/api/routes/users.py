@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.user import User, UserRole
+from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 from numis_geek.services.user import UserService
 
@@ -94,6 +95,15 @@ def invite_user(
     if body.role == UserRole.admin:
         new_user.role = UserRole.admin
     db.flush()
+    AuditService(db).log(
+        user_email=acting.email,
+        action="user.invited",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=new_user.id,
+        details={"invited_email": body.email, "role": body.role.value},
+    )
     return UserOut.from_orm(new_user)
 
 
@@ -105,9 +115,20 @@ def change_role(
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
+    acting = _get_user_or_404(db, current_user.user_id)
     user = _get_user_or_404(db, user_id)
+    old_role = user.role.value
     user.role = body.role
     db.flush()
+    AuditService(db).log(
+        user_email=acting.email,
+        action="user.role_changed",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=user_id,
+        details={"from": old_role, "to": body.role.value},
+    )
     return UserOut.from_orm(user)
 
 
@@ -119,7 +140,17 @@ def deactivate_user(
 ):
     _require_admin(current_user)
     acting = _get_user_or_404(db, current_user.user_id)
+    target = _get_user_or_404(db, user_id)
     UserService(db).deactivate(user_id, acting_user=acting)
+    AuditService(db).log(
+        user_email=acting.email,
+        action="user.deactivated",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=user_id,
+        details={"target_email": target.email},
+    )
     return UserOut.from_orm(_get_user_or_404(db, user_id))
 
 
@@ -142,6 +173,14 @@ def update_me(
     user = _get_user_or_404(db, current_user.user_id)
     user.name = body.name
     db.flush()
+    AuditService(db).log(
+        user_email=user.email,
+        action="profile.name_changed",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=user.id,
+    )
     return UserOut.from_orm(user)
 
 
@@ -156,3 +195,11 @@ def change_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect.")
     user.password_hash = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
     db.flush()
+    AuditService(db).log(
+        user_email=user.email,
+        action="profile.password_changed",
+        workspace_id=current_user.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="user",
+        resource_id=user.id,
+    )

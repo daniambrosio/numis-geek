@@ -1,7 +1,26 @@
 const BASE = '/api'
 
+export function getToken(): string | null {
+  return localStorage.getItem('token') ?? sessionStorage.getItem('token')
+}
+
+export function setToken(token: string, remember: boolean) {
+  if (remember) {
+    localStorage.setItem('token', token)
+    sessionStorage.removeItem('token')
+  } else {
+    sessionStorage.setItem('token', token)
+    localStorage.removeItem('token')
+  }
+}
+
+export function clearToken() {
+  localStorage.removeItem('token')
+  sessionStorage.removeItem('token')
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('token')
+  const token = getToken()
   const res = await fetch(`${BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -26,11 +45,28 @@ export interface UserOut {
   created_at: string
 }
 
+export interface AuditLogOut {
+  id: string
+  user_email: string
+  action: string
+  resource_type: string | null
+  resource_id: string | null
+  details: string | null
+  created_at: string
+}
+
+export interface AuditPage {
+  items: AuditLogOut[]
+  total: number
+  page: number
+  pages: number
+}
+
 export const api = {
-  login: (email: string, password: string) =>
+  login: (email: string, password: string, remember_me = false) =>
     request<{ access_token: string }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, remember_me }),
     }),
 
   me: () => request<UserOut>('/users/me'),
@@ -54,4 +90,10 @@ export const api = {
 
   deactivateUser: (userId: string) =>
     request<UserOut>(`/users/${userId}/deactivate`, { method: 'PUT' }),
+
+  listAudit: (page = 1, action?: string) => {
+    const params = new URLSearchParams({ page: String(page), limit: '50' })
+    if (action) params.set('action', action)
+    return request<AuditPage>(`/audit?${params}`)
+  },
 }

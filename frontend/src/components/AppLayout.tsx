@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { getTheme, toggleTheme, type Theme } from '../lib/theme'
-import type { UserOut } from '../lib/api'
+import { clearToken, type UserOut } from '../lib/api'
 
 interface Props {
   user: UserOut
@@ -11,6 +11,7 @@ interface Props {
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/dashboard', icon: '▦', adminOnly: false },
   { label: 'Usuários', href: '/admin/users', icon: '👥', adminOnly: true },
+  { label: 'Auditoria', href: '/admin/audit', icon: '📋', adminOnly: true },
 ]
 
 export default function AppLayout({ user, children }: Props) {
@@ -40,7 +41,7 @@ export default function AppLayout({ user, children }: Props) {
   }
 
   function handleLogout() {
-    localStorage.removeItem('token')
+    clearToken()
     navigate('/login')
   }
 
