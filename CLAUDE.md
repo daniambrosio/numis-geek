@@ -32,7 +32,7 @@ Claude acts as the **orchestrator**, not the implementer. Frameworks like LangGr
 - **Language:** Python 3.12+
 - **ORM:** SQLAlchemy 2.x (database-agnostic; start SQLite, migrate to PostgreSQL on VPS)
 - **Migrations:** Alembic (autogenerate enabled, every schema change needs a migration script)
-- **Auth:** passlib[bcrypt] for password hashing, JWT for sessions
+- **Auth:** bcrypt (direct, not passlib — incompatible with Python 3.14) for password hashing, PyJWT for sessions
 - **Testing:** pytest with in-memory SQLite fixtures
 - **Config:** python-dotenv (`.env` for `DATABASE_URL`, `SECRET_KEY`)
 - **Version control:** Git
@@ -91,3 +91,23 @@ Claude acts as the **orchestrator**, not the implementer. Frameworks like LangGr
 - The workspace is the top-level grouping for all entities (users, accounts, transactions, entries)
 - Authentication and authorization are email-based
 - Reference screenshots for the investment dashboard are in `assets/references/`
+
+## Roles & Authorization
+
+Three roles exist: `sysadmin`, `admin`, `member`.
+
+- **sysadmin** — system-level super-user; `workspace_id = None`; manages system entities (Financial Institutions, etc.) and can view/edit data across all workspaces
+- **admin** — workspace-scoped; manages users and settings within their workspace
+- **member** — workspace-scoped; regular access
+
+**Every role check that allows `admin` must also allow `sysadmin`** — use `role not in (admin, sysadmin)` pattern, never `role != admin`. Every workspace-scoped query must skip the workspace filter when `role == sysadmin`.
+
+## Backend Patterns
+
+- `get_db()` in `api/deps.py` must commit on success and rollback on error — never just `finally: db.close()` without committing first.
+- SQLite migrations that change column nullability or enum values require `op.batch_alter_table`.
+
+## Frontend Patterns
+
+- **Never catch data-fetch errors with `navigate('/login')`**. Only `api.me()` should trigger a login redirect on failure. All other fetches (listUsers, listAudit, etc.) should handle errors separately — a 403 or 500 on a data call must never log the user out.
+- Split `api.me()` and data fetches into separate `useEffect` hooks; gate the data fetch on `me` being set.
