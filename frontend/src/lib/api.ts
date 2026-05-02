@@ -43,6 +43,8 @@ export interface UserOut {
   role: string
   is_active: boolean
   created_at: string
+  workspace_id: string | null
+  workspace_name: string | null
 }
 
 export interface FinancialInstitutionOut {

@@ -76,9 +76,13 @@ export default function AdminUsers() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800">
-                {['Nome / Email', 'Role', 'Status', 'Ações'].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">{h}</th>
-                ))}
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Nome / Email</th>
+                {me.role === 'sysadmin' && (
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Workspace</th>
+                )}
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Role</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Status</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -88,16 +92,27 @@ export default function AdminUsers() {
                     <p className="font-medium text-gray-900 dark:text-white">{u.name ?? '—'}</p>
                     <p className="text-gray-500 dark:text-gray-400 text-xs">{u.email}</p>
                   </td>
+                  {me.role === 'sysadmin' && (
+                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
+                      {u.workspace_name ?? <span className="text-gray-300 dark:text-gray-600">—</span>}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
-                    <select
-                      value={u.role}
-                      onChange={e => handleRoleChange(u.id, e.target.value)}
-                      disabled={u.id === me.id}
-                      className="text-xs px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 disabled:opacity-50"
-                    >
-                      <option value="admin">Admin</option>
-                      <option value="member">Member</option>
-                    </select>
+                    {u.role === 'sysadmin' ? (
+                      <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                        SysAdmin
+                      </span>
+                    ) : (
+                      <select
+                        value={u.role}
+                        onChange={e => handleRoleChange(u.id, e.target.value)}
+                        disabled={u.id === me.id}
+                        className="text-xs px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 disabled:opacity-50"
+                      >
+                        <option value="admin">Admin</option>
+                        <option value="member">Member</option>
+                      </select>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
@@ -109,7 +124,7 @@ export default function AdminUsers() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    {u.is_active && u.id !== me.id && (
+                    {u.is_active && u.id !== me.id && u.role !== 'sysadmin' && (
                       <button
                         onClick={() => handleDeactivate(u.id)}
                         className="text-xs text-red-600 dark:text-red-400 hover:underline"

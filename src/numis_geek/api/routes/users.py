@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.user import User, UserRole
+from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 from numis_geek.services.user import UserService
@@ -21,9 +22,11 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     created_at: str
+    workspace_id: str | None = None
+    workspace_name: str | None = None
 
     @classmethod
-    def from_orm(cls, u: User) -> "UserOut":
+    def from_orm(cls, u: User, workspace_name: str | None = None) -> "UserOut":
         return cls(
             id=u.id,
             email=u.email,
@@ -31,6 +34,8 @@ class UserOut(BaseModel):
             role=u.role.value,
             is_active=u.is_active,
             created_at=u.created_at.isoformat(),
+            workspace_id=u.workspace_id,
+            workspace_name=workspace_name,
         )
 
 
@@ -79,7 +84,13 @@ def list_users(
     q = db.query(User)
     if current_user.role != UserRole.sysadmin:
         q = q.filter(User.workspace_id == current_user.workspace_id)
-    return [UserOut.from_orm(u) for u in q.all()]
+    users = q.all()
+    workspace_ids = {u.workspace_id for u in users if u.workspace_id}
+    ws_names = {
+        ws.id: ws.name
+        for ws in db.query(Workspace).filter(Workspace.id.in_(workspace_ids)).all()
+    }
+    return [UserOut.from_orm(u, workspace_name=ws_names.get(u.workspace_id)) for u in users]
 
 
 @router.post("/invite", response_model=UserOut, status_code=status.HTTP_201_CREATED)
