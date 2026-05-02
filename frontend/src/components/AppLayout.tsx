@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { getTheme, cycleTheme, applyTheme, type Theme } from '../lib/theme'
+import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { clearToken, type UserOut } from '../lib/api'
 
 interface Props {
@@ -46,10 +46,6 @@ export default function AppLayout({ user, children }: Props) {
     return () => mq.removeEventListener('change', onSystemChange)
   }, [])
 
-  function handleCycleTheme() {
-    setTheme(cycleTheme())
-  }
-
   function handleLogout() {
     clearToken()
     navigate('/login')
@@ -79,28 +75,39 @@ export default function AppLayout({ user, children }: Props) {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Theme toggle — cycles: dark → light → system */}
-          <button
-            onClick={handleCycleTheme}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            title={{ dark: 'Modo escuro — clique para claro', light: 'Modo claro — clique para sistema', system: 'Modo sistema — clique para escuro' }[theme]}
-          >
-            {theme === 'dark' && (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
-            )}
-            {theme === 'light' && (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M12 7a5 5 0 100 10A5 5 0 0012 7z" />
-              </svg>
-            )}
-            {theme === 'system' && (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-            )}
-          </button>
+          {/* Theme switcher — 3 options side by side */}
+          <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            {([
+              { value: 'dark' as Theme, title: 'Modo escuro', icon: (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+              )},
+              { value: 'light' as Theme, title: 'Modo claro', icon: (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M12 7a5 5 0 100 10A5 5 0 0012 7z" />
+                </svg>
+              )},
+              { value: 'system' as Theme, title: 'Seguir sistema', icon: (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              )},
+            ] as const).map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => { applyTheme(opt.value); setTheme(opt.value) }}
+                title={opt.title}
+                className={`p-1.5 transition-colors ${
+                  theme === opt.value
+                    ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300'
+                    : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800'
+                }`}
+              >
+                {opt.icon}
+              </button>
+            ))}
+          </div>
 
           {/* Avatar dropdown */}
           <div className="relative" ref={dropdownRef}>

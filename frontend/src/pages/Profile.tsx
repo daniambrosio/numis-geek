@@ -67,6 +67,8 @@ export default function Profile() {
         <section className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-3">
           <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Informações</h2>
           <dl className="grid grid-cols-2 gap-y-3 text-sm">
+            <dt className="text-gray-500 dark:text-gray-400">Nome</dt>
+            <dd className="text-gray-900 dark:text-white font-medium">{user.name ?? <span className="text-gray-400 dark:text-gray-600 italic">não definido</span>}</dd>
             <dt className="text-gray-500 dark:text-gray-400">Email</dt>
             <dd className="text-gray-900 dark:text-white font-medium">{user.email}</dd>
             <dt className="text-gray-500 dark:text-gray-400">Role</dt>
