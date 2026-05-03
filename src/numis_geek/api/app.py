@@ -2,7 +2,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from numis_geek.api.middleware import AuditMiddleware
-from numis_geek.api.routes import auth, users, audit, financial_institutions, accounts
+from numis_geek.api.routes import (
+    accounts,
+    assets,
+    audit,
+    auth,
+    financial_institutions,
+    users,
+    workspaces,
+)
 
 app = FastAPI(title="Numis-Geek API", version="0.1.0")
 
@@ -20,6 +28,8 @@ app.include_router(users.router)
 app.include_router(audit.router)
 app.include_router(financial_institutions.router)
 app.include_router(accounts.router)
+app.include_router(assets.router)
+app.include_router(workspaces.router)
 
 
 @app.get("/health")

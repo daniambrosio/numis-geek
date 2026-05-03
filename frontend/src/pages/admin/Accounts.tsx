@@ -87,7 +87,7 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
             <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo</label>
             <select
               value={accountType}
-              onChange={e => setAccountType(e.target.value)}
+              onChange={e => setAccountType(e.target.value as 'checking' | 'investment')}
               className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               <option value="checking">Corrente</option>
@@ -113,7 +113,7 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
             <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Moeda</label>
             <select
               value={currency}
-              onChange={e => setCurrency(e.target.value)}
+              onChange={e => setCurrency(e.target.value as 'BRL' | 'USD')}
               className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               <option value="BRL">BRL</option>

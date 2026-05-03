@@ -27,6 +27,9 @@ def _is_explicit(path: str) -> bool:
     # /financial-institutions and /financial-institutions/{id}[/deactivate]
     if parts[0] == "financial-institutions":
         return True
+    # /assets and /assets/{id}[/deactivate]
+    if parts[0] == "assets":
+        return True
     return False
 
 

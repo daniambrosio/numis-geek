@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.models.asset import Asset
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
 from numis_geek.services.audit import AuditService
@@ -134,6 +135,16 @@ def deactivate_financial_institution(
 ):
     _require_sysadmin(current_user)
     fi = _get_or_404(db, fi_id)
+    # RESTRICT: cannot deactivate while any active asset references this FI.
+    referencing_active_assets = db.query(Asset).filter(
+        Asset.financial_institution_id == fi.id,
+        Asset.is_active == True,  # noqa: E712
+    ).first()
+    if referencing_active_assets:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot deactivate: there are active assets referencing this institution.",
+        )
     fi.is_active = False
     fi.updated_at = datetime.now(timezone.utc)
     fi.updated_by = current_user.user_id

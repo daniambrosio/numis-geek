@@ -71,6 +71,81 @@ export interface AccountOut {
   created_at: string
 }
 
+export type AssetClass =
+  | 'STOCK_BR'
+  | 'STOCK_US'
+  | 'FII'
+  | 'ETF'
+  | 'REIT'
+  | 'BOND'
+  | 'FIXED_INCOME'
+  | 'FUND'
+  | 'CRYPTO'
+  | 'REAL_ESTATE'
+  | 'VEHICLE'
+
+export type FixedIncomeIndexer = 'CDI' | 'IPCA' | 'SELIC' | 'PREFIXED' | 'USD'
+
+export interface FixedIncomeDetails {
+  issuer: string
+  issue_date: string | null
+  maturity_date: string
+  indexer: FixedIncomeIndexer
+  rate: number
+  face_value: number | null
+}
+
+export interface PhysicalDetails {
+  address: string | null
+  city: string | null
+  state: string | null
+  country: string | null
+  area_m2: number | null
+  registration_number: string | null
+  make: string | null
+  model: string | null
+  year: number | null
+  license_plate: string | null
+  chassis: string | null
+}
+
+export interface AssetOut {
+  id: string
+  workspace_id: string
+  workspace_name: string | null
+  financial_institution_id: string
+  financial_institution_name: string
+  asset_class: AssetClass
+  subtype: string | null
+  name: string
+  ticker: string | null
+  cnpj: string | null
+  currency: 'BRL' | 'USD'
+  notes: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  details: FixedIncomeDetails | PhysicalDetails | null
+}
+
+export interface AssetRequest {
+  asset_class: AssetClass
+  financial_institution_id: string
+  name: string
+  currency: 'BRL' | 'USD'
+  subtype?: string | null
+  ticker?: string | null
+  cnpj?: string | null
+  notes?: string | null
+  workspace_id?: string | null
+  details?: Record<string, unknown> | null
+}
+
+export interface WorkspaceOut {
+  id: string
+  name: string
+}
+
 export interface AuditLogOut {
   id: string
   user_email: string
@@ -129,10 +204,10 @@ export const api = {
   listFinancialInstitutions: () =>
     request<FinancialInstitutionOut[]>('/financial-institutions'),
 
-  createFinancialInstitution: (data: { long_name: string; short_name: string; logo_slug?: string }) =>
+  createFinancialInstitution: (data: { long_name: string; short_name: string; logo_slug?: string | null }) =>
     request<FinancialInstitutionOut>('/financial-institutions', { method: 'POST', body: JSON.stringify(data) }),
 
-  updateFinancialInstitution: (id: string, data: { long_name: string; short_name: string; logo_slug?: string }) =>
+  updateFinancialInstitution: (id: string, data: { long_name: string; short_name: string; logo_slug?: string | null }) =>
     request<FinancialInstitutionOut>(`/financial-institutions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   deactivateFinancialInstitution: (id: string) =>
@@ -160,4 +235,27 @@ export const api = {
 
   deactivateAccount: (id: string) =>
     request<AccountOut>(`/accounts/${id}/deactivate`, { method: 'PUT' }),
+
+  listWorkspaces: () => request<WorkspaceOut[]>('/workspaces'),
+
+  listAssets: (params?: { workspace_id?: string; asset_class?: AssetClass; include_inactive?: boolean; search?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.workspace_id) qs.set('workspace_id', params.workspace_id)
+    if (params?.asset_class) qs.set('asset_class', params.asset_class)
+    if (params?.include_inactive) qs.set('include_inactive', 'true')
+    if (params?.search) qs.set('search', params.search)
+    const suffix = qs.toString()
+    return request<AssetOut[]>(`/assets${suffix ? `?${suffix}` : ''}`)
+  },
+
+  getAsset: (id: string) => request<AssetOut>(`/assets/${id}`),
+
+  createAsset: (data: AssetRequest) =>
+    request<AssetOut>('/assets', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateAsset: (id: string, data: AssetRequest) =>
+    request<AssetOut>(`/assets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deactivateAsset: (id: string) =>
+    request<AssetOut>(`/assets/${id}/deactivate`, { method: 'PUT' }),
 }

@@ -11,12 +11,14 @@ interface Props {
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/dashboard', icon: '▦', adminOnly: false },
   { label: 'Contas', href: '/accounts', icon: '🏦', adminOnly: true },
+  { label: 'Ativos', href: '/assets', icon: '💼', adminOnly: false },
   { label: 'Usuários', href: '/admin/users', icon: '👥', adminOnly: true },
   { label: 'Auditoria', href: '/admin/audit', icon: '📋', adminOnly: true },
 ]
 
 const SYSADMIN_NAV_ITEMS = [
   { label: 'Inst. Financeiras', href: '/sysadmin/financial-institutions', icon: '🏦' },
+  { label: 'Ativos', href: '/sysadmin/assets', icon: '💼' },
 ]
 
 export default function AppLayout({ user, children }: Props) {
