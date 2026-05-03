@@ -17,7 +17,44 @@ const LOGO_COLORS: Record<string, string> = {
   caixa:       'bg-blue-800',
 }
 
+// Maps logo_slug to domain for favicon lookup
+const LOGO_DOMAINS: Record<string, string> = {
+  itau:        'itau.com.br',
+  xp:          'xpi.com.br',
+  avenue:      'avenue.us',
+  btg:         'btgpactual.com',
+  bradesco:    'bradesco.com.br',
+  santander:   'santander.com.br',
+  mercadopago: 'mercadopago.com.br',
+  wise:        'wise.com',
+  coinbase:    'coinbase.com',
+  clear:       'clear.com.br',
+  caixa:       'caixa.gov.br',
+}
+
+function getLogoUrl(slug: string): string | null {
+  const domain = LOGO_DOMAINS[slug]
+  if (!domain) return null
+  return `https://www.google.com/s2/favicons?sz=64&domain=${domain}`
+}
+
 function InstitutionLogo({ fi }: { fi: FinancialInstitutionOut }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  const logoUrl = fi.logo_slug ? getLogoUrl(fi.logo_slug) : null
+
+  if (logoUrl && !imgFailed) {
+    return (
+      <div className="w-9 h-9 rounded-lg bg-white dark:bg-gray-800 flex items-center justify-center overflow-hidden shrink-0 border border-gray-100 dark:border-gray-700">
+        <img
+          src={logoUrl}
+          alt={fi.short_name}
+          className="w-7 h-7 object-contain"
+          onError={() => setImgFailed(true)}
+        />
+      </div>
+    )
+  }
+
   const color = fi.logo_slug ? (LOGO_COLORS[fi.logo_slug] ?? 'bg-gray-400') : 'bg-gray-400'
   const initials = fi.short_name.slice(0, 2).toUpperCase()
   return (
@@ -29,7 +66,7 @@ function InstitutionLogo({ fi }: { fi: FinancialInstitutionOut }) {
 
 interface ModalProps {
   initial?: FinancialInstitutionOut
-  onSave: (data: { long_name: string; short_name: string; logo_slug: string }) => Promise<void>
+  onSave: (data: { long_name: string; short_name: string; logo_slug: string | null }) => Promise<void>
   onClose: () => void
 }
 
@@ -45,7 +82,7 @@ function Modal({ initial, onSave, onClose }: ModalProps) {
     setError('')
     setSaving(true)
     try {
-      await onSave({ long_name: longName, short_name: shortName, logo_slug: logoSlug })
+      await onSave({ long_name: longName, short_name: shortName, logo_slug: logoSlug.trim() || null })
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
@@ -119,7 +156,7 @@ export default function SysAdminFinancialInstitutions() {
       .finally(() => setLoading(false))
   }, [me])
 
-  async function handleSave(data: { long_name: string; short_name: string; logo_slug: string }) {
+  async function handleSave(data: { long_name: string; short_name: string; logo_slug: string | null }) {
     if (editing) {
       const updated = await api.updateFinancialInstitution(editing.id, data)
       setItems(prev => prev.map(fi => fi.id === updated.id ? updated : fi))
