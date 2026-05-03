@@ -1,6 +1,6 @@
 """
-Creates initial workspace, admin user, sysadmin user, financial institutions, and example accounts.
-Run once: python scripts/seed.py
+Creates initial workspace, admin user, sysadmin user, financial institutions, and accounts.
+Idempotent — safe to run multiple times.
 """
 import uuid
 from datetime import datetime, timezone
@@ -26,9 +26,8 @@ existing = db.query(User).filter(User.email == "daniel.ambrosio@gmail.com").firs
 if not existing:
     ws = WorkspaceService(db).create("Família Ambrosio")
     UserService(db).create(ws.id, "daniel.ambrosio@gmail.com", "changeme", UserRole.admin)
-    ws_name = ws.name
     db.commit()
-    print(f"Workspace '{ws_name}' criado.")
+    print(f"Workspace '{ws.name}' criado.")
     print("Usuário: daniel.ambrosio@gmail.com / changeme")
 else:
     ws = db.query(Workspace).filter(Workspace.id == existing.workspace_id).first()
@@ -57,51 +56,53 @@ if not existing_sysadmin:
 else:
     print("Sysadmin já existe. Pulando.")
 
-# ── Example accounts ──────────────────────────────────────────────────────────
+# ── Accounts ──────────────────────────────────────────────────────────────────
 if ws:
     ws_id = ws.id
     sysadmin_id = existing_sysadmin.id if existing_sysadmin else None
 
-    # Look up financial institutions for seeding
-    itau = db.query(FinancialInstitution).filter(FinancialInstitution.short_name == "Itaú").first()
-    xp = db.query(FinancialInstitution).filter(FinancialInstitution.short_name == "XP").first()
+    # Build a lookup map: short_name → FI
+    all_fi = {fi.short_name: fi for fi in db.query(FinancialInstitution).filter(FinancialInstitution.is_active == True).all()}  # noqa: E712
 
-    example_accounts = []
-    if itau:
-        example_accounts.append({
-            "name": "Itaú Corrente",
-            "account_type": AccountType.checking,
-            "currency": Currency.BRL,
-            "financial_institution_id": itau.id,
-            "opening_balance": Decimal("0.00"),
-            "account_info": None,
-        })
-    if xp:
-        example_accounts.append({
-            "name": "XP Investimentos",
-            "account_type": AccountType.investment,
-            "currency": Currency.BRL,
-            "financial_institution_id": xp.id,
-            "opening_balance": None,
-            "account_info": None,
-        })
+    # (name, account_type, currency, fi_short_name)
+    ACCOUNTS = [
+        ("Conta Corrente Itaú",           AccountType.checking,   Currency.BRL, "Itaú"),
+        ("Conta Investimento Itaú",        AccountType.investment,  Currency.BRL, "Itaú"),
+        ("Conta Investimento XP",          AccountType.investment,  Currency.BRL, "XP"),
+        ("Conta Investimento BTG",         AccountType.investment,  Currency.BRL, "BTG"),
+        ("Conta Previdência Bradesco",     AccountType.investment,  Currency.BRL, "Bradesco"),
+        ("Conta Corrente Wise",            AccountType.checking,   Currency.USD, "Wise"),
+        ("Conta Investimento Avenue",      AccountType.investment,  Currency.USD, "Avenue"),
+        ("Conta Corrente Caixa",           AccountType.checking,   Currency.BRL, "Caixa"),
+        ("Conta Investimento Clear",       AccountType.investment,  Currency.BRL, "Clear"),
+        ("Conta Investimento Coinbase",    AccountType.investment,  Currency.USD, "Coinbase"),
+        ("Conta Corrente Mercado Pago",    AccountType.checking,   Currency.BRL, "Mercado Pago"),
+        ("Conta Investimento Mercado Pago",AccountType.investment,  Currency.BRL, "Mercado Pago"),
+        ("Conta Previdência Santander",    AccountType.investment,  Currency.BRL, "Santander"),
+    ]
 
-    for acc_data in example_accounts:
+    for name, acc_type, currency, fi_slug in ACCOUNTS:
+        fi = all_fi.get(fi_slug)
+        if not fi:
+            print(f"  ⚠ Instituição '{fi_slug}' não encontrada — pulando '{name}'.")
+            continue
+
         existing_acc = db.query(Account).filter(
             Account.workspace_id == ws_id,
-            Account.name == acc_data["name"],
+            Account.name == name,
         ).first()
+
         if not existing_acc:
             now = datetime.now(timezone.utc)
             acc = Account(
                 id=str(uuid.uuid4()),
                 workspace_id=ws_id,
-                financial_institution_id=acc_data["financial_institution_id"],
-                name=acc_data["name"],
-                account_type=acc_data["account_type"],
-                currency=acc_data["currency"],
-                opening_balance=acc_data["opening_balance"],
-                account_info=acc_data["account_info"],
+                financial_institution_id=fi.id,
+                name=name,
+                account_type=acc_type,
+                currency=currency,
+                opening_balance=None,
+                account_info=None,
                 is_active=True,
                 created_at=now,
                 updated_at=now,
@@ -110,8 +111,8 @@ if ws:
             )
             db.add(acc)
             db.commit()
-            print(f"Conta criada: {acc_data['name']}")
+            print(f"  Conta criada: {name}")
         else:
-            print(f"Conta '{acc_data['name']}' já existe. Pulando.")
+            print(f"  Conta já existe: {name}")
 
 db.close()
