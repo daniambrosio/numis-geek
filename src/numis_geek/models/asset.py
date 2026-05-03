@@ -22,6 +22,9 @@ class AssetClass(str, enum.Enum):
     CRYPTO = "CRYPTO"
     REAL_ESTATE = "REAL_ESTATE"
     VEHICLE = "VEHICLE"
+    PRIVATE_PENSION = "PRIVATE_PENSION"
+    FGTS = "FGTS"
+    CASH = "CASH"
 
 
 class FixedIncomeIndexer(str, enum.Enum):

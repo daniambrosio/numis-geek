@@ -1,10 +1,16 @@
 """
 Creates initial workspace, admin user, sysadmin user, financial institutions,
-accounts, and assets. Idempotent — safe to run multiple times.
+and accounts. Idempotent — safe to run multiple times.
+
+Assets are no longer seeded from a hard-coded list. Instead, if
+`data/notion_export.json` exists at seed time it is imported via
+`scripts/import_notion_assets.import_from_json`. Otherwise, asset seeding is
+skipped with an info message.
 """
+import sys
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
+from pathlib import Path
 
 import bcrypt
 
@@ -13,16 +19,16 @@ from numis_geek.db.base import Base
 from numis_geek.db.session import SessionLocal, engine
 from numis_geek.models import Workspace, User, FinancialInstitution  # noqa: F401 — registers models
 from numis_geek.models.account import Account, AccountType, Currency
-from numis_geek.models.asset import (
-    Asset,
-    AssetClass,
-    FixedIncomeAsset,
-    FixedIncomeIndexer,
-    PhysicalAsset,
-)
 from numis_geek.models.user import UserRole
 from numis_geek.services.workspace import WorkspaceService
 from numis_geek.services.user import UserService
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from import_notion_assets import (  # noqa: E402  — must be after sys.path tweak
+    DEFAULT_JSON_PATH as NOTION_EXPORT_PATH,
+    import_from_json as import_notion_assets,
+)
 
 Base.metadata.create_all(engine)
 
@@ -144,114 +150,16 @@ if ws:
             print(f"  Conta já existe: {name}")
 
 # ── Assets ────────────────────────────────────────────────────────────────────
-if ws:
-    ws_id = ws.id
-    sysadmin_id = existing_sysadmin.id if existing_sysadmin else None
-
-    # Refresh FI map (Particular may have been just inserted)
-    all_fi = {
-        fi.short_name: fi
-        for fi in db.query(FinancialInstitution).filter(FinancialInstitution.is_active == True).all()  # noqa: E712
-    }
-
-    # (asset_class, ticker, name, currency, fi_short_name, details_dict_or_None)
-    ASSETS: list[tuple[AssetClass, str | None, str, Currency, str, dict | None]] = [
-        (AssetClass.STOCK_BR, "PETR4",  "Petrobras PN",            Currency.BRL, "XP",         None),
-        (AssetClass.STOCK_BR, "ITUB4",  "Itaú Unibanco PN",        Currency.BRL, "XP",         None),
-        (AssetClass.STOCK_US, "AAPL",   "Apple Inc.",              Currency.USD, "Avenue",     None),
-        (AssetClass.STOCK_US, "MSFT",   "Microsoft Corp.",         Currency.USD, "Avenue",     None),
-        (AssetClass.FII,      "HGLG11", "CSHG Logística FII",      Currency.BRL, "XP",         None),
-        (AssetClass.ETF,      "BOVA11", "iShares Ibovespa ETF",    Currency.BRL, "XP",         None),
-        (AssetClass.ETF,      "SPY",    "SPDR S&P 500 ETF",        Currency.USD, "Avenue",     None),
-        (AssetClass.REIT,     "O",      "Realty Income",           Currency.USD, "Avenue",     None),
-        (AssetClass.CRYPTO,   "BTC",    "Bitcoin",                 Currency.USD, "Coinbase",   None),
-        (
-            AssetClass.FIXED_INCOME, None, "CDB BTG 110% CDI 2028", Currency.BRL, "XP",
-            {
-                "issuer": "Banco BTG Pactual",
-                "issue_date": date(2024, 3, 15),
-                "maturity_date": date(2028, 3, 15),
-                "indexer": FixedIncomeIndexer.CDI,
-                "rate": Decimal("110.0000"),
-                "face_value": Decimal("50000.00"),
-            },
-        ),
-        (
-            AssetClass.REAL_ESTATE, None, "Apto Exemplo (sample)", Currency.BRL, "Particular",
-            {
-                "address": "Rua Exemplo, 100, ap 1",
-                "city": "São Paulo",
-                "state": "SP",
-                "country": "BR",
-                "area_m2": Decimal("75.00"),
-            },
-        ),
-        (
-            AssetClass.VEHICLE, None, "Carro Exemplo (sample)", Currency.BRL, "Particular",
-            {
-                "make": "Toyota",
-                "model": "Corolla",
-                "year": 2022,
-                "license_plate": "ABC1D23",
-            },
-        ),
-    ]
-
-    for asset_class, ticker, name, currency, fi_slug, details in ASSETS:
-        fi = all_fi.get(fi_slug)
-        if not fi:
-            print(f"  ⚠ Instituição '{fi_slug}' não encontrada — pulando '{name}'.")
-            continue
-
-        existing_asset = db.query(Asset).filter(
-            Asset.workspace_id == ws_id,
-            Asset.name == name,
-        ).first()
-
-        if existing_asset:
-            print(f"  Ativo já existe: {name}")
-            continue
-
-        now = datetime.now(timezone.utc)
-        asset = Asset(
-            id=str(uuid.uuid4()),
-            workspace_id=ws_id,
-            financial_institution_id=fi.id,
-            asset_class=asset_class,
-            name=name,
-            ticker=ticker,
-            currency=currency,
-            is_active=True,
-            created_at=now,
-            updated_at=now,
-            created_by=sysadmin_id,
-            updated_by=sysadmin_id,
-        )
-        if asset_class == AssetClass.FIXED_INCOME and details:
-            asset.fixed_income = FixedIncomeAsset(
-                issuer=details["issuer"],
-                issue_date=details.get("issue_date"),
-                maturity_date=details["maturity_date"],
-                indexer=details["indexer"],
-                rate=details["rate"],
-                face_value=details.get("face_value"),
-            )
-        elif asset_class in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE) and details:
-            asset.physical = PhysicalAsset(
-                address=details.get("address"),
-                city=details.get("city"),
-                state=details.get("state"),
-                country=details.get("country"),
-                area_m2=details.get("area_m2"),
-                registration_number=details.get("registration_number"),
-                make=details.get("make"),
-                model=details.get("model"),
-                year=details.get("year"),
-                license_plate=details.get("license_plate"),
-                chassis=details.get("chassis"),
-            )
-        db.add(asset)
-        db.commit()
-        print(f"  Ativo criado: {name}")
+# Hard-coded starter assets are gone. Asset data now comes from
+# data/notion_export.json (produced by orchestration outside the script).
+if ws and NOTION_EXPORT_PATH.exists():
+    print(f"Importando ativos de {NOTION_EXPORT_PATH.relative_to(REPO_ROOT)}…")
+    summary = import_notion_assets(NOTION_EXPORT_PATH, apply=True, workspace_name=ws.name)
+    summary.print_report(applied=True)
+elif ws:
+    print(
+        f"Snapshot Notion não encontrado em {NOTION_EXPORT_PATH.relative_to(REPO_ROOT)} "
+        "— pulando seed de ativos."
+    )
 
 db.close()

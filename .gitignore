@@ -59,3 +59,8 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+# Notion export snapshots (generated, not source). Keep the dir itself
+# (.gitkeep) so the importer always has a target path; only ignore data files.
+/data/*
+!/data/.gitkeep

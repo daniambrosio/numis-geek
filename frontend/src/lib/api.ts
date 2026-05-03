@@ -83,6 +83,9 @@ export type AssetClass =
   | 'CRYPTO'
   | 'REAL_ESTATE'
   | 'VEHICLE'
+  | 'PRIVATE_PENSION'
+  | 'FGTS'
+  | 'CASH'
 
 export type FixedIncomeIndexer = 'CDI' | 'IPCA' | 'SELIC' | 'PREFIXED' | 'USD'
 

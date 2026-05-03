@@ -13,8 +13,13 @@ const CLASS_LABELS: Record<AssetClass, string> = {
   CRYPTO: 'Cripto',
   REAL_ESTATE: 'Imóvel',
   VEHICLE: 'Veículo',
+  PRIVATE_PENSION: 'Previdência Privada',
+  FGTS: 'FGTS',
+  CASH: 'Dinheiro',
 }
 
+// PRIVATE_PENSION/FGTS/CASH behave like ticker classes but ticker is optional
+// (per spec 07a — Notion has no ticker for those rows).
 const TICKER_REQUIRED: AssetClass[] = ['STOCK_BR', 'STOCK_US', 'FII', 'ETF', 'REIT', 'BOND', 'CRYPTO']
 const TICKER_FORBIDDEN: AssetClass[] = ['FIXED_INCOME', 'REAL_ESTATE', 'VEHICLE']
 const NEEDS_FIXED_INCOME: AssetClass[] = ['FIXED_INCOME']

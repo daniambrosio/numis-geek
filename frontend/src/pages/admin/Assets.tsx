@@ -19,6 +19,9 @@ function classBadge(c: AssetClass): string {
     CRYPTO: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
     REAL_ESTATE: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
     VEHICLE: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
+    PRIVATE_PENSION: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+    FGTS: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
+    CASH: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
   }
   return map[c]
 }
