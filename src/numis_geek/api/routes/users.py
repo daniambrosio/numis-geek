@@ -111,6 +111,8 @@ def invite_user(
         new_user.name = body.name
     if body.role == UserRole.admin:
         new_user.role = UserRole.admin
+    new_user.created_by = current_user.user_id
+    new_user.updated_by = current_user.user_id
     db.flush()
     AuditService(db).log(
         user_email=acting.email,
@@ -136,6 +138,7 @@ def change_role(
     user = _get_user_or_404(db, user_id)
     old_role = user.role.value
     user.role = body.role
+    user.updated_by = current_user.user_id
     db.flush()
     AuditService(db).log(
         user_email=acting.email,
@@ -182,6 +185,7 @@ def update_user_name(
     acting = _get_user_or_404(db, current_user.user_id)
     target = _get_user_or_404(db, user_id)
     target.name = body.name
+    target.updated_by = current_user.user_id
     db.flush()
     AuditService(db).log(
         user_email=acting.email,
@@ -213,6 +217,7 @@ def update_me(
 ):
     user = _get_user_or_404(db, current_user.user_id)
     user.name = body.name
+    user.updated_by = current_user.user_id
     db.flush()
     AuditService(db).log(
         user_email=user.email,
@@ -235,6 +240,7 @@ def change_password(
     if not bcrypt.checkpw(body.current_password.encode(), user.password_hash.encode()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect.")
     user.password_hash = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
+    user.updated_by = current_user.user_id
     db.flush()
     AuditService(db).log(
         user_email=user.email,

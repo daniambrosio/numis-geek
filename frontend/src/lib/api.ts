@@ -57,6 +57,20 @@ export interface FinancialInstitutionOut {
   updated_at: string
 }
 
+export interface AccountOut {
+  id: string
+  workspace_id: string
+  financial_institution_id: string
+  financial_institution_name: string
+  name: string
+  account_type: 'checking' | 'investment'
+  currency: 'BRL' | 'USD'
+  opening_balance: number | null
+  account_info: string | null
+  is_active: boolean
+  created_at: string
+}
+
 export interface AuditLogOut {
   id: string
   user_email: string
@@ -123,4 +137,27 @@ export const api = {
 
   deactivateFinancialInstitution: (id: string) =>
     request<FinancialInstitutionOut>(`/financial-institutions/${id}/deactivate`, { method: 'PUT' }),
+
+  listAccounts: () => request<AccountOut[]>('/accounts'),
+
+  createAccount: (data: {
+    name: string
+    account_type: string
+    financial_institution_id: string
+    currency: string
+    opening_balance?: number | null
+    account_info?: string | null
+  }) => request<AccountOut>('/accounts', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateAccount: (id: string, data: {
+    name: string
+    account_type: string
+    financial_institution_id: string
+    currency: string
+    opening_balance?: number | null
+    account_info?: string | null
+  }) => request<AccountOut>(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deactivateAccount: (id: string) =>
+    request<AccountOut>(`/accounts/${id}/deactivate`, { method: 'PUT' }),
 }

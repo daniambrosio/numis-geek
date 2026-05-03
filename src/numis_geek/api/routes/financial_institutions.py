@@ -84,6 +84,8 @@ def create_financial_institution(
         logo_slug=body.logo_slug,
         created_at=now,
         updated_at=now,
+        created_by=current_user.user_id,
+        updated_by=current_user.user_id,
     )
     db.add(fi)
     db.flush()
@@ -111,6 +113,7 @@ def update_financial_institution(
     fi.short_name = body.short_name
     fi.logo_slug = body.logo_slug
     fi.updated_at = datetime.now(timezone.utc)
+    fi.updated_by = current_user.user_id
     db.flush()
     actor = db.get(User, current_user.user_id)
     AuditService(db).log(
@@ -133,6 +136,7 @@ def deactivate_financial_institution(
     fi = _get_or_404(db, fi_id)
     fi.is_active = False
     fi.updated_at = datetime.now(timezone.utc)
+    fi.updated_by = current_user.user_id
     db.flush()
     actor = db.get(User, current_user.user_id)
     AuditService(db).log(

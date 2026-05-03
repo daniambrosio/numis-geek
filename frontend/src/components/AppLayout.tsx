@@ -10,6 +10,7 @@ interface Props {
 
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/dashboard', icon: '▦', adminOnly: false },
+  { label: 'Contas', href: '/accounts', icon: '🏦', adminOnly: true },
   { label: 'Usuários', href: '/admin/users', icon: '👥', adminOnly: true },
   { label: 'Auditoria', href: '/admin/audit', icon: '📋', adminOnly: true },
 ]
