@@ -176,7 +176,7 @@ export default function SysAdminFinancialInstitutions() {
 
   return (
     <AppLayout user={me}>
-      <div className="max-w-4xl">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Instituições Financeiras</h1>
           <button

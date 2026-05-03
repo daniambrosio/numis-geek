@@ -62,7 +62,7 @@ export default function AdminAudit() {
 
   return (
     <AppLayout user={me}>
-      <div className="max-w-4xl">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Auditoria</h1>
           <select

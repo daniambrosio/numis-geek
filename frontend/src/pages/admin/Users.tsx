@@ -67,7 +67,7 @@ export default function AdminUsers() {
 
   return (
     <AppLayout user={me}>
-      <div className="max-w-3xl">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Usuários</h1>
           <button
