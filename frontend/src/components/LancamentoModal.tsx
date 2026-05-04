@@ -53,12 +53,16 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [confirmInactive, setConfirmInactive] = useState(false)
 
   const selectedAsset = assets.find(a => a.id === assetId) ?? preselectedAsset
+  const assetInactive = !!selectedAsset && selectedAsset.is_active === false
 
-  // When the asset changes, default currency to the asset's currency.
+  // When the asset changes, default currency to the asset's currency
+  // and reset the inactive-confirmation checkbox.
   useEffect(() => {
     if (selectedAsset) setCurrency(selectedAsset.currency)
+    setConfirmInactive(false)
   }, [assetId])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const showQuantity = !QUANTITY_HIDDEN.includes(type)
@@ -139,10 +143,32 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
             >
               {assets.map(a => (
                 <option key={a.id} value={a.id}>
-                  {a.ticker ? `${a.ticker} — ` : ''}{a.name} ({a.financial_institution_name})
+                  {a.ticker ? `${a.ticker} — ` : ''}{a.name} ({a.financial_institution_name}){a.is_active === false ? ' · INATIVO' : ''}
                 </option>
               ))}
             </select>
+            {assetInactive && (
+              <div className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm">
+                <p className="text-amber-800 dark:text-amber-200 font-medium mb-1">
+                  Atenção: este ativo está desativado.
+                </p>
+                <p className="text-amber-700 dark:text-amber-300 mb-2">
+                  Você está prestes a registrar um lançamento contra um ativo desativado.
+                  Isso é incomum no fluxo manual — geralmente acontece em importações de histórico.
+                </p>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={confirmInactive}
+                    onChange={e => setConfirmInactive(e.target.checked)}
+                    className="w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span className="text-amber-800 dark:text-amber-200">
+                    Confirmo que quero registrar mesmo assim.
+                  </span>
+                </label>
+              </div>
+            )}
           </div>
 
           {(showQuantity || showUnitPrice) && (
@@ -277,7 +303,7 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
               Cancelar
             </button>
-            <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-medium transition-colors">
+            <button type="submit" disabled={saving || (assetInactive && !confirmInactive)} className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-medium transition-colors">
               {saving ? 'Salvando…' : 'Salvar'}
             </button>
           </div>

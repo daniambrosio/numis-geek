@@ -207,8 +207,10 @@ def _resolve_workspace_id(body: LancamentoRequest, current_user: UserContext, db
 
 
 def _resolve_asset(db: Session, asset_id: str, workspace_id: str, current_user: UserContext) -> Asset:
+    # Inactive assets are intentionally allowed: importers backfill historical entries
+    # against deactivated assets, and the UI surfaces an explicit confirmation step.
     asset = db.get(Asset, asset_id)
-    if not asset or not asset.is_active:
+    if not asset:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
     if current_user.role != UserRole.sysadmin and asset.workspace_id != workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
@@ -358,6 +360,11 @@ def create_lancamento(
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
 
     currency = body.currency or asset.currency
+    if body.type in INCOME_TYPES and currency != asset.currency:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Income lançamentos must use the asset's currency ({asset.currency.value}).",
+        )
     fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
     gross = _resolve_gross(body)
 
@@ -419,6 +426,11 @@ def update_lancamento(
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
 
     currency = body.currency or asset.currency
+    if body.type in INCOME_TYPES and currency != asset.currency:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Income lançamentos must use the asset's currency ({asset.currency.value}).",
+        )
     fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
     gross = _resolve_gross(body)
 

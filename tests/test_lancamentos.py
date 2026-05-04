@@ -548,3 +548,87 @@ def test_usd_asset_defaults_currency_usd(client, seed):
     data = r.json()
     assert data["currency"] == "USD"
     assert data["fx_rate"] == 5.5
+
+
+# ── Tests: inactive asset is now allowed (with FE warning safety net) ──────
+
+def test_can_create_lancamento_against_inactive_asset(client, seed):
+    """Importers backfill historical entries against deactivated assets;
+    the API does not reject this path. The UI shows a confirmation."""
+    # Deactivate asset_a directly via DB.
+    db = TestSession()
+    try:
+        asset = db.get(Asset, seed["asset_a"])
+        asset.is_active = False
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "COMPRA",
+        "event_date": _today_iso(),
+        "quantity": 1,
+        "unit_price": 25.0,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+
+    # Reactivate so other tests aren't affected.
+    db = TestSession()
+    try:
+        asset = db.get(Asset, seed["asset_a"])
+        asset.is_active = True
+        db.commit()
+    finally:
+        db.close()
+
+
+# ── Tests: income types must use the asset's currency ─────────────────────
+
+def test_income_currency_must_match_asset_currency(client, seed):
+    # asset_a_us is USD; trying to pay a BRL dividend on it should be rejected.
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a_us"],
+        "type": "DIVIDENDO",
+        "event_date": _today_iso(),
+        "gross_amount": 50.0,
+        "currency": "BRL",
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 400
+    assert "asset's currency" in r.json()["detail"].lower() or "USD" in r.json()["detail"]
+
+
+def test_income_with_matching_currency_succeeds(client, seed):
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a_us"],
+        "type": "DIVIDENDO",
+        "event_date": _today_iso(),
+        "gross_amount": 50.0,
+        "currency": "USD",
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+
+
+# ── Tests: BONIFICACAO accepts override gross_amount (e.g., FMV declared) ──
+
+def test_bonificacao_default_gross_is_zero(client, seed):
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "BONIFICACAO",
+        "event_date": _today_iso(),
+        "quantity": 5,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    assert r.json()["gross_amount"] == 0.0
+
+
+def test_bonificacao_accepts_override_gross_amount(client, seed):
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "BONIFICACAO",
+        "event_date": _today_iso(),
+        "quantity": 5,
+        "gross_amount": 150.0,  # FMV declared by company (5 shares × R$30 nominal)
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    assert r.json()["gross_amount"] == 150.0

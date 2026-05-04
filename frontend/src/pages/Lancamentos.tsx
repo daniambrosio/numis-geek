@@ -82,7 +82,7 @@ export default function Lancamentos() {
         include_inactive: includeInactive,
         page_size: 200,
       }),
-      api.listAssets(),
+      api.listAssets({ include_inactive: true }),
     ])
       .then(([page, as]) => {
         setItems(page.items)

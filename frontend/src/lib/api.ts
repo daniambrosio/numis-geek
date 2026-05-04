@@ -21,16 +21,50 @@ export function clearToken() {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken()
-  const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...options,
+    })
+  } catch {
+    throw new Error('Não foi possível conectar ao servidor. Verifique se o backend está rodando.')
+  }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(err.detail ?? 'Request failed')
+    let detail: unknown = null
+    let bodyText = ''
+    try {
+      bodyText = await res.text()
+      detail = bodyText ? JSON.parse(bodyText)?.detail : null
+    } catch {
+      // body wasn't JSON; bodyText still set above
+    }
+    let message: string
+    if (typeof detail === 'string') {
+      message = detail
+    } else if (Array.isArray(detail) && detail.length > 0) {
+      // FastAPI 422: array of {loc, msg, type, ...}
+      message = detail
+        .map((e) => {
+          if (e && typeof e === 'object' && 'msg' in e) {
+            const loc = Array.isArray((e as { loc?: unknown[] }).loc)
+              ? (e as { loc: unknown[] }).loc.slice(1).join('.')
+              : ''
+            const msg = (e as { msg: string }).msg
+            return loc ? `${loc}: ${msg}` : msg
+          }
+          return String(e)
+        })
+        .join('; ')
+    } else {
+      const status = `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`
+      const snippet = bodyText && bodyText.length < 200 ? ` — ${bodyText}` : ''
+      message = `${status}${snippet}`
+    }
+    throw new Error(message)
   }
   if (res.status === 204) return undefined as T
   return res.json()
