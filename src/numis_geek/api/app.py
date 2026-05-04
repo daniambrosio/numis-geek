@@ -8,6 +8,7 @@ from numis_geek.api.routes import (
     audit,
     auth,
     financial_institutions,
+    lancamentos,
     users,
     workspaces,
 )
@@ -29,6 +30,7 @@ app.include_router(audit.router)
 app.include_router(financial_institutions.router)
 app.include_router(accounts.router)
 app.include_router(assets.router)
+app.include_router(lancamentos.router)
 app.include_router(workspaces.router)
 
 

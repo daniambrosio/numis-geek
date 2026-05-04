@@ -215,3 +215,90 @@ def test_sysadmin_can_manage_accounts(client, seed):
     assert r.status_code == 200
     # sysadmin sees all — should see at least what admin created
     assert len(r.json()) >= 1
+
+
+# ── /accounts/by-custodian tests ─────────────────────────────────────────────
+
+def test_by_custodian_basic_shape(client, seed):
+    """Returns list of {financial_institution, accounts, assets} groups."""
+    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    assert r.status_code == 200, r.text
+    groups = r.json()
+    assert isinstance(groups, list)
+    if groups:
+        g = groups[0]
+        assert "financial_institution" in g
+        assert "accounts" in g
+        assert "assets" in g
+        assert "id" in g["financial_institution"]
+        assert "short_name" in g["financial_institution"]
+        assert "logo_slug" in g["financial_institution"]
+
+
+def test_by_custodian_includes_investment_accounts_only(client, seed):
+    """The 'accounts' inside each group are limited to investment-type accounts."""
+    # Create both a checking and an investment account at the same FI (using existing seed FI).
+    client.post("/accounts", json={
+        "name": "BC Investimentos",
+        "account_type": "investment",
+        "financial_institution_id": seed["fi_id"],
+        "currency": "BRL",
+    }, headers=auth_header(seed["admin_token"]))
+
+    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    groups = r.json()
+    for g in groups:
+        for a in g["accounts"]:
+            assert a["account_type"] == "investment"
+
+
+def test_by_custodian_skips_fi_with_neither(client, seed):
+    """FIs with neither investment accounts nor assets in the workspace are skipped."""
+    # Create a fresh FI with no associations
+    r_fi = client.post("/financial-institutions", json={
+        "long_name": "Custodian-Empty Bank",
+        "short_name": "CEmpty",
+    }, headers=auth_header(seed["sysadmin_token"]))
+    new_fi_id = r_fi.json()["id"]
+
+    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    groups = r.json()
+    fi_ids = [g["financial_institution"]["id"] for g in groups]
+    assert new_fi_id not in fi_ids
+
+
+def test_by_custodian_workspace_isolation(client, seed):
+    """Members only see their own workspace's accounts/assets."""
+    # Create a separate workspace + admin
+    db = TestSession()
+    other_ws = WorkspaceService(db).create("Other WS for by-custodian")
+    UserService(db).create(other_ws.id, "other_admin@test.com", "otherpass", UserRole.admin)
+    other_token = AuthService(db).login("other_admin@test.com", "otherpass")
+
+    # Create an investment account in OTHER workspace at the seed FI
+    db.close()
+    r_create = client.post("/accounts", json={
+        "name": "Other WS Investimentos",
+        "account_type": "investment",
+        "financial_institution_id": seed["fi_id"],
+        "currency": "BRL",
+    }, headers=auth_header(other_token))
+    other_acc_id = r_create.json()["id"]
+
+    # Original WS admin should NOT see other_acc_id in their by-custodian view
+    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    all_account_ids = [
+        a["id"]
+        for g in r.json()
+        for a in g["accounts"]
+    ]
+    assert other_acc_id not in all_account_ids
+
+
+def test_by_custodian_sysadmin_cross_workspace(client, seed):
+    """Sysadmin without workspace_id sees groups across workspaces."""
+    r = client.get("/accounts/by-custodian", headers=auth_header(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    groups = r.json()
+    # We have at least one investment account from earlier tests in this module.
+    assert len(groups) >= 1

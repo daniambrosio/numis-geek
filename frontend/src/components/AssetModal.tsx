@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import type { AssetClass, AssetOut, AssetRequest, FinancialInstitutionOut, FixedIncomeDetails, FixedIncomeIndexer, PhysicalDetails } from '../lib/api'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { api, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type LancamentoOut, type PhysicalDetails, type PositionOut } from '../lib/api'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
   STOCK_BR: 'Ação BR',
@@ -83,6 +84,22 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // Position + recent lançamentos (only when editing an existing asset).
+  const [position, setPosition] = useState<PositionOut | null>(null)
+  const [recentLans, setRecentLans] = useState<LancamentoOut[]>([])
+  const [posLoading, setPosLoading] = useState(false)
+  useEffect(() => {
+    if (!initial) return
+    setPosLoading(true)
+    Promise.all([
+      api.getAssetPosition(initial.id),
+      api.listAssetLancamentos(initial.id, { page_size: 5 }),
+    ])
+      .then(([p, l]) => { setPosition(p); setRecentLans(l.items) })
+      .catch(() => { /* keep panel quiet on errors */ })
+      .finally(() => setPosLoading(false))
+  }, [initial])
 
   const tickerRequired = TICKER_REQUIRED.includes(assetClass)
   const tickerForbidden = TICKER_FORBIDDEN.includes(assetClass)
@@ -486,6 +503,61 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
             </button>
           </div>
         </form>
+
+        {initial && (
+          <div className="mt-6 pt-5 border-t border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Posição</h3>
+              <Link
+                to={`/lancamentos`}
+                className="text-xs px-3 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors"
+              >
+                Ver lançamentos
+              </Link>
+            </div>
+            {posLoading ? (
+              <p className="text-xs text-gray-400">Carregando posição…</p>
+            ) : position ? (
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Quantidade</p>
+                  <p className="font-mono text-gray-900 dark:text-white">{position.quantity_held.toLocaleString('pt-BR', { maximumFractionDigits: 8 })}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Custo médio ({position.currency})</p>
+                  <p className="font-mono text-gray-900 dark:text-white">{position.average_cost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Investido (BRL)</p>
+                  <p className="font-mono text-gray-900 dark:text-white">{position.total_invested_brl.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Recebido (BRL)</p>
+                  <p className="font-mono text-gray-900 dark:text-white">{position.total_received_brl.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-4">
+              <h4 className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">Lançamentos recentes</h4>
+              {recentLans.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Nenhum lançamento.</p>
+              ) : (
+                <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {recentLans.map(l => (
+                    <li key={l.id} className="py-2 flex items-center justify-between text-xs">
+                      <span className="text-gray-600 dark:text-gray-400 w-24">{l.event_date}</span>
+                      <span className="text-gray-900 dark:text-white flex-1">{l.type_label}</span>
+                      <span className="font-mono text-gray-600 dark:text-gray-400">
+                        {l.net_amount.toLocaleString('pt-BR', { style: 'currency', currency: l.currency })}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

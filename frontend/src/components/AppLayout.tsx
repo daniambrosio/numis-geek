@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', href: '/dashboard', icon: '▦', adminOnly: false },
   { label: 'Contas', href: '/accounts', icon: '🏦', adminOnly: true },
   { label: 'Ativos', href: '/assets', icon: '💼', adminOnly: false },
+  { label: 'Lançamentos', href: '/lancamentos', icon: '📊', adminOnly: false },
   { label: 'Usuários', href: '/admin/users', icon: '👥', adminOnly: true },
   { label: 'Auditoria', href: '/admin/audit', icon: '📋', adminOnly: true },
 ]

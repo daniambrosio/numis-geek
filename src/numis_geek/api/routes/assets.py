@@ -18,10 +18,12 @@ from numis_geek.models.asset import (
     PhysicalAsset,
 )
 from numis_geek.models.financial_institution import FinancialInstitution
+from numis_geek.models.lancamento import LANCAMENTO_TYPE_LABELS, Lancamento, LancamentoType
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
+from numis_geek.services.positions import compute_position
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -519,6 +521,113 @@ def update_asset(
         ws = db.get(Workspace, asset.workspace_id)
         ws_name = ws.name if ws else None
     return AssetOut.from_orm(asset, fi.short_name, workspace_name=ws_name)
+
+
+class PositionOut(BaseModel):
+    asset_id: str
+    quantity_held: float
+    average_cost: float
+    average_cost_brl: float
+    total_invested_brl: float
+    total_received_brl: float
+    currency: str
+
+
+class LancamentoLite(BaseModel):
+    id: str
+    workspace_id: str
+    asset_id: str
+    type: str
+    type_label: str
+    event_date: str
+    settlement_date: str | None
+    quantity: float | None
+    unit_price: float | None
+    gross_amount: float | None
+    fee: float | None
+    tax: float | None
+    net_amount: float
+    currency: str
+    fx_rate: float
+    notes: str | None
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+
+class AssetLancamentosPage(BaseModel):
+    items: list[LancamentoLite]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/{asset_id}/position", response_model=PositionOut)
+def get_asset_position(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+    pos = compute_position(db, asset_id)
+    return PositionOut(
+        asset_id=asset_id,
+        quantity_held=float(pos["quantity_held"]),
+        average_cost=float(pos["average_cost"]),
+        average_cost_brl=float(pos["average_cost_brl"]),
+        total_invested_brl=float(pos["total_invested_brl"]),
+        total_received_brl=float(pos["total_received_brl"]),
+        currency=pos["currency"],
+    )
+
+
+@router.get("/{asset_id}/lancamentos", response_model=AssetLancamentosPage)
+def list_asset_lancamentos(
+    asset_id: str,
+    include_inactive: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+    q = db.query(Lancamento).filter(Lancamento.asset_id == asset_id)
+    if not include_inactive:
+        q = q.filter(Lancamento.is_active == True)  # noqa: E712
+    total = q.count()
+    rows = (
+        q.order_by(Lancamento.event_date.desc(), Lancamento.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = [
+        LancamentoLite(
+            id=l.id,
+            workspace_id=l.workspace_id,
+            asset_id=l.asset_id,
+            type=l.type.value,
+            type_label=LANCAMENTO_TYPE_LABELS[l.type],
+            event_date=l.event_date.isoformat(),
+            settlement_date=l.settlement_date.isoformat() if l.settlement_date else None,
+            quantity=float(l.quantity) if l.quantity is not None else None,
+            unit_price=float(l.unit_price) if l.unit_price is not None else None,
+            gross_amount=float(l.gross_amount) if l.gross_amount is not None else None,
+            fee=float(l.fee) if l.fee is not None else None,
+            tax=float(l.tax) if l.tax is not None else None,
+            net_amount=float(l.net_amount),
+            currency=l.currency.value,
+            fx_rate=float(l.fx_rate),
+            notes=l.notes,
+            is_active=l.is_active,
+            created_at=l.created_at.isoformat(),
+            updated_at=l.updated_at.isoformat(),
+        )
+        for l in rows
+    ]
+    return AssetLancamentosPage(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.put("/{asset_id}/deactivate", response_model=AssetOut)

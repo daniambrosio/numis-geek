@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { api, type AccountOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
+import { Link, useNavigate } from 'react-router-dom'
+import { api, type AccountOut, type CustodianGroupOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 
 function accountTypeLabel(t: string) {
@@ -162,15 +162,129 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
   )
 }
 
+type Tab = 'contas' | 'ativos'
+
+function ByCustodianView({ groups, loading, loadError }: { groups: CustodianGroupOut[]; loading: boolean; loadError: string }) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  // Auto-expand if only one group
+  const autoExpand = groups.length === 1
+  function isCollapsed(id: string) {
+    if (autoExpand) return false
+    return collapsed[id] ?? false
+  }
+  function toggle(id: string) {
+    setCollapsed(prev => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  if (loading) {
+    return <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
+  }
+  if (loadError) {
+    return <div className="p-12 text-center text-sm text-red-500">{loadError}</div>
+  }
+  if (groups.length === 0) {
+    return (
+      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-12 text-center text-sm text-gray-400 dark:text-gray-600">
+        Nenhum custodiante com contas de investimento ou ativos.
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {groups.map(g => {
+        const fi = g.financial_institution
+        const collapsedNow = isCollapsed(fi.id)
+        return (
+          <div key={fi.id} className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+            <button
+              onClick={() => toggle(fi.id)}
+              disabled={autoExpand}
+              className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                {fi.logo_slug ? (
+                  <img
+                    src={`https://www.google.com/s2/favicons?sz=64&domain=${fi.logo_slug}.com.br`}
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                    alt=""
+                    className="w-8 h-8 rounded"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded bg-gray-100 dark:bg-gray-800" />
+                )}
+                <div className="text-left">
+                  <p className="font-medium text-gray-900 dark:text-white text-sm">{fi.short_name}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {g.assets.length} ativo{g.assets.length === 1 ? '' : 's'} · {g.accounts.length} conta{g.accounts.length === 1 ? '' : 's'} de investimento
+                  </p>
+                </div>
+              </div>
+              {!autoExpand && (
+                <span className="text-gray-400 text-sm">{collapsedNow ? '▸' : '▾'}</span>
+              )}
+            </button>
+
+            {!collapsedNow && (
+              <div className="border-t border-gray-100 dark:border-gray-800">
+                {g.accounts.length > 0 && (
+                  <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+                    <p className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">Contas</p>
+                    <ul className="space-y-1">
+                      {g.accounts.map(a => (
+                        <li key={a.id} className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700 dark:text-gray-300">{a.name}</span>
+                          <span className="text-xs text-gray-400">{a.currency}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="px-5 py-3">
+                  <p className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">Ativos</p>
+                  {g.assets.length === 0 ? (
+                    <p className="text-sm text-gray-400 dark:text-gray-600 italic">Nenhum ativo cadastrado neste custodiante.</p>
+                  ) : (
+                    <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                      {g.assets.map(a => (
+                        <li key={a.id}>
+                          <Link
+                            to={`/assets`}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors text-sm"
+                          >
+                            {a.ticker && (
+                              <span className="font-mono text-xs text-gray-500 dark:text-gray-400 w-16 truncate">{a.ticker}</span>
+                            )}
+                            <span className="text-gray-900 dark:text-white truncate flex-1">{a.name}</span>
+                            <span className="text-[10px] text-gray-400 uppercase">{a.currency}</span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function AdminAccounts() {
   const navigate = useNavigate()
   const [me, setMe] = useState<UserOut | null>(null)
   const [accounts, setAccounts] = useState<AccountOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
+  const [byCustodian, setByCustodian] = useState<CustodianGroupOut[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AccountOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AccountOut | null>(null)
+  const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('accounts-tab') as Tab) || 'contas')
 
   useEffect(() => {
     api.me()
@@ -184,14 +298,22 @@ export default function AdminAccounts() {
   useEffect(() => {
     if (!me) return
     setLoading(true)
-    Promise.all([api.listAccounts(), api.listFinancialInstitutions()])
-      .then(([accs, fis]) => {
+    setLoadError('')
+    Promise.all([
+      api.listAccounts(),
+      api.listFinancialInstitutions(),
+      api.listAccountsByCustodian(),
+    ])
+      .then(([accs, fis, groups]) => {
         setAccounts(accs)
         setInstitutions(fis)
+        setByCustodian(groups)
       })
-      .catch(() => {})
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar.'))
       .finally(() => setLoading(false))
   }, [me])
+
+  useEffect(() => { localStorage.setItem('accounts-tab', tab) }, [tab])
 
   async function handleSave(data: Parameters<typeof api.createAccount>[0]) {
     if (editing) {
@@ -214,16 +336,41 @@ export default function AdminAccounts() {
   return (
     <AppLayout user={me}>
       <div className="w-full">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Contas</h1>
-          <button
-            onClick={() => { setEditing(undefined); setModalOpen(true) }}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
-          >
-            + Nova Conta
-          </button>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Contas</h1>
+            <div className="ml-4 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              {([
+                { id: 'contas' as Tab, label: 'Contas' },
+                { id: 'ativos' as Tab, label: 'Ativos' },
+              ]).map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`px-4 py-1.5 text-sm transition-colors ${
+                    tab === t.id
+                      ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium'
+                      : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {tab === 'contas' && (
+            <button
+              onClick={() => { setEditing(undefined); setModalOpen(true) }}
+              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
+            >
+              + Nova Conta
+            </button>
+          )}
         </div>
 
+        {tab === 'ativos' ? (
+          <ByCustodianView groups={byCustodian} loading={loading} loadError={loadError} />
+        ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
           {loading ? (
             <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
@@ -287,6 +434,7 @@ export default function AdminAccounts() {
             </table>
           )}
         </div>
+        )}
       </div>
 
       {modalOpen && institutions.length > 0 && (

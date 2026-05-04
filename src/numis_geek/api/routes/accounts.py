@@ -2,12 +2,13 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Account, AccountType, Currency
+from numis_geek.models.asset import Asset
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import UserRole
 from numis_geek.services.audit import AuditService
@@ -93,6 +94,101 @@ def list_accounts(
         for fi in db.query(FinancialInstitution).filter(FinancialInstitution.id.in_(fi_ids)).all()
     }
     return [AccountOut.from_orm(a, fi_map.get(a.financial_institution_id, a.financial_institution_id)) for a in accounts]
+
+
+class AssetLite(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    ticker: str | None
+    asset_class: str
+    currency: str
+
+
+class FinancialInstitutionLite(BaseModel):
+    id: str
+    short_name: str
+    long_name: str
+    logo_slug: str | None
+
+
+class CustodianGroupOut(BaseModel):
+    financial_institution: FinancialInstitutionLite
+    accounts: list[AccountOut]
+    assets: list[AssetLite]
+
+
+@router.get("/by-custodian", response_model=list[CustodianGroupOut])
+def list_by_custodian(
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Group investment-type accounts and active assets by custodian (FI).
+
+    Sysadmin: with `?workspace_id=` filter to that workspace; otherwise crosses
+    all workspaces. Members/admins are always scoped to their own workspace.
+    Skips FIs with neither investment accounts nor assets.
+    """
+    acc_q = db.query(Account).filter(
+        Account.is_active == True,  # noqa: E712
+        Account.account_type == AccountType.investment,
+    )
+    asset_q = db.query(Asset).filter(Asset.is_active == True)  # noqa: E712
+
+    if current_user.role == UserRole.sysadmin:
+        if workspace_id:
+            acc_q = acc_q.filter(Account.workspace_id == workspace_id)
+            asset_q = asset_q.filter(Asset.workspace_id == workspace_id)
+    else:
+        acc_q = acc_q.filter(Account.workspace_id == current_user.workspace_id)
+        asset_q = asset_q.filter(Asset.workspace_id == current_user.workspace_id)
+
+    accounts = acc_q.all()
+    assets = asset_q.all()
+
+    fi_ids = {a.financial_institution_id for a in accounts} | {a.financial_institution_id for a in assets}
+    if not fi_ids:
+        return []
+
+    fis = {
+        fi.id: fi
+        for fi in db.query(FinancialInstitution).filter(FinancialInstitution.id.in_(fi_ids)).all()
+    }
+
+    groups: list[CustodianGroupOut] = []
+    for fi_id, fi in fis.items():
+        fi_accounts = [a for a in accounts if a.financial_institution_id == fi_id]
+        fi_assets = [a for a in assets if a.financial_institution_id == fi_id]
+        if not fi_accounts and not fi_assets:
+            continue
+        groups.append(
+            CustodianGroupOut(
+                financial_institution=FinancialInstitutionLite(
+                    id=fi.id,
+                    short_name=fi.short_name,
+                    long_name=fi.long_name,
+                    logo_slug=fi.logo_slug,
+                ),
+                accounts=[AccountOut.from_orm(a, fi.short_name) for a in fi_accounts],
+                assets=sorted(
+                    [
+                        AssetLite(
+                            id=a.id,
+                            workspace_id=a.workspace_id,
+                            name=a.name,
+                            ticker=a.ticker,
+                            asset_class=a.asset_class.value,
+                            currency=a.currency.value,
+                        )
+                        for a in fi_assets
+                    ],
+                    key=lambda x: (x.ticker or "", x.name),
+                ),
+            )
+        )
+    groups.sort(key=lambda g: g.financial_institution.short_name.lower())
+    return groups
 
 
 @router.post("", response_model=AccountOut, status_code=status.HTTP_201_CREATED)

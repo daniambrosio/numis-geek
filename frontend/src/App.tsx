@@ -6,6 +6,7 @@ import AdminUsers from './pages/admin/Users'
 import AdminAudit from './pages/admin/Audit'
 import AdminAccounts from './pages/admin/Accounts'
 import Assets from './pages/admin/Assets'
+import Lancamentos from './pages/Lancamentos'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
 import { applyTheme, getTheme } from './lib/theme'
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
         <Route path="/accounts" element={<PrivateRoute><AdminAccounts /></PrivateRoute>} />
         <Route path="/assets" element={<PrivateRoute><Assets /></PrivateRoute>} />
+        <Route path="/lancamentos" element={<PrivateRoute><Lancamentos /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />
         <Route path="/admin/audit" element={<PrivateRoute><AdminAudit /></PrivateRoute>} />
         <Route path="/sysadmin/financial-institutions" element={<PrivateRoute><SysAdminFinancialInstitutions /></PrivateRoute>} />
