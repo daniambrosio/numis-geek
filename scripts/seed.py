@@ -29,6 +29,10 @@ from import_notion_assets import (  # noqa: E402  — must be after sys.path twe
     DEFAULT_JSON_PATH as NOTION_EXPORT_PATH,
     import_from_json as import_notion_assets,
 )
+from import_notion_lancamentos import (  # noqa: E402
+    DEFAULT_JSON_PATH as NOTION_LAN_EXPORT_PATH,
+    import_from_json as import_notion_lancamentos,
+)
 
 Base.metadata.create_all(engine)
 
@@ -160,6 +164,22 @@ elif ws:
     print(
         f"Snapshot Notion não encontrado em {NOTION_EXPORT_PATH.relative_to(REPO_ROOT)} "
         "— pulando seed de ativos."
+    )
+
+# ── Lançamentos (Spec 07c) ────────────────────────────────────────────────────
+if ws and NOTION_LAN_EXPORT_PATH.exists():
+    print(f"Importando lançamentos de {NOTION_LAN_EXPORT_PATH.relative_to(REPO_ROOT)}…")
+    lan_summary = import_notion_lancamentos(
+        NOTION_LAN_EXPORT_PATH,
+        apply=True,
+        workspace_name=ws.name,
+        force=False,
+    )
+    lan_summary.print_report(applied=True)
+elif ws:
+    print(
+        f"No notion_lancamento_export.json found at "
+        f"{NOTION_LAN_EXPORT_PATH.relative_to(REPO_ROOT)} — skipping."
     )
 
 db.close()

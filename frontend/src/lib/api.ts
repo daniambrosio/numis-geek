@@ -146,6 +146,8 @@ export interface PhysicalDetails {
   chassis: string | null
 }
 
+export type ExternalSource = 'NOTION' | 'B3' | 'BROKER_NOTE' | 'MANUAL_CSV'
+
 export interface AssetOut {
   id: string
   workspace_id: string
@@ -159,6 +161,8 @@ export interface AssetOut {
   cnpj: string | null
   currency: 'BRL' | 'USD'
   notes: string | null
+  external_id: string | null
+  external_source: ExternalSource | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -174,6 +178,8 @@ export interface AssetRequest {
   ticker?: string | null
   cnpj?: string | null
   notes?: string | null
+  external_id?: string | null
+  external_source?: ExternalSource | null
   workspace_id?: string | null
   details?: Record<string, unknown> | null
 }
@@ -209,6 +215,7 @@ export type LancamentoType =
   | 'COME_COTAS'
   | 'BONIFICACAO'
   | 'SUBSCRICAO'
+  | 'RESGATE_TOTAL'
 
 export const LANCAMENTO_TYPE_LABELS: Record<LancamentoType, string> = {
   COMPRA: 'Compra',
@@ -219,6 +226,7 @@ export const LANCAMENTO_TYPE_LABELS: Record<LancamentoType, string> = {
   COME_COTAS: 'Come-cotas',
   BONIFICACAO: 'Bonificação',
   SUBSCRICAO: 'Subscrição',
+  RESGATE_TOTAL: 'Resgate Total',
 }
 
 export interface LancamentoOut {
@@ -240,6 +248,9 @@ export interface LancamentoOut {
   currency: 'BRL' | 'USD'
   fx_rate: number
   notes: string | null
+  external_id: string | null
+  external_source: ExternalSource | null
+  nota_negociacao_number: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -266,6 +277,9 @@ export interface LancamentoRequest {
   currency?: 'BRL' | 'USD' | null
   fx_rate?: number | null
   notes?: string | null
+  external_id?: string | null
+  external_source?: ExternalSource | null
+  nota_negociacao_number?: string | null
   workspace_id?: string | null
 }
 

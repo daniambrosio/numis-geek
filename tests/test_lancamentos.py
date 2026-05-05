@@ -632,3 +632,109 @@ def test_bonificacao_accepts_override_gross_amount(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     assert r.status_code == 201, r.text
     assert r.json()["gross_amount"] == 150.0
+
+
+# ── Tests: RESGATE_TOTAL (Spec 07c) ───────────────────────────────────────────
+
+def test_create_resgate_total(client, seed):
+    """RESGATE_TOTAL is the 9th lançamento type; validation matches VENDA."""
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "RESGATE_TOTAL",
+        "event_date": _today_iso(),
+        "quantity": 100,
+        "unit_price": 25.00,
+        "fee": 1.00,
+        "tax": 0.50,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["type"] == "RESGATE_TOTAL"
+    assert data["type_label"] == "Resgate Total"
+    # Same math as VENDA: gross = qty * price = 2500; net = gross - fee - tax = 2498.5
+    assert data["gross_amount"] == 2500.0
+    assert data["net_amount"] == 2498.5
+
+
+def test_resgate_total_persists_external_fields(client, seed):
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "RESGATE_TOTAL",
+        "event_date": _today_iso(),
+        "quantity": 50,
+        "unit_price": 10.00,
+        "external_id": "https://www.notion.so/some-row",
+        "external_source": "NOTION",
+        "nota_negociacao_number": "12345",
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["external_id"] == "https://www.notion.so/some-row"
+    assert data["external_source"] == "NOTION"
+    assert data["nota_negociacao_number"] == "12345"
+
+
+# ── Tests: Non-cotado relaxation (CDB) ────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def cdb_asset(seed):
+    db = TestSession()
+    fi = db.query(FinancialInstitution).first()
+    now = datetime.now(timezone.utc)
+    cdb = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_a"],
+        financial_institution_id=fi.id,
+        asset_class=AssetClass.FIXED_INCOME,
+        name="CDB BTG 110% CDI 2028",
+        ticker=None,
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(cdb)
+    db.commit()
+    cdb_id = cdb.id
+    db.close()
+    return cdb_id
+
+
+def test_compra_cdb_with_gross_only_succeeds(client, seed, cdb_asset):
+    """A CDB COMPRA with only gross_amount (no qty/unit_price) is valid."""
+    r = client.post("/lancamentos", json={
+        "asset_id": cdb_asset,
+        "type": "COMPRA",
+        "event_date": _today_iso(),
+        "gross_amount": 5000.00,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["quantity"] is None
+    assert data["unit_price"] is None
+    assert data["gross_amount"] == 5000.0
+    # net = gross + fee + tax = 5000 (none provided → 0)
+    assert data["net_amount"] == 5000.0
+
+
+def test_compra_with_neither_qty_nor_gross_rejected(client, seed):
+    """A COMPRA with neither (qty+price) nor gross_amount must 422."""
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],
+        "type": "COMPRA",
+        "event_date": _today_iso(),
+        # no quantity, no unit_price, no gross_amount
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 422
+
+
+def test_compra_cotado_with_gross_only_rejected(client, seed):
+    """A cotado COMPRA can't use gross_amount-only — that's reserved for non-cotado."""
+    r = client.post("/lancamentos", json={
+        "asset_id": seed["asset_a"],  # STOCK_BR
+        "type": "COMPRA",
+        "event_date": _today_iso(),
+        "gross_amount": 1000.00,
+        # no qty, no unit_price
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 422

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  type AssetClass,
   type AssetOut,
   type LancamentoOut,
   type LancamentoRequest,
@@ -16,15 +17,21 @@ const ALL_TYPES: LancamentoType[] = [
   'COME_COTAS',
   'BONIFICACAO',
   'SUBSCRICAO',
+  'RESGATE_TOTAL',
 ]
 
-const QUANTITY_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'BONIFICACAO', 'SUBSCRICAO']
-const UNIT_PRICE_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'SUBSCRICAO']
+// Asset classes that are NOT cotado — show a single "Valor" input instead of qty/price.
+const NON_COTADO_CLASSES: AssetClass[] = ['FIXED_INCOME', 'FGTS', 'PRIVATE_PENSION', 'CASH']
+
+const QUANTITY_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'BONIFICACAO', 'SUBSCRICAO', 'RESGATE_TOTAL']
+const UNIT_PRICE_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'SUBSCRICAO', 'RESGATE_TOTAL']
 const UNIT_PRICE_HIDDEN: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS', 'BONIFICACAO']
 const QUANTITY_HIDDEN: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS']
 const GROSS_REQUIRED: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS']
 const TAX_REQUIRED: LancamentoType[] = ['COME_COTAS']
 const FEE_TAX_HIDDEN: LancamentoType[] = ['BONIFICACAO']
+// Types that show the brokerage-note number input.
+const NOTA_NEGOCIACAO_TYPES: LancamentoType[] = ['COMPRA', 'VENDA', 'RESGATE_TOTAL', 'SUBSCRICAO']
 
 interface Props {
   initial?: LancamentoOut
@@ -50,6 +57,7 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? preselectedAsset?.currency ?? 'BRL')
   const [fxRate, setFxRate] = useState(initial?.fx_rate != null ? String(initial.fx_rate) : '1.0')
   const [notes, setNotes] = useState(initial?.notes ?? '')
+  const [notaNegociacao, setNotaNegociacao] = useState(initial?.nota_negociacao_number ?? '')
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -65,10 +73,16 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
     setConfirmInactive(false)
   }, [assetId])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const showQuantity = !QUANTITY_HIDDEN.includes(type)
-  const showUnitPrice = !UNIT_PRICE_HIDDEN.includes(type)
+  const isNonCotado = !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
+  const isCotadoOrValueType = ['COMPRA', 'VENDA', 'SUBSCRICAO', 'RESGATE_TOTAL'].includes(type)
+  // For non-cotado assets on COMPRA/VENDA/SUBSCRICAO/RESGATE_TOTAL, hide qty/unit_price
+  // entirely and show a single "Valor" (gross_amount) input instead.
+  const useValueOnly = isNonCotado && isCotadoOrValueType
+  const showQuantity = !QUANTITY_HIDDEN.includes(type) && !useValueOnly
+  const showUnitPrice = !UNIT_PRICE_HIDDEN.includes(type) && !useValueOnly
   const showFeeTax = !FEE_TAX_HIDDEN.includes(type)
-  const grossRequired = GROSS_REQUIRED.includes(type)
+  const grossRequired = GROSS_REQUIRED.includes(type) || useValueOnly
+  const showNotaNegociacao = NOTA_NEGOCIACAO_TYPES.includes(type)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -89,6 +103,14 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
       if (grossAmount) payload.gross_amount = parseFloat(grossAmount)
       if (showFeeTax && fee) payload.fee = parseFloat(fee)
       if (showFeeTax && tax) payload.tax = parseFloat(tax)
+      if (showNotaNegociacao && notaNegociacao.trim()) {
+        payload.nota_negociacao_number = notaNegociacao.trim()
+      }
+      // For non-cotado COMPRA/VENDA/etc., explicitly null out qty/unit_price.
+      if (useValueOnly) {
+        payload.quantity = null
+        payload.unit_price = null
+      }
       await onSave(payload)
       onClose()
     } catch (err) {
@@ -209,7 +231,7 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
-                Bruto {grossRequired && <span className="text-red-500">*</span>}
+                {useValueOnly ? 'Valor' : 'Bruto'} {grossRequired && <span className="text-red-500">*</span>}
                 {!grossRequired && <span className="text-xs text-gray-400"> (calc.)</span>}
               </label>
               <input
@@ -286,6 +308,22 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
               />
             </div>
           </div>
+
+          {showNotaNegociacao && (
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+                Nº Nota de Corretagem <span className="text-xs text-gray-400">(opcional)</span>
+              </label>
+              <input
+                type="text"
+                value={notaNegociacao}
+                onChange={e => setNotaNegociacao(e.target.value)}
+                maxLength={50}
+                placeholder="Ex: 12345"
+                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+              />
+            </div>
+          )}
 
           <div>
             <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Notas</label>

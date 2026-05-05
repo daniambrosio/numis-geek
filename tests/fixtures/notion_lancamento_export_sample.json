@@ -1,0 +1,185 @@
+{
+  "exported_at": "2026-05-04T20:00:00Z",
+  "source_database": "DB IG Lançamentos (test fixture)",
+  "source_workspace": "fixture",
+  "target_workspace_name": "Família Ambrosio",
+  "lancamentos": [
+    {
+      "notion_id": "https://www.notion.so/lan-1",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Compra",
+      "event_date": "2024-03-15",
+      "quantity": 100.0,
+      "unit_price": 30.50,
+      "fee": 1.50,
+      "fx_rate": 1.0,
+      "currency": "BRL",
+      "nota_negociacao_number": "12345",
+      "notes": null
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-2",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Venda",
+      "event_date": "2024-04-15",
+      "quantity": 50.0,
+      "unit_price": 32.00,
+      "fee": 2.00,
+      "tax": 1.00,
+      "fx_rate": 1.0,
+      "currency": "BRL",
+      "nota_negociacao_number": "12346"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-3",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Bonificação",
+      "event_date": "2024-05-01",
+      "quantity": 10.0,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-4",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Subscrição",
+      "event_date": "2024-06-01",
+      "quantity": 5.0,
+      "unit_price": 28.00,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-5",
+      "asset_external_id": "https://www.notion.so/asset-fund1",
+      "type": "ComeCota",
+      "event_date": "2024-05-31",
+      "tax": 7.50,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-6",
+      "asset_external_id": "https://www.notion.so/asset-cdb",
+      "type": "Resgate Total",
+      "event_date": "2024-12-01",
+      "gross_amount": 5500.00,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-7",
+      "asset_external_id": "https://www.notion.so/asset-cdb",
+      "type": "Compra",
+      "event_date": "2024-01-10",
+      "gross_amount": 5000.00,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-orphan",
+      "asset_external_id": "https://www.notion.so/asset-DOES-NOT-EXIST",
+      "type": "Compra",
+      "event_date": "2024-03-15",
+      "quantity": 1.0,
+      "unit_price": 1.0,
+      "fx_rate": 1.0,
+      "currency": "BRL"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-missing-date",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Compra",
+      "event_date": null,
+      "quantity": 1.0,
+      "unit_price": 1.0
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-future-date",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Compra",
+      "event_date": "2099-01-01",
+      "quantity": 1.0,
+      "unit_price": 1.0
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-missing-asset",
+      "asset_external_id": "",
+      "type": "Compra",
+      "event_date": "2024-03-15",
+      "quantity": 1.0,
+      "unit_price": 1.0
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-unknown-type",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Não Sei O Que",
+      "event_date": "2024-03-15",
+      "quantity": 1.0,
+      "unit_price": 1.0
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-missing-value",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Compra",
+      "event_date": "2024-03-15"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-comecotas-missing-tax",
+      "asset_external_id": "https://www.notion.so/asset-fund1",
+      "type": "ComeCota",
+      "event_date": "2024-06-30"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-bonificacao-missing-qty",
+      "asset_external_id": "https://www.notion.so/asset-petr4",
+      "type": "Bonificação",
+      "event_date": "2024-07-15"
+    }
+  ],
+  "errors": [
+    {
+      "notion_id": "https://www.notion.so/lan-fetch-error",
+      "code": "DUPLICATE_NOTION_ID",
+      "message": "(orchestrator-supplied) duplicate notion_id observed",
+      "raw": null
+    }
+  ],
+  "warnings": [
+    {
+      "notion_id": "https://www.notion.so/lan-1",
+      "code": "UNIT_PRICE_ZERO",
+      "message": "(orchestrator-supplied) unit price zero on cotado COMPRA"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-3",
+      "code": "BONIFICACAO_HAS_PRICE",
+      "message": "(orchestrator-supplied)"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-2",
+      "code": "FX_RATE_MISSING_FOR_USD",
+      "message": "(orchestrator-supplied)"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-4",
+      "code": "FX_RATE_PRESENT_FOR_BRL",
+      "message": "(orchestrator-supplied)"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-5",
+      "code": "BOTH_QTY_AND_AR_VALOR",
+      "message": "(orchestrator-supplied)"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-6",
+      "code": "LARGE_FEE_RATIO",
+      "message": "(orchestrator-supplied)"
+    },
+    {
+      "notion_id": "https://www.notion.so/lan-7",
+      "code": "DATE_BEFORE_ASSET_CREATED",
+      "message": "(orchestrator-supplied)"
+    }
+  ]
+}

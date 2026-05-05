@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Currency
-from numis_geek.models.asset import Asset
+from numis_geek.models.asset import Asset, AssetClass
+from numis_geek.models.external import ExternalSource
 from numis_geek.models.lancamento import LANCAMENTO_TYPE_LABELS, Lancamento, LancamentoType
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
@@ -20,19 +21,28 @@ router = APIRouter(prefix="/lancamentos", tags=["lancamentos"])
 
 # ── Type-driven validation tables ────────────────────────────────────────────
 
-# quantity required: COMPRA, VENDA, BONIFICACAO, SUBSCRICAO.
-QUANTITY_REQUIRED = {
+# Asset classes that are NOT cotado (no qty/unit_price; just a monetary value).
+NON_COTADO_CLASSES = {
+    AssetClass.FIXED_INCOME,
+    AssetClass.FGTS,
+    AssetClass.PRIVATE_PENSION,
+    AssetClass.CASH,
+}
+
+# Types that follow "qty + unit_price" math (cotado) OR may use gross_amount-only
+# (non-cotado relaxation). RESGATE_TOTAL behaves identically to VENDA.
+COTADO_OR_VALUE_TYPES = {
     LancamentoType.COMPRA,
     LancamentoType.VENDA,
-    LancamentoType.BONIFICACAO,
     LancamentoType.SUBSCRICAO,
+    LancamentoType.RESGATE_TOTAL,
 }
-# unit_price required: COMPRA, VENDA, SUBSCRICAO. Forbidden for BONIFICACAO.
-UNIT_PRICE_REQUIRED = {
-    LancamentoType.COMPRA,
-    LancamentoType.VENDA,
-    LancamentoType.SUBSCRICAO,
-}
+
+# Types where quantity is allowed (and required for BONIFICACAO).
+QUANTITY_ALLOWED = COTADO_OR_VALUE_TYPES | {LancamentoType.BONIFICACAO}
+
+# unit_price allowed (BONIFICACAO forbids it; income types forbid it).
+UNIT_PRICE_ALLOWED = COTADO_OR_VALUE_TYPES
 UNIT_PRICE_FORBIDDEN = {LancamentoType.BONIFICACAO}
 
 # gross_amount required (must be > 0 and provided) for income types.
@@ -67,6 +77,9 @@ class LancamentoRequest(BaseModel):
     currency: Currency | None = None
     fx_rate: Decimal | None = None
     notes: str | None = None
+    external_id: str | None = Field(default=None, max_length=255)
+    external_source: ExternalSource | None = None
+    nota_negociacao_number: str | None = Field(default=None, max_length=50)
     workspace_id: str | None = None  # only honored when caller is sysadmin
 
     @model_validator(mode="after")
@@ -77,21 +90,36 @@ class LancamentoRequest(BaseModel):
             raise ValueError("event_date cannot be in the future.")
 
         # Quantity rules
-        if t in QUANTITY_REQUIRED:
+        # BONIFICACAO requires quantity (free shares: count is the whole story).
+        if t == LancamentoType.BONIFICACAO:
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError(f"quantity is required and must be > 0 for type {t.value}.")
+        elif t in COTADO_OR_VALUE_TYPES:
+            # COMPRA/VENDA/SUBSCRICAO/RESGATE_TOTAL: must have either
+            # (quantity AND unit_price) OR gross_amount. We can't see the
+            # asset_class here, so just enforce "at least one route to a
+            # gross". Value-positivity is checked at route level after asset
+            # resolution.
+            has_qty_price = self.quantity is not None and self.unit_price is not None
+            has_gross = self.gross_amount is not None
+            if not has_qty_price and not has_gross:
+                raise ValueError(
+                    f"type {t.value} requires either (quantity AND unit_price) "
+                    f"or gross_amount."
+                )
+            if self.quantity is not None and self.quantity <= 0:
+                raise ValueError(f"quantity must be > 0 for type {t.value}.")
+            if self.unit_price is not None and self.unit_price <= 0:
+                raise ValueError(f"unit_price must be > 0 for type {t.value}.")
         else:
+            # COME_COTAS / income types — quantity must be null per spec.
             if self.quantity is not None:
-                # COME_COTAS / income types: explicitly null per spec.
                 raise ValueError(f"quantity must be omitted for type {t.value}.")
 
         # Unit price rules
-        if t in UNIT_PRICE_REQUIRED:
-            if self.unit_price is None or self.unit_price <= 0:
-                raise ValueError(f"unit_price is required and must be > 0 for type {t.value}.")
         if t in UNIT_PRICE_FORBIDDEN and self.unit_price is not None:
             raise ValueError(f"unit_price must be omitted for type {t.value}.")
-        if t not in UNIT_PRICE_REQUIRED and t not in UNIT_PRICE_FORBIDDEN and self.unit_price is not None:
+        if t not in UNIT_PRICE_ALLOWED and t not in UNIT_PRICE_FORBIDDEN and self.unit_price is not None:
             # income/come-cotas: unit_price not used
             raise ValueError(f"unit_price must be omitted for type {t.value}.")
 
@@ -137,6 +165,9 @@ class LancamentoOut(BaseModel):
     currency: str
     fx_rate: float
     notes: str | None
+    external_id: str | None = None
+    external_source: str | None = None
+    nota_negociacao_number: str | None = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -162,6 +193,9 @@ class LancamentoOut(BaseModel):
             currency=l.currency.value,
             fx_rate=float(l.fx_rate),
             notes=l.notes,
+            external_id=l.external_id,
+            external_source=l.external_source.value if l.external_source else None,
+            nota_negociacao_number=l.nota_negociacao_number,
             is_active=l.is_active,
             created_at=l.created_at.isoformat(),
             updated_at=l.updated_at.isoformat(),
@@ -229,7 +263,7 @@ def _compute_net_amount(body: LancamentoRequest, gross: Decimal) -> Decimal:
     t = body.type
     if t == LancamentoType.COMPRA:
         return gross + fee + tax  # cost basis
-    if t == LancamentoType.VENDA:
+    if t in (LancamentoType.VENDA, LancamentoType.RESGATE_TOTAL):
         return gross - fee - tax  # proceeds
     if t in INCOME_TYPES and t != LancamentoType.COME_COTAS:
         return gross - fee - tax
@@ -247,9 +281,11 @@ def _resolve_gross(body: LancamentoRequest) -> Decimal:
     if body.gross_amount is not None:
         return body.gross_amount
     t = body.type
-    if t in (LancamentoType.COMPRA, LancamentoType.VENDA, LancamentoType.SUBSCRICAO):
-        # qty * unit_price (both required & validated > 0 above)
-        return (body.quantity or Decimal("0")) * (body.unit_price or Decimal("0"))
+    if t in COTADO_OR_VALUE_TYPES:
+        # qty * unit_price (when both present); else 0 (caller validated already).
+        if body.quantity is not None and body.unit_price is not None:
+            return body.quantity * body.unit_price
+        return Decimal("0")
     if t == LancamentoType.BONIFICACAO:
         return Decimal("0")
     # Income types fall through but the validator already requires gross_amount.
@@ -350,6 +386,41 @@ def get_lancamento(
     )
 
 
+def _validate_against_asset_class(body: LancamentoRequest, asset: Asset) -> None:
+    """Asset-class-aware validation that the Pydantic validator can't do.
+
+    Specifically: cotado assets (stocks/FIIs/ETFs/etc) must have
+    `(quantity AND unit_price)` for COMPRA/VENDA/SUBSCRICAO/RESGATE_TOTAL —
+    gross_amount-only is reserved for non-cotado classes (FIXED_INCOME / FGTS /
+    PRIVATE_PENSION / CASH).
+    """
+    t = body.type
+    if t not in COTADO_OR_VALUE_TYPES:
+        return
+    has_qty_price = body.quantity is not None and body.unit_price is not None
+    has_gross = body.gross_amount is not None
+    is_non_cotado = asset.asset_class in NON_COTADO_CLASSES
+    if not is_non_cotado and not has_qty_price:
+        # Cotado assets must have qty AND unit_price; gross_amount alone is
+        # not enough. (gross can override the math, but it's not a substitute
+        # for missing qty/price.)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"type {t.value} on a cotado asset ({asset.asset_class.value}) "
+                f"requires both quantity and unit_price."
+            ),
+        )
+    if is_non_cotado and not has_qty_price and not has_gross:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"type {t.value} on a non-cotado asset requires gross_amount "
+                f"(or quantity + unit_price)."
+            ),
+        )
+
+
 @router.post("", response_model=LancamentoOut, status_code=status.HTTP_201_CREATED)
 def create_lancamento(
     body: LancamentoRequest,
@@ -358,6 +429,7 @@ def create_lancamento(
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
+    _validate_against_asset_class(body, asset)
 
     currency = body.currency or asset.currency
     if body.type in INCOME_TYPES and currency != asset.currency:
@@ -372,7 +444,7 @@ def create_lancamento(
     persisted_gross: Decimal | None
     if body.gross_amount is not None:
         persisted_gross = body.gross_amount
-    elif body.type in (LancamentoType.COMPRA, LancamentoType.VENDA, LancamentoType.SUBSCRICAO):
+    elif body.type in COTADO_OR_VALUE_TYPES:
         persisted_gross = gross
     elif body.type == LancamentoType.BONIFICACAO:
         persisted_gross = Decimal("0")
@@ -398,6 +470,9 @@ def create_lancamento(
         currency=currency,
         fx_rate=fx_rate,
         notes=body.notes,
+        external_id=body.external_id,
+        external_source=body.external_source,
+        nota_negociacao_number=body.nota_negociacao_number,
         is_active=True,
         created_at=now,
         updated_at=now,
@@ -424,6 +499,7 @@ def update_lancamento(
     # workspace_id is immutable on update; honor sysadmin scope but don't move the row.
     workspace_id = l.workspace_id
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
+    _validate_against_asset_class(body, asset)
 
     currency = body.currency or asset.currency
     if body.type in INCOME_TYPES and currency != asset.currency:
@@ -437,7 +513,7 @@ def update_lancamento(
     persisted_gross: Decimal | None
     if body.gross_amount is not None:
         persisted_gross = body.gross_amount
-    elif body.type in (LancamentoType.COMPRA, LancamentoType.VENDA, LancamentoType.SUBSCRICAO):
+    elif body.type in COTADO_OR_VALUE_TYPES:
         persisted_gross = gross
     elif body.type == LancamentoType.BONIFICACAO:
         persisted_gross = Decimal("0")
@@ -459,6 +535,9 @@ def update_lancamento(
     l.currency = currency
     l.fx_rate = fx_rate
     l.notes = body.notes
+    l.external_id = body.external_id
+    l.external_source = body.external_source
+    l.nota_negociacao_number = body.nota_negociacao_number
     l.updated_at = datetime.now(timezone.utc)
     l.updated_by = current_user.user_id
     db.flush()

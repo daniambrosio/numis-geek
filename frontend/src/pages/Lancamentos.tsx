@@ -21,6 +21,7 @@ const ALL_TYPES: LancamentoType[] = [
   'COME_COTAS',
   'BONIFICACAO',
   'SUBSCRICAO',
+  'RESGATE_TOTAL',
 ]
 
 function typeBadge(t: LancamentoType): string {
@@ -33,6 +34,7 @@ function typeBadge(t: LancamentoType): string {
     COME_COTAS: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
     BONIFICACAO: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
     SUBSCRICAO: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    RESGATE_TOTAL: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400',
   }
   return map[t]
 }
@@ -194,7 +196,7 @@ export default function Lancamentos() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800">
-                  {['Data', 'Tipo', 'Ativo', 'Quantidade', 'Preço', 'Líquido', 'Moeda', ''].map((h, i) => (
+                  {['Data', 'Tipo', 'Ativo', 'Nota', 'Quantidade', 'Preço', 'Líquido', 'Moeda', ''].map((h, i) => (
                     <th key={i} className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -211,6 +213,11 @@ export default function Lancamentos() {
                     <td className="px-4 py-3 text-gray-900 dark:text-white">
                       {l.asset_ticker && <span className="font-mono text-xs text-gray-500 dark:text-gray-400 mr-2">{l.asset_ticker}</span>}
                       <span className="font-medium">{l.asset_name}</span>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs">
+                      {l.nota_negociacao_number
+                        ? <span className="text-gray-700 dark:text-gray-300">{l.nota_negociacao_number}</span>
+                        : <span className="text-gray-300 dark:text-gray-600">—</span>}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs">{fmtNumber(l.quantity)}</td>
                     <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs">{fmtNumber(l.unit_price)}</td>
@@ -238,7 +245,7 @@ export default function Lancamentos() {
                 ))}
                 {items.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
+                    <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
                       Nenhum lançamento encontrado.
                     </td>
                   </tr>

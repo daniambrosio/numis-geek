@@ -293,3 +293,142 @@ def test_empty_asset_position(client, seed):
     assert pos["quantity_held"] == 0.0
     assert pos["average_cost"] == 0.0
     assert pos["total_received_brl"] == 0.0
+
+
+# ── PRIO3 scenario: cost-basis reset on RESGATE_TOTAL ─────────────────────────
+
+def test_resgate_total_resets_cost_basis(client, seed):
+    """COMPRA 100 @ 25 → RESGATE_TOTAL (full close) → COMPRA 50 @ 32 must
+    yield avg_cost = 32 (not a weighted blend with the old 25)."""
+    db = TestSession()
+    fi = db.query(FinancialInstitution).first()
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        financial_institution_id=fi.id,
+        asset_class=AssetClass.STOCK_BR,
+        name="PRIO Petroleo",
+        ticker="PRIO3",
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(a); db.commit(); db.refresh(a)
+    asset_id = a.id
+    db.close()
+
+    # Use distinct event_dates to make the chronological order unambiguous.
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "COMPRA",
+        "event_date": "2024-01-15",
+        "quantity": 100, "unit_price": 25.00,
+    }, headers=auth(seed["admin_token"]))
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "RESGATE_TOTAL",
+        "event_date": "2024-06-15",
+        "quantity": 100, "unit_price": 28.00,
+    }, headers=auth(seed["admin_token"]))
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "COMPRA",
+        "event_date": "2024-09-15",
+        "quantity": 50, "unit_price": 32.00,
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    assert r.status_code == 200, r.text
+    pos = r.json()
+    # After reset, the only basis-contributing event is the second COMPRA (50 @ 32).
+    assert pos["quantity_held"] == 50.0
+    assert pos["average_cost"] == 32.0
+    # total_invested = 50 * 32 = 1600 (no old prices contaminate it).
+    assert pos["total_invested_brl"] == 1600.0
+
+
+# ── BTC fractional sale: tolerance triggers reset ─────────────────────────────
+
+def test_fractional_sale_below_tolerance_resets(client, seed):
+    """Buy 0.005 BTC; sell 0.005 BTC. Floating-point residual under 1e-6 must
+    trigger a position reset just as RESGATE_TOTAL would."""
+    db = TestSession()
+    fi = db.query(FinancialInstitution).first()
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        financial_institution_id=fi.id,
+        asset_class=AssetClass.CRYPTO,
+        name="Bitcoin",
+        ticker="BTC",
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(a); db.commit(); db.refresh(a)
+    asset_id = a.id
+    db.close()
+
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "COMPRA",
+        "event_date": "2024-01-10",
+        "quantity": 0.005, "unit_price": 200000.00,
+    }, headers=auth(seed["admin_token"]))
+    # Sell exactly the same — residual will be 0 (or below 1e-6).
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "VENDA",
+        "event_date": "2024-02-10",
+        "quantity": 0.005, "unit_price": 250000.00,
+    }, headers=auth(seed["admin_token"]))
+    # Re-buy at a different price.
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "COMPRA",
+        "event_date": "2024-03-10",
+        "quantity": 0.01, "unit_price": 300000.00,
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    assert abs(pos["quantity_held"] - 0.01) < 1e-6
+    # PM is fresh: only the second COMPRA matters.
+    assert pos["average_cost"] == 300000.0
+
+
+# ── Non-cotado COMPRA accumulates basis with qty unchanged ────────────────────
+
+def test_non_cotado_position_runs_basis_only(client, seed):
+    """A CDB COMPRA with gross_amount = 5000 contributes 5000 to basis but 0 to
+    quantity. running_qty = 0; running_basis_brl = 5000."""
+    db = TestSession()
+    fi = db.query(FinancialInstitution).first()
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        financial_institution_id=fi.id,
+        asset_class=AssetClass.FIXED_INCOME,
+        name="CDB BTG 110% CDI 2028",
+        ticker=None,
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(a); db.commit(); db.refresh(a)
+    asset_id = a.id
+    db.close()
+
+    client.post("/lancamentos", json={
+        "asset_id": asset_id, "type": "COMPRA",
+        "event_date": "2024-04-01",
+        "gross_amount": 5000.00,
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    assert pos["quantity_held"] == 0.0
+    # Cotado-style avg_cost is 0 (no qty contributing).
+    assert pos["average_cost"] == 0.0
+    # But the standalone basis is 5000.
+    assert pos["total_invested_brl"] == 5000.0

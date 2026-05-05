@@ -165,12 +165,33 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
     }
   }
 
+  const externalSourceLabel = (() => {
+    if (!initial?.external_source) return null
+    switch (initial.external_source) {
+      case 'NOTION': return 'Notion'
+      case 'B3': return 'B3'
+      case 'BROKER_NOTE': return 'Nota de Corretagem'
+      case 'MANUAL_CSV': return 'CSV manual'
+      default: return initial.external_source
+    }
+  })()
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-5">
-          {initial ? 'Editar Ativo' : 'Novo Ativo'}
-        </h2>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+            {initial ? 'Editar Ativo' : 'Novo Ativo'}
+          </h2>
+          {externalSourceLabel && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700"
+              title={initial?.external_id || ''}
+            >
+              Origem: {externalSourceLabel}
+            </span>
+          )}
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Classe</label>

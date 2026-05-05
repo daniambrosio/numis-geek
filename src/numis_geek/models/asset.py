@@ -3,11 +3,12 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from numis_geek.db.base import Base
 from numis_geek.models.account import Currency  # noqa: F401 — reused enum
+from numis_geek.models.external import ExternalSource
 
 
 class AssetClass(str, enum.Enum):
@@ -49,6 +50,10 @@ class Asset(Base):
     currency: Mapped[Currency] = mapped_column(Enum(Currency), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_source: Mapped[ExternalSource | None] = mapped_column(
+        Enum(ExternalSource), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -57,6 +62,16 @@ class Asset(Base):
     )
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_asset_external",
+            "external_source",
+            "external_id",
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
+    )
 
     fixed_income: Mapped["FixedIncomeAsset | None"] = relationship(
         "FixedIncomeAsset",

@@ -17,6 +17,7 @@ from numis_geek.models.asset import (
     FixedIncomeIndexer,
     PhysicalAsset,
 )
+from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.lancamento import LANCAMENTO_TYPE_LABELS, Lancamento, LancamentoType
 from numis_geek.models.user import User, UserRole
@@ -83,6 +84,8 @@ class AssetRequest(BaseModel):
     ticker: str | None = Field(default=None, max_length=20)
     cnpj: str | None = Field(default=None, max_length=18)
     notes: str | None = None
+    external_id: str | None = Field(default=None, max_length=255)
+    external_source: ExternalSource | None = None
     workspace_id: str | None = None  # only honored when caller is sysadmin
     details: dict[str, Any] | None = None
 
@@ -161,6 +164,8 @@ class AssetOut(BaseModel):
     cnpj: str | None
     currency: str
     notes: str | None
+    external_id: str | None = None
+    external_source: str | None = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -212,6 +217,8 @@ class AssetOut(BaseModel):
             cnpj=asset.cnpj,
             currency=asset.currency.value,
             notes=asset.notes,
+            external_id=asset.external_id,
+            external_source=asset.external_source.value if asset.external_source else None,
             is_active=asset.is_active,
             created_at=asset.created_at.isoformat(),
             updated_at=asset.updated_at.isoformat(),
@@ -461,6 +468,8 @@ def create_asset(
         cnpj=body.cnpj,
         currency=body.currency,
         notes=body.notes,
+        external_id=body.external_id,
+        external_source=body.external_source,
         is_active=True,
         created_at=now,
         updated_at=now,
@@ -510,6 +519,8 @@ def update_asset(
     asset.cnpj = body.cnpj
     asset.currency = body.currency
     asset.notes = body.notes
+    asset.external_id = body.external_id
+    asset.external_source = body.external_source
     asset.updated_at = datetime.now(timezone.utc)
     asset.updated_by = current_user.user_id
     _apply_details(asset, body, db)
@@ -550,6 +561,9 @@ class LancamentoLite(BaseModel):
     currency: str
     fx_rate: float
     notes: str | None
+    external_id: str | None = None
+    external_source: str | None = None
+    nota_negociacao_number: str | None = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -621,6 +635,9 @@ def list_asset_lancamentos(
             currency=l.currency.value,
             fx_rate=float(l.fx_rate),
             notes=l.notes,
+            external_id=l.external_id,
+            external_source=l.external_source.value if l.external_source else None,
+            nota_negociacao_number=l.nota_negociacao_number,
             is_active=l.is_active,
             created_at=l.created_at.isoformat(),
             updated_at=l.updated_at.isoformat(),

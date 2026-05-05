@@ -3,11 +3,12 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from numis_geek.db.base import Base
 from numis_geek.models.account import Currency  # noqa: F401 — reused enum
+from numis_geek.models.external import ExternalSource
 
 
 class LancamentoType(str, enum.Enum):
@@ -19,6 +20,7 @@ class LancamentoType(str, enum.Enum):
     COME_COTAS = "COME_COTAS"
     BONIFICACAO = "BONIFICACAO"
     SUBSCRICAO = "SUBSCRICAO"
+    RESGATE_TOTAL = "RESGATE_TOTAL"
 
 
 # Display names (PT) for UI use; kept on the backend so any layer (audit, exports,
@@ -32,6 +34,7 @@ LANCAMENTO_TYPE_LABELS: dict[LancamentoType, str] = {
     LancamentoType.COME_COTAS: "Come-cotas",
     LancamentoType.BONIFICACAO: "Bonificação",
     LancamentoType.SUBSCRICAO: "Subscrição",
+    LancamentoType.RESGATE_TOTAL: "Resgate Total",
 }
 
 
@@ -60,6 +63,12 @@ class Lancamento(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_source: Mapped[ExternalSource | None] = mapped_column(
+        Enum(ExternalSource), nullable=True
+    )
+    nota_negociacao_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -73,4 +82,11 @@ class Lancamento(Base):
         Index("ix_lancamento_workspace_event_date", "workspace_id", "event_date"),
         Index("ix_lancamento_asset_event_date", "asset_id", "event_date"),
         Index("ix_lancamento_workspace_type_event_date", "workspace_id", "type", "event_date"),
+        Index(
+            "ix_lancamento_external",
+            "external_source",
+            "external_id",
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
     )

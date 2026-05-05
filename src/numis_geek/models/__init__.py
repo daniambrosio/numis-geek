@@ -4,6 +4,7 @@ from numis_geek.models.audit_log import AuditLog
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass, FixedIncomeIndexer, FixedIncomeAsset, PhysicalAsset
+from numis_geek.models.external import ExternalSource
 from numis_geek.models.lancamento import Lancamento, LancamentoType, LANCAMENTO_TYPE_LABELS
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "FixedIncomeIndexer",
     "FixedIncomeAsset",
     "PhysicalAsset",
+    "ExternalSource",
     "Lancamento",
     "LancamentoType",
     "LANCAMENTO_TYPE_LABELS",
