@@ -389,36 +389,14 @@ def get_lancamento(
 def _validate_against_asset_class(body: LancamentoRequest, asset: Asset) -> None:
     """Asset-class-aware validation that the Pydantic validator can't do.
 
-    Specifically: cotado assets (stocks/FIIs/ETFs/etc) must have
-    `(quantity AND unit_price)` for COMPRA/VENDA/SUBSCRICAO/RESGATE_TOTAL —
-    gross_amount-only is reserved for non-cotado classes (FIXED_INCOME / FGTS /
-    PRIVATE_PENSION / CASH).
+    The Pydantic-level rule already requires either `(quantity AND unit_price)`
+    OR `gross_amount` for COMPRA / VENDA / SUBSCRICAO / RESGATE_TOTAL. We
+    intentionally do NOT add a stricter "cotado must have qty+price" rule
+    here: the user's real data (Notion) has cotado-class rows (Funds, dust
+    crypto transfers) that legitimately use `gross_amount` only. The position
+    calculator handles both shapes.
     """
-    t = body.type
-    if t not in COTADO_OR_VALUE_TYPES:
-        return
-    has_qty_price = body.quantity is not None and body.unit_price is not None
-    has_gross = body.gross_amount is not None
-    is_non_cotado = asset.asset_class in NON_COTADO_CLASSES
-    if not is_non_cotado and not has_qty_price:
-        # Cotado assets must have qty AND unit_price; gross_amount alone is
-        # not enough. (gross can override the math, but it's not a substitute
-        # for missing qty/price.)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"type {t.value} on a cotado asset ({asset.asset_class.value}) "
-                f"requires both quantity and unit_price."
-            ),
-        )
-    if is_non_cotado and not has_qty_price and not has_gross:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"type {t.value} on a non-cotado asset requires gross_amount "
-                f"(or quantity + unit_price)."
-            ),
-        )
+    return
 
 
 @router.post("", response_model=LancamentoOut, status_code=status.HTTP_201_CREATED)

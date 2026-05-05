@@ -352,13 +352,9 @@ def import_from_json(
                                       row)
                     summary.skipped.append((notion_id, "missing value"))
                     continue
-                # Cotado asset must have qty+price.
-                if asset.asset_class not in NON_COTADO_CLASSES and not has_qty_price:
-                    summary.add_error(notion_id, "COMPRA_VENDA_MISSING_VALUE",
-                                      f"{ltype.value} on cotado asset requires qty AND unit_price",
-                                      row)
-                    summary.skipped.append((notion_id, "cotado missing qty+price"))
-                    continue
+                # No further check: Pydantic already requires (qty+price) OR gross.
+                # We intentionally allow cotado assets to use gross-only, because
+                # the user's real data (Funds, dust crypto) requires it.
             elif ltype == LancamentoType.BONIFICACAO:
                 if quantity is None or quantity <= 0:
                     summary.add_error(notion_id, "BONIFICACAO_MISSING_QTY",

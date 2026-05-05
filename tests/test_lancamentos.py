@@ -728,8 +728,14 @@ def test_compra_with_neither_qty_nor_gross_rejected(client, seed):
     assert r.status_code == 422
 
 
-def test_compra_cotado_with_gross_only_rejected(client, seed):
-    """A cotado COMPRA can't use gross_amount-only — that's reserved for non-cotado."""
+def test_compra_cotado_with_gross_only_accepted(client, seed):
+    """A cotado COMPRA may use gross_amount-only.
+
+    Real-world data has cases like Brazilian Funds tracked as 'Não Cotado'
+    even though our enum classifies them as cotado, plus dust crypto
+    transfers without per-unit prices. The Pydantic-level check (qty+price
+    OR gross) is the only gate.
+    """
     r = client.post("/lancamentos", json={
         "asset_id": seed["asset_a"],  # STOCK_BR
         "type": "COMPRA",
@@ -737,4 +743,7 @@ def test_compra_cotado_with_gross_only_rejected(client, seed):
         "gross_amount": 1000.00,
         # no qty, no unit_price
     }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 422
+    assert r.status_code == 201, r.text
+    assert r.json()["gross_amount"] == 1000.0
+    assert r.json()["quantity"] is None
+    assert r.json()["unit_price"] is None
