@@ -2,48 +2,45 @@ import { useEffect, useState } from 'react'
 import {
   type AssetClass,
   type AssetOut,
-  type LancamentoOut,
-  type LancamentoRequest,
-  type LancamentoType,
-  LANCAMENTO_TYPE_LABELS,
+  type AssetMovementOut,
+  type AssetMovementRequest,
+  type AssetMovementType,
+  ASSET_MOVEMENT_TYPE_LABELS,
 } from '../lib/api'
 
-const ALL_TYPES: LancamentoType[] = [
-  'COMPRA',
-  'VENDA',
-  'DIVIDENDO',
-  'JUROS',
-  'JCP',
+const ALL_TYPES: AssetMovementType[] = [
+  'BUY',
+  'SELL',
   'COME_COTAS',
-  'BONIFICACAO',
-  'SUBSCRICAO',
-  'RESGATE_TOTAL',
+  'BONUS',
+  'SUBSCRIPTION',
+  'FULL_REDEMPTION',
 ]
 
 // Asset classes that are NOT cotado — show a single "Valor" input instead of qty/price.
 const NON_COTADO_CLASSES: AssetClass[] = ['FIXED_INCOME', 'FGTS', 'PRIVATE_PENSION', 'CASH']
 
-const QUANTITY_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'BONIFICACAO', 'SUBSCRICAO', 'RESGATE_TOTAL']
-const UNIT_PRICE_REQUIRED: LancamentoType[] = ['COMPRA', 'VENDA', 'SUBSCRICAO', 'RESGATE_TOTAL']
-const UNIT_PRICE_HIDDEN: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS', 'BONIFICACAO']
-const QUANTITY_HIDDEN: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS']
-const GROSS_REQUIRED: LancamentoType[] = ['DIVIDENDO', 'JUROS', 'JCP', 'COME_COTAS']
-const TAX_REQUIRED: LancamentoType[] = ['COME_COTAS']
-const FEE_TAX_HIDDEN: LancamentoType[] = ['BONIFICACAO']
+const QUANTITY_REQUIRED: AssetMovementType[] = ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'FULL_REDEMPTION']
+const UNIT_PRICE_REQUIRED: AssetMovementType[] = ['BUY', 'SELL', 'SUBSCRIPTION', 'FULL_REDEMPTION']
+const UNIT_PRICE_HIDDEN: AssetMovementType[] = ['COME_COTAS', 'BONUS']
+const QUANTITY_HIDDEN: AssetMovementType[] = ['COME_COTAS']
+const GROSS_REQUIRED: AssetMovementType[] = ['COME_COTAS']
+const TAX_REQUIRED: AssetMovementType[] = ['COME_COTAS']
+const FEE_TAX_HIDDEN: AssetMovementType[] = ['BONUS']
 // Types that show the brokerage-note number input.
-const NOTA_NEGOCIACAO_TYPES: LancamentoType[] = ['COMPRA', 'VENDA', 'RESGATE_TOTAL', 'SUBSCRICAO']
+const NOTA_NEGOCIACAO_TYPES: AssetMovementType[] = ['BUY', 'SELL', 'FULL_REDEMPTION', 'SUBSCRIPTION']
 
 interface Props {
-  initial?: LancamentoOut
+  initial?: AssetMovementOut
   /** Pre-selected asset (used when opening from /assets detail). */
   preselectedAsset?: AssetOut
   assets: AssetOut[]
-  onSave: (data: LancamentoRequest) => Promise<void>
+  onSave: (data: AssetMovementRequest) => Promise<void>
   onClose: () => void
 }
 
 export default function LancamentoModal({ initial, preselectedAsset, assets, onSave, onClose }: Props) {
-  const [type, setType] = useState<LancamentoType>(initial?.type ?? 'COMPRA')
+  const [type, setType] = useState<AssetMovementType>(initial?.type ?? 'BUY')
   const [assetId, setAssetId] = useState<string>(
     initial?.asset_id ?? preselectedAsset?.id ?? assets[0]?.id ?? ''
   )
@@ -74,7 +71,7 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
   }, [assetId])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const isNonCotado = !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
-  const isCotadoOrValueType = ['COMPRA', 'VENDA', 'SUBSCRICAO', 'RESGATE_TOTAL'].includes(type)
+  const isCotadoOrValueType = ['BUY', 'SELL', 'SUBSCRIPTION', 'FULL_REDEMPTION'].includes(type)
   // For non-cotado assets on COMPRA/VENDA/SUBSCRICAO/RESGATE_TOTAL, hide qty/unit_price
   // entirely and show a single "Valor" (gross_amount) input instead.
   const useValueOnly = isNonCotado && isCotadoOrValueType
@@ -89,7 +86,7 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
     setError('')
     setSaving(true)
     try {
-      const payload: LancamentoRequest = {
+      const payload: AssetMovementRequest = {
         asset_id: assetId,
         type,
         event_date: eventDate,
@@ -132,12 +129,12 @@ export default function LancamentoModal({ initial, preselectedAsset, assets, onS
               <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo</label>
               <select
                 value={type}
-                onChange={e => setType(e.target.value as LancamentoType)}
+                onChange={e => setType(e.target.value as AssetMovementType)}
                 disabled={!!initial}
                 className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
               >
                 {ALL_TYPES.map(t => (
-                  <option key={t} value={t}>{LANCAMENTO_TYPE_LABELS[t]}</option>
+                  <option key={t} value={t}>{ASSET_MOVEMENT_TYPE_LABELS[t]}</option>
                 ))}
               </select>
             </div>

@@ -1,13 +1,13 @@
 import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import {
-  type AssetOut, type FinancialInstitutionOut, type LancamentoOut,
+  type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
 } from '../lib/api'
 import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 import { CcyPill, ClassBadge, FILogo, TypeBadge } from './ui'
 
 interface Props {
-  lancamento: LancamentoOut
+  lancamento: AssetMovementOut
   asset: AssetOut | null
   fi: FinancialInstitutionOut | null
   onClose: () => void

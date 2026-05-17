@@ -165,7 +165,7 @@ def _today_iso():
 # ── Tests: list / empty ──────────────────────────────────────────────────────
 
 def test_list_lancamentos_empty(client, seed):
-    r = client.get("/lancamentos", headers=auth(seed["admin_token_a"]))
+    r = client.get("/asset-movements", headers=auth(seed["admin_token_a"]))
     assert r.status_code == 200
     body = r.json()
     assert body["items"] == []
@@ -175,9 +175,9 @@ def test_list_lancamentos_empty(client, seed):
 # ── Tests: create per type ──────────────────────────────────────────────────
 
 def test_create_compra(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 100,
         "unit_price": 30.50,
@@ -186,7 +186,7 @@ def test_create_compra(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     assert r.status_code == 201, r.text
     data = r.json()
-    assert data["type"] == "COMPRA"
+    assert data["type"] == 'BUY'
     assert data["type_label"] == "Compra"
     assert data["quantity"] == 100.0
     assert data["unit_price"] == 30.5
@@ -198,9 +198,9 @@ def test_create_compra(client, seed):
 
 
 def test_create_venda(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "VENDA",
+        "type": "SELL",
         "event_date": _today_iso(),
         "quantity": 50,
         "unit_price": 32.00,
@@ -214,24 +214,10 @@ def test_create_venda(client, seed):
     assert data["net_amount"] == 1597.0
 
 
-def test_create_dividendo(client, seed):
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-        "gross_amount": 100.00,
-        "tax": 5.00,
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 201, r.text
-    data = r.json()
-    # net = gross - fee - tax = 100 - 0 - 5 = 95
-    assert data["net_amount"] == 95.0
-
-
 def test_create_bonificacao(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "BONIFICACAO",
+        "type": "BONUS",
         "event_date": _today_iso(),
         "quantity": 10,
     }, headers=auth(seed["admin_token_a"]))
@@ -244,7 +230,7 @@ def test_create_bonificacao(client, seed):
 
 
 def test_create_come_cotas(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
         "type": "COME_COTAS",
         "event_date": _today_iso(),
@@ -260,9 +246,9 @@ def test_create_come_cotas(client, seed):
 # ── Tests: validation rules ────────────────────────────────────────────────
 
 def test_compra_requires_quantity(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "unit_price": 30.0,
     }, headers=auth(seed["admin_token_a"]))
@@ -270,9 +256,9 @@ def test_compra_requires_quantity(client, seed):
 
 
 def test_compra_requires_unit_price(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 100,
     }, headers=auth(seed["admin_token_a"]))
@@ -280,9 +266,9 @@ def test_compra_requires_unit_price(client, seed):
 
 
 def test_bonificacao_forbids_unit_price(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "BONIFICACAO",
+        "type": "BONUS",
         "event_date": _today_iso(),
         "quantity": 10,
         "unit_price": 5.0,
@@ -290,30 +276,11 @@ def test_bonificacao_forbids_unit_price(client, seed):
     assert r.status_code == 422
 
 
-def test_dividendo_requires_gross_positive(client, seed):
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-        "gross_amount": -10.0,
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 422
-
-
-def test_dividendo_requires_gross_provided(client, seed):
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 422
-
-
 def test_event_date_no_future(client, seed):
     future = (date.today() + timedelta(days=1)).isoformat()
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": future,
         "quantity": 1,
         "unit_price": 1.0,
@@ -322,7 +289,7 @@ def test_event_date_no_future(client, seed):
 
 
 def test_come_cotas_requires_tax(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
         "type": "COME_COTAS",
         "event_date": _today_iso(),
@@ -332,9 +299,9 @@ def test_come_cotas_requires_tax(client, seed):
 
 
 def test_compra_quantity_must_be_positive(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 0,
         "unit_price": 10.0,
@@ -342,23 +309,10 @@ def test_compra_quantity_must_be_positive(client, seed):
     assert r.status_code == 422
 
 
-def test_dividendo_no_quantity(client, seed):
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-        "gross_amount": 10.0,
-        "quantity": 5,
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 422
-
-
-# ── Tests: workspace isolation ─────────────────────────────────────────────
-
 def test_member_cannot_read_other_workspace_lancamento(client, seed):
-    r_create = client.post("/lancamentos", json={
+    r_create = client.post("/asset-movements", json={
         "asset_id": seed["asset_b"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 5,
         "unit_price": 10.0,
@@ -366,20 +320,20 @@ def test_member_cannot_read_other_workspace_lancamento(client, seed):
     assert r_create.status_code == 201, r_create.text
     lan_id_b = r_create.json()["id"]
 
-    r = client.get(f"/lancamentos/{lan_id_b}", headers=auth(seed["member_token_a"]))
+    r = client.get(f"/asset-movements/{lan_id_b}", headers=auth(seed["member_token_a"]))
     assert r.status_code == 404
 
     # And listing in WS A doesn't show it
-    r2 = client.get("/lancamentos", headers=auth(seed["member_token_a"]))
+    r2 = client.get("/asset-movements", headers=auth(seed["member_token_a"]))
     assert r2.status_code == 200
     assert lan_id_b not in [l["id"] for l in r2.json()["items"]]
 
 
 def test_cross_workspace_asset_rejected(client, seed):
     # admin_a tries to create a lançamento for an asset in WS B
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_b"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 1,
         "unit_price": 1.0,
@@ -390,7 +344,7 @@ def test_cross_workspace_asset_rejected(client, seed):
 # ── Tests: sysadmin cross-workspace ────────────────────────────────────────
 
 def test_sysadmin_lists_across_workspaces(client, seed):
-    r = client.get("/lancamentos", headers=auth(seed["sysadmin_token"]))
+    r = client.get("/asset-movements", headers=auth(seed["sysadmin_token"]))
     assert r.status_code == 200
     items = r.json()["items"]
     workspace_ids = {l["workspace_id"] for l in items}
@@ -399,9 +353,9 @@ def test_sysadmin_lists_across_workspaces(client, seed):
 
 
 def test_sysadmin_create_requires_workspace(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 1,
         "unit_price": 1.0,
@@ -410,9 +364,9 @@ def test_sysadmin_create_requires_workspace(client, seed):
 
 
 def test_sysadmin_creates_in_target_workspace(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_b"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 7,
         "unit_price": 12.0,
@@ -426,7 +380,7 @@ def test_sysadmin_creates_in_target_workspace(client, seed):
 
 def test_filter_by_asset(client, seed):
     r = client.get(
-        f"/lancamentos?asset_id={seed['asset_a']}",
+        f"/asset-movements?asset_id={seed['asset_a']}",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200
@@ -437,34 +391,34 @@ def test_filter_by_asset(client, seed):
 
 def test_filter_by_type(client, seed):
     r = client.get(
-        "/lancamentos?type=DIVIDENDO",
+        "/asset-movements?type=BUY",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200
     items = r.json()["items"]
-    assert all(l["type"] == "DIVIDENDO" for l in items)
+    assert all(l["type"] == "BUY" for l in items)
 
 
 def test_pagination_max_200(client, seed):
-    r = client.get("/lancamentos?page_size=500", headers=auth(seed["admin_token_a"]))
+    r = client.get("/asset-movements?page_size=500", headers=auth(seed["admin_token_a"]))
     assert r.status_code == 422  # ge/le validation
 
 
 # ── Tests: update / deactivate ─────────────────────────────────────────────
 
 def test_update_lancamento(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 10,
         "unit_price": 20.0,
     }, headers=auth(seed["admin_token_a"]))
     lan_id = r.json()["id"]
 
-    r2 = client.put(f"/lancamentos/{lan_id}", json={
+    r2 = client.put(f"/asset-movements/{lan_id}", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 15,
         "unit_price": 21.0,
@@ -479,46 +433,46 @@ def test_update_lancamento(client, seed):
 
 
 def test_deactivate_lancamento(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 1,
         "unit_price": 1.0,
     }, headers=auth(seed["admin_token_a"]))
     lan_id = r.json()["id"]
 
-    r2 = client.put(f"/lancamentos/{lan_id}/deactivate", headers=auth(seed["admin_token_a"]))
+    r2 = client.put(f"/asset-movements/{lan_id}/deactivate", headers=auth(seed["admin_token_a"]))
     assert r2.status_code == 200
     assert r2.json()["is_active"] is False
 
-    r3 = client.get("/lancamentos", headers=auth(seed["admin_token_a"]))
+    r3 = client.get("/asset-movements", headers=auth(seed["admin_token_a"]))
     assert lan_id not in [l["id"] for l in r3.json()["items"]]
 
-    r4 = client.get("/lancamentos?include_inactive=true", headers=auth(seed["admin_token_a"]))
+    r4 = client.get("/asset-movements?include_inactive=true", headers=auth(seed["admin_token_a"]))
     assert lan_id in [l["id"] for l in r4.json()["items"]]
 
 
 # ── Tests: audit log ───────────────────────────────────────────────────────
 
 def test_audit_log_created_for_lancamento_mutations(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 1,
         "unit_price": 1.0,
     }, headers=auth(seed["admin_token_a"]))
     lan_id = r.json()["id"]
 
-    client.put(f"/lancamentos/{lan_id}", json={
+    client.put(f"/asset-movements/{lan_id}", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 2,
         "unit_price": 1.0,
     }, headers=auth(seed["admin_token_a"]))
-    client.put(f"/lancamentos/{lan_id}/deactivate", headers=auth(seed["admin_token_a"]))
+    client.put(f"/asset-movements/{lan_id}/deactivate", headers=auth(seed["admin_token_a"]))
 
     db = TestSession()
     try:
@@ -528,17 +482,17 @@ def test_audit_log_created_for_lancamento_mutations(client, seed):
         ]
     finally:
         db.close()
-    assert "lancamento.created" in actions
-    assert "lancamento.updated" in actions
-    assert "lancamento.deactivated" in actions
+    assert "asset_movement.created" in actions
+    assert "asset_movement.updated" in actions
+    assert "asset_movement.deactivated" in actions
 
 
 # ── Tests: USD currency / fx_rate ──────────────────────────────────────────
 
 def test_usd_asset_defaults_currency_usd(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a_us"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 5,
         "unit_price": 200.0,
@@ -564,9 +518,9 @@ def test_can_create_lancamento_against_inactive_asset(client, seed):
     finally:
         db.close()
 
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "quantity": 1,
         "unit_price": 25.0,
@@ -585,36 +539,10 @@ def test_can_create_lancamento_against_inactive_asset(client, seed):
 
 # ── Tests: income types must use the asset's currency ─────────────────────
 
-def test_income_currency_must_match_asset_currency(client, seed):
-    # asset_a_us is USD; trying to pay a BRL dividend on it should be rejected.
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a_us"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-        "gross_amount": 50.0,
-        "currency": "BRL",
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 400
-    assert "asset's currency" in r.json()["detail"].lower() or "USD" in r.json()["detail"]
-
-
-def test_income_with_matching_currency_succeeds(client, seed):
-    r = client.post("/lancamentos", json={
-        "asset_id": seed["asset_a_us"],
-        "type": "DIVIDENDO",
-        "event_date": _today_iso(),
-        "gross_amount": 50.0,
-        "currency": "USD",
-    }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 201, r.text
-
-
-# ── Tests: BONIFICACAO accepts override gross_amount (e.g., FMV declared) ──
-
 def test_bonificacao_default_gross_is_zero(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "BONIFICACAO",
+        "type": "BONUS",
         "event_date": _today_iso(),
         "quantity": 5,
     }, headers=auth(seed["admin_token_a"]))
@@ -623,9 +551,9 @@ def test_bonificacao_default_gross_is_zero(client, seed):
 
 
 def test_bonificacao_accepts_override_gross_amount(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "BONIFICACAO",
+        "type": "BONUS",
         "event_date": _today_iso(),
         "quantity": 5,
         "gross_amount": 150.0,  # FMV declared by company (5 shares × R$30 nominal)
@@ -638,9 +566,9 @@ def test_bonificacao_accepts_override_gross_amount(client, seed):
 
 def test_create_resgate_total(client, seed):
     """RESGATE_TOTAL is the 9th lançamento type; validation matches VENDA."""
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "RESGATE_TOTAL",
+        "type": "FULL_REDEMPTION",
         "event_date": _today_iso(),
         "quantity": 100,
         "unit_price": 25.00,
@@ -649,7 +577,7 @@ def test_create_resgate_total(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     assert r.status_code == 201, r.text
     data = r.json()
-    assert data["type"] == "RESGATE_TOTAL"
+    assert data["type"] == 'FULL_REDEMPTION'
     assert data["type_label"] == "Resgate Total"
     # Same math as VENDA: gross = qty * price = 2500; net = gross - fee - tax = 2498.5
     assert data["gross_amount"] == 2500.0
@@ -657,9 +585,9 @@ def test_create_resgate_total(client, seed):
 
 
 def test_resgate_total_persists_external_fields(client, seed):
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "RESGATE_TOTAL",
+        "type": "FULL_REDEMPTION",
         "event_date": _today_iso(),
         "quantity": 50,
         "unit_price": 10.00,
@@ -702,9 +630,9 @@ def cdb_asset(seed):
 
 def test_compra_cdb_with_gross_only_succeeds(client, seed, cdb_asset):
     """A CDB COMPRA with only gross_amount (no qty/unit_price) is valid."""
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": cdb_asset,
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "gross_amount": 5000.00,
     }, headers=auth(seed["admin_token_a"]))
@@ -719,9 +647,9 @@ def test_compra_cdb_with_gross_only_succeeds(client, seed, cdb_asset):
 
 def test_compra_with_neither_qty_nor_gross_rejected(client, seed):
     """A COMPRA with neither (qty+price) nor gross_amount must 422."""
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         # no quantity, no unit_price, no gross_amount
     }, headers=auth(seed["admin_token_a"]))
@@ -736,9 +664,9 @@ def test_compra_cotado_with_gross_only_accepted(client, seed):
     transfers without per-unit prices. The Pydantic-level check (qty+price
     OR gross) is the only gate.
     """
-    r = client.post("/lancamentos", json={
+    r = client.post("/asset-movements", json={
         "asset_id": seed["asset_a"],  # STOCK_BR
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": _today_iso(),
         "gross_amount": 1000.00,
         # no qty, no unit_price

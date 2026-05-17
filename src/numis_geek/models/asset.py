@@ -43,7 +43,6 @@ class Asset(Base):
     workspace_id: Mapped[str] = mapped_column(String(36), ForeignKey("workspace.id"), nullable=False)
     financial_institution_id: Mapped[str] = mapped_column(String(36), ForeignKey("financial_institution.id"), nullable=False)
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
-    subtype: Mapped[str | None] = mapped_column(String(100), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
     cnpj: Mapped[str | None] = mapped_column(String(18), nullable=True)

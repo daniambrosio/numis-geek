@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  api, type AssetOut, type FinancialInstitutionOut, type LancamentoOut,
+  api, type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
   type PositionOut, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
@@ -30,7 +30,7 @@ export default function Dashboard() {
   const [assets, setAssets] = useState<AssetOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [positions, setPositions] = useState<Map<string, PositionOut | null>>(new Map())
-  const [recent, setRecent] = useState<LancamentoOut[]>([])
+  const [recent, setRecent] = useState<AssetMovementOut[]>([])
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -41,7 +41,7 @@ export default function Dashboard() {
     Promise.all([
       api.listAssets({}),
       api.listFinancialInstitutions(),
-      api.listLancamentos({ page_size: 10 }),
+      api.listAssetMovements({ page_size: 10 }),
     ])
       .then(([as, fis, lan]) => {
         setAssets(as)
@@ -362,7 +362,7 @@ function EmptyMini({ hint }: { hint: string }) {
   return <div className="text-[11px] text-gray-400 dark:text-gray-600 text-center py-8">{hint}</div>
 }
 
-function ActivityFeed({ items, assets }: { items: LancamentoOut[]; assets: AssetOut[] }) {
+function ActivityFeed({ items, assets }: { items: AssetMovementOut[]; assets: AssetOut[] }) {
   const assetById = useMemo(() => {
     const m = new Map<string, AssetOut>()
     for (const a of assets) m.set(a.id, a)
@@ -373,7 +373,7 @@ function ActivityFeed({ items, assets }: { items: LancamentoOut[]; assets: Asset
     return <div className="text-[11px] text-gray-400 dark:text-gray-600 text-center py-8">Sem atividade recente.</div>
   }
 
-  const grouped = new Map<string, LancamentoOut[]>()
+  const grouped = new Map<string, AssetMovementOut[]>()
   for (const it of items) {
     const k = it.event_date
     if (!grouped.has(k)) grouped.set(k, [])

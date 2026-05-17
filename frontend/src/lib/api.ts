@@ -155,7 +155,6 @@ export interface AssetOut {
   financial_institution_id: string
   financial_institution_name: string
   asset_class: AssetClass
-  subtype: string | null
   name: string
   ticker: string | null
   cnpj: string | null
@@ -174,7 +173,6 @@ export interface AssetRequest {
   financial_institution_id: string
   name: string
   currency: 'BRL' | 'USD'
-  subtype?: string | null
   ticker?: string | null
   cnpj?: string | null
   notes?: string | null
@@ -206,36 +204,30 @@ export interface AuditPage {
   pages: number
 }
 
-export type LancamentoType =
-  | 'COMPRA'
-  | 'VENDA'
-  | 'DIVIDENDO'
-  | 'JUROS'
-  | 'JCP'
+export type AssetMovementType =
+  | 'BUY'
+  | 'SELL'
   | 'COME_COTAS'
-  | 'BONIFICACAO'
-  | 'SUBSCRICAO'
-  | 'RESGATE_TOTAL'
+  | 'BONUS'
+  | 'SUBSCRIPTION'
+  | 'FULL_REDEMPTION'
 
-export const LANCAMENTO_TYPE_LABELS: Record<LancamentoType, string> = {
-  COMPRA: 'Compra',
-  VENDA: 'Venda',
-  DIVIDENDO: 'Dividendo',
-  JUROS: 'Juros / Cupom',
-  JCP: 'JCP',
+export const ASSET_MOVEMENT_TYPE_LABELS: Record<AssetMovementType, string> = {
+  BUY: 'Compra',
+  SELL: 'Venda',
   COME_COTAS: 'Come-cotas',
-  BONIFICACAO: 'Bonificação',
-  SUBSCRICAO: 'Subscrição',
-  RESGATE_TOTAL: 'Resgate Total',
+  BONUS: 'Bonificação',
+  SUBSCRIPTION: 'Subscrição',
+  FULL_REDEMPTION: 'Resgate Total',
 }
 
-export interface LancamentoOut {
+export interface AssetMovementOut {
   id: string
   workspace_id: string
   asset_id: string
   asset_name: string
   asset_ticker: string | null
-  type: LancamentoType
+  type: AssetMovementType
   type_label: string
   event_date: string
   settlement_date: string | null
@@ -256,16 +248,16 @@ export interface LancamentoOut {
   updated_at: string
 }
 
-export interface LancamentoListPage {
-  items: LancamentoOut[]
+export interface AssetMovementListPage {
+  items: AssetMovementOut[]
   total: number
   page: number
   page_size: number
 }
 
-export interface LancamentoRequest {
+export interface AssetMovementRequest {
   asset_id: string
-  type: LancamentoType
+  type: AssetMovementType
   event_date: string
   settlement_date?: string | null
   quantity?: number | null
@@ -280,6 +272,62 @@ export interface LancamentoRequest {
   external_id?: string | null
   external_source?: ExternalSource | null
   nota_negociacao_number?: string | null
+  workspace_id?: string | null
+}
+
+export type DistributionType = 'DIVIDEND' | 'INTEREST' | 'JCP' | 'SECURITIES_LENDING'
+
+export const DISTRIBUTION_TYPE_LABELS: Record<DistributionType, string> = {
+  DIVIDEND: 'Dividendo',
+  INTEREST: 'Juros / Cupom',
+  JCP: 'JCP',
+  SECURITIES_LENDING: 'Aluguel',
+}
+
+export interface DistributionOut {
+  id: string
+  workspace_id: string
+  financial_institution_id: string
+  financial_institution_name: string
+  asset_id: string | null
+  asset_name: string | null
+  asset_ticker: string | null
+  type: DistributionType
+  type_label: string
+  event_date: string
+  gross_amount: number
+  tax: number | null
+  net_amount: number
+  currency: 'BRL' | 'USD'
+  fx_rate: number
+  notes: string | null
+  external_id: string | null
+  external_source: ExternalSource | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface DistributionListPage {
+  items: DistributionOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface DistributionRequest {
+  financial_institution_id: string
+  asset_id?: string | null
+  type: DistributionType
+  event_date: string
+  gross_amount: number
+  tax?: number | null
+  net_amount?: number | null
+  currency?: 'BRL' | 'USD' | null
+  fx_rate?: number | null
+  notes?: string | null
+  external_id?: string | null
+  external_source?: ExternalSource | null
   workspace_id?: string | null
 }
 
@@ -410,18 +458,18 @@ export const api = {
   getAssetPosition: (id: string) =>
     request<PositionOut>(`/assets/${id}/position`),
 
-  listAssetLancamentos: (id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
+  listAssetMovementsForAsset: (id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
     const qs = new URLSearchParams()
     if (params?.page) qs.set('page', String(params.page))
     if (params?.page_size) qs.set('page_size', String(params.page_size))
     if (params?.include_inactive) qs.set('include_inactive', 'true')
     const suffix = qs.toString()
-    return request<LancamentoListPage>(`/assets/${id}/lancamentos${suffix ? `?${suffix}` : ''}`)
+    return request<AssetMovementListPage>(`/assets/${id}/asset-movements${suffix ? `?${suffix}` : ''}`)
   },
 
-  listLancamentos: (params?: {
+  listAssetMovements: (params?: {
     asset_id?: string
-    type?: LancamentoType
+    type?: AssetMovementType
     from?: string
     to?: string
     include_inactive?: boolean
@@ -439,20 +487,54 @@ export const api = {
     if (params?.page_size) qs.set('page_size', String(params.page_size))
     if (params?.workspace_id) qs.set('workspace_id', params.workspace_id)
     const suffix = qs.toString()
-    return request<LancamentoListPage>(`/lancamentos${suffix ? `?${suffix}` : ''}`)
+    return request<AssetMovementListPage>(`/asset-movements${suffix ? `?${suffix}` : ''}`)
   },
 
-  getLancamento: (id: string) =>
-    request<LancamentoOut>(`/lancamentos/${id}`),
+  getAssetMovement: (id: string) =>
+    request<AssetMovementOut>(`/asset-movements/${id}`),
 
-  createLancamento: (data: LancamentoRequest) =>
-    request<LancamentoOut>('/lancamentos', { method: 'POST', body: JSON.stringify(data) }),
+  createAssetMovement: (data: AssetMovementRequest) =>
+    request<AssetMovementOut>('/asset-movements', { method: 'POST', body: JSON.stringify(data) }),
 
-  updateLancamento: (id: string, data: LancamentoRequest) =>
-    request<LancamentoOut>(`/lancamentos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateAssetMovement: (id: string, data: AssetMovementRequest) =>
+    request<AssetMovementOut>(`/asset-movements/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
-  deactivateLancamento: (id: string) =>
-    request<LancamentoOut>(`/lancamentos/${id}/deactivate`, { method: 'PUT' }),
+  deactivateAssetMovement: (id: string) =>
+    request<AssetMovementOut>(`/asset-movements/${id}/deactivate`, { method: 'PUT' }),
+
+  listDistributions: (params?: {
+    asset_id?: string
+    financial_institution_id?: string
+    type?: DistributionType
+    from?: string
+    to?: string
+    include_inactive?: boolean
+    page?: number
+    page_size?: number
+    workspace_id?: string
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.asset_id) qs.set('asset_id', params.asset_id)
+    if (params?.financial_institution_id) qs.set('financial_institution_id', params.financial_institution_id)
+    if (params?.type) qs.set('type', params.type)
+    if (params?.from) qs.set('from', params.from)
+    if (params?.to) qs.set('to', params.to)
+    if (params?.include_inactive) qs.set('include_inactive', 'true')
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
+    if (params?.workspace_id) qs.set('workspace_id', params.workspace_id)
+    const suffix = qs.toString()
+    return request<DistributionListPage>(`/distributions${suffix ? `?${suffix}` : ''}`)
+  },
+
+  createDistribution: (data: DistributionRequest) =>
+    request<DistributionOut>('/distributions', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateDistribution: (id: string, data: DistributionRequest) =>
+    request<DistributionOut>(`/distributions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deactivateDistribution: (id: string) =>
+    request<DistributionOut>(`/distributions/${id}/deactivate`, { method: 'PUT' }),
 
   listAccountsByCustodian: (workspace_id?: string) => {
     const qs = workspace_id ? `?workspace_id=${workspace_id}` : ''

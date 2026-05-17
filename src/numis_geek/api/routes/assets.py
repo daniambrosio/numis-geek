@@ -19,7 +19,11 @@ from numis_geek.models.asset import (
 )
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
-from numis_geek.models.lancamento import LANCAMENTO_TYPE_LABELS, Lancamento, LancamentoType
+from numis_geek.models.asset_movement import (
+    ASSET_MOVEMENT_TYPE_LABELS,
+    AssetMovement,
+    AssetMovementType,
+)
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
@@ -80,7 +84,6 @@ class AssetRequest(BaseModel):
     financial_institution_id: str
     name: str = Field(min_length=1, max_length=255)
     currency: Currency
-    subtype: str | None = Field(default=None, max_length=100)
     ticker: str | None = Field(default=None, max_length=20)
     cnpj: str | None = Field(default=None, max_length=18)
     notes: str | None = None
@@ -158,7 +161,6 @@ class AssetOut(BaseModel):
     financial_institution_id: str
     financial_institution_name: str
     asset_class: str
-    subtype: str | None
     name: str
     ticker: str | None
     cnpj: str | None
@@ -211,7 +213,6 @@ class AssetOut(BaseModel):
             financial_institution_id=asset.financial_institution_id,
             financial_institution_name=fi_name,
             asset_class=asset.asset_class.value,
-            subtype=asset.subtype,
             name=asset.name,
             ticker=asset.ticker,
             cnpj=asset.cnpj,
@@ -462,7 +463,6 @@ def create_asset(
         workspace_id=workspace_id,
         financial_institution_id=body.financial_institution_id,
         asset_class=body.asset_class,
-        subtype=body.subtype,
         name=body.name,
         ticker=body.ticker,
         cnpj=body.cnpj,
@@ -513,7 +513,6 @@ def update_asset(
 
     asset.financial_institution_id = body.financial_institution_id
     asset.asset_class = body.asset_class
-    asset.subtype = body.subtype
     asset.name = body.name
     asset.ticker = body.ticker
     asset.cnpj = body.cnpj
@@ -544,7 +543,7 @@ class PositionOut(BaseModel):
     currency: str
 
 
-class LancamentoLite(BaseModel):
+class AssetMovementLite(BaseModel):
     id: str
     workspace_id: str
     asset_id: str
@@ -569,8 +568,8 @@ class LancamentoLite(BaseModel):
     updated_at: str
 
 
-class AssetLancamentosPage(BaseModel):
-    items: list[LancamentoLite]
+class AssetMovementsPage(BaseModel):
+    items: list[AssetMovementLite]
     total: int
     page: int
     page_size: int
@@ -596,8 +595,8 @@ def get_asset_position(
     )
 
 
-@router.get("/{asset_id}/lancamentos", response_model=AssetLancamentosPage)
-def list_asset_lancamentos(
+@router.get("/{asset_id}/asset-movements", response_model=AssetMovementsPage)
+def list_asset_movements(
     asset_id: str,
     include_inactive: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
@@ -607,44 +606,44 @@ def list_asset_lancamentos(
 ):
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
-    q = db.query(Lancamento).filter(Lancamento.asset_id == asset_id)
+    q = db.query(AssetMovement).filter(AssetMovement.asset_id == asset_id)
     if not include_inactive:
-        q = q.filter(Lancamento.is_active == True)  # noqa: E712
+        q = q.filter(AssetMovement.is_active == True)  # noqa: E712
     total = q.count()
     rows = (
-        q.order_by(Lancamento.event_date.desc(), Lancamento.created_at.desc())
+        q.order_by(AssetMovement.event_date.desc(), AssetMovement.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
     items = [
-        LancamentoLite(
-            id=l.id,
-            workspace_id=l.workspace_id,
-            asset_id=l.asset_id,
-            type=l.type.value,
-            type_label=LANCAMENTO_TYPE_LABELS[l.type],
-            event_date=l.event_date.isoformat(),
-            settlement_date=l.settlement_date.isoformat() if l.settlement_date else None,
-            quantity=float(l.quantity) if l.quantity is not None else None,
-            unit_price=float(l.unit_price) if l.unit_price is not None else None,
-            gross_amount=float(l.gross_amount) if l.gross_amount is not None else None,
-            fee=float(l.fee) if l.fee is not None else None,
-            tax=float(l.tax) if l.tax is not None else None,
-            net_amount=float(l.net_amount),
-            currency=l.currency.value,
-            fx_rate=float(l.fx_rate),
-            notes=l.notes,
-            external_id=l.external_id,
-            external_source=l.external_source.value if l.external_source else None,
-            nota_negociacao_number=l.nota_negociacao_number,
-            is_active=l.is_active,
-            created_at=l.created_at.isoformat(),
-            updated_at=l.updated_at.isoformat(),
+        AssetMovementLite(
+            id=m.id,
+            workspace_id=m.workspace_id,
+            asset_id=m.asset_id,
+            type=m.type.value,
+            type_label=ASSET_MOVEMENT_TYPE_LABELS[m.type],
+            event_date=m.event_date.isoformat(),
+            settlement_date=m.settlement_date.isoformat() if m.settlement_date else None,
+            quantity=float(m.quantity) if m.quantity is not None else None,
+            unit_price=float(m.unit_price) if m.unit_price is not None else None,
+            gross_amount=float(m.gross_amount) if m.gross_amount is not None else None,
+            fee=float(m.fee) if m.fee is not None else None,
+            tax=float(m.tax) if m.tax is not None else None,
+            net_amount=float(m.net_amount),
+            currency=m.currency.value,
+            fx_rate=float(m.fx_rate),
+            notes=m.notes,
+            external_id=m.external_id,
+            external_source=m.external_source.value if m.external_source else None,
+            nota_negociacao_number=m.nota_negociacao_number,
+            is_active=m.is_active,
+            created_at=m.created_at.isoformat(),
+            updated_at=m.updated_at.isoformat(),
         )
-        for l in rows
+        for m in rows
     ]
-    return AssetLancamentosPage(items=items, total=total, page=page, page_size=page_size)
+    return AssetMovementsPage(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.put("/{asset_id}/deactivate", response_model=AssetOut)

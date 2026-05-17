@@ -82,23 +82,30 @@ export const FI_PALETTE: Record<string, FIToken> = {
   fix:          { color: '#94a3b8', initials: 'FX' },
 }
 
-// Lançamento type palette — mirror prototype's typeOpts. Types DIVIDENDO,
-// JUROS, JCP migrate to Distribution in spec 08.
-export const LAN_TYPE_COLORS: Record<string, string> = {
-  COMPRA: '#3b82f6',         // blue
-  VENDA: '#ef4444',          // red
-  BONIFICACAO: '#22c55e',    // green
-  SUBSCRICAO: '#8b5cf6',     // violet
-  COME_COTAS: '#f59e0b',     // amber
-  RESGATE_TOTAL: '#14b8a6',  // teal
-  DIVIDENDO: '#a78bfa',      // violet light (→ Distribution.DIVIDEND)
-  JUROS: '#06b6d4',          // cyan (→ Distribution.INTEREST)
-  JCP: '#10b981',            // emerald (→ Distribution.JCP)
+// AssetMovement type palette — mirror prototype's typeOpts.
+export const AM_TYPE_COLORS: Record<string, string> = {
+  BUY: '#3b82f6',              // blue
+  SELL: '#ef4444',             // red
+  BONUS: '#22c55e',            // green
+  SUBSCRIPTION: '#8b5cf6',     // violet
+  COME_COTAS: '#f59e0b',       // amber
+  FULL_REDEMPTION: '#14b8a6',  // teal
 }
 
-export function lanTypeColor(type: string): string {
-  return LAN_TYPE_COLORS[type] ?? '#94a3b8'
+// Distribution type palette
+export const DIST_TYPE_COLORS: Record<string, string> = {
+  DIVIDEND: '#a78bfa',           // violet light
+  INTEREST: '#06b6d4',           // cyan
+  JCP: '#10b981',                // emerald
+  SECURITIES_LENDING: '#f97316', // orange
 }
+
+export function amTypeColor(type: string): string {
+  return AM_TYPE_COLORS[type] ?? DIST_TYPE_COLORS[type] ?? '#94a3b8'
+}
+
+// Backward-compat alias (used in a few components still importing `lanTypeColor`).
+export const lanTypeColor = amTypeColor
 
 export function fiTokenFor(slug: string | null | undefined, shortName: string): FIToken {
   if (slug && FI_PALETTE[slug]) return FI_PALETTE[slug]

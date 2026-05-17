@@ -51,7 +51,7 @@ from numis_geek.db.session import SessionLocal
 from numis_geek.models.account import Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.external import ExternalSource
-from numis_geek.models.lancamento import Lancamento, LancamentoType
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 
@@ -68,21 +68,21 @@ NON_COTADO_CLASSES = {
     AssetClass.CASH,
 }
 
-# Notion `Tipo Transação` → Numis `LancamentoType`.
-NOTION_TYPE_MAP: dict[str, LancamentoType] = {
-    "Compra": LancamentoType.COMPRA,
-    "Venda": LancamentoType.VENDA,
-    "Bonificação": LancamentoType.BONIFICACAO,
-    "Subscrição": LancamentoType.SUBSCRICAO,
-    "ComeCota": LancamentoType.COME_COTAS,
-    "Resgate Total": LancamentoType.RESGATE_TOTAL,
+# Notion `Tipo Transação` → Numis `AssetMovementType`.
+NOTION_TYPE_MAP: dict[str, AssetMovementType] = {
+    "Compra": AssetMovementType.BUY,
+    "Venda": AssetMovementType.SELL,
+    "Bonificação": AssetMovementType.BONUS,
+    "Subscrição": AssetMovementType.SUBSCRIPTION,
+    "ComeCota": AssetMovementType.COME_COTAS,
+    "Resgate Total": AssetMovementType.FULL_REDEMPTION,
 }
 
 COTADO_OR_VALUE_TYPES = {
-    LancamentoType.COMPRA,
-    LancamentoType.VENDA,
-    LancamentoType.SUBSCRICAO,
-    LancamentoType.RESGATE_TOTAL,
+    AssetMovementType.BUY,
+    AssetMovementType.SELL,
+    AssetMovementType.SUBSCRIPTION,
+    AssetMovementType.FULL_REDEMPTION,
 }
 
 
@@ -195,20 +195,20 @@ def _build_asset_index(db: Session, workspace_id: str) -> dict[str, Asset]:
 
 
 def _compute_net(
-    t: LancamentoType,
+    t: AssetMovementType,
     gross: Decimal,
     fee: Decimal,
     tax: Decimal,
 ) -> Decimal:
-    if t == LancamentoType.COMPRA:
+    if t == AssetMovementType.BUY:
         return gross + fee + tax
-    if t in (LancamentoType.VENDA, LancamentoType.RESGATE_TOTAL):
+    if t in (AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION):
         return gross - fee - tax
-    if t == LancamentoType.COME_COTAS:
+    if t == AssetMovementType.COME_COTAS:
         return -tax
-    if t == LancamentoType.BONIFICACAO:
+    if t == AssetMovementType.BONUS:
         return Decimal("0")
-    if t == LancamentoType.SUBSCRICAO:
+    if t == AssetMovementType.SUBSCRIPTION:
         return gross + fee + tax
     # Income types reach here only via direct map; we don't import them now.
     return gross - fee - tax
@@ -283,14 +283,14 @@ def import_from_json(
 
             # ── Type mapping ─────────────────────────────────────────────────
             raw_type = row.get("type") or row.get("notion_type") or ""
-            ltype: LancamentoType | None
+            ltype: AssetMovementType | None
             if raw_type in NOTION_TYPE_MAP:
                 ltype = NOTION_TYPE_MAP[raw_type]
             else:
                 # Accept already-mapped Numis enum values too (so test fixtures
                 # can use them directly).
                 try:
-                    ltype = LancamentoType(raw_type)
+                    ltype = AssetMovementType(raw_type)
                 except ValueError:
                     ltype = None
 
@@ -355,13 +355,13 @@ def import_from_json(
                 # No further check: Pydantic already requires (qty+price) OR gross.
                 # We intentionally allow cotado assets to use gross-only, because
                 # the user's real data (Funds, dust crypto) requires it.
-            elif ltype == LancamentoType.BONIFICACAO:
+            elif ltype == AssetMovementType.BONUS:
                 if quantity is None or quantity <= 0:
                     summary.add_error(notion_id, "BONIFICACAO_MISSING_QTY",
                                       "BONIFICACAO row has null/zero quantity", row)
                     summary.skipped.append((notion_id, "bonificacao missing qty"))
                     continue
-            elif ltype == LancamentoType.COME_COTAS:
+            elif ltype == AssetMovementType.COME_COTAS:
                 if (tax is None or tax <= 0) and (gross_amount is None or gross_amount <= 0):
                     summary.add_error(notion_id, "COMECOTAS_MISSING_TAX",
                                       "ComeCota row missing both Taxas and AR Valor", row)
@@ -372,12 +372,12 @@ def import_from_json(
             qty_for_running = quantity or Decimal("0")
             if asset.asset_class not in NON_COTADO_CLASSES:
                 key = asset.id
-                if ltype in (LancamentoType.COMPRA, LancamentoType.SUBSCRICAO,
-                             LancamentoType.BONIFICACAO):
+                if ltype in (AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION,
+                             AssetMovementType.BONUS):
                     running_qty[key] += qty_for_running
-                elif ltype in (LancamentoType.VENDA, LancamentoType.RESGATE_TOTAL):
+                elif ltype in (AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION):
                     running_qty[key] -= qty_for_running
-                    if ltype == LancamentoType.RESGATE_TOTAL:
+                    if ltype == AssetMovementType.FULL_REDEMPTION:
                         running_qty[key] = Decimal("0")
                     elif running_qty[key] < -Decimal("1e-6"):
                         summary.add_warning(
@@ -389,10 +389,10 @@ def import_from_json(
             # ── Persist ─────────────────────────────────────────────────────
             summary.by_type[ltype.value] += 1
 
-            existing = db.query(Lancamento).filter(
-                Lancamento.workspace_id == ws.id,
-                Lancamento.external_source == ExternalSource.NOTION,
-                Lancamento.external_id == notion_id,
+            existing = db.query(AssetMovement).filter(
+                AssetMovement.workspace_id == ws.id,
+                AssetMovement.external_source == ExternalSource.NOTION,
+                AssetMovement.external_id == notion_id,
             ).first()
 
             # Compute persisted gross + net.
@@ -400,7 +400,7 @@ def import_from_json(
                 persisted_gross = gross_amount
             elif quantity is not None and unit_price is not None:
                 persisted_gross = quantity * unit_price
-            elif ltype == LancamentoType.BONIFICACAO:
+            elif ltype == AssetMovementType.BONUS:
                 persisted_gross = Decimal("0")
             else:
                 persisted_gross = Decimal("0")
@@ -440,7 +440,7 @@ def import_from_json(
                 summary.would_create += 1
                 if apply:
                     now = datetime.now(timezone.utc)
-                    db.add(Lancamento(
+                    db.add(AssetMovement(
                         id=str(uuid.uuid4()),
                         workspace_id=ws.id,
                         asset_id=asset.id,

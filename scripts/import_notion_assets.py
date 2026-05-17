@@ -208,8 +208,15 @@ def import_from_json(
                 continue
 
             is_active = bool(row.get("is_active", True))
+            # Asset.subtype was dropped in spec 08. If the snapshot still has a
+            # non-empty `subtype` field, fold it into `notes` with [ex-subtype]
+            # prefix so the data round-trips without loss.
             subtype = row.get("subtype") or None
             notes = row.get("notes") or None
+            if subtype and isinstance(subtype, str) and subtype.strip():
+                stub = f"[ex-subtype] {subtype.strip()}"
+                if not notes or stub not in notes:
+                    notes = (notes + "\n\n" if notes else "") + stub
             # Preserve the Notion URL in notes for traceability if provided
             notion_url = row.get("notion_url")
             if notion_url and (not notes or notion_url not in notes):
@@ -237,7 +244,6 @@ def import_from_json(
                     existing.name = name
                     existing.asset_class = asset_class
                     existing.currency = currency
-                    existing.subtype = subtype
                     existing.notes = notes
                     existing.is_active = is_active
                     existing.updated_at = datetime.now(timezone.utc)
@@ -252,7 +258,6 @@ def import_from_json(
                         workspace_id=ws.id,
                         financial_institution_id=fi.id,
                         asset_class=asset_class,
-                        subtype=subtype,
                         name=name,
                         ticker=ticker,
                         currency=currency,

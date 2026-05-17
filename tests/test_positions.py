@@ -16,7 +16,7 @@ import numis_geek.models  # noqa: F401
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.account import Currency
 from numis_geek.models.financial_institution import FinancialInstitution
-from numis_geek.models.lancamento import Lancamento, LancamentoType
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import User, UserRole
 from numis_geek.services.auth import AuthService
 from numis_geek.services.positions import compute_position
@@ -130,24 +130,24 @@ def _today_iso():
 def test_position_quantity_held_with_compra_bonificacao_venda(client, seed):
     today = _today_iso()
     # 100 @ 30
-    client.post("/lancamentos", json={
+    client.post("/asset-movements", json={
         "asset_id": seed["asset_brl"],
-        "type": "COMPRA",
+        "type": "BUY",
         "event_date": today,
         "quantity": 100,
         "unit_price": 30.00,
     }, headers=auth(seed["admin_token"]))
     # +50 BONIFICACAO (free shares)
-    client.post("/lancamentos", json={
+    client.post("/asset-movements", json={
         "asset_id": seed["asset_brl"],
-        "type": "BONIFICACAO",
+        "type": "BONUS",
         "event_date": today,
         "quantity": 50,
     }, headers=auth(seed["admin_token"]))
     # -80 VENDA @ 35
-    client.post("/lancamentos", json={
+    client.post("/asset-movements", json={
         "asset_id": seed["asset_brl"],
-        "type": "VENDA",
+        "type": "SELL",
         "event_date": today,
         "quantity": 80,
         "unit_price": 35.00,
@@ -193,12 +193,12 @@ def test_weighted_average_cost(client, seed):
 
     today = _today_iso()
     # 100 @ 10, 100 @ 20 → weighted avg = (100*10 + 100*20) / 200 = 15
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA", "event_date": today,
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY", "event_date": today,
         "quantity": 100, "unit_price": 10.0,
     }, headers=auth(seed["admin_token"]))
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA", "event_date": today,
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY", "event_date": today,
         "quantity": 100, "unit_price": 20.0,
     }, headers=auth(seed["admin_token"]))
 
@@ -208,23 +208,25 @@ def test_weighted_average_cost(client, seed):
     assert pos["average_cost"] == 15.0
 
 
-# ── DIVIDENDO accumulation in BRL via fx_rate ──────────────────────────────
+# ── Distribution accumulation in BRL via fx_rate ────────────────────────────
 
-def test_dividendo_accumulation_with_fx_rate(client, seed):
+def test_dividend_accumulation_with_fx_rate(client, seed):
     today = _today_iso()
-    # USD asset: $10 dividendo at fx_rate 5.0 → 50 BRL; $20 dividendo at fx 5.5 → 110 BRL.
-    # Total received BRL = 160.
-    client.post("/lancamentos", json={
+    # USD asset: $10 dividend at fx_rate 5.0 → 50 BRL; $20 dividend at fx 5.5 → 110 BRL.
+    # Total received BRL = 160. Income now lives in Distribution, not AssetMovement.
+    client.post("/distributions", json={
+        "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_usd"],
-        "type": "DIVIDENDO",
+        "type": "DIVIDEND",
         "event_date": today,
         "gross_amount": 10.00,
         "currency": "USD",
         "fx_rate": 5.0,
     }, headers=auth(seed["admin_token"]))
-    client.post("/lancamentos", json={
+    client.post("/distributions", json={
+        "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_usd"],
-        "type": "DIVIDENDO",
+        "type": "DIVIDEND",
         "event_date": today,
         "gross_amount": 20.00,
         "currency": "USD",
@@ -238,11 +240,11 @@ def test_dividendo_accumulation_with_fx_rate(client, seed):
     assert pos["total_received_brl"] == 160.0
 
 
-# ── /assets/{id}/lancamentos convenience endpoint ──────────────────────────
+# ── /assets/{id}/asset-movements convenience endpoint ──────────────────────────
 
 def test_assets_lancamentos_endpoint(client, seed):
     r = client.get(
-        f"/assets/{seed['asset_brl']}/lancamentos",
+        f"/assets/{seed['asset_brl']}/asset-movements",
         headers=auth(seed["admin_token"]),
     )
     assert r.status_code == 200, r.text
@@ -320,18 +322,18 @@ def test_resgate_total_resets_cost_basis(client, seed):
     db.close()
 
     # Use distinct event_dates to make the chronological order unambiguous.
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
         "event_date": "2024-01-15",
         "quantity": 100, "unit_price": 25.00,
     }, headers=auth(seed["admin_token"]))
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "RESGATE_TOTAL",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "FULL_REDEMPTION",
         "event_date": "2024-06-15",
         "quantity": 100, "unit_price": 28.00,
     }, headers=auth(seed["admin_token"]))
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
         "event_date": "2024-09-15",
         "quantity": 50, "unit_price": 32.00,
     }, headers=auth(seed["admin_token"]))
@@ -370,20 +372,20 @@ def test_fractional_sale_below_tolerance_resets(client, seed):
     asset_id = a.id
     db.close()
 
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
         "event_date": "2024-01-10",
         "quantity": 0.005, "unit_price": 200000.00,
     }, headers=auth(seed["admin_token"]))
     # Sell exactly the same — residual will be 0 (or below 1e-6).
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "VENDA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "SELL",
         "event_date": "2024-02-10",
         "quantity": 0.005, "unit_price": 250000.00,
     }, headers=auth(seed["admin_token"]))
     # Re-buy at a different price.
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
         "event_date": "2024-03-10",
         "quantity": 0.01, "unit_price": 300000.00,
     }, headers=auth(seed["admin_token"]))
@@ -419,8 +421,8 @@ def test_non_cotado_position_runs_basis_only(client, seed):
     asset_id = a.id
     db.close()
 
-    client.post("/lancamentos", json={
-        "asset_id": asset_id, "type": "COMPRA",
+    client.post("/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
         "event_date": "2024-04-01",
         "gross_amount": 5000.00,
     }, headers=auth(seed["admin_token"]))

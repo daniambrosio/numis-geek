@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type LancamentoOut, type PhysicalDetails, type PositionOut } from '../lib/api'
+import { api, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
   STOCK_BR: 'Ação BR',
@@ -50,7 +50,6 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
   const [name, setName] = useState(initial?.name ?? '')
   const [fiId, setFiId] = useState(initial?.financial_institution_id ?? (institutions[0]?.id ?? ''))
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? 'BRL')
-  const [subtype, setSubtype] = useState(initial?.subtype ?? '')
   const [ticker, setTicker] = useState(initial?.ticker ?? '')
   const [cnpj, setCnpj] = useState(initial?.cnpj ?? '')
   const [notes, setNotes] = useState(initial?.notes ?? '')
@@ -87,14 +86,14 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
 
   // Position + recent lançamentos (only when editing an existing asset).
   const [position, setPosition] = useState<PositionOut | null>(null)
-  const [recentLans, setRecentLans] = useState<LancamentoOut[]>([])
+  const [recentLans, setRecentLans] = useState<AssetMovementOut[]>([])
   const [posLoading, setPosLoading] = useState(false)
   useEffect(() => {
     if (!initial) return
     setPosLoading(true)
     Promise.all([
       api.getAssetPosition(initial.id),
-      api.listAssetLancamentos(initial.id, { page_size: 5 }),
+      api.listAssetMovementsForAsset(initial.id, { page_size: 5 }),
     ])
       .then(([p, l]) => { setPosition(p); setRecentLans(l.items) })
       .catch(() => { /* keep panel quiet on errors */ })
@@ -122,7 +121,6 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
         financial_institution_id: fiId,
         name: name.trim(),
         currency,
-        subtype: subtype.trim() || null,
         ticker: tickerForbidden ? null : (ticker.trim() || null),
         cnpj: isFund ? (cnpj.trim() || null) : null,
         notes: notes.trim() || null,
@@ -260,16 +258,6 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
                 <option value="BRL">BRL</option>
                 <option value="USD">USD</option>
               </select>
-            </div>
-            <div>
-              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Subtipo (opcional)</label>
-              <input
-                type="text"
-                value={subtype}
-                onChange={e => setSubtype(e.target.value)}
-                placeholder="Ex: Small Cap"
-                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
             </div>
           </div>
 

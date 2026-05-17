@@ -18,7 +18,7 @@ from numis_geek.models.account import Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
-from numis_geek.models.lancamento import Lancamento, LancamentoType
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 
@@ -156,8 +156,8 @@ def test_dry_run_creates_nothing(seed, monkeypatch):
     assert sum(summary.by_type.values()) == 7
     db = TestSession()
     try:
-        assert db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"]
+        assert db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"]
         ).count() == 0
     finally:
         db.close()
@@ -211,8 +211,8 @@ def test_apply_refuses_when_errors_without_force(seed, monkeypatch):
     db = TestSession()
     try:
         # Nothing was committed.
-        assert db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"]
+        assert db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"]
         ).count() == 0
     finally:
         db.close()
@@ -228,8 +228,8 @@ def test_apply_with_force_inserts_valid_rows(seed, monkeypatch):
     assert summary.would_update == 0
     db = TestSession()
     try:
-        rows = db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"]
+        rows = db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"]
         ).all()
         assert len(rows) == 7
         # All carry NOTION provenance.
@@ -253,8 +253,8 @@ def test_idempotent_second_run_no_duplicates(seed, monkeypatch):
     assert summary.would_update == 7
     db = TestSession()
     try:
-        rows = db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"]
+        rows = db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"]
         ).all()
         assert len(rows) == 7
     finally:
@@ -265,12 +265,12 @@ def test_resgate_total_mapped(seed, monkeypatch):
     _patched_session_local(monkeypatch)
     db = TestSession()
     try:
-        rt = db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"],
-            Lancamento.external_id == "https://www.notion.so/lan-6",
+        rt = db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"],
+            AssetMovement.external_id == "https://www.notion.so/lan-6",
         ).first()
         assert rt is not None
-        assert rt.type == LancamentoType.RESGATE_TOTAL
+        assert rt.type == AssetMovementType.FULL_REDEMPTION
     finally:
         db.close()
 
@@ -279,9 +279,9 @@ def test_non_cotado_compra_persisted_with_gross_only(seed, monkeypatch):
     _patched_session_local(monkeypatch)
     db = TestSession()
     try:
-        cdb_compra = db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"],
-            Lancamento.external_id == "https://www.notion.so/lan-7",
+        cdb_compra = db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"],
+            AssetMovement.external_id == "https://www.notion.so/lan-7",
         ).first()
         assert cdb_compra is not None
         assert cdb_compra.quantity is None
@@ -295,9 +295,9 @@ def test_orphan_asset_row_skipped(seed, monkeypatch):
     _patched_session_local(monkeypatch)
     db = TestSession()
     try:
-        orphan = db.query(Lancamento).filter(
-            Lancamento.workspace_id == seed["ws_id"],
-            Lancamento.external_id == "https://www.notion.so/lan-orphan",
+        orphan = db.query(AssetMovement).filter(
+            AssetMovement.workspace_id == seed["ws_id"],
+            AssetMovement.external_id == "https://www.notion.so/lan-orphan",
         ).first()
         assert orphan is None
     finally:

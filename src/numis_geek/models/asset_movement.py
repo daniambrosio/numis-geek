@@ -11,40 +11,34 @@ from numis_geek.models.account import Currency  # noqa: F401 — reused enum
 from numis_geek.models.external import ExternalSource
 
 
-class LancamentoType(str, enum.Enum):
-    COMPRA = "COMPRA"
-    VENDA = "VENDA"
-    DIVIDENDO = "DIVIDENDO"
-    JUROS = "JUROS"
-    JCP = "JCP"
+class AssetMovementType(str, enum.Enum):
+    BUY = "BUY"
+    SELL = "SELL"
     COME_COTAS = "COME_COTAS"
-    BONIFICACAO = "BONIFICACAO"
-    SUBSCRICAO = "SUBSCRICAO"
-    RESGATE_TOTAL = "RESGATE_TOTAL"
+    BONUS = "BONUS"
+    SUBSCRIPTION = "SUBSCRIPTION"
+    FULL_REDEMPTION = "FULL_REDEMPTION"
 
 
 # Display names (PT) for UI use; kept on the backend so any layer (audit, exports,
 # notifications) can render the same label without re-implementing the dictionary.
-LANCAMENTO_TYPE_LABELS: dict[LancamentoType, str] = {
-    LancamentoType.COMPRA: "Compra",
-    LancamentoType.VENDA: "Venda",
-    LancamentoType.DIVIDENDO: "Dividendo",
-    LancamentoType.JUROS: "Juros / Cupom",
-    LancamentoType.JCP: "JCP",
-    LancamentoType.COME_COTAS: "Come-cotas",
-    LancamentoType.BONIFICACAO: "Bonificação",
-    LancamentoType.SUBSCRICAO: "Subscrição",
-    LancamentoType.RESGATE_TOTAL: "Resgate Total",
+ASSET_MOVEMENT_TYPE_LABELS: dict[AssetMovementType, str] = {
+    AssetMovementType.BUY: "Compra",
+    AssetMovementType.SELL: "Venda",
+    AssetMovementType.COME_COTAS: "Come-cotas",
+    AssetMovementType.BONUS: "Bonificação",
+    AssetMovementType.SUBSCRIPTION: "Subscrição",
+    AssetMovementType.FULL_REDEMPTION: "Resgate Total",
 }
 
 
-class Lancamento(Base):
-    __tablename__ = "lancamento"
+class AssetMovement(Base):
+    __tablename__ = "asset_movement"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     workspace_id: Mapped[str] = mapped_column(String(36), ForeignKey("workspace.id"), nullable=False)
     asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id"), nullable=False)
-    type: Mapped[LancamentoType] = mapped_column(Enum(LancamentoType), nullable=False)
+    type: Mapped[AssetMovementType] = mapped_column(Enum(AssetMovementType), nullable=False)
 
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
     settlement_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -79,11 +73,11 @@ class Lancamento(Base):
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     __table_args__ = (
-        Index("ix_lancamento_workspace_event_date", "workspace_id", "event_date"),
-        Index("ix_lancamento_asset_event_date", "asset_id", "event_date"),
-        Index("ix_lancamento_workspace_type_event_date", "workspace_id", "type", "event_date"),
+        Index("ix_asset_movement_workspace_event_date", "workspace_id", "event_date"),
+        Index("ix_asset_movement_asset_event_date", "asset_id", "event_date"),
+        Index("ix_asset_movement_workspace_type_event_date", "workspace_id", "type", "event_date"),
         Index(
-            "ix_lancamento_external",
+            "ix_asset_movement_external",
             "external_source",
             "external_id",
             sqlite_where=text("external_id IS NOT NULL"),

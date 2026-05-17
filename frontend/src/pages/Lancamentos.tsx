@@ -1,15 +1,15 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { MoreHorizontal, Plus } from 'lucide-react'
 import {
   api,
   type AssetOut,
   type FinancialInstitutionOut,
-  type LancamentoOut,
-  type LancamentoRequest,
-  type LancamentoType,
+  type AssetMovementOut,
+  type AssetMovementRequest,
+  type AssetMovementType,
   type UserOut,
-  LANCAMENTO_TYPE_LABELS,
+  ASSET_MOVEMENT_TYPE_LABELS,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import LancamentoModal from '../components/LancamentoModal'
@@ -20,14 +20,13 @@ import {
 } from '../components/ui'
 import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 
-const TYPE_ORDER: LancamentoType[] = [
-  'COMPRA', 'VENDA', 'BONIFICACAO', 'SUBSCRICAO', 'COME_COTAS', 'RESGATE_TOTAL',
-  'DIVIDENDO', 'JUROS', 'JCP',
+const TYPE_ORDER: AssetMovementType[] = [
+  'BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION',
 ]
 
 const TYPE_OPTS = TYPE_ORDER.map(t => ({
   id: t,
-  label: LANCAMENTO_TYPE_LABELS[t],
+  label: ASSET_MOVEMENT_TYPE_LABELS[t],
   color: lanTypeColor(t),
 }))
 
@@ -55,23 +54,22 @@ function fmtBRL(n: number, opts: { sign?: boolean; compact?: boolean } = {}) {
   return fmtMoney(n, 'BRL', opts)
 }
 
-function fmtDateShort(iso: string): string {
-  const d = new Date(iso + 'T00:00:00')
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+function fmtDate(iso: string): string {
+  return new Intl.DateTimeFormat('pt-BR').format(new Date(iso + 'T00:00:00'))
 }
 
 export default function Lancamentos() {
   const navigate = useNavigate()
   const [me, setMe] = useState<UserOut | null>(null)
-  const [items, setItems] = useState<LancamentoOut[]>([])
+  const [items, setItems] = useState<AssetMovementOut[]>([])
   const [assets, setAssets] = useState<AssetOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState<LancamentoOut | undefined>(undefined)
-  const [confirmDeactivate, setConfirmDeactivate] = useState<LancamentoOut | null>(null)
-  const [selected, setSelected] = useState<LancamentoOut | null>(null)
+  const [editing, setEditing] = useState<AssetMovementOut | undefined>(undefined)
+  const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
+  const [selected, setSelected] = useState<AssetMovementOut | null>(null)
 
   // Filters
   const [search, setSearch] = useState('')
@@ -89,7 +87,7 @@ export default function Lancamentos() {
     setLoading(true)
     setLoadError('')
     const lanParams = {
-      type: (typesSel.length === 1 ? (typesSel[0] as LancamentoType) : undefined),
+      type: (typesSel.length === 1 ? (typesSel[0] as AssetMovementType) : undefined),
       from: fromDate || undefined,
       to: toDate || undefined,
       include_inactive: includeInactive,
@@ -97,7 +95,7 @@ export default function Lancamentos() {
     }
 
     Promise.all([
-      api.listLancamentos({ ...lanParams, page: 1 }),
+      api.listAssetMovements({ ...lanParams, page: 1 }),
       api.listAssets({ include_inactive: true }),
       api.listFinancialInstitutions(),
     ])
@@ -112,7 +110,7 @@ export default function Lancamentos() {
         }
         const rest = await Promise.all(
           Array.from({ length: totalPages - 1 }, (_, i) =>
-            api.listLancamentos({ ...lanParams, page: i + 2 }),
+            api.listAssetMovements({ ...lanParams, page: i + 2 }),
           ),
         )
         const all = firstPage.items.concat(...rest.map(p => p.items))
@@ -154,7 +152,7 @@ export default function Lancamentos() {
 
   // Group by Year-Month
   const grouped = useMemo(() => {
-    const m = new Map<string, LancamentoOut[]>()
+    const m = new Map<string, AssetMovementOut[]>()
     for (const it of sorted) {
       const ym = it.event_date.slice(0, 7) // YYYY-MM
       if (!m.has(ym)) m.set(ym, [])
@@ -172,19 +170,19 @@ export default function Lancamentos() {
     return { totalNet, count: sorted.length, uniqAssets }
   }, [sorted])
 
-  async function handleSave(data: LancamentoRequest) {
+  async function handleSave(data: AssetMovementRequest) {
     if (editing) {
-      const updated = await api.updateLancamento(editing.id, data)
+      const updated = await api.updateAssetMovement(editing.id, data)
       setItems(prev => prev.map(l => l.id === updated.id ? updated : l))
       if (selected?.id === updated.id) setSelected(updated)
     } else {
-      const created = await api.createLancamento(data)
+      const created = await api.createAssetMovement(data)
       setItems(prev => [created, ...prev])
     }
   }
 
-  async function handleDeactivate(l: LancamentoOut) {
-    await api.deactivateLancamento(l.id)
+  async function handleDeactivate(l: AssetMovementOut) {
+    await api.deactivateAssetMovement(l.id)
     if (includeInactive) {
       setItems(prev => prev.map(x => x.id === l.id ? { ...x, is_active: false } : x))
       if (selected?.id === l.id) setSelected({ ...l, is_active: false })
@@ -287,16 +285,16 @@ export default function Lancamentos() {
                     <th className="text-right font-medium px-2 py-2">Qtd</th>
                     <th className="text-right font-medium px-2 py-2">Preço unit.</th>
                     <th className="text-right font-medium px-2 py-2">Net</th>
-                    <th className="text-center font-medium px-2 py-2 w-12">Moeda</th>
                     <th className="text-right font-medium px-2 py-2">FX</th>
+                    <th className="px-2"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {grouped.map(g => (
+                  {grouped.map((g, gi) => (
                     <Fragment key={g.ym}>
                       <tr>
                         <td colSpan={8} className="p-0">
-                          <MonthHeader ym={g.ym} />
+                          <MonthHeader ym={g.ym} first={gi === 0} />
                         </td>
                       </tr>
                       {g.items.map(l => (
@@ -365,11 +363,13 @@ export default function Lancamentos() {
   )
 }
 
-function MonthHeader({ ym }: { ym: string }) {
+function MonthHeader({ ym, first }: { ym: string; first?: boolean }) {
   const [y, m] = ym.split('-')
-  const label = `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`
+  const label = `${MONTH_NAMES[parseInt(m, 10) - 1]} · ${y}`
   return (
-    <div className="px-2 py-2 mt-2 first:mt-0 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50/60 dark:bg-gray-900/40 rounded">
+    <div
+      className={`px-2 py-2 ${first ? '' : 'mt-3'} text-[10px] uppercase tracking-wider font-semibold text-gray-500 sticky top-0 bg-gray-50 dark:bg-gray-950 z-[1] border-b border-gray-200 dark:border-gray-800`}
+    >
       {label}
     </div>
   )
@@ -378,7 +378,7 @@ function MonthHeader({ ym }: { ym: string }) {
 function Row({
   lan: l, asset, onClick,
 }: {
-  lan: LancamentoOut
+  lan: AssetMovementOut
   asset: AssetOut | null
   onClick: () => void
 }) {
@@ -397,33 +397,34 @@ function Row({
         inactive ? 'opacity-60' : ''
       }`}
     >
-      <td className="px-2 py-2 tnum text-gray-500 dark:text-gray-400">{fmtDateShort(l.event_date)}</td>
+      <td className="px-2 py-2 tnum text-gray-400">{fmtDate(l.event_date)}</td>
       <td className="px-2"><TypeBadge code={l.type} label={l.type_label} /></td>
       <td className="px-2">
         <div className="flex items-center gap-2">
-          <span className="w-1 h-5 rounded-full shrink-0" style={{ background: klassColor }} />
+          <span className="w-1 h-5 rounded-full" style={{ background: klassColor }} />
           <div className="min-w-0">
             <div className={`font-mono font-medium text-gray-900 dark:text-white ${inactive ? 'line-through' : ''}`}>
               {asset?.ticker || asset?.name || '—'}
             </div>
             {asset?.ticker && asset?.name && (
-              <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate max-w-[260px]">{asset.name}</div>
+              <div className="text-[11px] text-gray-500 truncate max-w-[200px]">{asset.name}</div>
             )}
           </div>
         </div>
       </td>
-      <td className="px-2 text-right tnum text-gray-700 dark:text-gray-300">{fmtNum(l.quantity)}</td>
-      <td className="px-2 text-right tnum money text-gray-500 dark:text-gray-400">
+      <td className="px-2 text-right tnum">{fmtNum(l.quantity)}</td>
+      <td className="px-2 text-right tnum money text-gray-400">
         {l.unit_price != null ? fmtMoney(l.unit_price, l.currency) : '—'}
       </td>
       <td className="px-2 text-right">
-        <span className={`tnum money font-medium ${netTone}`}>{fmtMoney(l.net_amount, l.currency, { sign: true })}</span>
-      </td>
-      <td className="px-2 text-center">
+        <div className={`tnum money font-medium ${netTone}`}>{fmtMoney(l.net_amount, l.currency, { sign: true })}</div>
         <CcyPill ccy={l.currency} />
       </td>
-      <td className="px-2 text-right tnum text-[11px] text-gray-400 dark:text-gray-600">
+      <td className="px-2 text-right tnum text-[11px] text-gray-500">
         {l.currency === 'USD' ? `R$ ${Number(l.fx_rate).toFixed(4)}` : '—'}
+      </td>
+      <td className="px-2 text-gray-500">
+        <MoreHorizontal className="w-4 h-4" />
       </td>
     </tr>
   )

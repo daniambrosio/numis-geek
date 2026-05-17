@@ -4,11 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from numis_geek.api.middleware import AuditMiddleware
 from numis_geek.api.routes import (
     accounts,
+    asset_movements,
     assets,
     audit,
     auth,
+    distributions,
     financial_institutions,
-    lancamentos,
     users,
     workspaces,
 )
@@ -30,7 +31,8 @@ app.include_router(audit.router)
 app.include_router(financial_institutions.router)
 app.include_router(accounts.router)
 app.include_router(assets.router)
-app.include_router(lancamentos.router)
+app.include_router(asset_movements.router)
+app.include_router(distributions.router)
 app.include_router(workspaces.router)
 
 

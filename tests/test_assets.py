@@ -470,11 +470,9 @@ def test_update_asset(client, seed):
         "name": "CSHG Logística FII",
         "currency": "BRL",
         "ticker": "HGLG11",
-        "subtype": "Logística",
     }, headers=auth(seed["admin_token_a"]))
     assert r2.status_code == 200
     assert r2.json()["name"] == "CSHG Logística FII"
-    assert r2.json()["subtype"] == "Logística"
 
 
 def test_deactivate_asset(client, seed):

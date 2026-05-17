@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import {
-  api, type AssetOut, type FinancialInstitutionOut, type LancamentoOut,
+  api, type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
   type PositionOut,
 } from '../lib/api'
 import { KLASS, collapsedOf } from '../lib/tokens'
@@ -27,14 +27,14 @@ function fmtMoney(n: number | null | undefined, currency: string) {
 
 export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactivate }: Props) {
   const [position, setPosition] = useState<PositionOut | null>(null)
-  const [recent, setRecent] = useState<LancamentoOut[]>([])
+  const [recent, setRecent] = useState<AssetMovementOut[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let cancel = false
     Promise.all([
       api.getAssetPosition(asset.id).catch(() => null),
-      api.listAssetLancamentos(asset.id, { page: 1, page_size: 5, include_inactive: false })
+      api.listAssetMovementsForAsset(asset.id, { page: 1, page_size: 5, include_inactive: false })
         .then(p => p.items)
         .catch(() => []),
     ]).then(([pos, recs]) => {
@@ -137,7 +137,6 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
               Detalhes
             </div>
             <dl className="space-y-1.5 text-[12px]">
-              <Detail label="Subtipo" value={asset.subtype ?? '—'} />
               <Detail label="CNPJ" value={asset.cnpj ?? '—'} />
               <Detail label="Origem" value={asset.external_source ?? 'manual'} />
               <Detail label="Criado" value={new Date(asset.created_at).toLocaleDateString('pt-BR')} />
