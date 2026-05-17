@@ -5,7 +5,7 @@ export function getPrivacy(): boolean {
 }
 
 export function applyPrivacy(on: boolean) {
-  document.body.classList.toggle('privacy', on)
+  document.documentElement.setAttribute('data-privacy', on ? 'on' : 'off')
   localStorage.setItem(KEY, on ? 'on' : 'off')
 }
 
