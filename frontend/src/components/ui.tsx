@@ -233,6 +233,30 @@ export function CcyPill({ ccy, className = '' }: { ccy: 'BRL' | 'USD'; className
   )
 }
 
+export function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">
+          {label}
+        </label>
+        {hint}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+export const INPUT_CLS = 'w-full h-9 px-3 rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-[13px] text-gray-900 dark:text-white placeholder:text-gray-400 focus:outline-none focus:border-indigo-500 transition-colors'
+
 export function QuickAddBar({
   placeholder,
   onClick,

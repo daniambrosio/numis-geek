@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type AuditLogOut, type AuditPage, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import { Card, PageHeader } from '../../components/ui'
 
 const ACTION_OPTIONS = [
   '', 'auth.login', 'user.invited', 'user.role_changed', 'user.deactivated',
@@ -62,22 +63,26 @@ export default function AdminAudit() {
 
   return (
     <AppLayout user={me}>
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Auditoria</h1>
-          <select
-            value={actionFilter}
-            onChange={e => handleFilterChange(e.target.value)}
-            className="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
-          >
-            <option value="">Todas as ações</option>
-            {ACTION_OPTIONS.filter(Boolean).map(a => (
-              <option key={a} value={a}>{actionLabel(a)}</option>
-            ))}
-          </select>
-        </div>
+      <div className="space-y-6">
+        <PageHeader
+          title="Auditoria"
+          count={data?.total ?? null}
+          countLabel={`registro${(data?.total ?? 0) === 1 ? '' : 's'}`}
+          action={
+            <select
+              value={actionFilter}
+              onChange={e => handleFilterChange(e.target.value)}
+              className="h-8 px-2 text-[12px] rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-indigo-500"
+            >
+              <option value="">Todas as ações</option>
+              {ACTION_OPTIONS.filter(Boolean).map(a => (
+                <option key={a} value={a}>{actionLabel(a)}</option>
+              ))}
+            </select>
+          }
+        />
 
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+        <Card padding="p-0"><div className="overflow-hidden rounded-2xl">
           {loading ? (
             <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
           ) : (
@@ -116,7 +121,7 @@ export default function AdminAudit() {
               </tbody>
             </table>
           )}
-        </div>
+        </div></Card>
 
         {/* Pagination */}
         {data && data.pages > 1 && (

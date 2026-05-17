@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Plus } from 'lucide-react'
 import { api, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import { Card, PageHeader } from '../../components/ui'
 
 interface InviteForm { email: string; name: string; password: string; role: string }
 
@@ -67,19 +69,23 @@ export default function AdminUsers() {
 
   return (
     <AppLayout user={me}>
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Usuários</h1>
-          <button
-            onClick={() => setShowInvite(true)}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
-          >
-            + Convidar usuário
-          </button>
-        </div>
+      <div className="space-y-6">
+        <PageHeader
+          title="Usuários"
+          count={users.length}
+          countLabel={`usuário${users.length === 1 ? '' : 's'}`}
+          action={
+            <button
+              onClick={() => setShowInvite(true)}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Convidar usuário
+            </button>
+          }
+        />
 
         {/* Users table */}
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+        <Card padding="p-0"><div className="overflow-hidden rounded-2xl">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800">
@@ -174,7 +180,7 @@ export default function AdminUsers() {
               ))}
             </tbody>
           </table>
-        </div>
+        </div></Card>
       </div>
 
       {/* Invite modal */}

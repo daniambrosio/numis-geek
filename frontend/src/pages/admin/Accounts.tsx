@@ -1,22 +1,18 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { api, type AccountOut, type CustodianGroupOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, TrendingUp, Wallet } from 'lucide-react'
+import { api, type AccountOut, type AssetOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import { Card, PageHeader, SectionTitle, FILogo, CcyPill, Field, INPUT_CLS } from '../../components/ui'
 
-function accountTypeLabel(t: string) {
-  return t === 'checking' ? 'Corrente' : 'Investimento'
+const TYPE_META = {
+  investment: { label: 'Investimento', icon: TrendingUp, bg: 'bg-violet-500/15', text: 'text-violet-700 dark:text-violet-300' },
+  checking: { label: 'Corrente', icon: Wallet, bg: 'bg-blue-500/15', text: 'text-blue-700 dark:text-blue-300' },
 }
 
-function accountTypeBadge(t: string) {
-  return t === 'checking'
-    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-    : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-}
-
-function currencyBadge(c: string) {
-  return c === 'USD'
-    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+function fmtMoney(n: number | null | undefined, currency: string) {
+  if (n == null) return '—'
+  return n.toLocaleString('pt-BR', { style: 'currency', currency })
 }
 
 interface ModalProps {
@@ -66,93 +62,47 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
+      <div className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-xl p-6">
         <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-5">
           {initial ? 'Editar Conta' : 'Nova Conta'}
         </h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Nome</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              required
-              placeholder="Ex: Itaú Corrente"
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo</label>
-            <select
-              value={accountType}
-              onChange={e => setAccountType(e.target.value as 'checking' | 'investment')}
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <Field label="Nome">
+            <input type="text" value={name} onChange={e => setName(e.target.value)} required placeholder="Ex: Itaú Corrente" className={INPUT_CLS} />
+          </Field>
+          <Field label="Tipo">
+            <select value={accountType} onChange={e => setAccountType(e.target.value as 'checking' | 'investment')} className={INPUT_CLS}>
               <option value="checking">Corrente</option>
               <option value="investment">Investimento</option>
             </select>
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Instituição Financeira</label>
-            <select
-              value={fiId}
-              onChange={e => setFiId(e.target.value)}
-              required
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {institutions.map(fi => (
-                <option key={fi.id} value={fi.id}>{fi.short_name}</option>
-              ))}
+          </Field>
+          <Field label="Instituição">
+            <select value={fiId} onChange={e => setFiId(e.target.value)} required className={INPUT_CLS}>
+              {institutions.map(fi => <option key={fi.id} value={fi.id}>{fi.short_name}</option>)}
             </select>
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Moeda</label>
-            <select
-              value={currency}
-              onChange={e => setCurrency(e.target.value as 'BRL' | 'USD')}
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
+          </Field>
+          <Field label="Moeda">
+            <select value={currency} onChange={e => setCurrency(e.target.value as 'BRL' | 'USD')} className={INPUT_CLS}>
               <option value="BRL">BRL</option>
               <option value="USD">USD</option>
             </select>
-          </div>
-
+          </Field>
           {accountType === 'checking' && (
-            <div>
-              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Saldo de abertura (opcional)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={openingBalance}
-                onChange={e => setOpeningBalance(e.target.value)}
-                placeholder="0.00"
-                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
+            <Field label="Saldo de abertura (opcional)">
+              <input type="number" step="0.01" value={openingBalance} onChange={e => setOpeningBalance(e.target.value)} placeholder="0,00" className={INPUT_CLS} />
+            </Field>
           )}
+          <Field label="Informações (opcional)">
+            <input type="text" value={accountInfo} onChange={e => setAccountInfo(e.target.value)} placeholder="Agência, número da conta…" className={INPUT_CLS} />
+          </Field>
 
-          <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Informações da conta (opcional)</label>
-            <input
-              type="text"
-              value={accountInfo}
-              onChange={e => setAccountInfo(e.target.value)}
-              placeholder="Agência, número da conta ou código da corretora"
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
+          {error && <p className="text-[12px] text-red-500 dark:text-red-400">{error}</p>}
 
-          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="h-9 px-4 inline-flex items-center rounded-lg text-[12px] text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
               Cancelar
             </button>
-            <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-medium transition-colors">
+            <button type="submit" disabled={saving} className="h-9 px-4 inline-flex items-center rounded-lg bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 text-white text-[12px] font-medium transition-colors">
               {saving ? 'Salvando…' : 'Salvar'}
             </button>
           </div>
@@ -162,129 +112,17 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
   )
 }
 
-type Tab = 'contas' | 'ativos'
-
-function ByCustodianView({ groups, loading, loadError }: { groups: CustodianGroupOut[]; loading: boolean; loadError: string }) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  // Auto-expand if only one group
-  const autoExpand = groups.length === 1
-  function isCollapsed(id: string) {
-    if (autoExpand) return false
-    return collapsed[id] ?? false
-  }
-  function toggle(id: string) {
-    setCollapsed(prev => ({ ...prev, [id]: !prev[id] }))
-  }
-
-  if (loading) {
-    return <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
-  }
-  if (loadError) {
-    return <div className="p-12 text-center text-sm text-red-500">{loadError}</div>
-  }
-  if (groups.length === 0) {
-    return (
-      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-12 text-center text-sm text-gray-400 dark:text-gray-600">
-        Nenhum custodiante com contas de investimento ou ativos.
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4">
-      {groups.map(g => {
-        const fi = g.financial_institution
-        const collapsedNow = isCollapsed(fi.id)
-        return (
-          <div key={fi.id} className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-            <button
-              onClick={() => toggle(fi.id)}
-              disabled={autoExpand}
-              className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                {fi.logo_slug ? (
-                  <img
-                    src={`https://www.google.com/s2/favicons?sz=64&domain=${fi.logo_slug}.com.br`}
-                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-                    alt=""
-                    className="w-8 h-8 rounded"
-                  />
-                ) : (
-                  <div className="w-8 h-8 rounded bg-gray-100 dark:bg-gray-800" />
-                )}
-                <div className="text-left">
-                  <p className="font-medium text-gray-900 dark:text-white text-sm">{fi.short_name}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {g.assets.length} ativo{g.assets.length === 1 ? '' : 's'} · {g.accounts.length} conta{g.accounts.length === 1 ? '' : 's'} de investimento
-                  </p>
-                </div>
-              </div>
-              {!autoExpand && (
-                <span className="text-gray-400 text-sm">{collapsedNow ? '▸' : '▾'}</span>
-              )}
-            </button>
-
-            {!collapsedNow && (
-              <div className="border-t border-gray-100 dark:border-gray-800">
-                {g.accounts.length > 0 && (
-                  <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
-                    <p className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">Contas</p>
-                    <ul className="space-y-1">
-                      {g.accounts.map(a => (
-                        <li key={a.id} className="flex items-center justify-between text-sm">
-                          <span className="text-gray-700 dark:text-gray-300">{a.name}</span>
-                          <span className="text-xs text-gray-400">{a.currency}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="px-5 py-3">
-                  <p className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">Ativos</p>
-                  {g.assets.length === 0 ? (
-                    <p className="text-sm text-gray-400 dark:text-gray-600 italic">Nenhum ativo cadastrado neste custodiante.</p>
-                  ) : (
-                    <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
-                      {g.assets.map(a => (
-                        <li key={a.id}>
-                          <Link
-                            to={`/assets`}
-                            className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors text-sm"
-                          >
-                            {a.ticker && (
-                              <span className="font-mono text-xs text-gray-500 dark:text-gray-400 w-16 truncate">{a.ticker}</span>
-                            )}
-                            <span className="text-gray-900 dark:text-white truncate flex-1">{a.name}</span>
-                            <span className="text-[10px] text-gray-400 uppercase">{a.currency}</span>
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
 export default function AdminAccounts() {
   const navigate = useNavigate()
   const [me, setMe] = useState<UserOut | null>(null)
   const [accounts, setAccounts] = useState<AccountOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
-  const [byCustodian, setByCustodian] = useState<CustodianGroupOut[]>([])
+  const [assets, setAssets] = useState<AssetOut[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AccountOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AccountOut | null>(null)
-  const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('accounts-tab') as Tab) || 'contas')
 
   useEffect(() => {
     api.me()
@@ -302,18 +140,41 @@ export default function AdminAccounts() {
     Promise.all([
       api.listAccounts(),
       api.listFinancialInstitutions(),
-      api.listAccountsByCustodian(),
+      api.listAssets({ include_inactive: false }),
     ])
-      .then(([accs, fis, groups]) => {
+      .then(([accs, fis, as]) => {
         setAccounts(accs)
         setInstitutions(fis)
-        setByCustodian(groups)
+        setAssets(as)
       })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar.'))
       .finally(() => setLoading(false))
   }, [me])
 
-  useEffect(() => { localStorage.setItem('accounts-tab', tab) }, [tab])
+  const fiById = useMemo(() => {
+    const m = new Map<string, FinancialInstitutionOut>()
+    for (const fi of institutions) m.set(fi.id, fi)
+    return m
+  }, [institutions])
+
+  const assetCountByFi = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const a of assets) {
+      m.set(a.financial_institution_id, (m.get(a.financial_institution_id) ?? 0) + 1)
+    }
+    return m
+  }, [assets])
+
+  const grouped = useMemo(() => ({
+    investment: accounts.filter(a => a.account_type === 'investment'),
+    checking: accounts.filter(a => a.account_type === 'checking'),
+  }), [accounts])
+
+  const stats = useMemo(() => {
+    const types = new Set(accounts.map(a => a.account_type)).size
+    const fis = new Set(accounts.map(a => a.financial_institution_id)).size
+    return { types, fis }
+  }, [accounts])
 
   async function handleSave(data: Parameters<typeof api.createAccount>[0]) {
     if (editing) {
@@ -333,107 +194,113 @@ export default function AdminAccounts() {
 
   if (!me) return null
 
+  const sections: Array<{ key: 'investment' | 'checking'; rows: AccountOut[] }> = [
+    { key: 'investment', rows: grouped.investment },
+    { key: 'checking', rows: grouped.checking },
+  ]
+
   return (
     <AppLayout user={me}>
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Contas</h1>
-            <div className="ml-4 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-              {([
-                { id: 'contas' as Tab, label: 'Contas' },
-                { id: 'ativos' as Tab, label: 'Ativos' },
-              ]).map(t => (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`px-4 py-1.5 text-sm transition-colors ${
-                    tab === t.id
-                      ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium'
-                      : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {tab === 'contas' && (
+      <div className="space-y-6">
+        <PageHeader
+          title="Contas"
+          count={accounts.length}
+          countLabel={`contas · ${stats.types} ${stats.types === 1 ? 'tipo' : 'tipos'} · ${stats.fis} ${stats.fis === 1 ? 'instituição' : 'instituições'}`}
+          action={
             <button
               onClick={() => { setEditing(undefined); setModalOpen(true) }}
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
             >
-              + Nova Conta
+              <Plus className="w-3.5 h-3.5" /> Nova Conta
             </button>
-          )}
-        </div>
+          }
+        />
 
-        {tab === 'ativos' ? (
-          <ByCustodianView groups={byCustodian} loading={loading} loadError={loadError} />
+        {loadError ? (
+          <Card>
+            <div className="text-sm text-red-600 dark:text-red-400 text-center py-6">{loadError}</div>
+          </Card>
+        ) : loading ? (
+          <Card>
+            <div className="text-sm text-gray-400 dark:text-gray-600 text-center py-12">Carregando…</div>
+          </Card>
         ) : (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-          {loading ? (
-            <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-800">
-                  {['Nome', 'Tipo', 'Instituição', 'Moeda', ''].map((h, i) => (
-                    <th key={i} className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {accounts.map(acc => (
-                  <tr key={acc.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-gray-900 dark:text-white">{acc.name}</p>
-                      {acc.account_info && (
-                        <p className="text-xs text-gray-400 dark:text-gray-600 mt-0.5">{acc.account_info}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${accountTypeBadge(acc.account_type)}`}>
-                        {accountTypeLabel(acc.account_type)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
-                      {acc.financial_institution_name}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${currencyBadge(acc.currency)}`}>
-                        {acc.currency}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2 justify-end">
-                        <button
+          sections.map(({ key, rows }) => {
+            const meta = TYPE_META[key]
+            const Icon = meta.icon
+            return (
+              <Card key={key}>
+                <SectionTitle action={<span className="text-[11px] text-gray-500">{rows.length}</span>}>
+                  <span className="flex items-center gap-2">
+                    <Icon className={`w-3.5 h-3.5 ${meta.text}`} />
+                    {key === 'investment' ? 'Contas de investimento' : 'Contas correntes'}
+                  </span>
+                </SectionTitle>
+                {rows.length === 0 ? (
+                  <div className="text-[11px] text-gray-400 dark:text-gray-600 text-center py-6">
+                    Nenhuma {key === 'investment' ? 'conta de investimento' : 'conta corrente'}.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {rows.map(acc => {
+                      const fi = fiById.get(acc.financial_institution_id)
+                      const assetCount = acc.account_type === 'investment' ? (assetCountByFi.get(acc.financial_institution_id) ?? 0) : 0
+                      return (
+                        <div
+                          key={acc.id}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => { setEditing(acc); setModalOpen(true) }}
-                          className="px-3 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                          onKeyDown={(e) => { if (e.key === 'Enter') { setEditing(acc); setModalOpen(true) } }}
+                          className="flex items-center gap-3 p-2.5 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 transition-colors text-left w-full cursor-pointer"
                         >
-                          Editar
-                        </button>
-                        <button
-                          onClick={() => setConfirmDeactivate(acc)}
-                          className="px-3 py-1 text-xs rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                        >
-                          Desativar
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {accounts.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
-                      Nenhuma conta cadastrada.
-                    </td>
-                  </tr>
+                          <FILogo slug={fi?.logo_slug ?? null} shortName={fi?.short_name ?? '··'} size="md" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[13px] font-medium text-gray-900 dark:text-white">{acc.name}</span>
+                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wider ${meta.bg} ${meta.text}`}>
+                                <Icon className="w-3 h-3" /> {meta.label}
+                              </span>
+                              <CcyPill ccy={acc.currency} />
+                            </div>
+                            <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-2">
+                              <span>{fi?.short_name ?? '—'}</span>
+                              {assetCount > 0 && (
+                                <>
+                                  <span>·</span>
+                                  <span>{assetCount} ativo{assetCount === 1 ? '' : 's'}</span>
+                                </>
+                              )}
+                              {acc.account_info && (
+                                <>
+                                  <span>·</span>
+                                  <span className="truncate">{acc.account_info}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">Saldo</div>
+                            <div className={`text-[13px] font-semibold tnum money ${acc.opening_balance == null ? 'text-gray-400 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
+                              {fmtMoney(acc.opening_balance, acc.currency)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeactivate(acc) }}
+                            className="text-[10px] px-2 py-1 rounded text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0"
+                            title="Desativar"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
-              </tbody>
-            </table>
-          )}
-        </div>
+              </Card>
+            )
+          })
         )}
       </div>
 
@@ -442,16 +309,16 @@ export default function AdminAccounts() {
           initial={editing}
           institutions={institutions}
           onSave={handleSave}
-          onClose={() => setModalOpen(false)}
+          onClose={() => { setModalOpen(false); setEditing(undefined) }}
         />
       )}
 
       {confirmDeactivate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
             <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar conta?</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-              <strong>{confirmDeactivate.name}</strong> será desativada e não aparecerá mais nas listas.
+              <strong>{confirmDeactivate.name}</strong> será desativada.
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">

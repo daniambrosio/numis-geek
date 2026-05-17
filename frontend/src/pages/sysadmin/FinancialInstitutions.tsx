@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Plus } from 'lucide-react'
 import { api, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import { Card, PageHeader } from '../../components/ui'
 
 const LOGO_COLORS: Record<string, string> = {
   itau:        'bg-orange-500',
@@ -176,18 +178,22 @@ export default function SysAdminFinancialInstitutions() {
 
   return (
     <AppLayout user={me}>
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Instituições Financeiras</h1>
-          <button
-            onClick={() => { setEditing(undefined); setModalOpen(true) }}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
-          >
-            + Nova Instituição
-          </button>
-        </div>
+      <div className="space-y-6">
+        <PageHeader
+          title="Instituições Financeiras"
+          count={items.length}
+          countLabel={`instituição${items.length === 1 ? '' : 'es'}`}
+          action={
+            <button
+              onClick={() => { setEditing(undefined); setModalOpen(true) }}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Nova Instituição
+            </button>
+          }
+        />
 
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+        <Card padding="p-0"><div className="overflow-hidden rounded-2xl">
           {loading ? (
             <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
           ) : (
@@ -236,7 +242,7 @@ export default function SysAdminFinancialInstitutions() {
               </tbody>
             </table>
           )}
-        </div>
+        </div></Card>
       </div>
 
       {modalOpen && (
