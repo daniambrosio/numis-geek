@@ -119,9 +119,53 @@ def _build_fi_map(db: Session) -> dict[str, FinancialInstitution]:
     }
 
 
-def _resolve_asset_class(raw: str) -> AssetClass | None:
+# Spec 09 — legacy 14-class codes collapse into the 11 final codes.
+# Country is derived from the legacy code (or from `currency` when ambiguous).
+_LEGACY_CLASS_TO_NEW = {
+    "STOCK_BR": ("STOCK", "BR"),
+    "STOCK_US": ("STOCK", "US"),
+    "FII": ("REIT", "BR"),
+    "REIT": ("REIT", "US"),  # canonical: REIT alone = US REIT
+    "BOND": ("FIXED_INCOME", "US"),
+    "FIXED_INCOME": ("FIXED_INCOME", "BR"),
+    "FUND": ("FUND", "BR"),
+    "REAL_ESTATE": ("REAL_ESTATE", "BR"),
+    "VEHICLE": ("VEHICLE", "BR"),
+    "FGTS": ("FGTS", "BR"),
+    "PRIVATE_PENSION": ("PRIVATE_PENSION", "BR"),
+}
+# These derive country from currency (USD → US, BRL → BR)
+_CURRENCY_DRIVEN_CLASSES = {"ETF", "CRYPTO", "CASH"}
+
+
+def _resolve_asset_class_and_country(
+    raw_class: str, raw_country: str | None, raw_currency: str,
+) -> tuple[AssetClass, str] | None:
+    """Maps the snapshot's class + (optional) country + currency to the
+    new 11-class enum + ISO-2 country. Snapshots from spec ≤08 still use the
+    legacy 14 codes; spec 09+ snapshots use the 11 codes plus a `country` field.
+    """
+    # If snapshot already uses new schema, honor it
+    if raw_country:
+        try:
+            return AssetClass(raw_class), raw_country.upper()
+        except ValueError:
+            pass
+    # Legacy direct map
+    if raw_class in _LEGACY_CLASS_TO_NEW:
+        new_class, ctry = _LEGACY_CLASS_TO_NEW[raw_class]
+        return AssetClass(new_class), ctry
+    # Currency-driven
+    if raw_class in _CURRENCY_DRIVEN_CLASSES:
+        try:
+            ac = AssetClass(raw_class)
+        except ValueError:
+            return None
+        ctry = "US" if raw_currency == "USD" else "BR"
+        return ac, ctry
+    # Direct new-schema class without country → default BR
     try:
-        return AssetClass(raw)
+        return AssetClass(raw_class), "BR"
     except ValueError:
         return None
 
@@ -177,20 +221,22 @@ def import_from_json(
             summary.total += 1
             ref = _ref(row)
 
-            # Class mapping
-            raw_class = row.get("asset_class") or ""
-            asset_class = _resolve_asset_class(raw_class)
-            if asset_class is None:
-                summary.unmapped_classes.append((ref, raw_class))
-                summary.skipped.append((ref, f"unmapped asset_class '{raw_class}'"))
-                continue
-
-            # Currency mapping
+            # Currency mapping (needed first for ETF/CRYPTO/CASH country derivation)
             raw_currency = row.get("currency") or ""
             currency = _resolve_currency(raw_currency)
             if currency is None:
                 summary.skipped.append((ref, f"unmapped currency '{raw_currency}'"))
                 continue
+
+            # Class + country mapping (spec 09: 11 final classes + ISO-2 country)
+            raw_class = row.get("asset_class") or ""
+            raw_country = row.get("country")
+            resolved = _resolve_asset_class_and_country(raw_class, raw_country, raw_currency)
+            if resolved is None:
+                summary.unmapped_classes.append((ref, raw_class))
+                summary.skipped.append((ref, f"unmapped asset_class '{raw_class}'"))
+                continue
+            asset_class, country = resolved
 
             # FI mapping (with fallback to Particular)
             requested_if = row.get("financial_institution_short_name") or ""
@@ -243,6 +289,7 @@ def import_from_json(
                 if apply:
                     existing.name = name
                     existing.asset_class = asset_class
+                    existing.country = country
                     existing.currency = currency
                     existing.notes = notes
                     existing.is_active = is_active
@@ -258,6 +305,7 @@ def import_from_json(
                         workspace_id=ws.id,
                         financial_institution_id=fi.id,
                         asset_class=asset_class,
+                        country=country,
                         name=name,
                         ticker=ticker,
                         currency=currency,

@@ -1,6 +1,5 @@
 // Visual tokens — mirror the prototype's KLASS and FI palette.
-// Legacy class codes (STOCK_BR, STOCK_US, FII, BOND) collapse to their
-// merge targets — TODO(spec-09): drop legacy aliases after backend collapse.
+// Spec 09 landed: backend now uses the 11 collapsed classes natively.
 
 export type CollapsedClassCode =
   | 'STOCK'
@@ -34,28 +33,12 @@ export const KLASS: Record<CollapsedClassCode, ClassToken> = {
   PRIVATE_PENSION: { color: '#06b6d4', label: 'Previdência' },
 }
 
-// Backend uses 14 codes today. Map every legacy code to its collapsed target.
-// Order of `members` defines which raw codes a "click on Ação" filters in.
-export const COLLAPSED_OF: Record<string, CollapsedClassCode> = {
-  STOCK_BR: 'STOCK',
-  STOCK_US: 'STOCK',
-  STOCK: 'STOCK',
-  FII: 'REIT',
-  REIT: 'REIT',
-  ETF: 'ETF',
-  BOND: 'FIXED_INCOME',
-  FIXED_INCOME: 'FIXED_INCOME',
-  FUND: 'FUND',
-  CRYPTO: 'CRYPTO',
-  REAL_ESTATE: 'REAL_ESTATE',
-  VEHICLE: 'VEHICLE',
-  CASH: 'CASH',
-  FGTS: 'FGTS',
-  PRIVATE_PENSION: 'PRIVATE_PENSION',
-}
-
+// Identity map kept for callers that still go through collapsedOf().
+// Backend uses the 11 collapsed codes natively as of spec 09.
 export function collapsedOf(rawClass: string): CollapsedClassCode {
-  return COLLAPSED_OF[rawClass] ?? 'STOCK'
+  return (rawClass as CollapsedClassCode) in KLASS
+    ? (rawClass as CollapsedClassCode)
+    : 'STOCK'
 }
 
 // Financial institution palette — keyed by `logo_slug` from the backend.

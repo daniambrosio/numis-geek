@@ -70,12 +70,14 @@ export default function Dashboard() {
     return m
   }, [institutions])
 
-  const { totalInvested, totalReceived, byClass, byFi, loading } = useMemo(() => {
+  const { totalInvested, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
     let invested = 0
     let received = 0
     const klassMap = new Map<CollapsedClassCode, number>()
     const fiMap = new Map<string, number>()
+    const countryMap = new Map<string, number>()
     let loaded = 0
+    const moversList: Array<{ asset: AssetOut; variation: number; pnl: number }> = []
 
     for (const a of assets) {
       const p = positions.get(a.id)
@@ -85,11 +87,17 @@ export default function Dashboard() {
       invested += Number(p.total_invested_brl ?? 0)
       received += Number(p.total_received_brl ?? 0)
       const klass = collapsedOf(a.asset_class)
-      klassMap.set(klass, (klassMap.get(klass) ?? 0) + Number(p.total_invested_brl ?? 0))
-      fiMap.set(
-        a.financial_institution_id,
-        (fiMap.get(a.financial_institution_id) ?? 0) + Number(p.total_invested_brl ?? 0),
-      )
+      const inv = Number(p.total_invested_brl ?? 0)
+      klassMap.set(klass, (klassMap.get(klass) ?? 0) + inv)
+      fiMap.set(a.financial_institution_id, (fiMap.get(a.financial_institution_id) ?? 0) + inv)
+      countryMap.set(a.country, (countryMap.get(a.country) ?? 0) + inv)
+      if (p.variation != null) {
+        moversList.push({
+          asset: a,
+          variation: Number(p.variation),
+          pnl: Number(p.current_value_brl ?? 0) - inv,
+        })
+      }
     }
     const byClassArr = Array.from(klassMap.entries())
       .map(([k, v]) => ({ klass: k, value: v }))
@@ -97,12 +105,18 @@ export default function Dashboard() {
     const byFiArr = Array.from(fiMap.entries())
       .map(([id, v]) => ({ fi: id, value: v }))
       .sort((a, b) => b.value - a.value)
+    const byCountryArr = Array.from(countryMap.entries())
+      .map(([c, v]) => ({ country: c, value: v }))
+      .sort((a, b) => b.value - a.value)
+    moversList.sort((a, b) => Math.abs(b.variation) - Math.abs(a.variation))
 
     return {
       totalInvested: invested,
       totalReceived: received,
       byClass: byClassArr,
       byFi: byFiArr,
+      byCountry: byCountryArr,
+      movers: moversList.slice(0, 5),
       loading: loaded < assets.length,
     }
   }, [assets, positions])
@@ -213,7 +227,32 @@ export default function Dashboard() {
 
           <Card className="col-span-12 lg:col-span-3">
             <SectionTitle>BR vs US</SectionTitle>
-            <PlaceholderCard hint="ativa com spec 09 (Asset.country)" />
+            {byCountry.length === 0 ? (
+              <EmptyMini hint="Sem alocação por país ainda." />
+            ) : (
+              <div className="space-y-4">
+                {byCountry.map(c => {
+                  const pct = totalInvested ? c.value / totalInvested : 0
+                  return (
+                    <div key={c.country}>
+                      <div className="flex items-center justify-between text-[12px] mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{c.country === 'BR' ? '🇧🇷' : c.country === 'US' ? '🇺🇸' : '🌐'}</span>
+                          <span className="font-medium text-gray-900 dark:text-white">
+                            {c.country === 'BR' ? 'Brasil' : c.country === 'US' ? 'Estados Unidos' : c.country}
+                          </span>
+                        </div>
+                        <span className="tnum text-gray-500 dark:text-gray-400">{(pct * 100).toFixed(1)}%</span>
+                      </div>
+                      <HBar value={c.value} max={byCountry[0].value} color={c.country === 'BR' ? '#22c55e' : '#3b82f6'} height={8} />
+                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tnum money">
+                        {fmtBRL(c.value, { compact: true })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </Card>
 
           <Card className="col-span-12 lg:col-span-4">
@@ -293,8 +332,37 @@ export default function Dashboard() {
           </Card>
 
           <Card className="col-span-12 lg:col-span-5">
-            <SectionTitle>Top movers · 30 dias</SectionTitle>
-            <PlaceholderCard hint="ativa com spec 09 (current_price)" />
+            <SectionTitle>Top movers</SectionTitle>
+            {movers.length === 0 ? (
+              <EmptyMini hint="Defina preço atual em ativos pra ver movimentação." />
+            ) : (
+              <div className="space-y-2">
+                {movers.map(m => {
+                  const klass = collapsedOf(m.asset.asset_class)
+                  return (
+                    <div key={m.asset.id} className="flex items-center gap-3 px-2 py-1.5 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 transition-colors">
+                      <span className="w-1.5 h-7 rounded-full shrink-0" style={{ background: KLASS[klass].color }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[12px] font-medium text-gray-900 dark:text-white">
+                            {m.asset.ticker || m.asset.name.slice(0, 18)}
+                          </span>
+                          <span className="text-[11px] leading-none">
+                            {m.asset.country === 'BR' ? '🇧🇷' : m.asset.country === 'US' ? '🇺🇸' : '🌐'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">{m.asset.name}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-[13px] font-semibold tnum ${m.variation >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
+                          {(m.variation >= 0 ? '+' : '') + (m.variation * 100).toFixed(2)}%
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </Card>
         </div>
 
@@ -345,15 +413,6 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className={`tnum font-medium ${value === '—' ? 'text-gray-300 dark:text-gray-700' : 'text-gray-900 dark:text-white money'}`}>
         {value}
       </div>
-    </div>
-  )
-}
-
-function PlaceholderCard({ hint }: { hint: string }) {
-  return (
-    <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-6 text-center">
-      <div className="text-[11px] text-gray-500 dark:text-gray-400">Em breve</div>
-      <div className="text-[10px] text-gray-400 dark:text-gray-600 mt-1">{hint}</div>
     </div>
   )
 }

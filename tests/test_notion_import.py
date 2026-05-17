@@ -137,7 +137,7 @@ def test_apply_inserts_all_rows(seed, monkeypatch):
         assert AssetClass.PRIVATE_PENSION in classes
         assert AssetClass.FGTS in classes
         assert AssetClass.CASH in classes
-        assert AssetClass.STOCK_BR in classes
+        assert AssetClass.STOCK in classes
         assert AssetClass.REAL_ESTATE in classes
 
         # All rows have created_by/updated_by = sysadmin

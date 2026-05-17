@@ -24,8 +24,8 @@ const KLASS_OPTS = (Object.keys(KLASS) as CollapsedClassCode[]).map(id => ({
 }))
 
 const COUNTRY_OPTS = [
-  { id: 'BR', label: '🇧🇷 Brasil', disabled: true },
-  { id: 'US', label: '🇺🇸 EUA', disabled: true },
+  { id: 'BR', label: '🇧🇷 Brasil' },
+  { id: 'US', label: '🇺🇸 EUA' },
 ]
 
 const GROUPING_OPTS = [
@@ -114,9 +114,10 @@ export default function SysadminAssets() {
   const filtered = useMemo(() => {
     let xs = assets
     if (klassSel.length) xs = xs.filter(a => klassSel.includes(collapsedOf(a.asset_class)))
+    if (countrySel.length) xs = xs.filter(a => countrySel.includes(a.country))
     if (fiSel.length) xs = xs.filter(a => fiSel.includes(a.financial_institution_id))
     return xs
-  }, [assets, klassSel, fiSel])
+  }, [assets, klassSel, countrySel, fiSel])
 
   const fiOpts = useMemo(() => {
     const present = new Set(assets.map(a => a.financial_institution_id))
@@ -211,7 +212,6 @@ export default function SysadminAssets() {
             </FilterGroup>
             <FilterGroup label="País">
               <MultiChips options={COUNTRY_OPTS} selected={countrySel} onChange={setCountrySel} />
-              <span className="text-[10px] text-gray-400 dark:text-gray-600 ml-2">— ativa com spec 09</span>
             </FilterGroup>
             <FilterGroup label="Custodiante">
               <MultiChips options={fiOpts} selected={fiSel} onChange={setFiSel} />

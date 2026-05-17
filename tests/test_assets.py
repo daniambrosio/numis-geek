@@ -161,7 +161,7 @@ def test_list_assets_empty(client, seed):
 
 def test_create_stock_br(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Petrobras PN",
         "currency": "BRL",
@@ -170,7 +170,7 @@ def test_create_stock_br(client, seed):
     assert r.status_code == 201, r.text
     data = r.json()
     assert data["ticker"] == "PETR4"
-    assert data["asset_class"] == "STOCK_BR"
+    assert data["asset_class"] == "STOCK"
     assert data["financial_institution_name"] == "XP"
     assert data["details"] is None
     assert data["workspace_id"] == seed["ws_a"]
@@ -178,7 +178,7 @@ def test_create_stock_br(client, seed):
 
 def test_create_member_can_create(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Itaú PN",
         "currency": "BRL",
@@ -189,7 +189,7 @@ def test_create_member_can_create(client, seed):
 
 def test_create_fixed_income(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "FIXED_INCOME",
+        "asset_class": "FIXED_INCOME", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "CDB BTG 110% CDI 2028",
         "currency": "BRL",
@@ -211,7 +211,7 @@ def test_create_fixed_income(client, seed):
 
 def test_create_real_estate(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "REAL_ESTATE",
+        "asset_class": "REAL_ESTATE", "country": "BR",
         "financial_institution_id": seed["fi_particular"],
         "name": "Apto Pinheiros 302",
         "currency": "BRL",
@@ -231,7 +231,7 @@ def test_create_real_estate(client, seed):
 
 def test_create_vehicle(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "VEHICLE",
+        "asset_class": "VEHICLE", "country": "BR",
         "financial_institution_id": seed["fi_particular"],
         "name": "Toyota Corolla 2022",
         "currency": "BRL",
@@ -250,7 +250,7 @@ def test_create_vehicle(client, seed):
 
 def test_fi_required(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         # missing financial_institution_id
         "name": "No FI",
         "currency": "BRL",
@@ -261,7 +261,7 @@ def test_fi_required(client, seed):
 
 def test_inactive_fi_rejected(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_inactive"],
         "name": "Should Fail",
         "currency": "BRL",
@@ -272,7 +272,7 @@ def test_inactive_fi_rejected(client, seed):
 
 def test_ticker_required_for_stock(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Stock w/o ticker",
         "currency": "BRL",
@@ -282,7 +282,7 @@ def test_ticker_required_for_stock(client, seed):
 
 def test_ticker_forbidden_for_real_estate(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "REAL_ESTATE",
+        "asset_class": "REAL_ESTATE", "country": "BR",
         "financial_institution_id": seed["fi_particular"],
         "name": "Casa com ticker",
         "currency": "BRL",
@@ -294,7 +294,7 @@ def test_ticker_forbidden_for_real_estate(client, seed):
 
 def test_details_required_for_fixed_income(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "FIXED_INCOME",
+        "asset_class": "FIXED_INCOME", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "CDB no details",
         "currency": "BRL",
@@ -304,7 +304,7 @@ def test_details_required_for_fixed_income(client, seed):
 
 def test_details_forbidden_for_stock(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Stock w/ extras",
         "currency": "BRL",
@@ -316,7 +316,7 @@ def test_details_forbidden_for_stock(client, seed):
 
 def test_cnpj_only_for_fund(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Stock w/ cnpj",
         "currency": "BRL",
@@ -328,7 +328,7 @@ def test_cnpj_only_for_fund(client, seed):
 
 def test_real_estate_missing_required_field(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "REAL_ESTATE",
+        "asset_class": "REAL_ESTATE", "country": "BR",
         "financial_institution_id": seed["fi_particular"],
         "name": "Casa incompleta",
         "currency": "BRL",
@@ -339,7 +339,7 @@ def test_real_estate_missing_required_field(client, seed):
 
 def test_unique_per_workspace_ticker_fi(client, seed):
     r1 = client.post("/assets", json={
-        "asset_class": "STOCK_US",
+        "asset_class": "STOCK", "country": "BR", "country": "US",
         "financial_institution_id": seed["fi_avenue"],
         "name": "Apple",
         "currency": "USD",
@@ -349,7 +349,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
 
     # Same ticker, same custodian, same class → blocked.
     r2 = client.post("/assets", json={
-        "asset_class": "STOCK_US",
+        "asset_class": "STOCK", "country": "BR", "country": "US",
         "financial_institution_id": seed["fi_avenue"],
         "name": "Apple Dup",
         "currency": "USD",
@@ -360,7 +360,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
     # Same ticker, same custodian, DIFFERENT class → also blocked
     # (catches class typos like registering AAPL as STOCK_BR by mistake).
     r3 = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_avenue"],
         "name": "Apple as BR (typo)",
         "currency": "BRL",
@@ -372,7 +372,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
 def test_same_ticker_different_fi_allowed(client, seed):
     # AAPL @ Avenue already exists from previous test; create AAPL @ XP — should succeed.
     r = client.post("/assets", json={
-        "asset_class": "STOCK_US",
+        "asset_class": "STOCK", "country": "BR", "country": "US",
         "financial_institution_id": seed["fi_xp"],
         "name": "Apple via XP BDR",
         "currency": "USD",
@@ -384,7 +384,7 @@ def test_same_ticker_different_fi_allowed(client, seed):
 def test_member_cannot_read_other_workspace(client, seed):
     # admin_b creates an asset in workspace B
     r_create = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "WS B Asset",
         "currency": "BRL",
@@ -399,7 +399,7 @@ def test_member_cannot_read_other_workspace(client, seed):
 
     # And cannot edit it
     r2 = client.put(f"/assets/{asset_id_b}", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Hijack",
         "currency": "BRL",
@@ -432,7 +432,7 @@ def test_sysadmin_filter_by_workspace(client, seed):
 
 def test_sysadmin_creates_in_specified_workspace(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "CRYPTO",
+        "asset_class": "CRYPTO", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "Bitcoin via Sysadmin",
         "currency": "USD",
@@ -445,7 +445,7 @@ def test_sysadmin_creates_in_specified_workspace(client, seed):
 
 def test_sysadmin_create_requires_workspace(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "No WS",
         "currency": "BRL",
@@ -456,7 +456,7 @@ def test_sysadmin_create_requires_workspace(client, seed):
 
 def test_update_asset(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "FII",
+        "asset_class": "REIT", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "HGLG11 original",
         "currency": "BRL",
@@ -465,7 +465,7 @@ def test_update_asset(client, seed):
     asset_id = r.json()["id"]
 
     r2 = client.put(f"/assets/{asset_id}", json={
-        "asset_class": "FII",
+        "asset_class": "REIT", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "CSHG Logística FII",
         "currency": "BRL",
@@ -477,7 +477,7 @@ def test_update_asset(client, seed):
 
 def test_deactivate_asset(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "To Deactivate",
         "currency": "BRL",
@@ -500,7 +500,7 @@ def test_deactivate_asset(client, seed):
 
 def test_audit_log_created_for_asset_mutations(client, seed):
     r = client.post("/assets", json={
-        "asset_class": "ETF",
+        "asset_class": "ETF", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "BOVA11",
         "currency": "BRL",
@@ -509,7 +509,7 @@ def test_audit_log_created_for_asset_mutations(client, seed):
     asset_id = r.json()["id"]
 
     client.put(f"/assets/{asset_id}", json={
-        "asset_class": "ETF",
+        "asset_class": "ETF", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "BOVA11 ETF Ibovespa",
         "currency": "BRL",
@@ -541,7 +541,7 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
 
     # Bind an asset to it
     r_asset = client.post("/assets", json={
-        "asset_class": "STOCK_BR",
+        "asset_class": "STOCK", "country": "BR", "country": "BR",
         "financial_institution_id": fi_id,
         "name": "Bound asset",
         "currency": "BRL",
@@ -562,7 +562,7 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
 
 def test_get_asset_returns_details(client, seed):
     r_create = client.post("/assets", json={
-        "asset_class": "FIXED_INCOME",
+        "asset_class": "FIXED_INCOME", "country": "BR",
         "financial_institution_id": seed["fi_xp"],
         "name": "LCI BTG IPCA",
         "currency": "BRL",

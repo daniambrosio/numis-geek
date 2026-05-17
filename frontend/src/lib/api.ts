@@ -106,20 +106,17 @@ export interface AccountOut {
 }
 
 export type AssetClass =
-  | 'STOCK_BR'
-  | 'STOCK_US'
-  | 'FII'
-  | 'ETF'
+  | 'STOCK'
   | 'REIT'
-  | 'BOND'
+  | 'ETF'
   | 'FIXED_INCOME'
   | 'FUND'
   | 'CRYPTO'
   | 'REAL_ESTATE'
   | 'VEHICLE'
-  | 'PRIVATE_PENSION'
-  | 'FGTS'
   | 'CASH'
+  | 'FGTS'
+  | 'PRIVATE_PENSION'
 
 export type FixedIncomeIndexer = 'CDI' | 'IPCA' | 'SELIC' | 'PREFIXED' | 'USD'
 
@@ -155,10 +152,13 @@ export interface AssetOut {
   financial_institution_id: string
   financial_institution_name: string
   asset_class: AssetClass
+  country: string
   name: string
   ticker: string | null
   cnpj: string | null
   currency: 'BRL' | 'USD'
+  current_price: number | null
+  price_updated_at: string | null
   notes: string | null
   external_id: string | null
   external_source: ExternalSource | null
@@ -171,10 +171,12 @@ export interface AssetOut {
 export interface AssetRequest {
   asset_class: AssetClass
   financial_institution_id: string
+  country: string
   name: string
   currency: 'BRL' | 'USD'
   ticker?: string | null
   cnpj?: string | null
+  current_price?: number | null
   notes?: string | null
   external_id?: string | null
   external_source?: ExternalSource | null
@@ -339,6 +341,11 @@ export interface PositionOut {
   total_invested_brl: number
   total_received_brl: number
   currency: string
+  current_price: number | null
+  current_value: number | null
+  current_value_brl: number | null
+  variation: number | null
+  rentabilidade: number | null
 }
 
 export interface CustodianGroupOut {

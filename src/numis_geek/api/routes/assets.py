@@ -36,12 +36,9 @@ router = APIRouter(prefix="/assets", tags=["assets"])
 # ── Class groupings ──────────────────────────────────────────────────────────
 
 TICKER_REQUIRED_CLASSES = {
-    AssetClass.STOCK_BR,
-    AssetClass.STOCK_US,
-    AssetClass.FII,
+    AssetClass.STOCK,
     AssetClass.ETF,
     AssetClass.REIT,
-    AssetClass.BOND,
     AssetClass.CRYPTO,
 }
 TICKER_FORBIDDEN_CLASSES = {
@@ -82,10 +79,12 @@ class PhysicalDetails(BaseModel):
 class AssetRequest(BaseModel):
     asset_class: AssetClass
     financial_institution_id: str
+    country: str = Field(min_length=2, max_length=2)
     name: str = Field(min_length=1, max_length=255)
     currency: Currency
     ticker: str | None = Field(default=None, max_length=20)
     cnpj: str | None = Field(default=None, max_length=18)
+    current_price: Decimal | None = None
     notes: str | None = None
     external_id: str | None = Field(default=None, max_length=255)
     external_source: ExternalSource | None = None
@@ -161,10 +160,13 @@ class AssetOut(BaseModel):
     financial_institution_id: str
     financial_institution_name: str
     asset_class: str
+    country: str
     name: str
     ticker: str | None
     cnpj: str | None
     currency: str
+    current_price: float | None = None
+    price_updated_at: str | None = None
     notes: str | None
     external_id: str | None = None
     external_source: str | None = None
@@ -213,10 +215,13 @@ class AssetOut(BaseModel):
             financial_institution_id=asset.financial_institution_id,
             financial_institution_name=fi_name,
             asset_class=asset.asset_class.value,
+            country=asset.country,
             name=asset.name,
             ticker=asset.ticker,
             cnpj=asset.cnpj,
             currency=asset.currency.value,
+            current_price=float(asset.current_price) if asset.current_price is not None else None,
+            price_updated_at=asset.price_updated_at.isoformat() if asset.price_updated_at else None,
             notes=asset.notes,
             external_id=asset.external_id,
             external_source=asset.external_source.value if asset.external_source else None,
@@ -463,10 +468,13 @@ def create_asset(
         workspace_id=workspace_id,
         financial_institution_id=body.financial_institution_id,
         asset_class=body.asset_class,
+        country=body.country.upper(),
         name=body.name,
         ticker=body.ticker,
         cnpj=body.cnpj,
         currency=body.currency,
+        current_price=body.current_price,
+        price_updated_at=now if body.current_price is not None else None,
         notes=body.notes,
         external_id=body.external_id,
         external_source=body.external_source,
@@ -513,10 +521,17 @@ def update_asset(
 
     asset.financial_institution_id = body.financial_institution_id
     asset.asset_class = body.asset_class
+    asset.country = body.country.upper()
     asset.name = body.name
     asset.ticker = body.ticker
     asset.cnpj = body.cnpj
     asset.currency = body.currency
+    if body.current_price is not None and asset.current_price != body.current_price:
+        asset.current_price = body.current_price
+        asset.price_updated_at = datetime.now(timezone.utc)
+    elif body.current_price is None and asset.current_price is not None:
+        asset.current_price = None
+        asset.price_updated_at = None
     asset.notes = body.notes
     asset.external_id = body.external_id
     asset.external_source = body.external_source
@@ -541,6 +556,11 @@ class PositionOut(BaseModel):
     total_invested_brl: float
     total_received_brl: float
     currency: str
+    current_price: float | None = None
+    current_value: float | None = None
+    current_value_brl: float | None = None
+    variation: float | None = None
+    rentabilidade: float | None = None
 
 
 class AssetMovementLite(BaseModel):
@@ -584,6 +604,11 @@ def get_asset_position(
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
     pos = compute_position(db, asset_id)
+
+    def _f(k: str) -> float | None:
+        v = pos.get(k)
+        return float(v) if v is not None else None
+
     return PositionOut(
         asset_id=asset_id,
         quantity_held=float(pos["quantity_held"]),
@@ -592,6 +617,11 @@ def get_asset_position(
         total_invested_brl=float(pos["total_invested_brl"]),
         total_received_brl=float(pos["total_received_brl"]),
         currency=pos["currency"],
+        current_price=_f("current_price"),
+        current_value=_f("current_value"),
+        current_value_brl=_f("current_value_brl"),
+        variation=_f("variation"),
+        rentabilidade=_f("rentabilidade"),
     )
 
 

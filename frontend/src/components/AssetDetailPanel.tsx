@@ -101,8 +101,28 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
             <Kpi label={`Preço médio (${asset.currency})`} value={loading ? '…' : fmtNumber(position?.average_cost ?? null, 4)} />
             <Kpi label="Total investido (BRL)" money value={loading ? '…' : fmtMoney(position?.total_invested_brl ?? null, 'BRL')} />
             <Kpi label="Total recebido (BRL)" money value={loading ? '…' : fmtMoney(position?.total_received_brl ?? null, 'BRL')} />
-            <Kpi label="Preço atual" value="—" hint="depende de spec 09 (current_price)" />
-            <Kpi label="Variação" value="—" hint="depende de spec 09" />
+            <Kpi
+              label={`Preço atual (${asset.currency})`}
+              value={loading ? '…' : fmtMoney(position?.current_price ?? null, asset.currency)}
+              money
+              hint={asset.price_updated_at ? `atualizado em ${new Date(asset.price_updated_at).toLocaleDateString('pt-BR')}` : 'sem preço atual ainda — edite o ativo'}
+            />
+            <Kpi
+              label="Variação"
+              value={position?.variation == null ? '—' : `${position.variation >= 0 ? '+' : ''}${(position.variation * 100).toFixed(2)}%`}
+              tone={position?.variation == null ? undefined : position.variation >= 0 ? 'positive' : 'negative'}
+            />
+            <Kpi
+              label="Valor atual (asset ccy)"
+              value={position?.current_value == null ? '—' : fmtMoney(position.current_value, asset.currency)}
+              money
+            />
+            <Kpi
+              label="Rentabilidade"
+              value={position?.rentabilidade == null ? '—' : `${position.rentabilidade >= 0 ? '+' : ''}${(position.rentabilidade * 100).toFixed(2)}%`}
+              tone={position?.rentabilidade == null ? undefined : position.rentabilidade >= 0 ? 'positive' : 'negative'}
+              hint="Variação + proventos recebidos"
+            />
           </div>
 
           {/* Recent */}
@@ -175,11 +195,24 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
   )
 }
 
-function Kpi({ label, value, money, hint }: { label: string; value: string; money?: boolean; hint?: string }) {
+function Kpi({
+  label, value, money, hint, tone,
+}: {
+  label: string
+  value: string
+  money?: boolean
+  hint?: string
+  tone?: 'positive' | 'negative'
+}) {
+  const valueCls = value === '—' || value === '…'
+    ? 'text-gray-300 dark:text-gray-700'
+    : tone === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
+    : tone === 'negative' ? 'text-red-500 dark:text-red-400'
+    : 'text-gray-900 dark:text-white'
   return (
     <div className="px-3 py-2 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800" title={hint}>
       <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500 dark:text-gray-400">{label}</div>
-      <div className={`mt-1 text-[14px] font-semibold tnum ${value === '—' ? 'text-gray-300 dark:text-gray-700' : 'text-gray-900 dark:text-white'}`}>
+      <div className={`mt-1 text-[14px] font-semibold tnum ${valueCls}`}>
         {money ? <span className="money">{value}</span> : value}
       </div>
     </div>

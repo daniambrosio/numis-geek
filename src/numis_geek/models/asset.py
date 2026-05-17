@@ -12,20 +12,17 @@ from numis_geek.models.external import ExternalSource
 
 
 class AssetClass(str, enum.Enum):
-    STOCK_BR = "STOCK_BR"
-    STOCK_US = "STOCK_US"
-    FII = "FII"
-    ETF = "ETF"
+    STOCK = "STOCK"
     REIT = "REIT"
-    BOND = "BOND"
+    ETF = "ETF"
     FIXED_INCOME = "FIXED_INCOME"
     FUND = "FUND"
     CRYPTO = "CRYPTO"
     REAL_ESTATE = "REAL_ESTATE"
     VEHICLE = "VEHICLE"
-    PRIVATE_PENSION = "PRIVATE_PENSION"
-    FGTS = "FGTS"
     CASH = "CASH"
+    FGTS = "FGTS"
+    PRIVATE_PENSION = "PRIVATE_PENSION"
 
 
 class FixedIncomeIndexer(str, enum.Enum):
@@ -43,10 +40,13 @@ class Asset(Base):
     workspace_id: Mapped[str] = mapped_column(String(36), ForeignKey("workspace.id"), nullable=False)
     financial_institution_id: Mapped[str] = mapped_column(String(36), ForeignKey("financial_institution.id"), nullable=False)
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
+    country: Mapped[str] = mapped_column(String(2), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
     cnpj: Mapped[str | None] = mapped_column(String(18), nullable=True)
     currency: Mapped[Currency] = mapped_column(Enum(Currency), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    price_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

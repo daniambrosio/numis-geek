@@ -44,6 +44,11 @@ class Position(TypedDict):
     total_invested_brl: Decimal
     total_received_brl: Decimal
     currency: str
+    current_price: Decimal | None
+    current_value: Decimal | None
+    current_value_brl: Decimal | None
+    variation: Decimal | None       # (current - avg) / avg, native currency
+    rentabilidade: Decimal | None   # (gain + distributions) / cost, BRL terms
 
 
 _BASIS_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION}
@@ -143,6 +148,25 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         fx = d.fx_rate or Decimal("1")
         total_received_brl += net * fx
 
+    # ── Derived figures from current_price (when set) ─────────────────────
+    current_price = asset.current_price if asset and asset.current_price is not None else None
+    current_value: Decimal | None = None
+    current_value_brl: Decimal | None = None
+    variation: Decimal | None = None
+    rentabilidade: Decimal | None = None
+    if current_price is not None and running_qty != 0:
+        current_value = running_qty * current_price
+        # For BRL conversion when the asset is in USD, we'd need a PTAX rate.
+        # Spec 13 lands PTAX — for now, USD assets get current_value_brl = None.
+        # BRL assets: current_value_brl == current_value.
+        if currency == "BRL":
+            current_value_brl = current_value
+        if average_cost > 0:
+            variation = (current_price - average_cost) / average_cost
+        if total_invested_brl > 0 and current_value_brl is not None:
+            paper_gain_brl = current_value_brl - total_invested_brl
+            rentabilidade = (paper_gain_brl + total_received_brl) / total_invested_brl
+
     return Position(
         quantity_held=running_qty,
         average_cost=average_cost,
@@ -150,4 +174,9 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         total_invested_brl=total_invested_brl,
         total_received_brl=total_received_brl,
         currency=currency,
+        current_price=current_price,
+        current_value=current_value,
+        current_value_brl=current_value_brl,
+        variation=variation,
+        rentabilidade=rentabilidade,
     )

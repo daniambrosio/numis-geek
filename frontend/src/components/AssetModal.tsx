@@ -3,25 +3,22 @@ import { Link } from 'react-router-dom'
 import { api, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
-  STOCK_BR: 'Ação BR',
-  STOCK_US: 'Ação US',
-  FII: 'FII',
+  STOCK: 'Ação',
+  REIT: 'FII / REIT',
   ETF: 'ETF',
-  REIT: 'REIT',
-  BOND: 'Bond',
   FIXED_INCOME: 'Renda Fixa',
   FUND: 'Fundo',
   CRYPTO: 'Cripto',
   REAL_ESTATE: 'Imóvel',
   VEHICLE: 'Veículo',
-  PRIVATE_PENSION: 'Previdência Privada',
-  FGTS: 'FGTS',
   CASH: 'Dinheiro',
+  FGTS: 'FGTS',
+  PRIVATE_PENSION: 'Previdência',
 }
 
 // PRIVATE_PENSION/FGTS/CASH behave like ticker classes but ticker is optional
 // (per spec 07a — Notion has no ticker for those rows).
-const TICKER_REQUIRED: AssetClass[] = ['STOCK_BR', 'STOCK_US', 'FII', 'ETF', 'REIT', 'BOND', 'CRYPTO']
+const TICKER_REQUIRED: AssetClass[] = ['STOCK', 'ETF', 'REIT', 'CRYPTO']
 const TICKER_FORBIDDEN: AssetClass[] = ['FIXED_INCOME', 'REAL_ESTATE', 'VEHICLE']
 const NEEDS_FIXED_INCOME: AssetClass[] = ['FIXED_INCOME']
 const NEEDS_PHYSICAL: AssetClass[] = ['REAL_ESTATE', 'VEHICLE']
@@ -46,12 +43,14 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
   const isFiClass = initial && NEEDS_FIXED_INCOME.includes(initial.asset_class)
   const isPhysicalClass = initial && NEEDS_PHYSICAL.includes(initial.asset_class)
 
-  const [assetClass, setAssetClass] = useState<AssetClass>(initial?.asset_class ?? 'STOCK_BR')
+  const [assetClass, setAssetClass] = useState<AssetClass>(initial?.asset_class ?? 'STOCK')
+  const [country, setCountry] = useState<string>(initial?.country ?? 'BR')
   const [name, setName] = useState(initial?.name ?? '')
   const [fiId, setFiId] = useState(initial?.financial_institution_id ?? (institutions[0]?.id ?? ''))
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? 'BRL')
   const [ticker, setTicker] = useState(initial?.ticker ?? '')
   const [cnpj, setCnpj] = useState(initial?.cnpj ?? '')
+  const [currentPrice, setCurrentPrice] = useState<string>(initial?.current_price != null ? String(initial.current_price) : '')
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [workspaceId, setWorkspaceId] = useState(
     initial?.workspace_id
@@ -118,11 +117,13 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
     try {
       const payload: AssetRequest = {
         asset_class: assetClass,
+        country: country.toUpperCase(),
         financial_institution_id: fiId,
         name: name.trim(),
         currency,
         ticker: tickerForbidden ? null : (ticker.trim() || null),
         cnpj: isFund ? (cnpj.trim() || null) : null,
+        current_price: currentPrice.trim() === '' ? null : parseFloat(currentPrice),
         notes: notes.trim() || null,
       }
       if (showWorkspacePicker && workspaceId) {
@@ -247,7 +248,7 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Moeda</label>
               <select
@@ -258,6 +259,30 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
                 <option value="BRL">BRL</option>
                 <option value="USD">USD</option>
               </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">País</label>
+              <select
+                value={country}
+                onChange={e => setCountry(e.target.value)}
+                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="BR">🇧🇷 Brasil</option>
+                <option value="US">🇺🇸 EUA</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+                Preço atual <span className="text-xs text-gray-400">(opcional)</span>
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={currentPrice}
+                onChange={e => setCurrentPrice(e.target.value)}
+                placeholder="0,00"
+                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
             </div>
           </div>
 
