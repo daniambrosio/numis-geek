@@ -6,3 +6,23 @@ body {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Tabular numerals for monetary / numeric columns. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Privacy mode: blur every monetary span. Hover unblurs for a quick peek. */
+body.privacy .money {
+  filter: blur(6px);
+  transition: filter 120ms ease;
+}
+body.privacy .money:hover {
+  filter: none;
+}
+
+/* Comfort mode: bump tiny text up a notch for mobile reading. */
+body.comfort .text-\[10px\] { font-size: 11px; }
+body.comfort .text-\[11px\] { font-size: 12px; }
+body.comfort .text-xs       { font-size: 13px; line-height: 1.1rem; }
+body.comfort .text-\[13px\] { font-size: 14px; }

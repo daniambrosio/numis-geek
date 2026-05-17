@@ -219,9 +219,9 @@ export default function Lancamentos() {
                         ? <span className="text-gray-700 dark:text-gray-300">{l.nota_negociacao_number}</span>
                         : <span className="text-gray-300 dark:text-gray-600">—</span>}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs">{fmtNumber(l.quantity)}</td>
-                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs">{fmtNumber(l.unit_price)}</td>
-                    <td className="px-4 py-3 text-right text-gray-900 dark:text-white font-medium">{fmtMoney(l.net_amount, l.currency)}</td>
+                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs tnum"><span className="money">{fmtNumber(l.quantity)}</span></td>
+                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs tnum"><span className="money">{fmtNumber(l.unit_price)}</span></td>
+                    <td className="px-4 py-3 text-right text-gray-900 dark:text-white font-medium tnum"><span className="money">{fmtMoney(l.net_amount, l.currency)}</span></td>
                     <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">{l.currency}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 justify-end">
