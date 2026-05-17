@@ -1,4 +1,4 @@
-import { Search } from 'lucide-react'
+import { Search, ArrowUpRight, ArrowDownRight } from 'lucide-react'
 import { KLASS, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
 
 /* ────────────────────────────────────────────────────────────
@@ -229,6 +229,36 @@ export function CcyPill({ ccy, className = '' }: { ccy: 'BRL' | 'USD'; className
       } ${className}`}
     >
       {ccy}
+    </span>
+  )
+}
+
+export function SectionTitle({
+  children,
+  action,
+}: {
+  children: React.ReactNode
+  action?: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{children}</h3>
+      {action}
+    </div>
+  )
+}
+
+export function Trend({ value, suffix }: { value: number; suffix?: string }) {
+  const positive = value >= 0
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[11px] font-medium tnum ${
+        positive ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'
+      }`}
+    >
+      {positive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+      {(positive ? '+' : '') + (value * 100).toFixed(2)}%
+      {suffix && <span className="text-gray-500 dark:text-gray-400 ml-0.5">{suffix}</span>}
     </span>
   )
 }
