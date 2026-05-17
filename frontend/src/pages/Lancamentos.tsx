@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Plus } from 'lucide-react'
 import {
   api,
   type AssetOut,
+  type FinancialInstitutionOut,
   type LancamentoOut,
   type LancamentoRequest,
   type LancamentoType,
@@ -11,41 +13,51 @@ import {
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import LancamentoModal from '../components/LancamentoModal'
+import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
+import {
+  Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
+  QuickAddBar, TypeBadge, CcyPill,
+} from '../components/ui'
+import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 
-const ALL_TYPES: LancamentoType[] = [
-  'COMPRA',
-  'VENDA',
-  'DIVIDENDO',
-  'JUROS',
-  'JCP',
-  'COME_COTAS',
-  'BONIFICACAO',
-  'SUBSCRICAO',
-  'RESGATE_TOTAL',
+const TYPE_ORDER: LancamentoType[] = [
+  'COMPRA', 'VENDA', 'BONIFICACAO', 'SUBSCRICAO', 'COME_COTAS', 'RESGATE_TOTAL',
+  'DIVIDENDO', 'JUROS', 'JCP',
 ]
 
-function typeBadge(t: LancamentoType): string {
-  const map: Record<LancamentoType, string> = {
-    COMPRA: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-    VENDA: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400',
-    DIVIDENDO: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-    JUROS: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
-    JCP: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
-    COME_COTAS: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
-    BONIFICACAO: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
-    SUBSCRICAO: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-    RESGATE_TOTAL: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400',
-  }
-  return map[t]
-}
+const TYPE_OPTS = TYPE_ORDER.map(t => ({
+  id: t,
+  label: LANCAMENTO_TYPE_LABELS[t],
+  color: lanTypeColor(t),
+}))
 
-function fmtMoney(n: number, currency: string) {
-  return n.toLocaleString('pt-BR', { style: 'currency', currency })
-}
+const MONTH_NAMES = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+]
 
-function fmtNumber(n: number | null) {
+function fmtMoney(n: number | null | undefined, currency: string, opts: { sign?: boolean; compact?: boolean } = {}) {
   if (n == null) return '—'
-  return n.toLocaleString('pt-BR', { maximumFractionDigits: 8 })
+  const v = opts.sign ? Math.abs(n) : n
+  const sign = opts.sign && n > 0 ? '+ ' : opts.sign && n < 0 ? '− ' : ''
+  if (opts.compact && Math.abs(v) >= 1000) {
+    return sign + v.toLocaleString('pt-BR', { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 })
+  }
+  return sign + v.toLocaleString('pt-BR', { style: 'currency', currency })
+}
+
+function fmtNum(n: number | null | undefined, digits = 8) {
+  if (n == null) return '—'
+  return n.toLocaleString('pt-BR', { maximumFractionDigits: digits })
+}
+
+function fmtBRL(n: number, opts: { sign?: boolean; compact?: boolean } = {}) {
+  return fmtMoney(n, 'BRL', opts)
+}
+
+function fmtDateShort(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
 
 export default function Lancamentos() {
@@ -53,51 +65,118 @@ export default function Lancamentos() {
   const [me, setMe] = useState<UserOut | null>(null)
   const [items, setItems] = useState<LancamentoOut[]>([])
   const [assets, setAssets] = useState<AssetOut[]>([])
+  const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<LancamentoOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<LancamentoOut | null>(null)
+  const [selected, setSelected] = useState<LancamentoOut | null>(null)
 
-  const [assetFilter, setAssetFilter] = useState('')
-  const [typeFilter, setTypeFilter] = useState<LancamentoType | ''>('')
+  // Filters
+  const [search, setSearch] = useState('')
+  const [typesSel, setTypesSel] = useState<string[]>([])
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [includeInactive, setIncludeInactive] = useState(false)
 
   useEffect(() => {
-    api.me()
-      .then(u => setMe(u))
-      .catch(() => navigate('/login'))
+    api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
 
   useEffect(() => {
     if (!me) return
     setLoading(true)
     setLoadError('')
+    const lanParams = {
+      type: (typesSel.length === 1 ? (typesSel[0] as LancamentoType) : undefined),
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      include_inactive: includeInactive,
+      page_size: 200,
+    }
+
     Promise.all([
-      api.listLancamentos({
-        asset_id: assetFilter || undefined,
-        type: typeFilter || undefined,
-        from: fromDate || undefined,
-        to: toDate || undefined,
-        include_inactive: includeInactive,
-        page_size: 200,
-      }),
+      api.listLancamentos({ ...lanParams, page: 1 }),
       api.listAssets({ include_inactive: true }),
+      api.listFinancialInstitutions(),
     ])
-      .then(([page, as]) => {
-        setItems(page.items)
+      .then(async ([firstPage, as, fis]) => {
         setAssets(as)
+        setInstitutions(fis)
+        // Fetch remaining pages if total exceeds first page (backend caps page_size at 200).
+        const totalPages = Math.ceil(firstPage.total / firstPage.page_size)
+        if (totalPages <= 1) {
+          setItems(firstPage.items)
+          return
+        }
+        const rest = await Promise.all(
+          Array.from({ length: totalPages - 1 }, (_, i) =>
+            api.listLancamentos({ ...lanParams, page: i + 2 }),
+          ),
+        )
+        const all = firstPage.items.concat(...rest.map(p => p.items))
+        setItems(all)
       })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar.'))
       .finally(() => setLoading(false))
-  }, [me, assetFilter, typeFilter, fromDate, toDate, includeInactive])
+  }, [me, typesSel, fromDate, toDate, includeInactive])
+
+  const assetById = useMemo(() => {
+    const m = new Map<string, AssetOut>()
+    for (const a of assets) m.set(a.id, a)
+    return m
+  }, [assets])
+  const fiById = useMemo(() => {
+    const m = new Map<string, FinancialInstitutionOut>()
+    for (const fi of institutions) m.set(fi.id, fi)
+    return m
+  }, [institutions])
+
+  // Client-side filters: multi-type, search.
+  const filtered = useMemo(() => {
+    let xs = items
+    if (typesSel.length > 1) xs = xs.filter(x => typesSel.includes(x.type))
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      xs = xs.filter(l => {
+        const a = assetById.get(l.asset_id)
+        return (a?.ticker || '').toLowerCase().includes(q) || (a?.name || '').toLowerCase().includes(q)
+      })
+    }
+    return xs
+  }, [items, typesSel, search, assetById])
+
+  const sorted = useMemo(
+    () => [...filtered].sort((a, b) => b.event_date.localeCompare(a.event_date)),
+    [filtered],
+  )
+
+  // Group by Year-Month
+  const grouped = useMemo(() => {
+    const m = new Map<string, LancamentoOut[]>()
+    for (const it of sorted) {
+      const ym = it.event_date.slice(0, 7) // YYYY-MM
+      if (!m.has(ym)) m.set(ym, [])
+      m.get(ym)!.push(it)
+    }
+    return Array.from(m.entries()).map(([ym, arr]) => ({ ym, items: arr }))
+  }, [sorted])
+
+  const stats = useMemo(() => {
+    const totalNet = sorted.reduce((s, l) => {
+      const fx = Number(l.fx_rate) || 1
+      return s + Number(l.net_amount) * fx
+    }, 0)
+    const uniqAssets = new Set(sorted.map(l => l.asset_id)).size
+    return { totalNet, count: sorted.length, uniqAssets }
+  }, [sorted])
 
   async function handleSave(data: LancamentoRequest) {
     if (editing) {
       const updated = await api.updateLancamento(editing.id, data)
       setItems(prev => prev.map(l => l.id === updated.id ? updated : l))
+      if (selected?.id === updated.id) setSelected(updated)
     } else {
       const created = await api.createLancamento(data)
       setItems(prev => [created, ...prev])
@@ -108,8 +187,10 @@ export default function Lancamentos() {
     await api.deactivateLancamento(l.id)
     if (includeInactive) {
       setItems(prev => prev.map(x => x.id === l.id ? { ...x, is_active: false } : x))
+      if (selected?.id === l.id) setSelected({ ...l, is_active: false })
     } else {
       setItems(prev => prev.filter(x => x.id !== l.id))
+      if (selected?.id === l.id) setSelected(null)
     }
     setConfirmDeactivate(null)
   }
@@ -118,143 +199,139 @@ export default function Lancamentos() {
 
   return (
     <AppLayout user={me}>
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Lançamentos</h1>
-          <button
-            onClick={() => { setEditing(undefined); setModalOpen(true) }}
-            disabled={assets.length === 0}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-            title={assets.length === 0 ? 'Cadastre um ativo antes' : undefined}
-          >
-            + Novo Lançamento
-          </button>
-        </div>
+      <div className="space-y-6">
+        <PageHeader
+          title="Lançamentos"
+          count={stats.count}
+          countLabel={`movimentações · ${stats.uniqAssets} ${stats.uniqAssets === 1 ? 'ativo' : 'ativos'}`}
+          action={
+            <button
+              onClick={() => { setEditing(undefined); setModalOpen(true) }}
+              disabled={assets.length === 0}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Novo Lançamento
+            </button>
+          }
+        />
 
-        <div className="flex flex-wrap gap-3 mb-4 items-end">
-          <div className="min-w-[220px]">
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Ativo</label>
-            <select
-              value={assetFilter}
-              onChange={e => setAssetFilter(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">Todos</option>
-              {assets.map(a => (
-                <option key={a.id} value={a.id}>
-                  {a.ticker ? `${a.ticker} — ` : ''}{a.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Tipo</label>
-            <select
-              value={typeFilter}
-              onChange={e => setTypeFilter(e.target.value as LancamentoType | '')}
-              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">Todos</option>
-              {ALL_TYPES.map(t => <option key={t} value={t}>{LANCAMENTO_TYPE_LABELS[t]}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">De</label>
+        <QuickAddBar
+          placeholder='Lançamento rápido — ex: "compra 100 PETR4 a 38,90 hoje" · em breve'
+          onClick={() => { setEditing(undefined); setModalOpen(true) }}
+        />
+
+        <Card padding="p-3" className="space-y-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Ativo (ticker ou nome)…"
+              className="w-64"
+            />
             <input
               type="date"
               value={fromDate}
               onChange={e => setFromDate(e.target.value)}
-              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="h-8 px-2 text-[12px] rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-indigo-500"
+              title="De"
             />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Até</label>
+            <span className="text-[10px] text-gray-500">→</span>
             <input
               type="date"
               value={toDate}
               onChange={e => setToDate(e.target.value)}
-              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="h-8 px-2 text-[12px] rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-indigo-500"
+              title="Até"
             />
+            <div className="flex-1" />
+            <ToggleSwitch on={includeInactive} onChange={setIncludeInactive} label="Incluir inativos" />
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 pb-1.5">
-            <input
-              type="checkbox"
-              checked={includeInactive}
-              onChange={e => setIncludeInactive(e.target.checked)}
-              className="rounded"
-            />
-            Mostrar inativos
-          </label>
-        </div>
+          <div className="space-y-2 pt-3 border-t border-gray-200 dark:border-gray-800">
+            <FilterGroup label="Tipo">
+              <MultiChips options={TYPE_OPTS} selected={typesSel} onChange={setTypesSel} />
+            </FilterGroup>
+          </div>
+          <div className="flex items-center gap-3 pt-3 border-t border-gray-200 dark:border-gray-800 text-[11px] text-gray-500 dark:text-gray-400">
+            <span><span className="tnum">{stats.count}</span> lançamentos</span>
+            <span>·</span>
+            <span>
+              Net total ·{' '}
+              <span className={`tnum money font-medium ${stats.totalNet >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
+                {fmtBRL(stats.totalNet, { sign: true, compact: true })}
+              </span>
+            </span>
+          </div>
+        </Card>
 
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-          {loading ? (
-            <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">Carregando…</div>
-          ) : loadError ? (
-            <div className="p-12 text-center text-sm text-red-500">{loadError}</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-800">
-                  {['Data', 'Tipo', 'Ativo', 'Nota', 'Quantidade', 'Preço', 'Líquido', 'Moeda', ''].map((h, i) => (
-                    <th key={i} className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">{h}</th>
+        {loadError ? (
+          <Card>
+            <div className="text-sm text-red-600 dark:text-red-400 text-center py-6">{loadError}</div>
+          </Card>
+        ) : loading ? (
+          <Card>
+            <div className="text-sm text-gray-400 dark:text-gray-600 text-center py-12">Carregando…</div>
+          </Card>
+        ) : sorted.length === 0 ? (
+          <Card>
+            <div className="text-sm text-gray-400 dark:text-gray-600 text-center py-12">Nenhum lançamento encontrado.</div>
+          </Card>
+        ) : (
+          <Card padding="p-3">
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                    <th className="text-left font-medium px-2 py-2">Data</th>
+                    <th className="text-left font-medium px-2 py-2">Tipo</th>
+                    <th className="text-left font-medium px-2 py-2">Ativo</th>
+                    <th className="text-right font-medium px-2 py-2">Qtd</th>
+                    <th className="text-right font-medium px-2 py-2">Preço unit.</th>
+                    <th className="text-right font-medium px-2 py-2">Net</th>
+                    <th className="text-center font-medium px-2 py-2 w-12">Moeda</th>
+                    <th className="text-right font-medium px-2 py-2">FX</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {grouped.map(g => (
+                    <Fragment key={g.ym}>
+                      <tr>
+                        <td colSpan={8} className="p-0">
+                          <MonthHeader ym={g.ym} />
+                        </td>
+                      </tr>
+                      {g.items.map(l => (
+                        <Row
+                          key={l.id}
+                          lan={l}
+                          asset={assetById.get(l.asset_id) ?? null}
+                          onClick={() => setSelected(l)}
+                        />
+                      ))}
+                    </Fragment>
                   ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {items.map(l => (
-                  <tr key={l.id} className={`hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors ${l.is_active ? '' : 'opacity-60'}`}>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{l.event_date}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${typeBadge(l.type)}`}>
-                        {l.type_label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-900 dark:text-white">
-                      {l.asset_ticker && <span className="font-mono text-xs text-gray-500 dark:text-gray-400 mr-2">{l.asset_ticker}</span>}
-                      <span className="font-medium">{l.asset_name}</span>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs">
-                      {l.nota_negociacao_number
-                        ? <span className="text-gray-700 dark:text-gray-300">{l.nota_negociacao_number}</span>
-                        : <span className="text-gray-300 dark:text-gray-600">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs tnum"><span className="money">{fmtNumber(l.quantity)}</span></td>
-                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono text-xs tnum"><span className="money">{fmtNumber(l.unit_price)}</span></td>
-                    <td className="px-4 py-3 text-right text-gray-900 dark:text-white font-medium tnum"><span className="money">{fmtMoney(l.net_amount, l.currency)}</span></td>
-                    <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">{l.currency}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2 justify-end">
-                        <button
-                          onClick={() => { setEditing(l); setModalOpen(true) }}
-                          className="px-3 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-                        >
-                          Editar
-                        </button>
-                        {l.is_active && (
-                          <button
-                            onClick={() => setConfirmDeactivate(l)}
-                            className="px-3 py-1 text-xs rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                          >
-                            Desativar
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {items.length === 0 && (
-                  <tr>
-                    <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
-                      Nenhum lançamento encontrado.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
       </div>
+
+      {selected && (
+        <LancamentoDetailPanel
+          key={selected.id}
+          lancamento={selected}
+          asset={assetById.get(selected.asset_id) ?? null}
+          fi={
+            (() => {
+              const a = assetById.get(selected.asset_id)
+              return a ? fiById.get(a.financial_institution_id) ?? null : null
+            })()
+          }
+          onClose={() => setSelected(null)}
+          onEdit={() => { setEditing(selected); setModalOpen(true) }}
+          onDeactivate={() => setConfirmDeactivate(selected)}
+        />
+      )}
 
       {modalOpen && (
         <LancamentoModal
@@ -266,11 +343,12 @@ export default function Lancamentos() {
       )}
 
       {confirmDeactivate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
             <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar lançamento?</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-              <strong>{confirmDeactivate.type_label}</strong> de <strong>{confirmDeactivate.asset_name}</strong> será desativado.
+              <strong>{confirmDeactivate.type_label}</strong> de{' '}
+              <strong>{confirmDeactivate.asset_name}</strong> será desativado.
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
@@ -284,5 +362,69 @@ export default function Lancamentos() {
         </div>
       )}
     </AppLayout>
+  )
+}
+
+function MonthHeader({ ym }: { ym: string }) {
+  const [y, m] = ym.split('-')
+  const label = `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`
+  return (
+    <div className="px-2 py-2 mt-2 first:mt-0 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50/60 dark:bg-gray-900/40 rounded">
+      {label}
+    </div>
+  )
+}
+
+function Row({
+  lan: l, asset, onClick,
+}: {
+  lan: LancamentoOut
+  asset: AssetOut | null
+  onClick: () => void
+}) {
+  const klass = asset ? collapsedOf(asset.asset_class) : null
+  const klassColor = klass ? KLASS[klass].color : '#94a3b8'
+  const inactive = !l.is_active
+  const netTone =
+    l.net_amount > 0 ? 'text-emerald-500 dark:text-emerald-400'
+    : l.net_amount < 0 ? 'text-red-500 dark:text-red-400'
+    : 'text-gray-500 dark:text-gray-400'
+
+  return (
+    <tr
+      onClick={onClick}
+      className={`border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer ${
+        inactive ? 'opacity-60' : ''
+      }`}
+    >
+      <td className="px-2 py-2 tnum text-gray-500 dark:text-gray-400">{fmtDateShort(l.event_date)}</td>
+      <td className="px-2"><TypeBadge code={l.type} label={l.type_label} /></td>
+      <td className="px-2">
+        <div className="flex items-center gap-2">
+          <span className="w-1 h-5 rounded-full shrink-0" style={{ background: klassColor }} />
+          <div className="min-w-0">
+            <div className={`font-mono font-medium text-gray-900 dark:text-white ${inactive ? 'line-through' : ''}`}>
+              {asset?.ticker || asset?.name || '—'}
+            </div>
+            {asset?.ticker && asset?.name && (
+              <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate max-w-[260px]">{asset.name}</div>
+            )}
+          </div>
+        </div>
+      </td>
+      <td className="px-2 text-right tnum text-gray-700 dark:text-gray-300">{fmtNum(l.quantity)}</td>
+      <td className="px-2 text-right tnum money text-gray-500 dark:text-gray-400">
+        {l.unit_price != null ? fmtMoney(l.unit_price, l.currency) : '—'}
+      </td>
+      <td className="px-2 text-right">
+        <span className={`tnum money font-medium ${netTone}`}>{fmtMoney(l.net_amount, l.currency, { sign: true })}</span>
+      </td>
+      <td className="px-2 text-center">
+        <CcyPill ccy={l.currency} />
+      </td>
+      <td className="px-2 text-right tnum text-[11px] text-gray-400 dark:text-gray-600">
+        {l.currency === 'USD' ? `R$ ${Number(l.fx_rate).toFixed(4)}` : '—'}
+      </td>
+    </tr>
   )
 }

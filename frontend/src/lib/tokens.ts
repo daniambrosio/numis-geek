@@ -82,6 +82,24 @@ export const FI_PALETTE: Record<string, FIToken> = {
   fix:          { color: '#94a3b8', initials: 'FX' },
 }
 
+// Lançamento type palette — mirror prototype's typeOpts. Types DIVIDENDO,
+// JUROS, JCP migrate to Distribution in spec 08.
+export const LAN_TYPE_COLORS: Record<string, string> = {
+  COMPRA: '#3b82f6',         // blue
+  VENDA: '#ef4444',          // red
+  BONIFICACAO: '#22c55e',    // green
+  SUBSCRICAO: '#8b5cf6',     // violet
+  COME_COTAS: '#f59e0b',     // amber
+  RESGATE_TOTAL: '#14b8a6',  // teal
+  DIVIDENDO: '#a78bfa',      // violet light (→ Distribution.DIVIDEND)
+  JUROS: '#06b6d4',          // cyan (→ Distribution.INTEREST)
+  JCP: '#10b981',            // emerald (→ Distribution.JCP)
+}
+
+export function lanTypeColor(type: string): string {
+  return LAN_TYPE_COLORS[type] ?? '#94a3b8'
+}
+
 export function fiTokenFor(slug: string | null | undefined, shortName: string): FIToken {
   if (slug && FI_PALETTE[slug]) return FI_PALETTE[slug]
   // Fallback — derive initials from short name.

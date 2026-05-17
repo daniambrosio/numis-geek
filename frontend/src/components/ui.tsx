@@ -1,5 +1,5 @@
-import { Search, ArrowUpRight, ArrowDownRight } from 'lucide-react'
-import { KLASS, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
+import { Search, ArrowUpRight, ArrowDownRight, Sparkles, CornerDownLeft } from 'lucide-react'
+import { KLASS, fiTokenFor, lanTypeColor, type CollapsedClassCode } from '../lib/tokens'
 
 /* ────────────────────────────────────────────────────────────
  * Reusable UI primitives — mirror prototype's components.
@@ -229,6 +229,40 @@ export function CcyPill({ ccy, className = '' }: { ccy: 'BRL' | 'USD'; className
       } ${className}`}
     >
       {ccy}
+    </span>
+  )
+}
+
+export function QuickAddBar({
+  placeholder,
+  onClick,
+}: {
+  placeholder: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 hover:border-indigo-400 dark:hover:border-indigo-500/50 transition-colors text-left group"
+    >
+      <Sparkles className="w-4 h-4 text-indigo-500 dark:text-indigo-400 shrink-0" />
+      <span className="text-[13px] text-gray-400 dark:text-gray-500 truncate flex-1">{placeholder}</span>
+      <kbd className="inline-flex items-center gap-0.5 rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 px-1.5 py-0.5 text-[10px] font-mono text-gray-400 dark:text-gray-500">
+        <CornerDownLeft className="w-2.5 h-2.5" />
+      </kbd>
+    </button>
+  )
+}
+
+export function TypeBadge({ code, label }: { code: string; label: string }) {
+  const color = lanTypeColor(code)
+  return (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider"
+      style={{ background: `${color}26`, color }}
+    >
+      {label}
     </span>
   )
 }
