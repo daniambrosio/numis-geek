@@ -14,7 +14,7 @@ from numis_geek.api.deps import get_db
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401
 from numis_geek.models.asset import Asset, AssetClass
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import User, UserRole
@@ -76,11 +76,25 @@ def seed():
     )
     db.add(fi)
 
+    # Spec 10: every asset needs an investment account
+    account = Account(
+        id=str(uuid.uuid4()),
+        workspace_id=ws.id,
+        financial_institution_id=fi.id,
+        name="Test investment account",
+        account_type=AccountType.investment,
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(account)
+
     # BRL stock asset for the qty / avg-cost test
     asset_brl = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws.id,
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Petrobras PN",
@@ -94,7 +108,7 @@ def seed():
     asset_usd = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws.id,
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Apple",
@@ -176,11 +190,12 @@ def test_weighted_average_cost(client, seed):
     # New asset to keep things isolated
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_id"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Itaú",
@@ -275,11 +290,12 @@ def test_empty_asset_position(client, seed):
     # Create a brand-new asset with no lançamentos
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_id"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Zero Asset",
@@ -308,11 +324,12 @@ def test_resgate_total_resets_cost_basis(client, seed):
     yield avg_cost = 32 (not a weighted blend with the old 25)."""
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_id"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="PRIO Petroleo",
@@ -360,11 +377,12 @@ def test_fractional_sale_below_tolerance_resets(client, seed):
     trigger a position reset just as RESGATE_TOTAL would."""
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_id"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.CRYPTO,
         country="BR",
         name="Bitcoin",
@@ -410,11 +428,12 @@ def test_non_cotado_position_runs_basis_only(client, seed):
     quantity. running_qty = 0; running_basis_brl = 5000."""
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_id"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.FIXED_INCOME,
         country="BR",
         name="CDB BTG 110% CDI 2028",

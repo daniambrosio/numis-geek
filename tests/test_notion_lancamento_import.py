@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401 — registers models on Base.metadata
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
@@ -79,11 +79,26 @@ def seed():
         updated_at=now,
     ))
 
+    # Investment account at the FI (spec 10 requires it for Asset.account_id)
+    account_id = str(uuid.uuid4())
+    db.add(Account(
+        id=account_id,
+        workspace_id=ws_id,
+        financial_institution_id=fi_id,
+        name="XP Inv Notion",
+        account_type=AccountType.investment,
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    ))
+    db.commit()
+
     # Three Notion-sourced assets, matching the fixture's asset_external_id values.
     asset_petr = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_id,
-        financial_institution_id=fi_id,
+        account_id=account_id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Petrobras PN",
@@ -98,7 +113,7 @@ def seed():
     asset_fund = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_id,
-        financial_institution_id=fi_id,
+        account_id=account_id,
         asset_class=AssetClass.FUND,
         country="BR",
         name="Fundo Multi XP",
@@ -113,7 +128,7 @@ def seed():
     asset_cdb = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_id,
-        financial_institution_id=fi_id,
+        account_id=account_id,
         asset_class=AssetClass.FIXED_INCOME,
         country="BR",
         name="CDB BTG 110% CDI 2028",

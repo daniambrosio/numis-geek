@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
+import { api, type AccountOut, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
   STOCK: 'Ação',
@@ -47,6 +47,12 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
   const [country, setCountry] = useState<string>(initial?.country ?? 'BR')
   const [name, setName] = useState(initial?.name ?? '')
   const [fiId, setFiId] = useState(initial?.financial_institution_id ?? (institutions[0]?.id ?? ''))
+  // Spec 10: resolve account from (workspace, FI).
+  const [accounts, setAccounts] = useState<AccountOut[]>([])
+  useEffect(() => { api.listAccounts().then(setAccounts).catch(() => {}) }, [])
+  const accountForFi = useMemo(() => {
+    return accounts.find(a => a.financial_institution_id === fiId && a.account_type === 'investment') ?? null
+  }, [accounts, fiId])
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? 'BRL')
   const [ticker, setTicker] = useState(initial?.ticker ?? '')
   const [cnpj, setCnpj] = useState(initial?.cnpj ?? '')
@@ -115,10 +121,15 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
     setError('')
     setSaving(true)
     try {
+      if (!accountForFi) {
+        setError('Nenhuma conta de investimento encontrada nessa FI.')
+        setSaving(false)
+        return
+      }
       const payload: AssetRequest = {
         asset_class: assetClass,
         country: country.toUpperCase(),
-        financial_institution_id: fiId,
+        account_id: accountForFi.id,
         name: name.trim(),
         currency,
         ticker: tickerForbidden ? null : (ticker.trim() || null),

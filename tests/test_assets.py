@@ -122,28 +122,47 @@ def seed():
     db.refresh(admin_a); db.refresh(member_a); db.refresh(admin_b); db.refresh(sysadmin)
     db.refresh(fi_xp); db.refresh(fi_avenue); db.refresh(fi_inactive); db.refresh(fi_particular)
 
-    admin_token_a = AuthService(db).login("ast_admin_a@test.com", "adminpass")
-    member_token_a = AuthService(db).login("ast_member_a@test.com", "memberpass")
-    admin_token_b = AuthService(db).login("ast_admin_b@test.com", "adminpass")
-    sysadmin_token = AuthService(db).login("ast_sysadmin@test.internal", "syspass")
-    db.close()
+    # Spec 10: assets need investment accounts. Create one per (workspace, FI).
+    def _make_acc(ws_id, fi_id, name, currency="BRL"):
+        from numis_geek.models.account import Account, AccountType, Currency
+        from datetime import timezone
+        a = Account(
+            id=str(uuid.uuid4()),
+            workspace_id=ws_id,
+            financial_institution_id=fi_id,
+            name=name,
+            account_type=AccountType.investment,
+            currency=Currency(currency),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(a)
+        return a
 
-    return {
-        "ws_a": ws_a.id,
-        "ws_b": ws_b.id,
-        "admin_a_id": admin_a.id,
-        "member_a_id": member_a.id,
-        "admin_b_id": admin_b.id,
+    acc_xp_a = _make_acc(ws_a.id, fi_xp.id, "XP Inv A")
+    acc_avenue_a = _make_acc(ws_a.id, fi_avenue.id, "Avenue Inv A", currency="USD")
+    acc_particular_a = _make_acc(ws_a.id, fi_particular.id, "Patrimônio pessoal A")
+    acc_xp_b = _make_acc(ws_b.id, fi_xp.id, "XP Inv B")
+    db.commit()
+    db.refresh(acc_xp_a); db.refresh(acc_avenue_a); db.refresh(acc_particular_a); db.refresh(acc_xp_b)
+
+    # Capture all IDs before db.close() to avoid DetachedInstanceError.
+    out = {
+        "ws_a": ws_a.id, "ws_b": ws_b.id,
+        "admin_a_id": admin_a.id, "member_a_id": member_a.id, "admin_b_id": admin_b.id,
         "sysadmin_id": sysadmin.id,
-        "fi_xp": fi_xp.id,
-        "fi_avenue": fi_avenue.id,
-        "fi_inactive": fi_inactive.id,
-        "fi_particular": fi_particular.id,
-        "admin_token_a": admin_token_a,
-        "member_token_a": member_token_a,
-        "admin_token_b": admin_token_b,
-        "sysadmin_token": sysadmin_token,
+        "fi_xp": fi_xp.id, "fi_avenue": fi_avenue.id,
+        "fi_inactive": fi_inactive.id, "fi_particular": fi_particular.id,
+        "acc_xp_a": acc_xp_a.id, "acc_avenue_a": acc_avenue_a.id,
+        "acc_particular_a": acc_particular_a.id, "acc_xp_b": acc_xp_b.id,
     }
+    out["admin_token_a"] = AuthService(db).login("ast_admin_a@test.com", "adminpass")
+    out["member_token_a"] = AuthService(db).login("ast_member_a@test.com", "memberpass")
+    out["admin_token_b"] = AuthService(db).login("ast_admin_b@test.com", "adminpass")
+    out["sysadmin_token"] = AuthService(db).login("ast_sysadmin@test.internal", "syspass")
+    db.close()
+    return out
 
 
 def auth(token):
@@ -162,7 +181,7 @@ def test_list_assets_empty(client, seed):
 def test_create_stock_br(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Petrobras PN",
         "currency": "BRL",
         "ticker": "PETR4",
@@ -179,7 +198,7 @@ def test_create_stock_br(client, seed):
 def test_create_member_can_create(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Itaú PN",
         "currency": "BRL",
         "ticker": "ITUB4",
@@ -190,7 +209,7 @@ def test_create_member_can_create(client, seed):
 def test_create_fixed_income(client, seed):
     r = client.post("/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "CDB BTG 110% CDI 2028",
         "currency": "BRL",
         "details": {
@@ -212,7 +231,7 @@ def test_create_fixed_income(client, seed):
 def test_create_real_estate(client, seed):
     r = client.post("/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
-        "financial_institution_id": seed["fi_particular"],
+        "account_id": seed["acc_particular_a"],
         "name": "Apto Pinheiros 302",
         "currency": "BRL",
         "details": {
@@ -232,7 +251,7 @@ def test_create_real_estate(client, seed):
 def test_create_vehicle(client, seed):
     r = client.post("/assets", json={
         "asset_class": "VEHICLE", "country": "BR",
-        "financial_institution_id": seed["fi_particular"],
+        "account_id": seed["acc_particular_a"],
         "name": "Toyota Corolla 2022",
         "currency": "BRL",
         "details": {
@@ -259,10 +278,11 @@ def test_fi_required(client, seed):
     assert r.status_code == 422
 
 
-def test_inactive_fi_rejected(client, seed):
+def test_nonexistent_account_rejected(client, seed):
+    """Spec 10: when account_id doesn't exist, return 404."""
     r = client.post("/assets", json={
-        "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_inactive"],
+        "asset_class": "STOCK", "country": "BR",
+        "account_id": "00000000-0000-0000-0000-000000000000",
         "name": "Should Fail",
         "currency": "BRL",
         "ticker": "FAIL3",
@@ -273,7 +293,7 @@ def test_inactive_fi_rejected(client, seed):
 def test_ticker_required_for_stock(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Stock w/o ticker",
         "currency": "BRL",
     }, headers=auth(seed["admin_token_a"]))
@@ -283,7 +303,7 @@ def test_ticker_required_for_stock(client, seed):
 def test_ticker_forbidden_for_real_estate(client, seed):
     r = client.post("/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
-        "financial_institution_id": seed["fi_particular"],
+        "account_id": seed["acc_particular_a"],
         "name": "Casa com ticker",
         "currency": "BRL",
         "ticker": "HOUSE",
@@ -295,7 +315,7 @@ def test_ticker_forbidden_for_real_estate(client, seed):
 def test_details_required_for_fixed_income(client, seed):
     r = client.post("/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "CDB no details",
         "currency": "BRL",
     }, headers=auth(seed["admin_token_a"]))
@@ -305,7 +325,7 @@ def test_details_required_for_fixed_income(client, seed):
 def test_details_forbidden_for_stock(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Stock w/ extras",
         "currency": "BRL",
         "ticker": "EXTRA3",
@@ -317,7 +337,7 @@ def test_details_forbidden_for_stock(client, seed):
 def test_cnpj_only_for_fund(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Stock w/ cnpj",
         "currency": "BRL",
         "ticker": "CNPJ3",
@@ -329,7 +349,7 @@ def test_cnpj_only_for_fund(client, seed):
 def test_real_estate_missing_required_field(client, seed):
     r = client.post("/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
-        "financial_institution_id": seed["fi_particular"],
+        "account_id": seed["acc_particular_a"],
         "name": "Casa incompleta",
         "currency": "BRL",
         "details": {"address": "x", "city": "y"},  # missing state, country
@@ -340,7 +360,7 @@ def test_real_estate_missing_required_field(client, seed):
 def test_unique_per_workspace_ticker_fi(client, seed):
     r1 = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
-        "financial_institution_id": seed["fi_avenue"],
+        "account_id": seed["acc_avenue_a"],
         "name": "Apple",
         "currency": "USD",
         "ticker": "AAPL",
@@ -350,7 +370,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
     # Same ticker, same custodian, same class → blocked.
     r2 = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
-        "financial_institution_id": seed["fi_avenue"],
+        "account_id": seed["acc_avenue_a"],
         "name": "Apple Dup",
         "currency": "USD",
         "ticker": "AAPL",
@@ -361,7 +381,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
     # (catches class typos like registering AAPL as STOCK_BR by mistake).
     r3 = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_avenue"],
+        "account_id": seed["acc_avenue_a"],
         "name": "Apple as BR (typo)",
         "currency": "BRL",
         "ticker": "AAPL",
@@ -373,7 +393,7 @@ def test_same_ticker_different_fi_allowed(client, seed):
     # AAPL @ Avenue already exists from previous test; create AAPL @ XP — should succeed.
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Apple via XP BDR",
         "currency": "USD",
         "ticker": "AAPL",
@@ -384,8 +404,8 @@ def test_same_ticker_different_fi_allowed(client, seed):
 def test_member_cannot_read_other_workspace(client, seed):
     # admin_b creates an asset in workspace B
     r_create = client.post("/assets", json={
-        "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "asset_class": "STOCK", "country": "BR",
+        "account_id": seed["acc_xp_b"],
         "name": "WS B Asset",
         "currency": "BRL",
         "ticker": "WSB3",
@@ -400,7 +420,7 @@ def test_member_cannot_read_other_workspace(client, seed):
     # And cannot edit it
     r2 = client.put(f"/assets/{asset_id_b}", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "Hijack",
         "currency": "BRL",
         "ticker": "WSB3",
@@ -433,7 +453,7 @@ def test_sysadmin_filter_by_workspace(client, seed):
 def test_sysadmin_creates_in_specified_workspace(client, seed):
     r = client.post("/assets", json={
         "asset_class": "CRYPTO", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_b"],
         "name": "Bitcoin via Sysadmin",
         "currency": "USD",
         "ticker": "BTC",
@@ -446,7 +466,7 @@ def test_sysadmin_creates_in_specified_workspace(client, seed):
 def test_sysadmin_create_requires_workspace(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "No WS",
         "currency": "BRL",
         "ticker": "NOWS3",
@@ -457,7 +477,7 @@ def test_sysadmin_create_requires_workspace(client, seed):
 def test_update_asset(client, seed):
     r = client.post("/assets", json={
         "asset_class": "REIT", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "HGLG11 original",
         "currency": "BRL",
         "ticker": "HGLG11",
@@ -466,7 +486,7 @@ def test_update_asset(client, seed):
 
     r2 = client.put(f"/assets/{asset_id}", json={
         "asset_class": "REIT", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "CSHG Logística FII",
         "currency": "BRL",
         "ticker": "HGLG11",
@@ -478,7 +498,7 @@ def test_update_asset(client, seed):
 def test_deactivate_asset(client, seed):
     r = client.post("/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "To Deactivate",
         "currency": "BRL",
         "ticker": "DEAC3",
@@ -501,7 +521,7 @@ def test_deactivate_asset(client, seed):
 def test_audit_log_created_for_asset_mutations(client, seed):
     r = client.post("/assets", json={
         "asset_class": "ETF", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "BOVA11",
         "currency": "BRL",
         "ticker": "BOVA11",
@@ -510,7 +530,7 @@ def test_audit_log_created_for_asset_mutations(client, seed):
 
     client.put(f"/assets/{asset_id}", json={
         "asset_class": "ETF", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "BOVA11 ETF Ibovespa",
         "currency": "BRL",
         "ticker": "BOVA11",
@@ -539,10 +559,24 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
     }, headers=auth(seed["sysadmin_token"]))
     fi_id = r_fi.json()["id"]
 
+    # Create an investment account at this FI in workspace A
+    from numis_geek.models.account import Account, AccountType, Currency
+    db = TestSession()
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=seed["ws_a"],
+        financial_institution_id=fi_id, name="Restrict Inv",
+        account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.add(acc); db.commit(); db.refresh(acc)
+    acc_id = acc.id
+    db.close()
+
     # Bind an asset to it
     r_asset = client.post("/assets", json={
-        "asset_class": "STOCK", "country": "BR", "country": "BR",
-        "financial_institution_id": fi_id,
+        "asset_class": "STOCK", "country": "BR",
+        "account_id": acc_id,
         "name": "Bound asset",
         "currency": "BRL",
         "ticker": "REST3",
@@ -563,7 +597,7 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
 def test_get_asset_returns_details(client, seed):
     r_create = client.post("/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
-        "financial_institution_id": seed["fi_xp"],
+        "account_id": seed["acc_xp_a"],
         "name": "LCI BTG IPCA",
         "currency": "BRL",
         "details": {

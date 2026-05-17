@@ -37,7 +37,7 @@ from typing import Iterable
 from sqlalchemy.orm import Session
 
 from numis_geek.db.session import SessionLocal
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
@@ -268,10 +268,38 @@ def import_from_json(
             if notion_url and (not notes or notion_url not in notes):
                 notes = (notes + "\n" if notes else "") + f"Notion: {notion_url}"
 
+            # Spec 10: resolve investment account at this (workspace, FI).
+            # Auto-create implicit accounts for Particular / Caixa if missing.
+            account = db.query(Account).filter(
+                Account.workspace_id == ws.id,
+                Account.financial_institution_id == fi.id,
+                Account.account_type == AccountType.investment,
+            ).first()
+            if account is None:
+                # Create an implicit investment account named after the FI's purpose.
+                if fi.short_name == "Particular":
+                    acc_name = "Patrimônio pessoal"
+                elif fi.short_name == "Caixa":
+                    acc_name = "Conta FGTS Caixa"
+                else:
+                    acc_name = f"Conta Investimento {fi.short_name}"
+                now_acc = datetime.now(timezone.utc)
+                account = Account(
+                    id=str(uuid.uuid4()), workspace_id=ws.id,
+                    financial_institution_id=fi.id, name=acc_name,
+                    account_type=AccountType.investment, currency=currency,
+                    opening_balance=None, account_info=None, is_active=True,
+                    created_at=now_acc, updated_at=now_acc,
+                    created_by=sysadmin_id, updated_by=sysadmin_id,
+                )
+                if apply:
+                    db.add(account)
+                    db.flush()
+
             # Idempotency lookup
             q = db.query(Asset).filter(
                 Asset.workspace_id == ws.id,
-                Asset.financial_institution_id == fi.id,
+                Asset.account_id == account.id,
             )
             if ticker:
                 existing = q.filter(Asset.ticker == ticker).first()
@@ -303,7 +331,7 @@ def import_from_json(
                     db.add(Asset(
                         id=str(uuid.uuid4()),
                         workspace_id=ws.id,
-                        financial_institution_id=fi.id,
+                        account_id=account.id,
                         asset_class=asset_class,
                         country=country,
                         name=name,

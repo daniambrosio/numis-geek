@@ -135,9 +135,12 @@ def deactivate_financial_institution(
 ):
     _require_sysadmin(current_user)
     fi = _get_or_404(db, fi_id)
-    # RESTRICT: cannot deactivate while any active asset references this FI.
-    referencing_active_assets = db.query(Asset).filter(
-        Asset.financial_institution_id == fi.id,
+    # RESTRICT: cannot deactivate while any active asset's account references this FI.
+    from numis_geek.models.account import Account
+    referencing_active_assets = db.query(Asset).join(
+        Account, Asset.account_id == Account.id,
+    ).filter(
+        Account.financial_institution_id == fi.id,
         Asset.is_active == True,  # noqa: E712
     ).first()
     if referencing_active_assets:

@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401 — registers all models on Base.metadata
+from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
@@ -157,7 +158,7 @@ def test_fi_mapping_matches_short_name(seed, monkeypatch):
             Asset.ticker == "PETR4",
         ).first()
         assert petr is not None
-        assert petr.financial_institution_id == seed["fi_ids"]["XP"]
+        assert db.query(Account).get(petr.account_id).financial_institution_id == seed["fi_ids"]["XP"]
 
         cash = db.query(Asset).filter(
             Asset.workspace_id == seed["ws_id"],
@@ -165,7 +166,7 @@ def test_fi_mapping_matches_short_name(seed, monkeypatch):
             Asset.name == "Float Avenue",
         ).first()
         assert cash is not None
-        assert cash.financial_institution_id == seed["fi_ids"]["Avenue"]
+        assert db.query(Account).get(cash.account_id).financial_institution_id == seed["fi_ids"]["Avenue"]
     finally:
         db.close()
 
@@ -180,7 +181,7 @@ def test_fallback_to_particular_for_unknown_if(seed, monkeypatch):
         ).first()
         assert wege is not None
         # Unknown "Banco Inexistente" must have fallen back to Particular
-        assert wege.financial_institution_id == seed["fi_ids"]["Particular"]
+        assert db.query(Account).get(wege.account_id).financial_institution_id == seed["fi_ids"]["Particular"]
     finally:
         db.close()
 

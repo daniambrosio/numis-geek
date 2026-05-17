@@ -149,6 +149,8 @@ export interface AssetOut {
   id: string
   workspace_id: string
   workspace_name: string | null
+  account_id: string
+  account_name: string
   financial_institution_id: string
   financial_institution_name: string
   asset_class: AssetClass
@@ -170,7 +172,7 @@ export interface AssetOut {
 
 export interface AssetRequest {
   asset_class: AssetClass
-  financial_institution_id: string
+  account_id: string
   country: string
   name: string
   currency: 'BRL' | 'USD'

@@ -13,7 +13,7 @@ from numis_geek.api.deps import get_db
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401
 from numis_geek.models.asset import Asset, AssetClass
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.audit_log import AuditLog
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
@@ -90,13 +90,26 @@ def seed():
         updated_at=now,
     )
     db.add(fi)
+
+    # Spec 10: every asset needs an investment account per workspace
+    account_a = Account(
+        id=str(uuid.uuid4()), workspace_id=ws_a.id, financial_institution_id=fi.id,
+        name="XP Inv A", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    account_b = Account(
+        id=str(uuid.uuid4()), workspace_id=ws_b.id, financial_institution_id=fi.id,
+        name="XP Inv B", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add_all([account_a, account_b])
     db.flush()
 
     # One asset per workspace.
     asset_a = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_a.id,
-        financial_institution_id=fi.id,
+        account_id=account_a.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Petrobras PN",
@@ -109,7 +122,7 @@ def seed():
     asset_a_us = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_a.id,
-        financial_institution_id=fi.id,
+        account_id=account_a.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Apple",
@@ -122,7 +135,7 @@ def seed():
     asset_b = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws_b.id,
-        financial_institution_id=fi.id,
+        account_id=account_b.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Itaú PN",
@@ -611,11 +624,12 @@ def test_resgate_total_persists_external_fields(client, seed):
 def cdb_asset(seed):
     db = TestSession()
     fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
     now = datetime.now(timezone.utc)
     cdb = Asset(
         id=str(uuid.uuid4()),
         workspace_id=seed["ws_a"],
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.FIXED_INCOME,
         country="BR",
         name="CDB BTG 110% CDI 2028",

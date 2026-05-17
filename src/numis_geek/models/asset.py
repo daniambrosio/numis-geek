@@ -38,7 +38,7 @@ class Asset(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     workspace_id: Mapped[str] = mapped_column(String(36), ForeignKey("workspace.id"), nullable=False)
-    financial_institution_id: Mapped[str] = mapped_column(String(36), ForeignKey("financial_institution.id"), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("account.id"), nullable=False)
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
     country: Mapped[str] = mapped_column(String(2), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)

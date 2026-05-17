@@ -9,7 +9,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import (
     Asset,
     AssetClass,
@@ -78,7 +78,7 @@ class PhysicalDetails(BaseModel):
 
 class AssetRequest(BaseModel):
     asset_class: AssetClass
-    financial_institution_id: str
+    account_id: str
     country: str = Field(min_length=2, max_length=2)
     name: str = Field(min_length=1, max_length=255)
     currency: Currency
@@ -157,6 +157,8 @@ class AssetOut(BaseModel):
     id: str
     workspace_id: str
     workspace_name: str | None = None
+    account_id: str
+    account_name: str
     financial_institution_id: str
     financial_institution_name: str
     asset_class: str
@@ -180,6 +182,8 @@ class AssetOut(BaseModel):
         cls,
         asset: Asset,
         fi_name: str,
+        account_name: str,
+        fi_id: str,
         workspace_name: str | None = None,
     ) -> "AssetOut":
         details: dict[str, Any] | None = None
@@ -212,7 +216,9 @@ class AssetOut(BaseModel):
             id=asset.id,
             workspace_id=asset.workspace_id,
             workspace_name=workspace_name,
-            financial_institution_id=asset.financial_institution_id,
+            account_id=asset.account_id,
+            account_name=account_name,
+            financial_institution_id=fi_id,
             financial_institution_name=fi_name,
             asset_class=asset.asset_class.value,
             country=asset.country,
@@ -269,7 +275,7 @@ def _check_unique(
     *,
     workspace_id: str,
     ticker: str | None,
-    fi_id: str,
+    account_id: str,
     exclude_id: str | None = None,
 ) -> None:
     if not ticker:
@@ -277,14 +283,14 @@ def _check_unique(
     q = db.query(Asset).filter(
         Asset.workspace_id == workspace_id,
         Asset.ticker == ticker,
-        Asset.financial_institution_id == fi_id,
+        Asset.account_id == account_id,
     )
     if exclude_id:
         q = q.filter(Asset.id != exclude_id)
     if q.first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"An asset with ticker {ticker} already exists for this custodian.",
+            detail=f"An asset with ticker {ticker} already exists at this account.",
         )
 
 
@@ -401,7 +407,13 @@ def list_assets(
         )
 
     assets = q.order_by(Asset.name).all()
-    fi_ids = {a.financial_institution_id for a in assets}
+    # Hydrate account → FI map for AssetOut
+    account_ids = {a.account_id for a in assets}
+    account_map = {
+        ac.id: ac
+        for ac in db.query(Account).filter(Account.id.in_(account_ids)).all()
+    } if account_ids else {}
+    fi_ids = {ac.financial_institution_id for ac in account_map.values()}
     fi_map = {
         fi.id: fi.short_name
         for fi in db.query(FinancialInstitution).filter(FinancialInstitution.id.in_(fi_ids)).all()
@@ -416,14 +428,18 @@ def list_assets(
                 for w in db.query(Workspace).filter(Workspace.id.in_(ws_ids)).all()
             }
 
-    return [
-        AssetOut.from_orm(
+    out = []
+    for a in assets:
+        ac = account_map.get(a.account_id)
+        fi_id = ac.financial_institution_id if ac else ""
+        out.append(AssetOut.from_orm(
             a,
-            fi_map.get(a.financial_institution_id, a.financial_institution_id),
+            fi_map.get(fi_id, fi_id),
+            account_name=ac.name if ac else a.account_id,
+            fi_id=fi_id,
             workspace_name=ws_map.get(a.workspace_id),
-        )
-        for a in assets
-    ]
+        ))
+    return out
 
 
 @router.get("/{asset_id}", response_model=AssetOut)
@@ -434,13 +450,37 @@ def get_asset(
 ):
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
-    fi = db.get(FinancialInstitution, asset.financial_institution_id)
-    fi_name = fi.short_name if fi else asset.financial_institution_id
+    account = db.get(Account, asset.account_id)
+    fi_id = account.financial_institution_id if account else ""
+    fi = db.get(FinancialInstitution, fi_id) if fi_id else None
+    fi_name = fi.short_name if fi else fi_id
     ws_name: str | None = None
     if current_user.role == UserRole.sysadmin:
         ws = db.get(Workspace, asset.workspace_id)
         ws_name = ws.name if ws else None
-    return AssetOut.from_orm(asset, fi_name, workspace_name=ws_name)
+    return AssetOut.from_orm(
+        asset, fi_name,
+        account_name=account.name if account else asset.account_id,
+        fi_id=fi_id,
+        workspace_name=ws_name,
+    )
+
+
+def _resolve_account(db: Session, account_id: str, workspace_id: str) -> Account:
+    account = db.get(Account, account_id)
+    if not account or not account.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+    if account.workspace_id != workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account belongs to a different workspace.",
+        )
+    if account.account_type != AccountType.investment:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Asset must be linked to an investment account.",
+        )
+    return account
 
 
 @router.post("", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
@@ -450,8 +490,8 @@ def create_asset(
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
-
-    fi = db.get(FinancialInstitution, body.financial_institution_id)
+    account = _resolve_account(db, body.account_id, workspace_id)
+    fi = db.get(FinancialInstitution, account.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
 
@@ -459,14 +499,14 @@ def create_asset(
         db,
         workspace_id=workspace_id,
         ticker=body.ticker,
-        fi_id=body.financial_institution_id,
+        account_id=body.account_id,
     )
 
     now = datetime.now(timezone.utc)
     asset = Asset(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
-        financial_institution_id=body.financial_institution_id,
+        account_id=account.id,
         asset_class=body.asset_class,
         country=body.country.upper(),
         name=body.name,
@@ -493,7 +533,11 @@ def create_asset(
     if current_user.role == UserRole.sysadmin:
         ws = db.get(Workspace, asset.workspace_id)
         ws_name = ws.name if ws else None
-    return AssetOut.from_orm(asset, fi.short_name, workspace_name=ws_name)
+    return AssetOut.from_orm(
+        asset, fi.short_name,
+        account_name=account.name, fi_id=fi.id,
+        workspace_name=ws_name,
+    )
 
 
 @router.put("/{asset_id}", response_model=AssetOut)
@@ -506,20 +550,20 @@ def update_asset(
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
 
-    fi = db.get(FinancialInstitution, body.financial_institution_id)
+    account = _resolve_account(db, body.account_id, asset.workspace_id)
+    fi = db.get(FinancialInstitution, account.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
 
-    # workspace_id is immutable — silently ignore body.workspace_id on update.
     _check_unique(
         db,
         workspace_id=asset.workspace_id,
         ticker=body.ticker,
-        fi_id=body.financial_institution_id,
+        account_id=body.account_id,
         exclude_id=asset.id,
     )
 
-    asset.financial_institution_id = body.financial_institution_id
+    asset.account_id = account.id
     asset.asset_class = body.asset_class
     asset.country = body.country.upper()
     asset.name = body.name
@@ -545,7 +589,11 @@ def update_asset(
     if current_user.role == UserRole.sysadmin:
         ws = db.get(Workspace, asset.workspace_id)
         ws_name = ws.name if ws else None
-    return AssetOut.from_orm(asset, fi.short_name, workspace_name=ws_name)
+    return AssetOut.from_orm(
+        asset, fi.short_name,
+        account_name=account.name, fi_id=fi.id,
+        workspace_name=ws_name,
+    )
 
 
 class PositionOut(BaseModel):
@@ -690,10 +738,17 @@ def deactivate_asset(
     db.flush()
     _audit(db, current_user, "asset.deactivated", asset)
 
-    fi = db.get(FinancialInstitution, asset.financial_institution_id)
-    fi_name = fi.short_name if fi else asset.financial_institution_id
+    account = db.get(Account, asset.account_id)
+    fi_id = account.financial_institution_id if account else ""
+    fi = db.get(FinancialInstitution, fi_id) if fi_id else None
+    fi_name = fi.short_name if fi else fi_id
     ws_name: str | None = None
     if current_user.role == UserRole.sysadmin:
         ws = db.get(Workspace, asset.workspace_id)
         ws_name = ws.name if ws else None
-    return AssetOut.from_orm(asset, fi_name, workspace_name=ws_name)
+    return AssetOut.from_orm(
+        asset, fi_name,
+        account_name=account.name if account else asset.account_id,
+        fi_id=fi_id,
+        workspace_name=ws_name,
+    )

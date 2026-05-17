@@ -17,7 +17,7 @@ from numis_geek.api.deps import get_db
 from numis_geek.db.base import Base
 import numis_geek.models  # noqa: F401
 from numis_geek.models.asset import Asset, AssetClass
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import UserRole
 from numis_geek.services.auth import AuthService
@@ -77,10 +77,24 @@ def seed():
         updated_at=now,
     )
     db.add(fi)
-    asset_usd = Asset(
+
+    # Spec 10: every asset needs an investment account
+    account = Account(
         id=str(uuid.uuid4()),
         workspace_id=ws.id,
         financial_institution_id=fi.id,
+        name="Test investment account",
+        account_type=AccountType.investment,
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(account)
+    asset_usd = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=ws.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Realty Income",
@@ -93,7 +107,7 @@ def seed():
     asset_brl = Asset(
         id=str(uuid.uuid4()),
         workspace_id=ws.id,
-        financial_institution_id=fi.id,
+        account_id=account.id,
         asset_class=AssetClass.STOCK,
         country="BR",
         name="Petrobras PN",
