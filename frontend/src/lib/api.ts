@@ -674,6 +674,27 @@ export const api = {
     const qs = only_country ? `?only_country=${only_country}` : ''
     return request<BulkRefreshSummaryOut>(`/assets/refresh-prices/bulk${qs}`, { method: 'POST' })
   },
+
+  // ── Snapshots (spec 14) ──────────────────────────────────────────────────
+  listSnapshots: () => request<SnapshotOut[]>('/snapshots'),
+  createSnapshot: (period_end_date: string) =>
+    request<SnapshotOut>('/snapshots', {
+      method: 'POST',
+      body: JSON.stringify({ period_end_date }),
+    }),
+}
+
+export interface SnapshotOut {
+  id: string
+  workspace_id: string
+  period_end_date: string
+  fx_rate_usd_brl: string | null
+  total_value_brl: string
+  total_value_usd: string
+  total_invested_brl: string
+  total_received_brl: string
+  source: string
+  items_count: number
 }
 
 export interface PriceRefreshOut {

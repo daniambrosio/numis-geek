@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   api, type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
-  type PositionOut, type UserOut,
+  type PositionOut, type SnapshotOut, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import { Card, SectionTitle, FILogo, CcyPill } from '../components/ui'
@@ -31,6 +31,7 @@ export default function Dashboard() {
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [positions, setPositions] = useState<Map<string, PositionOut | null>>(new Map())
   const [recent, setRecent] = useState<AssetMovementOut[]>([])
+  const [snapshots, setSnapshots] = useState<SnapshotOut[]>([])
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -38,6 +39,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!me) return
+    api.listSnapshots().then(setSnapshots).catch(() => setSnapshots([]))
     Promise.all([
       api.listAssets({}),
       api.listFinancialInstitutions(),
@@ -70,8 +72,9 @@ export default function Dashboard() {
     return m
   }, [institutions])
 
-  const { totalInvested, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
+  const { totalInvested, totalCurrent, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
     let invested = 0
+    let current = 0
     let received = 0
     const klassMap = new Map<CollapsedClassCode, number>()
     const fiMap = new Map<string, number>()
@@ -88,9 +91,12 @@ export default function Dashboard() {
       received += Number(p.total_received_brl ?? 0)
       const klass = collapsedOf(a.asset_class)
       const inv = Number(p.total_invested_brl ?? 0)
-      klassMap.set(klass, (klassMap.get(klass) ?? 0) + inv)
-      fiMap.set(a.financial_institution_id, (fiMap.get(a.financial_institution_id) ?? 0) + inv)
-      countryMap.set(a.country, (countryMap.get(a.country) ?? 0) + inv)
+      // Prefer current market value; fall back to invested when current_price is not set.
+      const cur = p.current_value_brl != null ? Number(p.current_value_brl) : inv
+      current += cur
+      klassMap.set(klass, (klassMap.get(klass) ?? 0) + cur)
+      fiMap.set(a.financial_institution_id, (fiMap.get(a.financial_institution_id) ?? 0) + cur)
+      countryMap.set(a.country, (countryMap.get(a.country) ?? 0) + cur)
       if (p.variation != null) {
         moversList.push({
           asset: a,
@@ -112,6 +118,7 @@ export default function Dashboard() {
 
     return {
       totalInvested: invested,
+      totalCurrent: current,
       totalReceived: received,
       byClass: byClassArr,
       byFi: byFiArr,
@@ -155,17 +162,27 @@ export default function Dashboard() {
               </div>
               <div className="mt-2 flex items-baseline gap-3">
                 <div className="text-4xl lg:text-5xl font-semibold tracking-tight tnum money text-gray-900 dark:text-white">
-                  {loading && totalInvested === 0 ? '…' : fmtBRL(totalInvested)}
+                  {loading && totalCurrent === 0 ? '…' : fmtBRL(totalCurrent)}
                 </div>
                 <CcyPill ccy="BRL" />
               </div>
               <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                Patrimônio total (investimentos + caixa − cartões) chega com specs 10 e 11
+                Patrimônio investido em valor de mercado (USD via PTAX) · Caixa & Cartões chegam com spec futura
               </div>
               <div className="mt-5 grid grid-cols-3 gap-3">
-                <Pill label="Investimentos" value={`+ ${fmtBRL(totalInvested, { compact: true })}`} tone="positive" money />
-                <Pill label="Caixa" value="—" hint="spec 11 (Transactions)" />
-                <Pill label="Cartões abertos" value="—" hint="spec 11 (CreditCard + Invoice)" />
+                <Pill label="Investido" value={fmtBRL(totalInvested, { compact: true })} />
+                <Pill
+                  label="Ganho/perda"
+                  value={`${totalCurrent - totalInvested >= 0 ? '+' : ''}${fmtBRL(totalCurrent - totalInvested, { compact: true })}`}
+                  tone={totalCurrent - totalInvested >= 0 ? 'positive' : 'negative'}
+                  money
+                />
+                <Pill
+                  label="Proventos"
+                  value={fmtBRL(totalReceived, { compact: true })}
+                  tone={totalReceived > 0 ? 'positive' : undefined}
+                  money
+                />
               </div>
               <div className="mt-5 flex items-center gap-2">
                 <span className="text-[11px] text-gray-500 dark:text-gray-400">
@@ -175,15 +192,24 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="col-span-12 lg:col-span-5 p-6 lg:p-8 border-t lg:border-t-0 lg:border-l border-gray-200 dark:border-gray-800 bg-gradient-to-br from-indigo-500/5 to-transparent">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                Evolução · 12 meses
-              </div>
-              <div className="mt-6 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-6 text-center">
-                <div className="text-[11px] text-gray-500 dark:text-gray-400">Spec futura</div>
-                <div className="text-[10px] text-gray-400 dark:text-gray-600 mt-1">
-                  Requer snapshot mensal de patrimônio
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  Evolução
                 </div>
+                <span className="text-[10px] text-gray-400 dark:text-gray-600">
+                  {snapshots.length} {snapshots.length === 1 ? 'snapshot' : 'snapshots'}
+                </span>
               </div>
+              {snapshots.length === 0 ? (
+                <div className="mt-6 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-6 text-center">
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">Sem snapshots ainda</div>
+                  <div className="text-[10px] text-gray-400 dark:text-gray-600 mt-1">
+                    Rode <code className="text-[10px]">snapshot create</code> ou POST /snapshots
+                  </div>
+                </div>
+              ) : (
+                <SnapshotSeries snapshots={snapshots} currentBrl={totalCurrent} />
+              )}
             </div>
           </div>
         </Card>
@@ -203,13 +229,13 @@ export default function Dashboard() {
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <div className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">Total</div>
                     <div className="text-base font-semibold tnum money text-gray-900 dark:text-white">
-                      {fmtBRL(totalInvested, { compact: true })}
+                      {fmtBRL(totalCurrent, { compact: true })}
                     </div>
                   </div>
                 </div>
                 <div className="flex-1 space-y-1.5 min-w-0">
                   {donutData.map((d, i) => {
-                    const pct = totalInvested ? d.value / totalInvested : 0
+                    const pct = totalCurrent ? d.value / totalCurrent : 0
                     return (
                       <div key={i} className="flex items-center gap-2 text-[12px]">
                         <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: d.color }} />
@@ -232,7 +258,7 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-4">
                 {byCountry.map(c => {
-                  const pct = totalInvested ? c.value / totalInvested : 0
+                  const pct = totalCurrent ? c.value / totalCurrent : 0
                   return (
                     <div key={c.country}>
                       <div className="flex items-center justify-between text-[12px] mb-1.5">
@@ -293,7 +319,7 @@ export default function Dashboard() {
               <div className="space-y-3">
                 {topFis.map((f, i) => {
                   const fi = fiById.get(f.fi)
-                  const pct = totalInvested ? f.value / totalInvested : 0
+                  const pct = totalCurrent ? f.value / totalCurrent : 0
                   const color = fi ? fiTokenFor(fi.logo_slug, fi.short_name).color : '#94a3b8'
                   return (
                     <div
@@ -381,6 +407,56 @@ export default function Dashboard() {
         </Card>
       </div>
     </AppLayout>
+  )
+}
+
+function SnapshotSeries({ snapshots, currentBrl }: { snapshots: SnapshotOut[]; currentBrl: number }) {
+  // Order chronologically; show min(12, count) most recent
+  const sorted = [...snapshots]
+    .sort((a, b) => a.period_end_date.localeCompare(b.period_end_date))
+    .slice(-12)
+
+  if (sorted.length === 0) return null
+
+  const values = sorted.map(s => Number(s.total_value_brl))
+  const max = Math.max(...values, currentBrl)
+  const last = values[values.length - 1]
+  const first = values[0]
+  const delta = last - first
+  const pct = first > 0 ? (delta / first) * 100 : 0
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-baseline gap-2">
+        <div className="text-2xl font-semibold tnum money text-gray-900 dark:text-white">
+          {last.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 })}
+        </div>
+        <span className={`text-[12px] tnum ${delta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+          {delta >= 0 ? '+' : ''}{pct.toFixed(1)}%
+        </span>
+      </div>
+      <div className="mt-2 text-[10px] text-gray-400">
+        último snapshot · {new Date(sorted[sorted.length - 1].period_end_date).toLocaleDateString('pt-BR')}
+      </div>
+      {/* Sparkline */}
+      <svg viewBox="0 0 200 60" className="mt-3 w-full h-16" preserveAspectRatio="none">
+        <polyline
+          fill="none"
+          stroke="rgb(99 102 241)"
+          strokeWidth="2"
+          points={values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 200},${60 - (v / max) * 55}`).join(' ')}
+        />
+        <polyline
+          fill="rgb(99 102 241 / 0.1)"
+          stroke="none"
+          points={`0,60 ${values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 200},${60 - (v / max) * 55}`).join(' ')} 200,60`}
+        />
+      </svg>
+      <div className="mt-1 flex justify-between text-[10px] text-gray-400">
+        <span>{new Date(sorted[0].period_end_date).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</span>
+        <span>{new Date(sorted[sorted.length - 1].period_end_date).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</span>
+      </div>
+    </div>
   )
 }
 
