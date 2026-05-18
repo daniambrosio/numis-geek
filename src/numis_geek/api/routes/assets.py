@@ -643,6 +643,71 @@ class AssetMovementsPage(BaseModel):
     page_size: int
 
 
+class PriceRefreshOut(BaseModel):
+    asset_id: str
+    ticker: str | None
+    country: str | None
+    status: str
+    provider: str | None
+    old_price: float | None
+    new_price: float | None
+    error: str | None
+
+
+@router.post("/{asset_id}/refresh-price", response_model=PriceRefreshOut)
+def refresh_asset_price(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    from numis_geek.services.price_update import refresh_one
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+    r = refresh_one(db, asset)
+    return PriceRefreshOut(
+        asset_id=r.asset_id,
+        ticker=r.ticker,
+        country=r.country,
+        status=r.status,
+        provider=r.provider,
+        old_price=float(r.old_price) if r.old_price is not None else None,
+        new_price=float(r.new_price) if r.new_price is not None else None,
+        error=r.error,
+    )
+
+
+class BulkRefreshSummaryOut(BaseModel):
+    total: int
+    ok: int
+    skipped: int
+    failed: int
+    results: list[PriceRefreshOut]
+
+
+@router.post("/refresh-prices/bulk", response_model=BulkRefreshSummaryOut)
+def refresh_prices_bulk(
+    only_country: str | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    from numis_geek.services.price_update import refresh_bulk
+    workspace_id = None if current_user.role == UserRole.sysadmin else current_user.workspace_id
+    summary = refresh_bulk(db, workspace_id=workspace_id, only_country=only_country)
+    return BulkRefreshSummaryOut(
+        total=summary.total, ok=summary.ok, skipped=summary.skipped, failed=summary.failed,
+        results=[
+            PriceRefreshOut(
+                asset_id=r.asset_id, ticker=r.ticker, country=r.country,
+                status=r.status, provider=r.provider,
+                old_price=float(r.old_price) if r.old_price is not None else None,
+                new_price=float(r.new_price) if r.new_price is not None else None,
+                error=r.error,
+            )
+            for r in summary.results
+        ],
+    )
+
+
 @router.get("/{asset_id}/position", response_model=PositionOut)
 def get_asset_position(
     asset_id: str,

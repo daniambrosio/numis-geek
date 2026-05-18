@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ExternalLink, Plus } from 'lucide-react'
+import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
 import {
   api, type AssetOut, type AssetRequest, type FinancialInstitutionOut,
   type PositionOut, type UserOut,
@@ -46,6 +46,30 @@ export default function Assets() {
   const [editing, setEditing] = useState<AssetOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
   const [selected, setSelected] = useState<AssetOut | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshSummary, setRefreshSummary] = useState<import('../../lib/api').BulkRefreshSummaryOut | null>(null)
+
+  async function handleBulkRefresh() {
+    setRefreshing(true)
+    setRefreshSummary(null)
+    try {
+      const summary = await api.refreshPricesBulk()
+      setRefreshSummary(summary)
+      const updated = await api.listAssets({
+        include_inactive: includeInactive,
+        search: search.trim() || undefined,
+      })
+      setAssets(updated)
+    } catch (e) {
+      setRefreshSummary({ total: 0, ok: 0, skipped: 0, failed: 1, results: [
+        { asset_id: '-', ticker: null, country: null, status: 'failed',
+          provider: null, old_price: null, new_price: null,
+          error: e instanceof Error ? e.message : 'Erro' }
+      ] })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   // filters
   const [search, setSearch] = useState('')
@@ -170,6 +194,14 @@ export default function Assets() {
           action={
             <div className="flex items-center gap-2">
               <button
+                onClick={handleBulkRefresh}
+                disabled={refreshing}
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 text-gray-700 dark:text-gray-300 transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                {refreshing ? 'Atualizando…' : 'Atualizar preços'}
+              </button>
+              <button
                 disabled
                 title="Em breve"
                 className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed"
@@ -185,6 +217,22 @@ export default function Assets() {
             </div>
           }
         />
+
+        {refreshSummary && (
+          <div className="text-sm bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-900 rounded-xl px-4 py-3 text-emerald-700 dark:text-emerald-300">
+            Atualização: {refreshSummary.ok} OK · {refreshSummary.skipped} ignorados · {refreshSummary.failed} falharam
+            {refreshSummary.failed > 0 && (
+              <details className="mt-1 text-xs">
+                <summary className="cursor-pointer">Ver falhas</summary>
+                <ul className="mt-1 ml-4 list-disc">
+                  {refreshSummary.results.filter(r => r.status === 'failed').map(r => (
+                    <li key={r.asset_id}>{r.ticker ?? r.asset_id}: {r.error}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
 
         <Card padding="p-3" className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">

@@ -665,4 +665,32 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ mode }),
     }),
+
+  // ── Price refresh (spec 12) ───────────────────────────────────────────────
+  refreshAssetPrice: (id: string) =>
+    request<PriceRefreshOut>(`/assets/${id}/refresh-price`, { method: 'POST' }),
+
+  refreshPricesBulk: (only_country?: 'BR' | 'US') => {
+    const qs = only_country ? `?only_country=${only_country}` : ''
+    return request<BulkRefreshSummaryOut>(`/assets/refresh-prices/bulk${qs}`, { method: 'POST' })
+  },
+}
+
+export interface PriceRefreshOut {
+  asset_id: string
+  ticker: string | null
+  country: string | null
+  status: 'ok' | 'skipped' | 'failed'
+  provider: string | null
+  old_price: number | null
+  new_price: number | null
+  error: string | null
+}
+
+export interface BulkRefreshSummaryOut {
+  total: number
+  ok: number
+  skipped: number
+  failed: number
+  results: PriceRefreshOut[]
 }
