@@ -9,6 +9,8 @@ import Assets from './pages/admin/Assets'
 import Lancamentos from './pages/Lancamentos'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
+import SysAdminIntegrations from './pages/sysadmin/Integrations'
+import SysAdminPTAX from './pages/sysadmin/PTAX'
 import ComingSoon from './components/ComingSoon'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
@@ -51,6 +53,8 @@ export default function App() {
         {/* Sistema */}
         <Route path="/sysadmin/financial-institutions" element={<PrivateRoute><SysAdminFinancialInstitutions /></PrivateRoute>} />
         <Route path="/sysadmin/assets" element={<PrivateRoute><SysAdminAssets /></PrivateRoute>} />
+        <Route path="/sysadmin/integrations" element={<PrivateRoute><SysAdminIntegrations /></PrivateRoute>} />
+        <Route path="/sysadmin/ptax" element={<PrivateRoute><SysAdminPTAX /></PrivateRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

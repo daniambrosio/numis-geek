@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from numis_geek.models.asset import Asset
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.distribution import Distribution
+from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 
 
 class Position(TypedDict):
@@ -156,11 +157,14 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     rentabilidade: Decimal | None = None
     if current_price is not None and running_qty != 0:
         current_value = running_qty * current_price
-        # For BRL conversion when the asset is in USD, we'd need a PTAX rate.
-        # Spec 13 lands PTAX — for now, USD assets get current_value_brl = None.
-        # BRL assets: current_value_brl == current_value.
         if currency == "BRL":
             current_value_brl = current_value
+        elif currency == "USD":
+            try:
+                fx = fx_rate_on(db, as_of or date.today())
+                current_value_brl = current_value * fx
+            except FxRateNotFound:
+                current_value_brl = None
         if average_cost > 0:
             variation = (current_price - average_cost) / average_cost
         if total_invested_brl > 0 and current_value_brl is not None:

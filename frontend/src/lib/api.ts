@@ -368,6 +368,85 @@ export interface CustodianGroupOut {
   }[]
 }
 
+// ── Integration Credentials (sysadmin) ──────────────────────────────────────
+export type IntegrationProvider = 'BCB' | 'BRAPI' | 'FINNHUB' | 'YFINANCE'
+export type CredentialTestResult = 'UNTESTED' | 'SUCCESS' | 'FAILED'
+
+export interface IntegrationCredentialOut {
+  id: string
+  provider: IntegrationProvider
+  provider_label: string
+  key_name: string
+  label: string | null
+  secret_preview: string
+  is_active: boolean
+  last_tested_at: string | null
+  last_test_result: CredentialTestResult
+  last_test_message: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface IntegrationCredentialRequest {
+  provider: IntegrationProvider
+  key_name: string
+  label?: string | null
+  secret_value: string
+}
+
+export interface IntegrationCredentialPatch {
+  label?: string | null
+  secret_value?: string | null
+  is_active?: boolean | null
+}
+
+export interface ProviderCatalogEntry {
+  provider: IntegrationProvider
+  label: string
+  requires_credentials: boolean
+}
+
+export interface TestResultOut {
+  result: CredentialTestResult
+  message: string
+  tested_at: string
+}
+
+// ── PTAX ────────────────────────────────────────────────────────────────────
+export interface PTAXRateOut {
+  id: string
+  date: string
+  rate: string
+  source: string
+  fetched_at: string
+}
+
+export interface PTAXListOut {
+  items: PTAXRateOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface PTAXStatusOut {
+  total_rows: number
+  last_date: string | null
+  oldest_date: string | null
+  last_fetched_at: string | null
+}
+
+export type PTAXSyncMode = 'incremental' | 'full'
+
+export interface PTAXSyncResultOut {
+  mode: PTAXSyncMode
+  fetched_count: number
+  inserted_count: number
+  updated_count: number
+  range_start: string
+  range_end: string
+  duration_ms: number
+}
+
 export const api = {
   login: (email: string, password: string, remember_me = false) =>
     request<{ access_token: string }>('/auth/login', {
@@ -549,4 +628,41 @@ export const api = {
     const qs = workspace_id ? `?workspace_id=${workspace_id}` : ''
     return request<CustodianGroupOut[]>(`/accounts/by-custodian${qs}`)
   },
+
+  // ── Integrations ──────────────────────────────────────────────────────────
+  listIntegrationProviders: () =>
+    request<ProviderCatalogEntry[]>('/sysadmin/integrations/providers'),
+
+  listIntegrations: () =>
+    request<IntegrationCredentialOut[]>('/sysadmin/integrations'),
+
+  createIntegration: (data: IntegrationCredentialRequest) =>
+    request<IntegrationCredentialOut>('/sysadmin/integrations', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateIntegration: (id: string, data: IntegrationCredentialPatch) =>
+    request<IntegrationCredentialOut>(`/sysadmin/integrations/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteIntegration: (id: string) =>
+    request<void>(`/sysadmin/integrations/${id}`, { method: 'DELETE' }),
+
+  testIntegration: (id: string) =>
+    request<TestResultOut>(`/sysadmin/integrations/${id}/test`, { method: 'POST' }),
+
+  // ── PTAX ──────────────────────────────────────────────────────────────────
+  ptaxStatus: () => request<PTAXStatusOut>('/sysadmin/ptax/status'),
+
+  listPtax: (page = 1, page_size = 50) =>
+    request<PTAXListOut>(`/sysadmin/ptax?page=${page}&page_size=${page_size}`),
+
+  syncPtax: (mode: PTAXSyncMode) =>
+    request<PTAXSyncResultOut>('/sysadmin/ptax/sync', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
 }

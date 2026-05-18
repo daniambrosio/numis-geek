@@ -4,6 +4,7 @@ import {
   LayoutDashboard, TrendingUp, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
+  Plug, DollarSign,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
@@ -60,6 +61,8 @@ const NAV: NavEntry[] = [
   { kind: 'section', label: 'Sistema', roles: ['sysadmin'] },
   { kind: 'item', label: 'Inst. Financeiras', href: '/sysadmin/financial-institutions', icon: Building2 },
   { kind: 'item', label: 'Ativos', href: '/sysadmin/assets', icon: LineChart },
+  { kind: 'item', label: 'Integrações', href: '/sysadmin/integrations', icon: Plug },
+  { kind: 'item', label: 'PTAX', href: '/sysadmin/ptax', icon: DollarSign },
 ]
 
 const NOVO_ITEMS = ['Lançamento', 'Provento', 'Movimentação', 'Cartão tx', 'Ativo', 'Conta', 'Cartão']

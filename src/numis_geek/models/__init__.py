@@ -15,6 +15,14 @@ from numis_geek.models.distribution import (
     DistributionType,
     DISTRIBUTION_TYPE_LABELS,
 )
+from numis_geek.models.ptax_rate import PTAXRate
+from numis_geek.models.integration_credential import (
+    IntegrationCredential,
+    IntegrationProvider,
+    INTEGRATION_PROVIDER_LABELS,
+    PROVIDERS_REQUIRING_CREDENTIALS,
+    CredentialTestResult,
+)
 
 __all__ = [
     "Workspace",
@@ -37,4 +45,10 @@ __all__ = [
     "Distribution",
     "DistributionType",
     "DISTRIBUTION_TYPE_LABELS",
+    "PTAXRate",
+    "IntegrationCredential",
+    "IntegrationProvider",
+    "INTEGRATION_PROVIDER_LABELS",
+    "PROVIDERS_REQUIRING_CREDENTIALS",
+    "CredentialTestResult",
 ]
