@@ -21,6 +21,11 @@ from numis_geek.models.corporate_action import (
     CorporateActionType,
     CORPORATE_ACTION_TYPE_LABELS,
 )
+from numis_geek.models.portfolio_snapshot import (
+    PortfolioSnapshot,
+    PortfolioSnapshotItem,
+    SnapshotSource,
+)
 from numis_geek.models.integration_credential import (
     IntegrationCredential,
     IntegrationProvider,
@@ -54,6 +59,9 @@ __all__ = [
     "CorporateAction",
     "CorporateActionType",
     "CORPORATE_ACTION_TYPE_LABELS",
+    "PortfolioSnapshot",
+    "PortfolioSnapshotItem",
+    "SnapshotSource",
     "IntegrationCredential",
     "IntegrationProvider",
     "INTEGRATION_PROVIDER_LABELS",

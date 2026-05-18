@@ -13,6 +13,7 @@ from numis_geek.api.routes import (
     financial_institutions,
     integrations,
     ptax,
+    snapshots,
     users,
     workspaces,
 )
@@ -40,6 +41,7 @@ app.include_router(workspaces.router)
 app.include_router(integrations.router)
 app.include_router(ptax.router)
 app.include_router(corporate_actions.router)
+app.include_router(snapshots.router)
 
 
 @app.get("/health")
