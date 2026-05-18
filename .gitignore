@@ -55,6 +55,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+*.db.bak-*
 
 # Logs
 *.log
