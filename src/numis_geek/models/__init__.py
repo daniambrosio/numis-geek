@@ -16,6 +16,11 @@ from numis_geek.models.distribution import (
     DISTRIBUTION_TYPE_LABELS,
 )
 from numis_geek.models.ptax_rate import PTAXRate
+from numis_geek.models.corporate_action import (
+    CorporateAction,
+    CorporateActionType,
+    CORPORATE_ACTION_TYPE_LABELS,
+)
 from numis_geek.models.integration_credential import (
     IntegrationCredential,
     IntegrationProvider,
@@ -46,6 +51,9 @@ __all__ = [
     "DistributionType",
     "DISTRIBUTION_TYPE_LABELS",
     "PTAXRate",
+    "CorporateAction",
+    "CorporateActionType",
+    "CORPORATE_ACTION_TYPE_LABELS",
     "IntegrationCredential",
     "IntegrationProvider",
     "INTEGRATION_PROVIDER_LABELS",

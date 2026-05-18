@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.models.asset import Asset
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+from numis_geek.models.corporate_action import CorporateAction, CorporateActionType
 from numis_geek.models.distribution import Distribution
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 
@@ -76,7 +77,29 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     if as_of is not None:
         q = q.filter(AssetMovement.event_date <= as_of)
 
-    rows = q.order_by(AssetMovement.event_date.asc(), AssetMovement.created_at.asc()).all()
+    movements = q.order_by(AssetMovement.event_date.asc(), AssetMovement.created_at.asc()).all()
+
+    # Merge with CorporateActions sorted by event_date. Movements come before
+    # corporate actions of the same date (so a BUY on the morning of a split
+    # still gets adjusted by the split that day).
+    caq = (
+        db.query(CorporateAction)
+        .filter(CorporateAction.asset_id == asset_id, CorporateAction.is_active == True)  # noqa: E712
+    )
+    if as_of is not None:
+        caq = caq.filter(CorporateAction.event_date <= as_of)
+    corp_actions = caq.order_by(CorporateAction.event_date.asc(), CorporateAction.created_at.asc()).all()
+
+    # Tagged timeline: ('mv', m) or ('ca', ca)
+    timeline = (
+        [("mv", m) for m in movements]
+        + [("ca", c) for c in corp_actions]
+    )
+    timeline.sort(key=lambda kv: (
+        kv[1].event_date,
+        0 if kv[0] == "mv" else 1,
+        kv[1].created_at,
+    ))
 
     running_qty = Decimal("0")
     basis_qty = Decimal("0")          # qty contributing to native PM (cotado BUY/SUBSCRIPTION)
@@ -91,7 +114,23 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         basis_cost_brl = Decimal("0")
         non_cotado_basis_brl = Decimal("0")
 
-    for r in rows:
+    for kind, r in timeline:
+        if kind == "ca":
+            # Corporate action — transform position, preserve total cost
+            if r.event_type in (CorporateActionType.SPLIT, CorporateActionType.GROUPING):
+                ratio = r.ratio or Decimal("1")
+                running_qty *= ratio
+                basis_qty *= ratio
+                # basis_cost_native / _brl preserved — avg_cost = cost / qty
+                # scales down automatically.
+            elif r.event_type == CorporateActionType.ASSET_CONVERSION:
+                # Position closes for this asset; target asset has its own
+                # AssetMovement records (created by importer or user).
+                running_qty = Decimal("0")
+                reset_basis()
+            continue
+
+        # kind == "mv"
         qty = r.quantity or Decimal("0")
         unit = r.unit_price or Decimal("0")
         fx = r.fx_rate or Decimal("1")
