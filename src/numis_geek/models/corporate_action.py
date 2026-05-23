@@ -11,11 +11,13 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text
+    Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text, text
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from numis_geek.db.base import Base
+from numis_geek.models.external import ExternalSource
+from numis_geek.models.notion_sync import NotionSyncStatus
 
 
 class CorporateActionType(str, enum.Enum):
@@ -49,6 +51,17 @@ class CorporateAction(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_source: Mapped[ExternalSource | None] = mapped_column(
+        Enum(ExternalSource), nullable=True
+    )
+    notion_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_remote_last_edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_sync_status: Mapped[NotionSyncStatus] = mapped_column(
+        Enum(NotionSyncStatus), nullable=False, default=NotionSyncStatus.PENDING
+    )
+    notion_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -61,4 +74,11 @@ class CorporateAction(Base):
     __table_args__ = (
         Index("ix_corp_action_workspace_event_date", "workspace_id", "event_date"),
         Index("ix_corp_action_asset_event_date", "asset_id", "event_date"),
+        Index(
+            "ix_corp_action_external",
+            "external_source",
+            "external_id",
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
     )

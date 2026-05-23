@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MoreHorizontal, Plus } from 'lucide-react'
+import { MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import {
   api,
   type AssetOut,
@@ -8,6 +8,8 @@ import {
   type AssetMovementOut,
   type AssetMovementRequest,
   type AssetMovementType,
+  type BulkSyncOut,
+  type SyncOut,
   type UserOut,
   ASSET_MOVEMENT_TYPE_LABELS,
 } from '../lib/api'
@@ -78,9 +80,21 @@ export default function Lancamentos() {
   const [toDate, setToDate] = useState('')
   const [includeInactive, setIncludeInactive] = useState(false)
 
+  // Notion sync
+  const [pendingCount, setPendingCount] = useState<number | null>(null)
+  const [bulkSyncing, setBulkSyncing] = useState(false)
+  const [bulkResult, setBulkResult] = useState<BulkSyncOut | null>(null)
+
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
+
+  useEffect(() => {
+    if (!me) return
+    api.notionPending()
+      .then(c => setPendingCount(c.asset_movements))
+      .catch(() => setPendingCount(null))
+  }, [me, items])
 
   useEffect(() => {
     if (!me) return
@@ -181,6 +195,40 @@ export default function Lancamentos() {
     }
   }
 
+  function handleSyncUpdated(out: SyncOut) {
+    setItems(prev => prev.map(x => x.id === out.entity_id ? {
+      ...x,
+      notion_sync_status: out.status,
+      notion_sync_error: out.error,
+      notion_last_synced_at: out.status === 'SYNCED' ? new Date().toISOString() : x.notion_last_synced_at,
+    } : x))
+    if (selected?.id === out.entity_id) {
+      setSelected(prev => prev ? {
+        ...prev,
+        notion_sync_status: out.status,
+        notion_sync_error: out.error,
+      } : prev)
+    }
+  }
+
+  async function handleBulkSync() {
+    setBulkSyncing(true)
+    setBulkResult(null)
+    try {
+      const r = await api.notionBulk('asset-movement')
+      setBulkResult(r)
+      // Refresh data
+      const p = await api.listAssetMovements({ page_size: 200, page: 1 })
+      setItems(p.items)
+      const c = await api.notionPending()
+      setPendingCount(c.asset_movements)
+    } catch (e) {
+      alert(`Erro no bulk sync: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBulkSyncing(false)
+    }
+  }
+
   async function handleDeactivate(l: AssetMovementOut) {
     await api.deactivateAssetMovement(l.id)
     if (includeInactive) {
@@ -203,15 +251,38 @@ export default function Lancamentos() {
           count={stats.count}
           countLabel={`movimentações · ${stats.uniqAssets} ${stats.uniqAssets === 1 ? 'ativo' : 'ativos'}`}
           action={
-            <button
-              onClick={() => { setEditing(undefined); setModalOpen(true) }}
-              disabled={assets.length === 0}
-              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" /> Novo Lançamento
-            </button>
+            <div className="flex items-center gap-2">
+              {pendingCount !== null && pendingCount > 0 && (
+                <button
+                  onClick={handleBulkSync}
+                  disabled={bulkSyncing}
+                  title={`${pendingCount} pendente(s) — clique para sincronizar todos`}
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-amber-500 hover:bg-amber-400 text-white font-medium disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${bulkSyncing ? 'animate-spin' : ''}`} />
+                  Sync Notion ({pendingCount})
+                </button>
+              )}
+              <button
+                onClick={() => { setEditing(undefined); setModalOpen(true) }}
+                disabled={assets.length === 0}
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" /> Novo Lançamento
+              </button>
+            </div>
           }
         />
+
+        {bulkResult && (
+          <div className="rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-3 py-2 text-[12px] text-gray-700 dark:text-gray-300">
+            Sync: <strong className="text-emerald-600 dark:text-emerald-400">{bulkResult.synced} ok</strong>
+            {bulkResult.conflicts > 0 && <> · <strong className="text-orange-600 dark:text-orange-400">{bulkResult.conflicts} conflitos</strong></>}
+            {bulkResult.errors > 0 && <> · <strong className="text-red-600 dark:text-red-400">{bulkResult.errors} erros</strong></>}
+            {' '}de {bulkResult.total}.
+            <button onClick={() => setBulkResult(null)} className="ml-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">dispensar</button>
+          </div>
+        )}
 
         <QuickAddBar
           placeholder='Lançamento rápido — ex: "compra 100 PETR4 a 38,90 hoje" · em breve'
@@ -328,6 +399,7 @@ export default function Lancamentos() {
           onClose={() => setSelected(null)}
           onEdit={() => { setEditing(selected); setModalOpen(true) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
+          onSyncUpdated={handleSyncUpdated}
         />
       )}
 

@@ -141,6 +141,9 @@ class AssetMovementOut(BaseModel):
     external_id: str | None = None
     external_source: str | None = None
     nota_negociacao_number: str | None = None
+    notion_sync_status: str
+    notion_sync_error: str | None = None
+    notion_last_synced_at: str | None = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -169,6 +172,9 @@ class AssetMovementOut(BaseModel):
             external_id=m.external_id,
             external_source=m.external_source.value if m.external_source else None,
             nota_negociacao_number=m.nota_negociacao_number,
+            notion_sync_status=m.notion_sync_status.value,
+            notion_sync_error=m.notion_sync_error,
+            notion_last_synced_at=m.notion_last_synced_at.isoformat() if m.notion_last_synced_at else None,
             is_active=m.is_active,
             created_at=m.created_at.isoformat(),
             updated_at=m.updated_at.isoformat(),

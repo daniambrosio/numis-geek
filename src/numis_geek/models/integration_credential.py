@@ -13,6 +13,7 @@ class IntegrationProvider(str, enum.Enum):
     BRAPI = "BRAPI"
     FINNHUB = "FINNHUB"
     YFINANCE = "YFINANCE"
+    NOTION = "NOTION"
 
 
 INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
@@ -20,11 +21,13 @@ INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
     IntegrationProvider.BRAPI: "brapi (B3, FIIs, Tesouro)",
     IntegrationProvider.FINNHUB: "Finnhub (cotação US)",
     IntegrationProvider.YFINANCE: "Yahoo Finance (histórico US)",
+    IntegrationProvider.NOTION: "Notion (sync Numis → Notion)",
 }
 
 PROVIDERS_REQUIRING_CREDENTIALS: set[IntegrationProvider] = {
     IntegrationProvider.BRAPI,
     IntegrationProvider.FINNHUB,
+    IntegrationProvider.NOTION,
 }
 
 

@@ -20,11 +20,13 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text,
-    UniqueConstraint,
+    UniqueConstraint, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from numis_geek.db.base import Base
+from numis_geek.models.external import ExternalSource
+from numis_geek.models.notion_sync import NotionSyncStatus
 
 
 class SnapshotSource(str, enum.Enum):
@@ -51,6 +53,17 @@ class PortfolioSnapshot(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_source: Mapped[ExternalSource | None] = mapped_column(
+        Enum(ExternalSource), nullable=True
+    )
+    notion_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_remote_last_edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_sync_status: Mapped[NotionSyncStatus] = mapped_column(
+        Enum(NotionSyncStatus), nullable=False, default=NotionSyncStatus.PENDING
+    )
+    notion_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -63,6 +76,13 @@ class PortfolioSnapshot(Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "period_end_date", name="ux_snapshot_ws_period"),
         Index("ix_snapshot_workspace_period", "workspace_id", "period_end_date"),
+        Index(
+            "ix_snapshot_external",
+            "external_source",
+            "external_id",
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
     )
 
 
@@ -86,9 +106,27 @@ class PortfolioSnapshotItem(Base):
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_source: Mapped[ExternalSource | None] = mapped_column(
+        Enum(ExternalSource), nullable=True
+    )
+    notion_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_remote_last_edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notion_sync_status: Mapped[NotionSyncStatus] = mapped_column(
+        Enum(NotionSyncStatus), nullable=False, default=NotionSyncStatus.PENDING
+    )
+    notion_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_snapshot_item_snapshot", "snapshot_id"),
         Index("ix_snapshot_item_asset", "asset_id"),
+        Index(
+            "ix_snapshot_item_external",
+            "external_source",
+            "external_id",
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
     )
