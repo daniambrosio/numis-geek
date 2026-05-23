@@ -24,6 +24,12 @@ class AssetClass(str, enum.Enum):
     CASH = "CASH"
     FGTS = "FGTS"
     PRIVATE_PENSION = "PRIVATE_PENSION"
+    OPTION = "OPTION"
+
+
+class OptionType(str, enum.Enum):
+    CALL = "CALL"
+    PUT = "PUT"
 
 
 class FixedIncomeIndexer(str, enum.Enum):
@@ -50,6 +56,17 @@ class Asset(Base):
     price_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Options (asset_class=OPTION). All NULL for non-option assets.
+    underlying_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset.id"), nullable=True
+    )
+    option_type: Mapped["OptionType | None"] = mapped_column(
+        Enum(OptionType), nullable=True
+    )
+    strike_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    expiration_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    contract_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_source: Mapped[ExternalSource | None] = mapped_column(
         Enum(ExternalSource), nullable=True

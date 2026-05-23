@@ -55,8 +55,16 @@ class Position(TypedDict):
 
 _BASIS_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION}
 _BASIS_SUB_TYPES = {AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION}
-_QTY_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.BONUS, AssetMovementType.SUBSCRIPTION}
-_QTY_SUB_TYPES = {AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION}
+_QTY_ADD_TYPES = {
+    AssetMovementType.BUY, AssetMovementType.BONUS, AssetMovementType.SUBSCRIPTION,
+    # Spec 17: options open positions add qty (model long/short via sign of net_amount)
+    AssetMovementType.SELL_OPEN, AssetMovementType.BUY_TO_OPEN,
+}
+_QTY_SUB_TYPES = {
+    AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION,
+    AssetMovementType.SELL_TO_CLOSE, AssetMovementType.BUY_TO_CLOSE,
+    AssetMovementType.EXERCISED, AssetMovementType.EXPIRED,
+}
 
 _TOLERANCE = Decimal("1e-6")
 

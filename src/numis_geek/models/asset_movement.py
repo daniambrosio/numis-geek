@@ -19,6 +19,13 @@ class AssetMovementType(str, enum.Enum):
     BONUS = "BONUS"
     SUBSCRIPTION = "SUBSCRIPTION"
     FULL_REDEMPTION = "FULL_REDEMPTION"
+    # Spec 17: options
+    SELL_OPEN = "SELL_OPEN"
+    BUY_TO_OPEN = "BUY_TO_OPEN"
+    BUY_TO_CLOSE = "BUY_TO_CLOSE"
+    SELL_TO_CLOSE = "SELL_TO_CLOSE"
+    EXERCISED = "EXERCISED"
+    EXPIRED = "EXPIRED"
 
 
 # Display names (PT) for UI use; kept on the backend so any layer (audit, exports,
@@ -30,6 +37,12 @@ ASSET_MOVEMENT_TYPE_LABELS: dict[AssetMovementType, str] = {
     AssetMovementType.BONUS: "Bonificação",
     AssetMovementType.SUBSCRIPTION: "Subscrição",
     AssetMovementType.FULL_REDEMPTION: "Resgate Total",
+    AssetMovementType.SELL_OPEN: "Venda pra abrir",
+    AssetMovementType.BUY_TO_OPEN: "Compra pra abrir",
+    AssetMovementType.BUY_TO_CLOSE: "Compra pra fechar",
+    AssetMovementType.SELL_TO_CLOSE: "Venda pra fechar",
+    AssetMovementType.EXERCISED: "Exercida",
+    AssetMovementType.EXPIRED: "Vencida (pó)",
 }
 
 
@@ -57,6 +70,12 @@ class AssetMovement(Base):
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Spec 17: links underlying BUY/SELL to the EXERCISED movement on the
+    # option that triggered it (self-FK, nullable).
+    related_movement_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_movement.id"), nullable=True
+    )
 
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_source: Mapped[ExternalSource | None] = mapped_column(

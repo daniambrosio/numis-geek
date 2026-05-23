@@ -13,6 +13,7 @@ from numis_geek.api.routes import (
     financial_institutions,
     integrations,
     notion_sync,
+    options,
     ptax,
     snapshots,
     users,
@@ -44,6 +45,7 @@ app.include_router(ptax.router)
 app.include_router(corporate_actions.router)
 app.include_router(snapshots.router)
 app.include_router(notion_sync.router)
+app.include_router(options.router)
 
 
 @app.get("/health")

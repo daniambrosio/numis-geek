@@ -117,6 +117,9 @@ export type AssetClass =
   | 'CASH'
   | 'FGTS'
   | 'PRIVATE_PENSION'
+  | 'OPTION'
+
+export type OptionType = 'CALL' | 'PUT'
 
 export type FixedIncomeIndexer = 'CDI' | 'IPCA' | 'SELIC' | 'PREFIXED' | 'USD'
 
@@ -215,6 +218,12 @@ export type AssetMovementType =
   | 'BONUS'
   | 'SUBSCRIPTION'
   | 'FULL_REDEMPTION'
+  | 'SELL_OPEN'
+  | 'BUY_TO_OPEN'
+  | 'BUY_TO_CLOSE'
+  | 'SELL_TO_CLOSE'
+  | 'EXERCISED'
+  | 'EXPIRED'
 
 export const ASSET_MOVEMENT_TYPE_LABELS: Record<AssetMovementType, string> = {
   BUY: 'Compra',
@@ -223,6 +232,12 @@ export const ASSET_MOVEMENT_TYPE_LABELS: Record<AssetMovementType, string> = {
   BONUS: 'Bonificação',
   SUBSCRIPTION: 'Subscrição',
   FULL_REDEMPTION: 'Resgate Total',
+  SELL_OPEN: 'Venda pra abrir',
+  BUY_TO_OPEN: 'Compra pra abrir',
+  BUY_TO_CLOSE: 'Compra pra fechar',
+  SELL_TO_CLOSE: 'Venda pra fechar',
+  EXERCISED: 'Exercida',
+  EXPIRED: 'Vencida (pó)',
 }
 
 export interface AssetMovementOut {
@@ -700,6 +715,33 @@ export const api = {
     request<BulkSyncOut>(`/notion-sync/${entity}/bulk`, { method: 'POST' }),
   notionResolve: (entity: NotionEntity, id: string, action: 'force_push' | 'abort') =>
     request<SyncOut>(`/notion-sync/${entity}/${id}/resolve?action=${action}`, { method: 'POST' }),
+
+  // ── Options (spec 17) ────────────────────────────────────────────────────
+  parseOption: (ticker: string, underlying_price?: number) => {
+    const qs = new URLSearchParams({ ticker })
+    if (underlying_price != null) qs.set('underlying_price', String(underlying_price))
+    return request<ParsedOptionTicker>(`/options/parse?${qs}`)
+  },
+  createOption: (body: OptionCreateRequest) =>
+    request<OptionOut>('/options', { method: 'POST', body: JSON.stringify(body) }),
+  getOption: (id: string) => request<OptionOut>(`/options/${id}`),
+  listOpenOptionsForUnderlying: (underlying_id: string) =>
+    request<OpenOptionOut[]>(`/options/by-underlying/${underlying_id}`),
+  exerciseOption: (id: string, exercise_date: string) =>
+    request<OptionOut>(`/options/${id}/exercise`, {
+      method: 'POST', body: JSON.stringify({ exercise_date }),
+    }),
+  expireOption: (id: string, expiration_date?: string) =>
+    request<OptionOut>(`/options/${id}/expire`, {
+      method: 'POST', body: JSON.stringify({ expiration_date: expiration_date ?? null }),
+    }),
+  closeOption: (id: string, body: {
+    close_date: string; quantity: number; price_per_share: number;
+    movement_type?: 'BUY_TO_CLOSE' | 'SELL_TO_CLOSE'; fee?: number; notes?: string;
+  }) =>
+    request<OptionOut>(`/options/${id}/close`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
 }
 
 export interface SnapshotOut {
@@ -762,4 +804,69 @@ export interface PendingCountsOut {
   asset_movements: number
   snapshots: number
   corporate_actions: number
+}
+
+// ── Options (spec 17) ────────────────────────────────────────────────────────
+
+export interface OptionOut {
+  id: string
+  ticker: string
+  name: string
+  underlying_id: string
+  underlying_ticker: string | null
+  option_type: OptionType
+  strike_price: number
+  expiration_date: string
+  contract_size: number
+  currency: 'BRL' | 'USD'
+  is_active: boolean
+  account_id: string
+  workspace_id: string
+}
+
+export interface OpenOptionOut {
+  option_id: string
+  ticker: string
+  name: string
+  option_type: OptionType
+  strike: number
+  expiration_date: string
+  days_to_expiration: number
+  contract_size: number
+  qty: number
+  is_short: boolean
+  premium_received: number
+  premium_per_share: number
+  current_price: number | null
+  mark_to_market: number | null
+  close_now_pnl: number | null
+  effective_price: number | null
+  verdict: 'likely_exercise' | 'likely_worthless' | 'unknown'
+}
+
+export interface ParsedOptionTicker {
+  prefix: string
+  month: number
+  option_type: OptionType
+  strike_digits: string
+  strike_suggested: number
+  adjustment_suffix: string | null
+}
+
+export interface OptionCreateRequest {
+  ticker: string
+  name?: string
+  underlying_id: string
+  account_id: string
+  option_type: OptionType
+  strike_price: number
+  expiration_date: string
+  contract_size?: number
+  movement_type?: 'SELL_OPEN' | 'BUY_TO_OPEN'
+  movement_date: string
+  quantity: number
+  price_per_share: number
+  fee?: number
+  tax?: number
+  notes?: string
 }

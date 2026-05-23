@@ -6,6 +6,8 @@ import {
 } from '../lib/api'
 import { KLASS, collapsedOf } from '../lib/tokens'
 import { ClassBadge, CcyPill, FILogo } from './ui'
+import OpenOptionsCard from './OpenOptionsCard'
+import OptionModal from './OptionModal'
 
 interface Props {
   asset: AssetOut
@@ -29,6 +31,8 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
   const [position, setPosition] = useState<PositionOut | null>(null)
   const [recent, setRecent] = useState<AssetMovementOut[]>([])
   const [loading, setLoading] = useState(true)
+  const [optionModalOpen, setOptionModalOpen] = useState(false)
+  const [optionsRefresh, setOptionsRefresh] = useState(0)
 
   useEffect(() => {
     let cancel = false
@@ -125,6 +129,24 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
             />
           </div>
 
+          {/* Open options on this underlying (spec 17) */}
+          {asset.asset_class !== 'OPTION' && (
+            <>
+              <OpenOptionsCard
+                key={optionsRefresh}
+                underlyingId={asset.id}
+                underlyingTicker={asset.ticker || asset.name}
+                onAction={() => setOptionsRefresh(n => n + 1)}
+              />
+              <button
+                onClick={() => setOptionModalOpen(true)}
+                className="w-full h-8 px-3 inline-flex items-center justify-center gap-1.5 rounded-lg text-[12px] border border-dashed border-purple-300 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
+              >
+                + Nova opção sobre {asset.ticker || asset.name}
+              </button>
+            </>
+          )}
+
           {/* Recent */}
           <div>
             <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
@@ -172,6 +194,14 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
             )}
           </div>
         </div>
+
+        {optionModalOpen && (
+          <OptionModal
+            underlying={asset}
+            onClose={() => setOptionModalOpen(false)}
+            onSaved={() => setOptionsRefresh(n => n + 1)}
+          />
+        )}
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-end gap-2">

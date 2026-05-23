@@ -13,6 +13,7 @@ export type CollapsedClassCode =
   | 'CASH'
   | 'FGTS'
   | 'PRIVATE_PENSION'
+  | 'OPTION'
 
 export interface ClassToken {
   color: string   // hex, used inline for dots / vertical bars
@@ -31,6 +32,7 @@ export const KLASS: Record<CollapsedClassCode, ClassToken> = {
   CASH:            { color: '#64748b', label: 'Dinheiro' },
   FGTS:            { color: '#84cc16', label: 'FGTS' },
   PRIVATE_PENSION: { color: '#06b6d4', label: 'Previdência' },
+  OPTION:          { color: '#a855f7', label: 'Opção' },
 }
 
 // Identity map kept for callers that still go through collapsedOf().
@@ -73,6 +75,12 @@ export const AM_TYPE_COLORS: Record<string, string> = {
   SUBSCRIPTION: '#8b5cf6',     // violet
   COME_COTAS: '#f59e0b',       // amber
   FULL_REDEMPTION: '#14b8a6',  // teal
+  SELL_OPEN: '#a855f7',        // purple (option premium received)
+  BUY_TO_OPEN: '#7c3aed',      // purple darker
+  BUY_TO_CLOSE: '#6b21a8',     // purple darkest
+  SELL_TO_CLOSE: '#c084fc',    // purple light
+  EXERCISED: '#f59e0b',        // amber
+  EXPIRED: '#64748b',          // slate (worthless)
 }
 
 // Distribution type palette
