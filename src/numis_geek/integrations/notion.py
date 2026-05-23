@@ -20,7 +20,7 @@ import httpx
 
 NOTION_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 60.0
 
 
 class NotionError(RuntimeError):
@@ -103,14 +103,17 @@ class NotionClient:
         database_id: str,
         filter_: dict[str, Any] | None = None,
         page_size: int = 100,
-    ) -> list[NotionPage]:
-        """Single-page query — does NOT auto-paginate. Caller handles cursors
-        if needed (we never expect more than 100 hits per lookup)."""
+        start_cursor: str | None = None,
+    ) -> tuple[list[NotionPage], str | None]:
+        """Single-page query. Returns (pages, next_cursor). next_cursor is
+        None when there are no more pages."""
         body: dict[str, Any] = {"page_size": page_size}
         if filter_:
             body["filter"] = filter_
+        if start_cursor:
+            body["start_cursor"] = start_cursor
         data = self._request("POST", f"/databases/{database_id}/query", json=body)
-        return [
+        pages = [
             NotionPage(
                 id=row["id"],
                 last_edited_time=row["last_edited_time"],
@@ -119,6 +122,24 @@ class NotionClient:
             )
             for row in data.get("results", [])
         ]
+        next_cursor = data.get("next_cursor") if data.get("has_more") else None
+        return pages, next_cursor
+
+    def query_all(
+        self,
+        database_id: str,
+        filter_: dict[str, Any] | None = None,
+    ) -> list[NotionPage]:
+        """Auto-paginates query_database until next_cursor is None."""
+        out: list[NotionPage] = []
+        cursor: str | None = None
+        while True:
+            pages, cursor = self.query_database(
+                database_id, filter_, page_size=100, start_cursor=cursor
+            )
+            out.extend(pages)
+            if cursor is None:
+                return out
 
 
 # ── Property builders ────────────────────────────────────────────────────────

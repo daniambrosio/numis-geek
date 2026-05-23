@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from numis_geek.db.session import SessionLocal
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
+from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
@@ -321,6 +322,9 @@ def import_from_json(
                     existing.currency = currency
                     existing.notes = notes
                     existing.is_active = is_active
+                    if notion_url:
+                        existing.external_id = notion_url
+                        existing.external_source = ExternalSource.NOTION
                     existing.updated_at = datetime.now(timezone.utc)
                     if sysadmin_id:
                         existing.updated_by = sysadmin_id
@@ -339,6 +343,8 @@ def import_from_json(
                         currency=currency,
                         notes=notes,
                         is_active=is_active,
+                        external_id=notion_url,
+                        external_source=ExternalSource.NOTION if notion_url else None,
                         created_at=now,
                         updated_at=now,
                         created_by=sysadmin_id,
