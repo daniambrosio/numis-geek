@@ -517,6 +517,13 @@ export const api = {
 
   listAccounts: () => request<AccountOut[]>('/accounts'),
 
+  getAccount: async (id: string) => {
+    const all = await request<AccountOut[]>('/accounts')
+    const a = all.find(ac => ac.id === id)
+    if (!a) throw new Error(`Account ${id} not found`)
+    return a
+  },
+
   createAccount: (data: {
     name: string
     account_type: string
@@ -607,6 +614,14 @@ export const api = {
 
   deactivateAssetMovement: (id: string) =>
     request<AssetMovementOut>(`/asset-movements/${id}/deactivate`, { method: 'PUT' }),
+
+  listDistributionsForAsset: (asset_id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
+    const qs = new URLSearchParams({ asset_id })
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
+    if (params?.include_inactive) qs.set('include_inactive', 'true')
+    return request<DistributionListPage>(`/distributions?${qs}`)
+  },
 
   listDistributions: (params?: {
     asset_id?: string

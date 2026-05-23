@@ -8,7 +8,6 @@ import {
 import AppLayout from '../../components/AppLayout'
 import AssetModal from '../../components/AssetModal'
 import AssetTable from '../../components/AssetTable'
-import AssetDetailPanel from '../../components/AssetDetailPanel'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
   GroupingToggle,
@@ -45,7 +44,6 @@ export default function Assets() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AssetOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
-  const [selected, setSelected] = useState<AssetOut | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshSummary, setRefreshSummary] = useState<import('../../lib/api').BulkRefreshSummaryOut | null>(null)
 
@@ -163,7 +161,6 @@ export default function Assets() {
     if (editing) {
       const updated = await api.updateAsset(editing.id, data)
       setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))
-      if (selected?.id === updated.id) setSelected(updated)
     } else {
       const created = await api.createAsset(data)
       setAssets(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
@@ -174,10 +171,8 @@ export default function Assets() {
     await api.deactivateAsset(asset.id)
     if (includeInactive) {
       setAssets(prev => prev.map(a => a.id === asset.id ? { ...a, is_active: false } : a))
-      if (selected?.id === asset.id) setSelected({ ...asset, is_active: false })
     } else {
       setAssets(prev => prev.filter(a => a.id !== asset.id))
-      if (selected?.id === asset.id) setSelected(null)
     }
     setConfirmDeactivate(null)
   }
@@ -282,21 +277,10 @@ export default function Assets() {
             positions={positions}
             institutions={institutions}
             grouping={grouping}
-            onRowClick={setSelected}
+            onRowClick={(a) => navigate(`/assets/${a.id}`)}
           />
         )}
       </div>
-
-      {selected && (
-        <AssetDetailPanel
-          key={selected.id}
-          asset={selected}
-          fi={fiById.get(selected.financial_institution_id) ?? null}
-          onClose={() => setSelected(null)}
-          onEdit={() => { setEditing(selected); setModalOpen(true) }}
-          onDeactivate={() => setConfirmDeactivate(selected)}
-        />
-      )}
 
       {modalOpen && institutions.length > 0 && (
         <AssetModal

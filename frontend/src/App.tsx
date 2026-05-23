@@ -6,6 +6,7 @@ import AdminUsers from './pages/admin/Users'
 import AdminAudit from './pages/admin/Audit'
 import AdminAccounts from './pages/admin/Accounts'
 import Assets from './pages/admin/Assets'
+import AssetDetail from './pages/AssetDetail'
 import Lancamentos from './pages/Lancamentos'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
@@ -33,6 +34,7 @@ export default function App() {
         {/* Investimentos */}
         <Route path="/patrimonio" element={<PrivateRoute><ComingSoon title="Patrimônio" hint="Drilldowns por classe, país e custódia. Chega quando o spec de Patrimônio for implementado." /></PrivateRoute>} />
         <Route path="/assets" element={<PrivateRoute><Assets /></PrivateRoute>} />
+        <Route path="/assets/:id" element={<PrivateRoute><AssetDetail /></PrivateRoute>} />
         <Route path="/lancamentos" element={<PrivateRoute><Lancamentos /></PrivateRoute>} />
         <Route path="/proventos" element={<PrivateRoute><ComingSoon title="Proventos" hint="Dividendos, JCP, juros e aluguel. Depende da entidade Distribution (spec 08)." /></PrivateRoute>} />
 
