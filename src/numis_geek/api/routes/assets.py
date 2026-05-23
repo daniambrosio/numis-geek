@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
@@ -406,7 +406,7 @@ def list_assets(
             )
         )
 
-    assets = q.order_by(Asset.name).all()
+    assets = q.order_by(func.lower(Asset.name)).all()
     # Hydrate account → FI map for AssetOut
     account_ids = {a.account_id for a in assets}
     account_map = {
