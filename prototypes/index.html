@@ -175,6 +175,7 @@ const KLASS = {
   CASH:            { label: "Dinheiro",        color: "#64748b", token: "cash" },
   FGTS:            { label: "FGTS",            color: "#84cc16", token: "fgts" },
   PRIVATE_PENSION: { label: "Previdência",     color: "#06b6d4", token: "private_pension" },
+  OPTION:          { label: "Opção",            color: "#a855f7", token: "option" },
 };
 
 // Assets — now linked to an InvestmentAccount (account_id), not directly to FI
@@ -220,6 +221,20 @@ const ASSETS = [
 
   // BTG private pension
   { id: "vgblbtg", account: "btg-inv",       klass: "PRIVATE_PENSION", country: "BR", ticker: null, name: "VGBL BTG Conservador", qty: 1, avg: 60000, price: 74200, ccy: "BRL" },
+
+  // Options on ITUB4 — both sold (SELL_OPEN), expiration 19/06/2026
+  // ITUBR364: PUT strike R$ 36,40 — currently ITM (ITUB4 at R$ 33,42 < strike → provável exercício)
+  // ITUBF475: CALL strike R$ 47,50 — currently OTM (ITUB4 at R$ 33,42 < strike → provável virar pó)
+  { id: "itubr364", account: "xp-inv", klass: "OPTION", country: "BR", ticker: "ITUBR364",
+    name: "PUT ITUB4 · strike R$ 36,40 · vence 19/06/2026",
+    qty: 1000, avg: 0.09, price: 3.20, ccy: "BRL",
+    underlying: "itub4", option_type: "PUT", strike_price: 36.40, expiration_date: "2026-06-19", contract_size: 100,
+    is_short: true },
+  { id: "itubf475", account: "xp-inv", klass: "OPTION", country: "BR", ticker: "ITUBF475",
+    name: "CALL ITUB4 · strike R$ 47,50 · vence 19/06/2026",
+    qty: 1000, avg: 0.34, price: 0.18, ccy: "BRL",
+    underlying: "itub4", option_type: "CALL", strike_price: 47.50, expiration_date: "2026-06-19", contract_size: 100,
+    is_short: true },
 ];
 const assetById = Object.fromEntries(ASSETS.map(a => [a.id, a]));
 
@@ -274,6 +289,9 @@ const MOVEMENTS = [
   { id: "m029", d: "2026-05-01", asset: "vgblbtg",  type: "COME_COTAS",      qty: null,  price: null,   net:  -384,    ccy: "BRL", tax:  384,    fxRate: 1.00 },
   // FULL_REDEMPTION (matured fixed income)
   { id: "m030", d: "2026-04-30", asset: "lciit26",  type: "FULL_REDEMPTION", qty:    1,  price: 56800,  net: 56800,    ccy: "BRL", fee:    0,    fxRate: 1.00 },
+  // SELL_OPEN — options sold (synthetic premium income)
+  { id: "m031", d: "2026-05-02", asset: "itubr364", type: "SELL_OPEN",      qty: 1000,  price:  0.09,  net:    90,    ccy: "BRL", fee:    0,    fxRate: 1.00 },
+  { id: "m032", d: "2026-05-05", asset: "itubf475", type: "SELL_OPEN",      qty: 1000,  price:  0.34,  net:   340,    ccy: "BRL", fee:    0,    fxRate: 1.00 },
 ];
 const mvById = Object.fromEntries(MOVEMENTS.map(m => [m.id, m]));
 
@@ -485,6 +503,93 @@ function allocationHistory() {
     out.push(row);
   }
   return out;
+}
+
+// Options helpers
+const isOption = (a) => a && a.klass === "OPTION";
+const openOptionsOnAsset = (assetId) => ASSETS.filter(a => isOption(a) && a.underlying === assetId && a.is_active !== false);
+const allOpenOptions = () => ASSETS.filter(a => isOption(a) && a.is_active !== false);
+
+// OPTION_PREMIUM rows — derived from SELL_OPEN / BUY_TO_CLOSE movements on OPTION assets.
+// Used by /proventos UNION and synthetic dividend totals on /onde-investir.
+// NEVER feeds DY/YoC of the underlying.
+const OPTION_PREMIUMS = MOVEMENTS
+  .filter(m => m.type === "SELL_OPEN" || m.type === "BUY_TO_CLOSE")
+  .map(m => {
+    const opt = assetById[m.asset];
+    const underlyingId = opt?.underlying;
+    const acc = accById[opt?.account];
+    return {
+      id: m.id + "-prem",
+      d: m.d,
+      fi: acc?.fi,
+      asset: underlyingId,            // attributes the synthetic to the UNDERLYING
+      option_asset: m.asset,          // but remembers which option produced it
+      type: "OPTION_PREMIUM",
+      gross: m.net,
+      tax: 0,
+      net: m.net,
+      ccy: m.ccy,
+      fxRate: m.fxRate,
+    };
+  });
+
+// Target allocation — PLACEHOLDER until user shares Notion table content.
+// Source: docs/decision-support-rationale.md §10.1
+const TARGET_ALLOCATION = [
+  { dimension: "class", key: "STOCK",           target_pct: 0.28 },
+  { dimension: "class", key: "REIT",            target_pct: 0.18 },
+  { dimension: "class", key: "FIXED_INCOME",    target_pct: 0.24 },
+  { dimension: "class", key: "ETF",             target_pct: 0.12 },
+  { dimension: "class", key: "FUND",            target_pct: 0.04 },
+  { dimension: "class", key: "CRYPTO",          target_pct: 0.03 },
+  { dimension: "class", key: "REAL_ESTATE",     target_pct: 0.06 },
+  { dimension: "class", key: "PRIVATE_PENSION", target_pct: 0.03 },
+  { dimension: "class", key: "FGTS",            target_pct: 0.02 },
+];
+
+// User preferences (would live in a settings table per workspace)
+const USER_PREFERENCES = {
+  required_yield_brl: 0.08,    // 8% DY target for Bazin BRL
+  required_yield_usd: 0.05,    // 5% DY target for Bazin USD
+  crypto_max_pct: 0.05,        // 5% cap on volatile crypto
+  emergency_reserve_target_brl: 50_000,
+};
+
+// Emergency reserve assets — manually marked. In schema this is is_emergency_reserve boolean on Asset.
+const EMERGENCY_RESERVE_ASSET_IDS = ["tdipca35", "lciit26", "cdbbtg27"];
+
+// Verdict per asset — coarse rules per class (per decision-support-rationale §12)
+function assetVerdict(a) {
+  if (isOption(a)) return { label: "—", color: "gray", reason: "Opção (não aplicável)" };
+  const { variation, rentabilidade, distNet } = assetReturns(a);
+
+  if (a.klass === "STOCK") {
+    // Stocks: simple proxy — variação positiva forte → manter/vender; variação negativa → comprar
+    if (variation < -0.05) return { label: "Comprar", color: "emerald", reason: "Abaixo do preço médio · oportunidade de DCA" };
+    if (variation > 0.50)  return { label: "Vender",  color: "red",     reason: "Bem acima do preço médio · considerar realização" };
+    return { label: "Manter", color: "gray", reason: "Dentro da faixa esperada" };
+  }
+  if (a.klass === "REIT") {
+    // FII/REIT: DY 12m proxy → high DY = buy
+    const value = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
+    const dyAnnualized = value ? (distNet * (a.ccy === "USD" ? PTAX : 1)) / value : 0;
+    if (dyAnnualized > 0.10) return { label: "Comprar", color: "emerald", reason: `DY ${fmtPct(dyAnnualized, 1)} acima do alvo` };
+    if (dyAnnualized < 0.05) return { label: "Vender",  color: "red",     reason: `DY ${fmtPct(dyAnnualized, 1)} abaixo do alvo` };
+    return { label: "Manter", color: "gray", reason: "Yield dentro da faixa" };
+  }
+  if (a.klass === "ETF") {
+    if (variation < -0.03) return { label: "Comprar", color: "emerald", reason: "DCA mensal recomendado" };
+    return { label: "Manter", color: "gray", reason: "Posição alvo atingida" };
+  }
+  if (a.klass === "FIXED_INCOME") {
+    return { label: "Manter", color: "gray", reason: "Carregar até vencimento" };
+  }
+  if (a.klass === "CRYPTO") {
+    // Cap-based: if % of portfolio < target, buy
+    return { label: "Manter", color: "gray", reason: "Manter dentro do cap (5%)" };
+  }
+  return { label: "Manter", color: "gray", reason: "Sem regra ativa" };
 }
 
 // Activity feed derived from MOVEMENTS + DISTRIBUTIONS + TRANSACTIONS — sorted newest first.
@@ -816,6 +921,7 @@ const NAV = [
 
   { kind: "section", label: "Investimentos" },
   { kind: "item", label: "Patrimônio",     href: "#/patrimonio",     icon: "trending-up" },
+  { kind: "item", label: "Onde investir",  href: "#/onde-investir",  icon: "target" },
   { kind: "item", label: "Ativos",         href: "#/ativos",         icon: "line-chart", badge: ASSETS.length.toString() },
   { kind: "item", label: "Lançamentos",    href: "#/lancamentos",    icon: "arrow-down-up", badge: MOVEMENTS.length.toString() },
   { kind: "item", label: "Proventos",      href: "#/proventos",      icon: "coins", badge: DISTRIBUTIONS.length.toString() },
@@ -1703,7 +1809,7 @@ function typeMovementLabel(t) {
   return ({BUY:"Compra",SELL:"Venda",BONUS:"Bonificação",SUBSCRIPTION:"Subscrição",COME_COTAS:"Come-cotas",FULL_REDEMPTION:"Resgate"}[t]) || t;
 }
 function typeDistributionLabel(t) {
-  return ({DIVIDEND:"Dividendo",INTEREST:"Juros",JCP:"JCP",SECURITIES_LENDING:"Aluguel"}[t]) || t;
+  return ({DIVIDEND:"Dividendo",INTEREST:"Juros",JCP:"JCP",SECURITIES_LENDING:"Aluguel",OPTION_PREMIUM:"Prêmio sintético"}[t]) || t;
 }
 
 function ActivityFeed({ items, hideSource }) {
@@ -2653,12 +2759,16 @@ function AtivosPage() {
   const [fi,        setFi]        = useState([]);    // multi
   const [grouping,  setGrouping]  = useState("none");
   const [showInact, setShowInact] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
   // Row click navigates to full asset page (no slide-over here — use the page).
   const openAsset = (id) => { window.location.hash = `#/ativo/${id}`; };
 
   const filtered = useMemo(() => {
     let xs = ASSETS;
     if (!showInact) xs = xs.filter(a => a.is_active !== false);
+    // Options are excluded by default — they have weird metrics (variation 3500% etc.) and
+    // are better viewed embedded on the underlying's Asset detail page.
+    if (!showOptions) xs = xs.filter(a => a.klass !== "OPTION");
     if (search.trim()) {
       const q = search.toLowerCase();
       xs = xs.filter(a => (a.ticker || "").toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
@@ -2667,7 +2777,7 @@ function AtivosPage() {
     if (country.length) xs = xs.filter(a => country.includes(a.country));
     if (fi.length)      xs = xs.filter(a => fi.includes(assetFi(a)));
     return xs;
-  }, [search, klass, country, fi, showInact]);
+  }, [search, klass, country, fi, showInact, showOptions]);
 
   // Sorted by current value desc
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
@@ -2732,6 +2842,7 @@ function AtivosPage() {
         <div className="flex items-center gap-3 flex-wrap">
           <SearchInput value={search} onChange={setSearch} placeholder="Buscar por ticker ou nome…"/>
           <div className="flex-1"/>
+          <ToggleSwitch on={showOptions} onChange={setShowOptions} label="Incluir opções"/>
           <ToggleSwitch on={showInact} onChange={setShowInact} label="Incluir zerados"/>
         </div>
         <div className="space-y-2 pt-3 border-t border-gray-200 dark:border-gray-800">
@@ -3045,6 +3156,119 @@ function NotesAttachments({ meta, label = "Notas & documentos" }) {
   );
 }
 
+/* ---------- Open options card (rendered inside AtivoDetailPage of an underlying) ---------- */
+
+function OpenOptionsCard({ underlyingId }) {
+  const options = openOptionsOnAsset(underlyingId);
+  if (options.length === 0) return null;
+  const underlying = assetById[underlyingId];
+
+  // Total premium received (sum of SELL_OPEN, minus BUY_TO_CLOSE if any)
+  const totalPremium = options.reduce((s, opt) => {
+    const movs = MOVEMENTS.filter(m => m.asset === opt.id);
+    return s + movs.reduce((ss, m) => ss + ((m.type === "SELL_OPEN" || m.type === "SELL_TO_CLOSE") ? m.net : (m.type === "BUY_TO_OPEN" || m.type === "BUY_TO_CLOSE" ? m.net : 0)), 0);
+  }, 0);
+
+  // Probable outcome heuristic at current price
+  const verdict = (opt) => {
+    if (opt.option_type === "PUT") {
+      return underlying.price < opt.strike_price
+        ? { label: "Provável exercício", color: "text-amber-400" }
+        : { label: "Provável virar pó", color: "text-emerald-400" };
+    } else {
+      return underlying.price > opt.strike_price
+        ? { label: "Provável exercício", color: "text-amber-400" }
+        : { label: "Provável virar pó", color: "text-emerald-400" };
+    }
+  };
+
+  const daysToExpiration = (dateStr) => {
+    const today = new Date("2026-05-06");
+    const exp = new Date(dateStr);
+    return Math.max(0, Math.round((exp - today) / (1000 * 60 * 60 * 24)));
+  };
+
+  return (
+    <Card>
+      <SectionTitle action={
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-500">Prêmio total recebido <span className="tnum money font-medium text-emerald-400">{fmtBRL(totalPremium, { sign: true, compact: true })}</span></span>
+          <button className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+            <Icon name="plus" className="w-3 h-3"/> Nova opção
+          </button>
+        </div>
+      }>
+        <span className="flex items-center gap-2">
+          <span className="w-1.5 h-3 rounded-full" style={{ background: KLASS.OPTION.color }}/>
+          Opções abertas sobre {underlying.ticker} · {options.length}
+        </span>
+      </SectionTitle>
+
+      <div className="space-y-2">
+        {options.map(opt => {
+          const movs = MOVEMENTS.filter(m => m.asset === opt.id);
+          const premium = movs.reduce((s, m) => s + ((m.type === "SELL_OPEN" || m.type === "SELL_TO_CLOSE") ? m.net : (m.type === "BUY_TO_CLOSE" || m.type === "BUY_TO_OPEN" ? m.net : 0)), 0);
+          const v = verdict(opt);
+          const days = daysToExpiration(opt.expiration_date);
+          const markValue = opt.qty * opt.price; // mark-to-market value of the option
+          const closeNow = opt.is_short ? premium - markValue : markValue - Math.abs(premium);
+          const closeNowSign = closeNow >= 0 ? "+" : "−";
+          // Effective price if exercised
+          const premiumPerShare = opt.avg;
+          const effectivePrice = opt.option_type === "PUT"
+            ? opt.strike_price - premiumPerShare
+            : opt.strike_price + premiumPerShare;
+          return (
+            <div key={opt.id} className="p-3 -mx-1 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider
+                    ${opt.option_type === "PUT" ? "bg-blue-500/15 text-blue-400" : "bg-violet-500/15 text-violet-300"}`}>
+                    {opt.option_type} · vendida
+                  </span>
+                  <span className="font-mono text-[13px] font-medium">{opt.ticker}</span>
+                  <span className="text-[11px] text-gray-500">strike <span className="tnum money text-gray-300">{fmtBRL(opt.strike_price)}</span></span>
+                </div>
+                <div className="text-right">
+                  <div className={`text-[12px] font-medium ${v.color}`}>{v.label}</div>
+                  <div className="text-[10px] text-gray-500 tnum">vence em <span className={days < 14 ? "text-amber-400 font-medium" : ""}>{days} dias</span></div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-[11px]">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500">Prêmio recebido</div>
+                  <div className="tnum money font-medium text-emerald-400">{fmtBRL(premium, { sign: true })}</div>
+                  <div className="text-[10px] text-gray-500">R$ {opt.avg.toFixed(2)}/ação × {fmtNum(opt.qty)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500">Mark-to-market</div>
+                  <div className="tnum money font-medium">{fmtBRL(markValue)}</div>
+                  <div className="text-[10px] text-gray-500">R$ {opt.price.toFixed(2)} atual</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500">Se fechasse agora</div>
+                  <div className={`tnum money font-medium ${closeNow >= 0 ? "text-emerald-400" : "text-red-400"}`}>{closeNowSign} {fmtBRL(Math.abs(closeNow))}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500">{opt.option_type === "PUT" ? "Preço efetivo (BUY)" : "Preço efetivo (SELL)"}</div>
+                  <div className="tnum money font-medium">{fmtBRL(effectivePrice)}</div>
+                  <div className="text-[10px] text-gray-500">se exercida</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 text-[11px] text-gray-500">
+        <Icon name="circle-dot" className="w-3 h-3 inline mr-1 text-indigo-400"/>
+        Prêmios contam em <a href="#/proventos" className="text-indigo-400 hover:text-indigo-300">/proventos</a> como
+        <span className="font-medium"> Dividendo sintético</span> — não inflam o DY/Rentabilidade do {underlying.ticker}.
+      </div>
+    </Card>
+  );
+}
+
 /* ---------- Ativo detail page (full route) ---------- */
 
 function AtivoDetailPage({ assetId }) {
@@ -3260,6 +3484,9 @@ function AtivoDetailPage({ assetId }) {
           )
         }
       </Card>
+
+      {/* Open options on this asset (if any) */}
+      <OpenOptionsCard underlyingId={a.id}/>
 
       {/* Notes & attachments */}
       <NotesAttachments meta={ASSET_NOTES[a.id]} label="Notas & documentos do ativo"/>
@@ -3610,10 +3837,12 @@ function ProventosPage() {
   const [types,  setTypes]  = useState([]);
   const [view,   setView]   = useState("month"); // month | asset
   const [search, setSearch] = useState("");
+  const [includeSynthetic, setIncludeSynthetic] = useState(true);
   const [selected, setSelected] = useState(null); // distribution id
 
   const filtered = useMemo(() => {
-    let xs = DISTRIBUTIONS;
+    // UNION: real distributions + synthetic option premiums (when toggle on)
+    let xs = includeSynthetic ? [...DISTRIBUTIONS, ...OPTION_PREMIUMS] : DISTRIBUTIONS;
     if (types.length) xs = xs.filter(d => types.includes(d.type));
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -3623,7 +3852,7 @@ function ProventosPage() {
       });
     }
     return xs;
-  }, [types, search]);
+  }, [types, search, includeSynthetic]);
 
   const sorted = useMemo(() => [...filtered].sort((a, b) => b.d.localeCompare(a.d)), [filtered]);
   const grouped = groupByYM(sorted);
@@ -3646,10 +3875,11 @@ function ProventosPage() {
   const assetRows = Object.values(byAsset).sort((a, b) => b.total - a.total);
 
   const typeOpts = [
-    { id: "DIVIDEND",            label: "Dividendo", color: "#22c55e" },
-    { id: "INTEREST",            label: "Juros",     color: "#3b82f6" },
-    { id: "JCP",                 label: "JCP",       color: "#f59e0b" },
-    { id: "SECURITIES_LENDING",  label: "Aluguel",   color: "#8b5cf6" },
+    { id: "DIVIDEND",            label: "Dividendo",        color: "#22c55e" },
+    { id: "INTEREST",            label: "Juros",            color: "#3b82f6" },
+    { id: "JCP",                 label: "JCP",              color: "#f59e0b" },
+    { id: "SECURITIES_LENDING",  label: "Aluguel",          color: "#8b5cf6" },
+    { id: "OPTION_PREMIUM",      label: "Prêmio sintético", color: "#a855f7" },
   ];
 
   return (
@@ -3693,6 +3923,7 @@ function ProventosPage() {
           <SearchInput value={search} onChange={setSearch} placeholder="Ativo, ticker, instituição…"/>
           <DateRangeButton label="Últimos 12 meses"/>
           <div className="flex-1"/>
+          <ToggleSwitch on={includeSynthetic} onChange={setIncludeSynthetic} label="Incluir dividendos sintéticos"/>
           <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Visão</span>
           <GroupingToggle value={view} onChange={setView} options={[{id: "month", label: "Por mês"}, {id: "asset", label: "Por ativo"}]}/>
         </div>
@@ -3727,9 +3958,16 @@ function ProventosPage() {
                       const fi = fiById[d.fi];
                       const meta = DISTRIBUTION_NOTES[d.id];
                       const hasMeta = meta && (meta.notes || meta.files.length);
+                      const isSynthetic = d.type === "OPTION_PREMIUM";
                       return (
                         <tr key={d.id}
-                          onClick={() => setSelected(d.id)}
+                          onClick={() => {
+                            if (isSynthetic && d.option_asset) {
+                              window.location.hash = `#/ativo/${d.option_asset}`;
+                            } else {
+                              setSelected(d.id);
+                            }
+                          }}
                           className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
                           <td className="px-2 py-2 tnum text-gray-400">{fmtDate(d.d)}</td>
                           <td className="px-2">
@@ -5376,6 +5614,282 @@ function LoginPage() {
 /* ---------- Hint: Field with right-aligned hint slot ---------- */
 // (Field component already supports `hint` prop — used here to slot a button.)
 
+/* ---------- Onde Investir (decision-support cockpit) ---------- */
+
+function OndeInvestirPage() {
+  // 1. Cash disponível
+  const checkingBRL = ACCOUNTS.filter(a => a.type === "checking" && a.currency === "BRL").reduce((s, a) => s + a.balance, 0);
+  const checkingUSD = ACCOUNTS.filter(a => a.type === "checking" && a.currency === "USD").reduce((s, a) => s + a.balance, 0);
+  const cashTotal = checkingBRL + checkingUSD * PTAX;
+
+  // Float em corretora — float de contas investment
+  const floatBRL = ACCOUNTS.filter(a => a.type === "investment" && a.currency === "BRL").reduce((s, a) => s + a.balance, 0);
+  const floatUSD = ACCOUNTS.filter(a => a.type === "investment" && a.currency === "USD").reduce((s, a) => s + a.balance, 0);
+  const floatTotal = floatBRL + floatUSD * PTAX;
+
+  // 2. Reserva de emergência
+  const reservaAtual = ASSETS
+    .filter(a => EMERGENCY_RESERVE_ASSET_IDS.includes(a.id))
+    .reduce((s, a) => s + a.qty * a.price * (a.ccy === "USD" ? PTAX : 1), 0);
+  const reservaTarget = USER_PREFERENCES.emergency_reserve_target_brl;
+  const reservaOK = reservaAtual >= reservaTarget;
+  const reservaPct = reservaTarget ? reservaAtual / reservaTarget : 1;
+
+  // Cash disponível pra investir = todo cash + float, MENOS gap de reserva se houver
+  const reservaGap = Math.max(0, reservaTarget - reservaAtual);
+  const cashDisponivel = cashTotal + floatTotal - reservaGap;
+
+  // 3. Gap vs target allocation
+  const totalInvest = TOTAL_INVEST;
+  const classAllocation = {};
+  ASSETS.filter(a => !isOption(a)).forEach(a => {
+    const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
+    classAllocation[a.klass] = (classAllocation[a.klass] || 0) + v;
+  });
+  const allocationGap = TARGET_ALLOCATION.map(t => {
+    const currentValue = classAllocation[t.key] || 0;
+    const currentPct = totalInvest ? currentValue / totalInvest : 0;
+    const targetValue = totalInvest * t.target_pct;
+    const gapValue = targetValue - currentValue;
+    const gapPct = t.target_pct - currentPct;
+    return { ...t, currentValue, currentPct, targetValue, gapValue, gapPct };
+  }).sort((a, b) => b.gapValue - a.gapValue);
+
+  // 4. Top opportunities — assets with "Comprar" verdict, ranked by variation
+  const opportunities = ASSETS
+    .filter(a => !isOption(a) && a.is_active !== false)
+    .map(a => ({ asset: a, verdict: assetVerdict(a), returns: assetReturns(a) }))
+    .filter(o => o.verdict.label === "Comprar")
+    .sort((a, b) => a.returns.variation - b.returns.variation)
+    .slice(0, 8);
+
+  // 5. Dividendo sintético (opções abertas)
+  const openOptions = allOpenOptions();
+  const syntheticPremium = OPTION_PREMIUMS.reduce((s, p) => s + p.net * (p.ccy === "USD" ? PTAX : 1), 0);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Onde investir"
+        countLabel="cockpit de decisão · onde alocar o cash disponível"
+        action={
+          <div className="flex items-center gap-2">
+            <a href="#/alocacao-alvo" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <Icon name="target" className="w-3.5 h-3.5"/> Alocação alvo
+            </a>
+          </div>
+        }
+      />
+
+      {/* Row 1: Cash + Reserva */}
+      <div className="grid grid-cols-12 gap-6">
+        <Card className="col-span-12 lg:col-span-8">
+          <SectionTitle action={<span className="text-[11px] text-gray-500">{ACCOUNTS.filter(a => a.type === "checking").length} contas correntes + {ACCOUNTS.filter(a => a.type === "investment").length} contas de investimento</span>}>
+            Cash disponível pra investir
+          </SectionTitle>
+          <div className="flex items-baseline gap-3 mb-1">
+            <div className="text-4xl font-semibold tnum money">{fmtBRL(cashDisponivel)}</div>
+            <CcyPill ccy="BRL"/>
+          </div>
+          <div className="text-[12px] text-gray-500 tnum money">≈ {fmtUSD(cashDisponivel / PTAX)} ao PTAX R$ {PTAX.toFixed(4)}</div>
+
+          <div className="mt-5 grid grid-cols-3 gap-3">
+            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Conta corrente BRL</div>
+              <div className="text-sm font-semibold tnum money">{fmtBRL(checkingBRL, { compact: true })}</div>
+            </div>
+            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Conta corrente USD</div>
+              <div className="text-sm font-semibold tnum money">{fmtUSD(checkingUSD, { compact: true })}</div>
+            </div>
+            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Float em corretora</div>
+              <div className="text-sm font-semibold tnum money">{fmtBRL(floatTotal, { compact: true })}</div>
+            </div>
+          </div>
+          {reservaGap > 0 && (
+            <div className="mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] text-amber-300">
+              <Icon name="circle-dot" className="w-3.5 h-3.5 inline mr-1"/>
+              Reserva R$ <span className="tnum">{fmtBRL(reservaGap, { compact: true })}</span> abaixo do alvo — descontado do disponível acima. Reforce a reserva antes de investir o resto.
+            </div>
+          )}
+        </Card>
+
+        <Card className="col-span-12 lg:col-span-4">
+          <SectionTitle action={
+            <button className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-300 hover:bg-gray-700"><Icon name="settings" className="w-3 h-3"/></button>
+          }>Reserva de emergência</SectionTitle>
+          <div className="flex items-baseline gap-2">
+            <div className="text-2xl font-semibold tnum money">{fmtBRL(reservaAtual, { compact: true })}</div>
+            <div className="text-[11px] text-gray-500">de <span className="tnum money">{fmtBRL(reservaTarget, { compact: true })}</span></div>
+          </div>
+          <div className="mt-2"><HBar value={Math.min(reservaAtual, reservaTarget)} max={reservaTarget} color={reservaOK ? "#22c55e" : "#f59e0b"} height={8}/></div>
+          <div className={`mt-2 text-[11px] ${reservaOK ? "text-emerald-400" : "text-amber-400"}`}>
+            {reservaOK
+              ? <Fragment><Icon name="check" className="w-3.5 h-3.5 inline mr-1"/>OK · {fmtPct(reservaPct, 0)}</Fragment>
+              : <Fragment><Icon name="circle-dot" className="w-3.5 h-3.5 inline mr-1"/>Faltam {fmtBRL(reservaGap, { compact: true })}</Fragment>
+            }
+          </div>
+          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Ativos marcados como reserva</div>
+            <div className="space-y-1.5">
+              {EMERGENCY_RESERVE_ASSET_IDS.map(id => {
+                const a = assetById[id];
+                if (!a) return null;
+                const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
+                return (
+                  <a key={id} href={`#/ativo/${id}`} className="flex items-center gap-2 text-[11px] hover:text-indigo-400">
+                    <span className="w-1 h-3 rounded-full" style={{ background: KLASS[a.klass].color }}/>
+                    <span className="truncate flex-1">{a.name}</span>
+                    <span className="tnum money text-gray-400">{fmtBRL(v, { compact: true })}</span>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Row 2: Allocation gap */}
+      <Card>
+        <SectionTitle action={
+          <span className="text-[11px] text-gray-500">
+            <Icon name="circle-dot" className="w-3 h-3 inline mr-0.5 text-amber-400"/>
+            target placeholder · aguardando dados do Notion
+          </span>
+        }>
+          Gap vs alocação alvo
+        </SectionTitle>
+        <div className="space-y-2">
+          {allocationGap.filter(g => g.target_pct > 0).map(g => {
+            const meta = KLASS[g.key];
+            const overweight = g.gapValue < 0;
+            return (
+              <div key={g.key} className="grid grid-cols-12 items-center gap-3 py-1.5">
+                <div className="col-span-3 flex items-center gap-2">
+                  <span className="w-1.5 h-5 rounded-full" style={{ background: meta?.color }}/>
+                  <span className="text-[12px] font-medium">{meta?.label}</span>
+                </div>
+                <div className="col-span-5 flex items-center gap-2">
+                  <div className="flex-1 relative h-2 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                    <div className="absolute inset-y-0 left-0 rounded-full"
+                         style={{ width: `${Math.min(100, g.currentPct * 100)}%`, background: meta?.color }}/>
+                    <div className="absolute inset-y-0 w-0.5 bg-gray-500"
+                         style={{ left: `${Math.min(100, g.target_pct * 100)}%` }} title={`Alvo ${fmtPct(g.target_pct, 1)}`}/>
+                  </div>
+                  <span className="text-[11px] tnum text-gray-400 w-12 text-right">{fmtPct(g.currentPct, 1)}</span>
+                  <span className="text-[10px] text-gray-500 w-10 text-right">alvo {fmtPct(g.target_pct, 0)}</span>
+                </div>
+                <div className="col-span-4 text-right">
+                  <div className={`text-[12px] tnum font-medium ${overweight ? "text-gray-500" : "text-emerald-400"}`}>
+                    {overweight ? "↑ acima " : "↓ alocar "}<span className="money">{fmtBRL(Math.abs(g.gapValue), { compact: true })}</span>
+                  </div>
+                  <div className="text-[10px] text-gray-500">{fmtPct(Math.abs(g.gapPct), 1)} {overweight ? "acima" : "abaixo"}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Row 3: Top opportunities + Synthetic premium */}
+      <div className="grid grid-cols-12 gap-6">
+        <Card className="col-span-12 lg:col-span-8">
+          <SectionTitle action={
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-gray-500">verdict baseado em regras simples · ver doc</span>
+              <a href="#/ativos" className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver todos →</a>
+            </div>
+          }>
+            Top oportunidades · "Comprar" agora
+          </SectionTitle>
+          {opportunities.length === 0
+            ? <div className="text-[12px] text-gray-500 italic py-6 text-center">Nenhum ativo com verdict "Comprar" no momento.</div>
+            : (
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-[12px]">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                      <th className="text-left font-medium px-2 py-2">Ativo</th>
+                      <th className="text-left font-medium px-2 py-2">Classe</th>
+                      <th className="text-right font-medium px-2 py-2">Preço atual</th>
+                      <th className="text-right font-medium px-2 py-2">Variação</th>
+                      <th className="text-left font-medium px-2 py-2">Sinal</th>
+                      <th className="px-2"/>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {opportunities.map(({ asset: a, verdict, returns }) => (
+                      <tr key={a.id}
+                        onClick={() => { window.location.hash = `#/ativo/${a.id}`; }}
+                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
+                        <td className="px-2 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="w-1 h-5 rounded-full" style={{ background: KLASS[a.klass].color }}/>
+                            <div>
+                              <div className="font-mono font-medium flex items-center gap-1.5">{a.ticker || a.name} <CountryFlag country={a.country}/></div>
+                              <div className="text-[11px] text-gray-500 truncate max-w-[200px]">{a.name}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-2"><ClassBadge klass={a.klass} size="xs" withDot={false}/></td>
+                        <td className="px-2 text-right tnum money">{fmtMoney(a.price, a.ccy)}</td>
+                        <td className="px-2 text-right">
+                          <div className={`tnum font-medium ${returns.variation >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(returns.variation, 2, true)}</div>
+                        </td>
+                        <td className="px-2">
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider bg-emerald-500/15 text-emerald-400`}>
+                            {verdict.label}
+                          </span>
+                          <div className="text-[10px] text-gray-500 mt-0.5 truncate max-w-[180px]">{verdict.reason}</div>
+                        </td>
+                        <td className="px-2 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+        </Card>
+
+        <Card className="col-span-12 lg:col-span-4">
+          <SectionTitle action={openOptions.length > 0 && <a href={`#/ativo/${openOptions[0].underlying}`} className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver →</a>}>
+            Dividendo sintético
+          </SectionTitle>
+          <div className="text-2xl font-semibold tnum money text-emerald-400">{fmtBRL(syntheticPremium, { sign: true, compact: true })}</div>
+          <div className="text-[11px] text-gray-500 mt-1">prêmios de opções recebidos · não compõe DY/YoC</div>
+
+          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Opções abertas · {openOptions.length}</div>
+            {openOptions.length === 0
+              ? <div className="text-[12px] text-gray-500 italic">Nenhuma opção aberta no momento.</div>
+              : (
+                <div className="space-y-1.5">
+                  {openOptions.map(opt => {
+                    const underlying = assetById[opt.underlying];
+                    const days = Math.max(0, Math.round((new Date(opt.expiration_date) - new Date("2026-05-06")) / 86400000));
+                    return (
+                      <a key={opt.id} href={`#/ativo/${opt.underlying}`} className="flex items-center gap-2 text-[11px] hover:text-indigo-400">
+                        <span className={`inline-flex items-center px-1 py-0.5 rounded text-[9px] uppercase ${opt.option_type === "PUT" ? "bg-blue-500/15 text-blue-400" : "bg-violet-500/15 text-violet-300"}`}>{opt.option_type}</span>
+                        <span className="font-mono truncate flex-1">{opt.ticker}</span>
+                        <span className={`text-[10px] tnum ${days < 14 ? "text-amber-400" : "text-gray-500"}`}>{days}d</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
+          </div>
+        </Card>
+      </div>
+
+      {/* Footnote */}
+      <div className="text-center text-[11px] text-gray-500">
+        Verdicts são heurísticos · regras completas em <span className="text-gray-400">docs/decision-support-rationale.md §12</span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Placeholder & Not found ---------- */
 
 function Placeholder({ label }) {
@@ -5495,6 +6009,9 @@ function App() {
   } else if (route === "/patrimonio") {
     page = <PatrimonioPage/>;
     breadcrumbs = [{ label: "Investimentos" }, { label: "Patrimônio" }];
+  } else if (route === "/onde-investir") {
+    page = <OndeInvestirPage/>;
+    breadcrumbs = [{ label: "Investimentos" }, { label: "Onde investir" }];
   } else if (route === "/audit") {
     page = <AuditLogPage/>;
     breadcrumbs = [{ label: "Admin" }, { label: "Audit log" }];
