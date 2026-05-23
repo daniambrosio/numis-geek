@@ -52,6 +52,7 @@ from numis_geek.models.account import Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+from numis_geek.models.notion_sync import NotionSyncStatus
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 
@@ -419,6 +420,7 @@ def import_from_json(
             if existing:
                 summary.would_update += 1
                 if apply:
+                    now_dt = datetime.now(timezone.utc)
                     existing.asset_id = asset.id
                     existing.type = ltype
                     existing.event_date = event_date
@@ -433,7 +435,10 @@ def import_from_json(
                     existing.fx_rate = fx_rate
                     existing.notes = notes
                     existing.nota_negociacao_number = nota_negociacao_number
-                    existing.updated_at = datetime.now(timezone.utc)
+                    existing.notion_sync_status = NotionSyncStatus.SYNCED
+                    existing.notion_last_synced_at = now_dt
+                    existing.notion_remote_last_edited_at = now_dt
+                    existing.updated_at = now_dt
                     if sysadmin_id:
                         existing.updated_by = sysadmin_id
             else:
@@ -459,6 +464,9 @@ def import_from_json(
                         external_id=notion_id,
                         external_source=ExternalSource.NOTION,
                         nota_negociacao_number=nota_negociacao_number,
+                        notion_sync_status=NotionSyncStatus.SYNCED,
+                        notion_last_synced_at=now,
+                        notion_remote_last_edited_at=now,
                         is_active=True,
                         created_at=now,
                         updated_at=now,

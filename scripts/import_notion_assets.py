@@ -41,6 +41,7 @@ from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
+from numis_geek.models.notion_sync import NotionSyncStatus
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 
@@ -316,6 +317,7 @@ def import_from_json(
             if existing:
                 summary.would_update += 1
                 if apply:
+                    now_dt = datetime.now(timezone.utc)
                     existing.name = name
                     existing.asset_class = asset_class
                     existing.country = country
@@ -325,7 +327,10 @@ def import_from_json(
                     if notion_url:
                         existing.external_id = notion_url
                         existing.external_source = ExternalSource.NOTION
-                    existing.updated_at = datetime.now(timezone.utc)
+                        existing.notion_sync_status = NotionSyncStatus.SYNCED
+                        existing.notion_last_synced_at = now_dt
+                        existing.notion_remote_last_edited_at = now_dt
+                    existing.updated_at = now_dt
                     if sysadmin_id:
                         existing.updated_by = sysadmin_id
             else:
@@ -345,6 +350,9 @@ def import_from_json(
                         is_active=is_active,
                         external_id=notion_url,
                         external_source=ExternalSource.NOTION if notion_url else None,
+                        notion_sync_status=NotionSyncStatus.SYNCED if notion_url else NotionSyncStatus.PENDING,
+                        notion_last_synced_at=now if notion_url else None,
+                        notion_remote_last_edited_at=now if notion_url else None,
                         created_at=now,
                         updated_at=now,
                         created_by=sysadmin_id,
