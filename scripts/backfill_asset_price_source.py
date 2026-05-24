@@ -1,14 +1,17 @@
 """Spec 22 — heuristic backfill of Asset.price_source.
 
 Mapping rules:
-    CRYPTO                                  → COINBASE
-    STOCK | REIT | ETF | OPTION, country=BR → BRAPI
-    STOCK | REIT | ETF,          country=US → FINNHUB
-    Everything else                         → MANUAL
+    CRYPTO                          → COINBASE
+    STOCK | REIT | ETF, country=BR  → BRAPI
+    STOCK | REIT | ETF, country=US  → FINNHUB
+    Everything else                 → MANUAL
 
-Note: Tesouro Direto assets fall into MANUAL by design — the TESOURO
-source value remains in the enum but no adapter is built in V1 (decision
-2026-05-24; user updates Tesouro positions manually via Investidor Geek).
+Notes:
+- Tesouro Direto assets fall into MANUAL by design — the TESOURO source
+  value remains in the enum but no adapter is built in V1.
+- B3 OPTIONs also fall into MANUAL — brapi's coverage of OPTION tickers
+  is too sparse to be reliable (decision 2026-05-24, after live sync
+  failed on the 2 existing options).
 
 CLI:
     uv run python -m scripts.backfill_asset_price_source           # dry-run (preview only)
@@ -34,12 +37,14 @@ def classify(asset: Asset) -> PriceSource:
     if klass == AssetClass.CRYPTO:
         return PriceSource.COINBASE
 
-    if klass in (AssetClass.STOCK, AssetClass.REIT, AssetClass.ETF, AssetClass.OPTION):
+    if klass in (AssetClass.STOCK, AssetClass.REIT, AssetClass.ETF):
         if country == "BR":
             return PriceSource.BRAPI
         if country == "US":
             return PriceSource.FINNHUB
 
+    # OPTION falls through to MANUAL — brapi coverage is too sparse to be
+    # reliable for B3 options. Revisit if/when a dedicated adapter exists.
     return PriceSource.MANUAL
 
 
