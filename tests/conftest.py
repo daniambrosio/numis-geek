@@ -1,6 +1,12 @@
+import os
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Disable APScheduler in tests so app.lifespan doesn't spin up a real
+# thread that could interfere with TestClient or leak across tests.
+os.environ.setdefault("DISABLE_SCHEDULER", "true")
 
 from numis_geek.db.base import Base
 

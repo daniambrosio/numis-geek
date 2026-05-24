@@ -1,7 +1,10 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from numis_geek.api.middleware import AuditMiddleware
+from numis_geek.scheduler import start_scheduler, stop_scheduler
 from numis_geek.api.routes import (
     accounts,
     asset_movements,
@@ -23,7 +26,14 @@ from numis_geek.api.routes import (
     workspaces,
 )
 
-app = FastAPI(title="Numis-Geek API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler(app)
+    yield
+    stop_scheduler(app)
+
+
+app = FastAPI(title="Numis-Geek API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
