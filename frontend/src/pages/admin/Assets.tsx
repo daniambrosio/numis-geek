@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
+import { ExternalLink, Plus } from 'lucide-react'
 import {
   api, type AssetOut, type AssetRequest, type FinancialInstitutionOut,
   type PositionOut, type UserOut,
@@ -45,32 +45,6 @@ export default function Assets() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AssetOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
-  const [refreshing, setRefreshing] = useState(false)
-  const [refreshSummary, setRefreshSummary] = useState<import('../../lib/api').BulkRefreshSummaryOut | null>(null)
-  const [refreshRunId, setRefreshRunId] = useState(0)
-
-  async function handleBulkRefresh() {
-    setRefreshing(true)
-    setRefreshSummary(null)
-    try {
-      const summary = await api.refreshPricesBulk()
-      setRefreshSummary(summary)
-      setRefreshRunId((n) => n + 1)
-      const updated = await api.listAssets({
-        include_inactive: includeInactive,
-        search: search.trim() || undefined,
-      })
-      setAssets(updated)
-    } catch (e) {
-      setRefreshSummary({ total: 0, ok: 0, skipped: 0, failed: 1, results: [
-        { asset_id: '-', ticker: null, country: null, status: 'failed',
-          provider: null, price_source: null, old_price: null, new_price: null,
-          error: e instanceof Error ? e.message : 'Erro' }
-      ] })
-    } finally {
-      setRefreshing(false)
-    }
-  }
 
   // filters
   const [search, setSearch] = useState('')
@@ -197,14 +171,6 @@ export default function Assets() {
           action={
             <div className="flex items-center gap-2">
               <button
-                onClick={handleBulkRefresh}
-                disabled={refreshing}
-                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 text-gray-700 dark:text-gray-300 transition-colors"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-                {refreshing ? 'Atualizando…' : 'Atualizar preços'}
-              </button>
-              <button
                 disabled
                 title="Em breve"
                 className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed"
@@ -220,37 +186,6 @@ export default function Assets() {
             </div>
           }
         />
-
-        {refreshing && !refreshSummary && (
-          <div className="text-sm bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900 rounded-xl px-4 py-3 text-amber-700 dark:text-amber-300 flex items-center gap-2">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            Atualizando preços… pode levar até 30 segundos.
-          </div>
-        )}
-        {refreshSummary && (
-          <div
-            key={refreshRunId}
-            className={`text-sm border rounded-xl px-4 py-3 transition-opacity ${
-              refreshSummary.failed > 0
-                ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-300'
-                : 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
-            }`}
-          >
-            Atualização às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-            {' · '}
-            {refreshSummary.ok} OK · {refreshSummary.skipped} ignorados · {refreshSummary.failed} falharam
-            {refreshSummary.failed > 0 && (
-              <details className="mt-1 text-xs">
-                <summary className="cursor-pointer">Ver falhas</summary>
-                <ul className="mt-1 ml-4 list-disc">
-                  {refreshSummary.results.filter(r => r.status === 'failed').map(r => (
-                    <li key={r.asset_id}>{r.ticker ?? r.asset_id}: {r.error}</li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </div>
-        )}
 
         <Card padding="p-3" className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">

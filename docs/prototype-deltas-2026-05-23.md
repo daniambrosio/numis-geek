@@ -87,19 +87,27 @@ Cron diário **18:00 America/Sao_Paulo** que chama `/api/prices/refresh` sem bod
 
 - Nova coluna `Atualizado` antes da coluna de ações:
   - Dot colorido + `há Xh` (texto pequeno)
-  - Ícone `↻` por linha (botão; `e.stopPropagation()`)
+  - Ícone `↻` por linha
+    - Botão habilitado (`stopPropagation`) quando `price_source != MANUAL`
+    - Desabilitado/cinza quando `MANUAL`, com tooltip "Sem fonte automatizada — preço manual"
   - Tooltip com fonte + timestamp ISO formatado
 - Sort por `price_updated_at ASC` deve estar disponível (escopo V1.5)
-- Bulk action "Atualizar selecionados" (V1.5 — não bloqueia)
+- Bulk action "Atualizar selecionados" (V1.5 — não bloqueia). Bulk **ignora silenciosamente** itens MANUAL.
 
 ### 1.7 UI — detalhe do ativo
 
-- No header de actions, antes de "Editar":
-  - Se `price_source != MANUAL`: botão `Atualizar preço` com ícone refresh
-  - Se `price_source == MANUAL`: botão `Editar preço` com ícone edit
-- KPI "Preço atual":
-  - Dot colorido no canto superior direito (tooltip explica o tier)
-  - Sub-text: `há Xh · {source label}` (+ conversão R$ se USD)
+No header de actions, **dois botões dedicados** (em vez de um morph):
+
+| Botão | Ícone | Estado |
+|---|---|---|
+| `Atualizar preço` | `refresh` | Habilitado quando `price_source != MANUAL`. Desabilitado com `cursor-not-allowed` + border tracejada + tooltip "Sem fonte automatizada — use Editar preço para atualizar manualmente" quando `MANUAL`. |
+| `Editar preço` | `edit-2` | Sempre habilitado. Abre modal/inline-edit para sobrescrever `price` e setar `price_updated_at = now()`, `price_source = MANUAL` se vier de outra fonte. Audit log `price.update.manual`. |
+
+KPI "Preço atual":
+- Dot colorido no canto superior direito (tooltip explica o tier)
+- Sub-text: `há Xh · {source label}` (+ conversão R$ se USD)
+
+> Por quê não morph entre Atualizar/Editar: usuário não enxerga a regra ("por que esse não dá pra atualizar?"). Tendo os dois sempre visíveis com um deles cinza, fica claro qual ação está disponível e por quê.
 
 ### 1.8 Auditoria
 

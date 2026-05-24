@@ -2,7 +2,7 @@
  * (line 3274). Same structure, classes, spacing and helpers. */
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Coins, MoreHorizontal, Plus, Settings } from 'lucide-react'
+import { ArrowLeft, Coins, Edit2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import {
   api,
   type AccountOut,
@@ -13,6 +13,7 @@ import {
   type PositionOut,
   type UserOut,
 } from '../lib/api'
+import { SOURCE_LABEL } from '../lib/price'
 import AppLayout from '../components/AppLayout'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionModal from '../components/OptionModal'
@@ -128,6 +129,35 @@ export default function AssetDetail() {
   const [error, setError] = useState('')
   const [optionModalOpen, setOptionModalOpen] = useState(false)
   const [optionsRefresh, setOptionsRefresh] = useState(0)
+  const [refreshingPrice, setRefreshingPrice] = useState(false)
+  const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  async function handleRefreshPrice() {
+    if (!asset || refreshingPrice) return
+    setRefreshingPrice(true)
+    setPriceMsg(null)
+    try {
+      const r = await api.refreshAssetPrice(asset.id)
+      if (r.status === 'ok') {
+        setPriceMsg({ kind: 'ok', text: `Atualizado: ${r.ticker ?? asset.ticker} = ${r.new_price}` })
+        const updated = await api.getAsset(asset.id)
+        setAsset(updated)
+      } else {
+        setPriceMsg({ kind: 'err', text: r.error ?? `${r.status}` })
+      }
+    } catch (e) {
+      setPriceMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Erro' })
+    } finally {
+      setRefreshingPrice(false)
+      window.setTimeout(() => setPriceMsg(null), 4000)
+    }
+  }
+
+  function handleEditPrice() {
+    // Manual price edit modal lands in Spec 28. For now, send a soft hint.
+    setPriceMsg({ kind: 'err', text: 'Edição manual chega no spec 28.' })
+    window.setTimeout(() => setPriceMsg(null), 3000)
+  }
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -261,8 +291,34 @@ export default function AssetDetail() {
               )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
-                <Settings className="w-3.5 h-3.5" /> Editar
+              {/* Atualizar preço — sempre presente; disabled p/ MANUAL */}
+              {(() => {
+                const isManual = !asset.price_source || asset.price_source === 'MANUAL'
+                return (
+                  <button
+                    onClick={handleRefreshPrice}
+                    disabled={isManual || refreshingPrice}
+                    title={isManual
+                      ? 'Sem fonte automatizada — use "Editar preço" para atualizar manualmente'
+                      : `Buscar preço em ${SOURCE_LABEL[asset.price_source!]}`}
+                    className={`h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] transition-colors ${
+                      isManual
+                        ? 'bg-gray-50 dark:bg-gray-900/40 text-gray-400 dark:text-gray-600 border border-dashed border-gray-300 dark:border-gray-800 cursor-not-allowed'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${refreshingPrice ? 'animate-spin' : ''}`} />
+                    {refreshingPrice ? 'Atualizando…' : 'Atualizar preço'}
+                  </button>
+                )
+              })()}
+              {/* Editar preço — sempre disponível (manual edit, stub p/ spec 28) */}
+              <button
+                onClick={handleEditPrice}
+                title="Editar preço atual manualmente"
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5" /> Editar preço
               </button>
               <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                 <Coins className="w-3.5 h-3.5" /> + Provento
@@ -280,6 +336,19 @@ export default function AssetDetail() {
               )}
             </div>
           </div>
+
+          {/* Price-refresh toast (inline, auto-dismiss) */}
+          {priceMsg && (
+            <div
+              className={`mt-3 text-[11px] rounded-md px-3 py-1.5 inline-flex items-center gap-2 ${
+                priceMsg.kind === 'ok'
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900'
+              }`}
+            >
+              {priceMsg.text}
+            </div>
+          )}
 
           {/* KPI grid 4×2 */}
           <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
