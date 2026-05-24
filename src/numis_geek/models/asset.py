@@ -40,6 +40,14 @@ class FixedIncomeIndexer(str, enum.Enum):
     USD = "USD"
 
 
+class PriceSource(str, enum.Enum):
+    BRAPI = "BRAPI"        # Ações BR, FIIs, ETFs BR, opções BR
+    FINNHUB = "FINNHUB"    # Ações US, REITs US, ETFs US
+    COINBASE = "COINBASE"  # Cripto
+    TESOURO = "TESOURO"    # Tesouro Direto
+    MANUAL = "MANUAL"      # Imóvel, veículo, FGTS, VGBL, CDB, LCI, etc.
+
+
 class Asset(Base):
     __tablename__ = "asset"
 
@@ -54,6 +62,9 @@ class Asset(Base):
     currency: Mapped[Currency] = mapped_column(Enum(Currency), nullable=False)
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     price_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    price_source: Mapped["PriceSource | None"] = mapped_column(
+        Enum(PriceSource), nullable=True
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -29,6 +29,7 @@ from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 from numis_geek.services.positions import compute_position
+from numis_geek.services.price_freshness import freshness_tier
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -169,6 +170,8 @@ class AssetOut(BaseModel):
     currency: str
     current_price: float | None = None
     price_updated_at: str | None = None
+    price_source: str | None = None
+    price_tier: str = "UNKNOWN"
     notes: str | None
     external_id: str | None = None
     external_source: str | None = None
@@ -228,6 +231,8 @@ class AssetOut(BaseModel):
             currency=asset.currency.value,
             current_price=float(asset.current_price) if asset.current_price is not None else None,
             price_updated_at=asset.price_updated_at.isoformat() if asset.price_updated_at else None,
+            price_source=asset.price_source.value if asset.price_source else None,
+            price_tier=freshness_tier(asset.price_updated_at, asset.price_source).value,
             notes=asset.notes,
             external_id=asset.external_id,
             external_source=asset.external_source.value if asset.external_source else None,

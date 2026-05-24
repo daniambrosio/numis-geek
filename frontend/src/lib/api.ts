@@ -149,6 +149,15 @@ export interface PhysicalDetails {
 
 export type ExternalSource = 'NOTION' | 'B3' | 'BROKER_NOTE' | 'MANUAL_CSV'
 
+export type PriceSource =
+  | 'BRAPI'
+  | 'FINNHUB'
+  | 'COINBASE'
+  | 'TESOURO'
+  | 'MANUAL'
+
+export type PriceTier = 'FRESH' | 'STALE' | 'OLD' | 'UNKNOWN'
+
 export interface AssetOut {
   id: string
   workspace_id: string
@@ -165,6 +174,8 @@ export interface AssetOut {
   currency: 'BRL' | 'USD'
   current_price: number | null
   price_updated_at: string | null
+  price_source: PriceSource | null
+  price_tier: PriceTier
   notes: string | null
   external_id: string | null
   external_source: ExternalSource | null
