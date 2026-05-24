@@ -711,10 +711,17 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
 
-  // ── Price refresh (spec 12) ───────────────────────────────────────────────
+  // ── Price refresh (spec 12 + 23) ─────────────────────────────────────────
   refreshAssetPrice: (id: string) =>
     request<PriceRefreshOut>(`/assets/${id}/refresh-price`, { method: 'POST' }),
 
+  refreshPrices: (body?: { source?: PriceSource; asset_ids?: string[] }) =>
+    request<RefreshSummaryOut>('/prices/refresh', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+
+  /** @deprecated use refreshPrices(). Sunset 2026-12-31. */
   refreshPricesBulk: (only_country?: 'BR' | 'US') => {
     const qs = only_country ? `?only_country=${only_country}` : ''
     return request<BulkRefreshSummaryOut>(`/assets/refresh-prices/bulk${qs}`, { method: 'POST' })
@@ -852,6 +859,7 @@ export interface PriceRefreshOut {
   country: string | null
   status: 'ok' | 'skipped' | 'failed'
   provider: string | null
+  price_source: PriceSource | null
   old_price: number | null
   new_price: number | null
   error: string | null
@@ -863,6 +871,20 @@ export interface BulkRefreshSummaryOut {
   skipped: number
   failed: number
   results: PriceRefreshOut[]
+}
+
+export interface RefreshError {
+  asset_id: string
+  ticker: string | null
+  reason: string | null
+}
+
+export interface RefreshSummaryOut {
+  ok: number
+  failed: number
+  skipped: number
+  errors: RefreshError[]
+  ran_at: string
 }
 
 // ── Notion sync (spec 16) ────────────────────────────────────────────────────

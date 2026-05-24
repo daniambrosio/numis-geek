@@ -47,6 +47,7 @@ export default function Assets() {
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshSummary, setRefreshSummary] = useState<import('../../lib/api').BulkRefreshSummaryOut | null>(null)
+  const [refreshRunId, setRefreshRunId] = useState(0)
 
   async function handleBulkRefresh() {
     setRefreshing(true)
@@ -54,6 +55,7 @@ export default function Assets() {
     try {
       const summary = await api.refreshPricesBulk()
       setRefreshSummary(summary)
+      setRefreshRunId((n) => n + 1)
       const updated = await api.listAssets({
         include_inactive: includeInactive,
         search: search.trim() || undefined,
@@ -62,7 +64,7 @@ export default function Assets() {
     } catch (e) {
       setRefreshSummary({ total: 0, ok: 0, skipped: 0, failed: 1, results: [
         { asset_id: '-', ticker: null, country: null, status: 'failed',
-          provider: null, old_price: null, new_price: null,
+          provider: null, price_source: null, old_price: null, new_price: null,
           error: e instanceof Error ? e.message : 'Erro' }
       ] })
     } finally {
@@ -219,9 +221,24 @@ export default function Assets() {
           }
         />
 
+        {refreshing && !refreshSummary && (
+          <div className="text-sm bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900 rounded-xl px-4 py-3 text-amber-700 dark:text-amber-300 flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            Atualizando preços… pode levar até 30 segundos.
+          </div>
+        )}
         {refreshSummary && (
-          <div className="text-sm bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-900 rounded-xl px-4 py-3 text-emerald-700 dark:text-emerald-300">
-            Atualização: {refreshSummary.ok} OK · {refreshSummary.skipped} ignorados · {refreshSummary.failed} falharam
+          <div
+            key={refreshRunId}
+            className={`text-sm border rounded-xl px-4 py-3 transition-opacity ${
+              refreshSummary.failed > 0
+                ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-300'
+                : 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
+            }`}
+          >
+            Atualização às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            {' · '}
+            {refreshSummary.ok} OK · {refreshSummary.skipped} ignorados · {refreshSummary.failed} falharam
             {refreshSummary.failed > 0 && (
               <details className="mt-1 text-xs">
                 <summary className="cursor-pointer">Ver falhas</summary>

@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -654,6 +654,7 @@ class PriceRefreshOut(BaseModel):
     country: str | None
     status: str
     provider: str | None
+    price_source: str | None
     old_price: float | None
     new_price: float | None
     error: str | None
@@ -665,16 +666,25 @@ def refresh_asset_price(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
+    from numis_geek.models.asset import PriceSource
     from numis_geek.services.price_update import refresh_one
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
-    r = refresh_one(db, asset)
+    if asset.price_source == PriceSource.MANUAL or asset.price_source is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Asset has MANUAL price source. Use the manual edit endpoint.",
+        )
+    actor = db.get(User, current_user.user_id)
+    email = actor.email if actor else current_user.user_id
+    r = refresh_one(db, asset, user_email=email)
     return PriceRefreshOut(
         asset_id=r.asset_id,
         ticker=r.ticker,
         country=r.country,
         status=r.status,
         provider=r.provider,
+        price_source=r.source,
         old_price=float(r.old_price) if r.old_price is not None else None,
         new_price=float(r.new_price) if r.new_price is not None else None,
         error=r.error,
@@ -689,21 +699,34 @@ class BulkRefreshSummaryOut(BaseModel):
     results: list[PriceRefreshOut]
 
 
-@router.post("/refresh-prices/bulk", response_model=BulkRefreshSummaryOut)
+@router.post(
+    "/refresh-prices/bulk",
+    response_model=BulkRefreshSummaryOut,
+    deprecated=True,
+    summary="Deprecated — use POST /prices/refresh (Spec 23).",
+)
 def refresh_prices_bulk(
+    response: Response,
     only_country: str | None = Query(None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
     from numis_geek.services.price_update import refresh_bulk
     workspace_id = None if current_user.role == UserRole.sysadmin else current_user.workspace_id
-    summary = refresh_bulk(db, workspace_id=workspace_id, only_country=only_country)
+    actor = db.get(User, current_user.user_id)
+    email = actor.email if actor else current_user.user_id
+    summary = refresh_bulk(
+        db, workspace_id=workspace_id, only_country=only_country, user_email=email,
+    )
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "2026-12-31"
+    response.headers["Link"] = '</prices/refresh>; rel="successor-version"'
     return BulkRefreshSummaryOut(
         total=summary.total, ok=summary.ok, skipped=summary.skipped, failed=summary.failed,
         results=[
             PriceRefreshOut(
                 asset_id=r.asset_id, ticker=r.ticker, country=r.country,
-                status=r.status, provider=r.provider,
+                status=r.status, provider=r.provider, price_source=r.source,
                 old_price=float(r.old_price) if r.old_price is not None else None,
                 new_price=float(r.new_price) if r.new_price is not None else None,
                 error=r.error,
