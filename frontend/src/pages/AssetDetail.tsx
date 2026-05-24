@@ -13,7 +13,14 @@ import {
   type PositionOut,
   type UserOut,
 } from '../lib/api'
-import { SOURCE_LABEL } from '../lib/price'
+import { SOURCE_LABEL, TIER_COLOR, formatRelative } from '../lib/price'
+
+const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
+  FRESH: 'Atualizado nas últimas 24h',
+  STALE: 'Atualizado há mais de 24h',
+  OLD: 'Atualizado há mais de 7 dias',
+  UNKNOWN: 'Nunca atualizado',
+}
 import AppLayout from '../components/AppLayout'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionContextCard from '../components/OptionContextCard'
@@ -71,16 +78,6 @@ function fmtPct(n: number | null | undefined, dp = 1, sign = false) {
 
 function fmtDate(iso: string) {
   return new Intl.DateTimeFormat('pt-BR').format(new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')))
-}
-
-function fmtRelDate(iso: string) {
-  const d = new Date(iso)
-  const today = new Date()
-  const diff = Math.round((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24))
-  if (diff === 0) return 'Hoje'
-  if (diff === 1) return 'Ontem'
-  if (diff < 7) return `Há ${diff} dias`
-  return fmtDate(iso)
 }
 
 function CountryFlag({ country }: { country: string }) {
@@ -372,9 +369,31 @@ export default function AssetDetail() {
             <KpiTile
               label="Preço atual"
               value={fmtMoney(price, ccy)}
-              sub={asset.price_updated_at
-                ? `atualizado · ${fmtRelDate(asset.price_updated_at)}${ccy === 'USD' && price != null ? ` · R$ ${(price * PTAX).toFixed(2)}` : ''}`
-                : 'sem preço atual'}
+              cornerDot={{
+                color: TIER_COLOR[asset.price_tier],
+                title: PRICE_TIER_TITLE[asset.price_tier],
+              }}
+              sub={
+                asset.price_updated_at ? (
+                  <>
+                    <span data-testid="price-age">{formatRelative(asset.price_updated_at)}</span>
+                    {asset.price_source && (
+                      <>
+                        <span className="mx-1">·</span>
+                        <span data-testid="price-source">{SOURCE_LABEL[asset.price_source]}</span>
+                      </>
+                    )}
+                    {ccy === 'USD' && price != null && (
+                      <>
+                        <span className="mx-1">·</span>
+                        <span className="tnum">R$ {(price * PTAX).toFixed(2)}</span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  'sem preço atual'
+                )
+              }
             />
             <KpiTile
               label="P&L"
@@ -600,14 +619,29 @@ export default function AssetDetail() {
 }
 
 function KpiTile({
-  label, value, sub, intent,
-}: { label: string; value: string; sub?: string; intent?: 'positive' | 'negative' }) {
+  label, value, sub, intent, cornerDot,
+}: {
+  label: string
+  value: string
+  sub?: React.ReactNode
+  intent?: 'positive' | 'negative'
+  cornerDot?: { color: string; title?: string }
+}) {
   const intentColor =
     intent === 'negative' ? 'text-red-500 dark:text-red-400'
     : intent === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
     : ''
   return (
-    <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+    <div className="relative px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+      {cornerDot && (
+        <span
+          className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
+          style={{ background: cornerDot.color }}
+          title={cornerDot.title}
+          aria-label={cornerDot.title}
+          data-testid="kpi-dot"
+        />
+      )}
       <div className="text-[11px] uppercase tracking-wider font-medium text-gray-500 dark:text-gray-400">{label}</div>
       <div className={`mt-1 text-lg font-semibold tnum money flex items-center gap-2 ${intentColor}`}>
         {value}
