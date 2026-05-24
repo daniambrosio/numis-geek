@@ -9,6 +9,8 @@ import Assets from './pages/admin/Assets'
 import AssetDetail from './pages/AssetDetail'
 import AssetMovements from './pages/AssetMovements'
 import DecisionSupport from './pages/DecisionSupport'
+import Portfolio from './pages/Portfolio'
+import Distributions from './pages/Distributions'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
 import SysAdminIntegrations from './pages/sysadmin/Integrations'
@@ -33,12 +35,12 @@ export default function App() {
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
 
         {/* Investimentos */}
-        <Route path="/portfolio" element={<PrivateRoute><ComingSoon title="Patrimônio" hint="Drilldowns por classe, país e custódia. Chega quando o spec de Patrimônio for implementado." /></PrivateRoute>} />
+        <Route path="/portfolio" element={<PrivateRoute><Portfolio /></PrivateRoute>} />
         <Route path="/decision-support" element={<PrivateRoute><DecisionSupport /></PrivateRoute>} />
         <Route path="/assets" element={<PrivateRoute><Assets /></PrivateRoute>} />
         <Route path="/assets/:id" element={<PrivateRoute><AssetDetail /></PrivateRoute>} />
         <Route path="/asset-movements" element={<PrivateRoute><AssetMovements /></PrivateRoute>} />
-        <Route path="/distributions" element={<PrivateRoute><ComingSoon title="Proventos" hint="Dividendos, JCP, juros e aluguel — incl. prêmios sintéticos de opção. Chega no Spec 21." /></PrivateRoute>} />
+        <Route path="/distributions" element={<PrivateRoute><Distributions /></PrivateRoute>} />
 
         {/* Caixa & Cartões */}
         <Route path="/transactions" element={<PrivateRoute><ComingSoon title="Movimentações" hint="Transações de contas e cartões. Depende da entidade Transaction (Spec 23)." /></PrivateRoute>} />

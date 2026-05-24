@@ -39,11 +39,11 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
 
   { kind: 'section', label: 'Investimentos' },
-  { kind: 'item', label: 'Patrimônio', href: '/portfolio', icon: TrendingUp, placeholder: true },
+  { kind: 'item', label: 'Patrimônio', href: '/portfolio', icon: TrendingUp },
   { kind: 'item', label: 'Decision-support', href: '/decision-support', icon: Compass, placeholder: true },
   { kind: 'item', label: 'Ativos', href: '/assets', icon: LineChart },
   { kind: 'item', label: 'Lançamentos', href: '/asset-movements', icon: ArrowDownUp },
-  { kind: 'item', label: 'Proventos', href: '/distributions', icon: Coins, placeholder: true },
+  { kind: 'item', label: 'Proventos', href: '/distributions', icon: Coins },
 
   { kind: 'section', label: 'Caixa & Cartões' },
   { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
@@ -83,7 +83,7 @@ interface NovoItem {
 // Mirrors prototype index.html:1115-1124. Order within each group preserved.
 const NOVO_ITEMS: NovoItem[] = [
   { key: 'movement',     label: 'Lançamento',           desc: 'Compra, venda, bonificação…',           icon: ArrowDownUp,  group: 'Investimentos',    shortcut: 'L', enabled: true, composeRoute: '/asset-movements' },
-  { key: 'distribution', label: 'Provento',             desc: 'Dividendo, juros, JCP, aluguel',        icon: Coins,        group: 'Investimentos',    shortcut: 'P', enabled: false },
+  { key: 'distribution', label: 'Provento',             desc: 'Dividendo, juros, JCP, aluguel',        icon: Coins,        group: 'Investimentos',    shortcut: 'P', enabled: true, composeRoute: '/distributions' },
   { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: false },
   { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: false },
   { key: 'asset',        label: 'Ativo',                desc: 'Cadastrar um novo ativo',               icon: LineChart,    group: 'Cadastros',        shortcut: 'A', enabled: true, composeRoute: '/assets' },

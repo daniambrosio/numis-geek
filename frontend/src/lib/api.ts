@@ -758,6 +758,66 @@ export const api = {
     request<OptionOut>(`/options/${id}/close`, {
       method: 'POST', body: JSON.stringify(body),
     }),
+
+  getPortfolio: (workspace_id?: string) => {
+    const qs = workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''
+    return request<PortfolioOut>(`/portfolio${qs}`)
+  },
+}
+
+// ── Portfolio (Spec 20) ──────────────────────────────────────────────────────
+
+export interface PortfolioClassBreakdown {
+  asset_class: string
+  value_brl: number
+  pct: number
+}
+
+export interface PortfolioCountryBreakdown {
+  country: string
+  value_brl: number
+  pct: number
+}
+
+export interface PortfolioCustodianBreakdown {
+  fi_id: string
+  fi_short: string
+  fi_logo_slug: string | null
+  value_brl: number
+  pct: number
+  asset_count: number
+}
+
+export interface PortfolioHolding {
+  asset_id: string
+  ticker: string | null
+  name: string
+  asset_class: string
+  country: string
+  fi_short: string
+  fi_logo_slug: string | null
+  value_brl: number
+  pct: number
+}
+
+export interface PortfolioHistoryPoint {
+  period_end: string
+  total_brl: number
+  by_class: Record<string, number>
+}
+
+export interface PortfolioOut {
+  as_of: string | null
+  source: 'snapshot' | 'live' | 'empty'
+  ptax_rate: number | null
+  total_value_brl: number
+  total_value_usd: number
+  total_invested_brl: number
+  by_class: PortfolioClassBreakdown[]
+  by_country: PortfolioCountryBreakdown[]
+  by_custodian: PortfolioCustodianBreakdown[]
+  top_holdings: PortfolioHolding[]
+  history: PortfolioHistoryPoint[]
 }
 
 export interface SnapshotOut {
