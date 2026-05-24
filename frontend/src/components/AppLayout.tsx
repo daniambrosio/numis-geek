@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, Fragment } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, TrendingUp, LineChart, ArrowDownUp, Coins, Wallet,
+  LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
-  Plug, DollarSign,
+  Plug, DollarSign, Sparkles,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
@@ -39,33 +39,69 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
 
   { kind: 'section', label: 'Investimentos' },
-  { kind: 'item', label: 'Patrimônio', href: '/patrimonio', icon: TrendingUp, placeholder: true },
+  { kind: 'item', label: 'Patrimônio', href: '/portfolio', icon: TrendingUp, placeholder: true },
+  { kind: 'item', label: 'Decision-support', href: '/decision-support', icon: Compass, placeholder: true },
   { kind: 'item', label: 'Ativos', href: '/assets', icon: LineChart },
-  { kind: 'item', label: 'Lançamentos', href: '/lancamentos', icon: ArrowDownUp },
-  { kind: 'item', label: 'Proventos', href: '/proventos', icon: Coins, placeholder: true },
+  { kind: 'item', label: 'Lançamentos', href: '/asset-movements', icon: ArrowDownUp },
+  { kind: 'item', label: 'Proventos', href: '/distributions', icon: Coins, placeholder: true },
 
   { kind: 'section', label: 'Caixa & Cartões' },
-  { kind: 'item', label: 'Movimentações', href: '/movimentacoes', icon: Wallet, placeholder: true },
-  { kind: 'item', label: 'Cartões', href: '/cartoes', icon: CreditCard, placeholder: true },
-  { kind: 'item', label: 'Faturas', href: '/faturas', icon: FileText, placeholder: true },
-  { kind: 'item', label: 'Orçamento', href: '/orcamento', icon: Target, placeholder: true },
+  { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
+  { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard, placeholder: true },
+  { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText, placeholder: true },
+  { kind: 'item', label: 'Orçamento', href: '/budget', icon: Target, placeholder: true },
 
   { kind: 'section', label: 'Estrutura' },
-  { kind: 'item', label: 'Instituições', href: '/instituicoes', icon: Building2, placeholder: true },
+  { kind: 'item', label: 'Instituições', href: '/financial-institutions', icon: Building2, placeholder: true },
   { kind: 'item', label: 'Contas', href: '/accounts', icon: Layers },
 
   { kind: 'section', label: 'Admin', roles: ['admin', 'sysadmin'] },
-  { kind: 'item', label: 'Usuários', href: '/admin/users', icon: ShieldCheck },
   { kind: 'item', label: 'Auditoria', href: '/admin/audit', icon: ScrollText },
 
   { kind: 'section', label: 'Sistema', roles: ['sysadmin'] },
+  { kind: 'item', label: 'Usuários', href: '/admin/users', icon: ShieldCheck },
   { kind: 'item', label: 'Inst. Financeiras', href: '/sysadmin/financial-institutions', icon: Building2 },
   { kind: 'item', label: 'Ativos', href: '/sysadmin/assets', icon: LineChart },
   { kind: 'item', label: 'Integrações', href: '/sysadmin/integrations', icon: Plug },
   { kind: 'item', label: 'PTAX', href: '/sysadmin/ptax', icon: DollarSign },
 ]
 
-const NOVO_ITEMS = ['Lançamento', 'Provento', 'Movimentação', 'Cartão tx', 'Ativo', 'Conta', 'Cartão']
+type NovoGroup = 'Investimentos' | 'Caixa & Cartões' | 'Cadastros'
+
+interface NovoItem {
+  key: string
+  label: string
+  desc: string
+  icon: typeof LayoutDashboard
+  group: NovoGroup
+  shortcut: string
+  enabled: boolean
+  /** Route to navigate to and set `?compose=<key>` on. Required when `enabled`. */
+  composeRoute?: string
+}
+
+// Mirrors prototype index.html:1115-1124. Order within each group preserved.
+const NOVO_ITEMS: NovoItem[] = [
+  { key: 'movement',     label: 'Lançamento',           desc: 'Compra, venda, bonificação…',           icon: ArrowDownUp,  group: 'Investimentos',    shortcut: 'L', enabled: true, composeRoute: '/asset-movements' },
+  { key: 'distribution', label: 'Provento',             desc: 'Dividendo, juros, JCP, aluguel',        icon: Coins,        group: 'Investimentos',    shortcut: 'P', enabled: false },
+  { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: false },
+  { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: false },
+  { key: 'asset',        label: 'Ativo',                desc: 'Cadastrar um novo ativo',               icon: LineChart,    group: 'Cadastros',        shortcut: 'A', enabled: true, composeRoute: '/assets' },
+  { key: 'account',      label: 'Conta',                desc: 'Nova conta corrente ou de investimento',icon: Layers,       group: 'Cadastros',        shortcut: 'C', enabled: false },
+  { key: 'card',         label: 'Cartão',               desc: 'Novo cartão de crédito',                icon: CreditCard,   group: 'Cadastros',        shortcut: 'K', enabled: false },
+]
+
+const NOVO_GROUPS: NovoGroup[] = ['Investimentos', 'Caixa & Cartões', 'Cadastros']
+
+function defaultNovoItem(pathname: string): string {
+  if (pathname.startsWith('/asset-movements')) return 'movement'
+  if (pathname.startsWith('/distributions'))   return 'distribution'
+  if (pathname.startsWith('/transactions'))    return 'transaction'
+  if (pathname.startsWith('/credit-cards') || pathname.startsWith('/invoices')) return 'card-tx'
+  if (pathname.startsWith('/assets'))          return 'asset'
+  if (pathname.startsWith('/accounts'))        return 'account'
+  return 'movement'
+}
 
 export default function AppLayout({ user, children }: Props) {
   const navigate = useNavigate()
@@ -75,8 +111,10 @@ export default function AppLayout({ user, children }: Props) {
   const [comfort, setComfort] = useState(getComfort)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [novoOpen, setNovoOpen] = useState(false)
+  const [novoToast, setNovoToast] = useState<string | null>(null)
   const avatarRef = useRef<HTMLDivElement>(null)
   const novoRef = useRef<HTMLDivElement>(null)
+  const novoDefault = defaultNovoItem(location.pathname)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -100,6 +138,16 @@ export default function AppLayout({ user, children }: Props) {
   function handleLogout() {
     clearToken()
     navigate('/login')
+  }
+
+  function handleNovoClick(item: NovoItem) {
+    if (!item.enabled || !item.composeRoute) {
+      setNovoToast(item.label)
+      window.setTimeout(() => setNovoToast(null), 1400)
+      return
+    }
+    setNovoOpen(false)
+    navigate(`${item.composeRoute}?compose=${item.key}`)
   }
 
   const initials = user.name
@@ -203,21 +251,55 @@ export default function AppLayout({ user, children }: Props) {
                 className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" /> Novo
+                <ChevronDown className="w-3 h-3 -mr-0.5 opacity-80" />
               </button>
               {novoOpen && (
-                <div className="menu-pop absolute right-0 mt-2 w-52 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-lg py-1 z-50">
-                  <div className="px-3 py-2 text-[10px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500">Criar</div>
-                  {NOVO_ITEMS.map(label => (
-                    <button
-                      key={label}
-                      disabled
-                      title="Em breve"
-                      className="w-full flex items-center justify-between px-3 py-1.5 text-[12px] text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    >
-                      <span>{label}</span>
-                      <span className="text-[9px] uppercase tracking-wider">em breve</span>
-                    </button>
+                <div className="menu-pop absolute right-0 mt-2 w-72 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xl shadow-black/30 p-2 z-50">
+                  {NOVO_GROUPS.map(g => (
+                    <Fragment key={g}>
+                      <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-gray-500 dark:text-gray-400">{g}</div>
+                      {NOVO_ITEMS.filter(it => it.group === g).map(item => {
+                        const isDefault = item.key === novoDefault
+                        const Icon = item.icon
+                        return (
+                          <button
+                            key={item.key}
+                            onClick={() => handleNovoClick(item)}
+                            title={item.enabled ? '' : 'Em breve'}
+                            className={`w-full text-left flex items-start gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
+                              isDefault
+                                ? 'bg-indigo-500/10 hover:bg-indigo-500/15'
+                                : 'hover:bg-gray-100 dark:hover:bg-gray-800/50'
+                            } ${!item.enabled ? 'opacity-60' : ''}`}
+                          >
+                            <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${isDefault ? 'text-indigo-500 dark:text-indigo-400' : 'text-gray-500 dark:text-gray-400'}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[12px] font-medium ${isDefault ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-200'}`}>
+                                  {item.label}
+                                </span>
+                                {isDefault && <Sparkles className="w-3 h-3 text-indigo-500 dark:text-indigo-400" />}
+                                {!item.enabled && <span className="text-[9px] uppercase tracking-wider text-gray-400 dark:text-gray-600">em breve</span>}
+                              </div>
+                              <div className="text-[11px] text-gray-500 dark:text-gray-500 truncate">{item.desc}</div>
+                            </div>
+                            <kbd className="text-[9px] text-gray-500 dark:text-gray-400 px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800/50 shrink-0">
+                              {item.shortcut}
+                            </kbd>
+                          </button>
+                        )
+                      })}
+                    </Fragment>
                   ))}
+                  <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800 px-2 py-1 text-[10px] text-gray-500 dark:text-gray-400 inline-flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-indigo-500 dark:text-indigo-400" />
+                    sugerido pelo contexto atual
+                  </div>
+                </div>
+              )}
+              {novoToast && (
+                <div className="menu-pop absolute right-0 -bottom-10 px-2.5 py-1 rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-[11px] shadow-lg z-50 whitespace-nowrap">
+                  {novoToast} — em breve
                 </div>
               )}
             </div>

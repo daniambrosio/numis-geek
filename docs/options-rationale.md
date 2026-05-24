@@ -87,6 +87,69 @@ opções:
 > Pra opções vendidas, a posição "aberta" é o resultado de
 > `SELL_OPEN − BUY_TO_CLOSE − EXERCISED − EXPIRED`.
 
+### 3.1 "Abrir" vs "fechar" — em PT plano
+
+A nomenclatura inglesa (`*_OPEN`, `*_TO_CLOSE`) parece densa, mas é só duas
+distinções ortogonais: **direção** (vender/comprar) × **estado** (abrir
+nova posição vs fechar posição existente).
+
+**Os 2 tipos de "abrir" (originação)**
+
+- **Vender pra abrir** (`SELL_OPEN`, jargão B3: "lançar opção"): você
+  vende a opção sem possuí-la, fica short. Recebe prêmio na hora. Aposta
+  que a opção vai virar pó. Risco: exercício te força a comprar (PUT
+  vendida) ou vender (CALL vendida) o underlying pelo strike.
+- **Comprar pra abrir** (`BUY_TO_OPEN`): você compra a opção, paga prêmio,
+  fica long. Aposta que a opção vai ficar valiosa. Perda máxima limitada
+  ao prêmio pago.
+
+São os únicos tipos que aparecem na **criação inicial** da opção —
+`OptionModal` mostra esses 2 na dropdown "Tipo operação".
+
+**Os 4 tipos de "fechar" / vencimento**
+
+`SELL_TO_CLOSE` / `BUY_TO_CLOSE` fecham uma posição **antes** do
+vencimento; `EXERCISED` / `EXPIRED` são o que **acontece** no vencimento.
+
+Estes 4 **não aparecem como tipo escolhido pelo usuário num composer**:
+
+- `EXERCISED` / `EXPIRED` são botões no `OpenOptionsCard` (no detail do
+  underlying): "Marcar exercida" / "Marcar vencida".
+- `SELL_TO_CLOSE` / `BUY_TO_CLOSE` ficam pra spec dedicada futura
+  ("Fechar posição cedo") — ainda não há fluxo no UI.
+
+### 3.2 Onde cada tipo aparece na UX (revisão 2026-05-23)
+
+| Tipo | Composer / fluxo | Origem |
+|---|---|---|
+| `BUY` / `SELL` / `BONUS` / `SUBSCRIPTION` / `COME_COTAS` / `FULL_REDEMPTION` | `MovementComposer` (dropdown Novo → Lançamento) | spec 18 |
+| `SELL_OPEN` / `BUY_TO_OPEN` | `OptionModal` aberto via "+ Opção" no `AssetDetail` ou "+ Nova opção" no `OpenOptionsCard` | spec 17 |
+| `EXERCISED` / `EXPIRED` | botões no `OpenOptionsCard` (Marcar exercida / vencida) | spec 17 |
+| `SELL_TO_CLOSE` / `BUY_TO_CLOSE` | sem fluxo no UI hoje — spec dedicada futura | TBD |
+
+**Razão da divisão:** o `MovementComposer` mostra os 6 tipos comuns num
+grid 3×2 (espelhando o protótipo `index.html:4242-4387`). Misturar os 12
+tipos lá polui a tela sem clareza. Opção é um asset distinto com fluxo
+próprio.
+
+### 3.3 Sync Notion — option types ficam fora (decidido 2026-05-23)
+
+A base original do Notion (importada via spec 07b) só tem as 6 opções de
+`Tipo Transação` clássicas. **Movimentos com `type IN (SELL_OPEN,
+BUY_TO_OPEN, SELL_TO_CLOSE, BUY_TO_CLOSE, EXERCISED, EXPIRED)** são
+**bloqueados no push pra Notion** — option lifecycle nasceu nesta base, é
+conceito novo que o Notion original não modela.
+
+Implementação:
+- `services/notion_sync.py::push_asset_movement` detecta option type e
+  retorna `SKIPPED` antes de chamar Notion.
+- Movimentos skipped não aparecem no contador "Sync Notion (N)" — o
+  query de pendentes ignora.
+- Pull do Notion não é afetado (option types só são criados aqui).
+
+Se algum dia o Notion source de verdade ganhar opções, reabilitar é uma
+linha — remover o early return.
+
 ---
 
 ## 4. Exercise price adjustment — a regra crítica

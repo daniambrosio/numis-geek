@@ -147,6 +147,14 @@ def _mark_error(entity, msg: str) -> None:
     entity.notion_sync_error = msg[:500]
 
 
+def _mark_skipped(entity, reason: str) -> None:
+    """Mark an entity as intentionally not pushed to Notion (e.g. option
+    lifecycle movements not modeled in the upstream Notion DB schema). See
+    `docs/options-rationale.md` §3.3."""
+    entity.notion_sync_status = NotionSyncStatus.SKIPPED
+    entity.notion_sync_error = reason[:500]
+
+
 def _mark_conflict(entity, remote_edited_at: str) -> None:
     entity.notion_sync_status = NotionSyncStatus.CONFLICT
     entity.notion_sync_error = (
@@ -177,6 +185,13 @@ _MOVEMENT_TYPE_PT = {
     AssetMovementType.SUBSCRIPTION: "Subscrição",
     AssetMovementType.COME_COTAS: "ComeCota",
     AssetMovementType.FULL_REDEMPTION: "Resgate Total",
+    # Option lifecycle (Spec 17) — labels mirror UI conventions.
+    AssetMovementType.SELL_OPEN: "Venda pra abrir",
+    AssetMovementType.BUY_TO_OPEN: "Compra pra abrir",
+    AssetMovementType.SELL_TO_CLOSE: "Venda pra fechar",
+    AssetMovementType.BUY_TO_CLOSE: "Compra pra fechar",
+    AssetMovementType.EXERCISED: "Exercida",
+    AssetMovementType.EXPIRED: "Vencida",
 }
 
 
@@ -321,9 +336,26 @@ def push_asset(
     return _push(db, asset, db_id, _asset_to_props(asset), cli, force)
 
 
+_OPTION_LIFECYCLE_TYPES = frozenset({
+    AssetMovementType.SELL_OPEN,
+    AssetMovementType.BUY_TO_OPEN,
+    AssetMovementType.SELL_TO_CLOSE,
+    AssetMovementType.BUY_TO_CLOSE,
+    AssetMovementType.EXERCISED,
+    AssetMovementType.EXPIRED,
+})
+
+
 def push_asset_movement(
     db: Session, m: AssetMovement, *, force: bool = False, client: NotionClient | None = None
 ) -> SyncResult:
+    # Option lifecycle types aren't representable in the upstream Notion DB
+    # schema (which only knows the 6 classic types). See
+    # `docs/options-rationale.md` §3.3.
+    if m.type in _OPTION_LIFECYCLE_TYPES:
+        _mark_skipped(m, "Option-lifecycle movement; not pushed to Notion.")
+        return SyncResult(NotionSyncStatus.SKIPPED, None, None, m.notion_sync_error)
+
     cli = client or _client(db)
     asset = db.get(Asset, m.asset_id)
     if not asset:

@@ -6,6 +6,9 @@ SYNCED  — last push succeeded; `notion_last_synced_at` and
 CONFLICT — last sync attempt detected that the remote page changed since the
           last successful push; UI must prompt user before sobrescrever
 ERROR   — last sync raised; `notion_sync_error` has the message
+SKIPPED — push intentionally skipped because the entity is not representable
+          in the upstream Notion DB schema (e.g. option lifecycle movements,
+          see `docs/options-rationale.md` §3.3). Excluded from pending counts.
 """
 from __future__ import annotations
 
@@ -17,3 +20,4 @@ class NotionSyncStatus(str, enum.Enum):
     SYNCED = "SYNCED"
     CONFLICT = "CONFLICT"
     ERROR = "ERROR"
+    SKIPPED = "SKIPPED"

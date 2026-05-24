@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
 import {
   api, type AssetOut, type AssetRequest, type FinancialInstitutionOut,
@@ -35,6 +35,7 @@ const GROUPING_OPTS = [
 
 export default function Assets() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [me, setMe] = useState<UserOut | null>(null)
   const [assets, setAssets] = useState<AssetOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
@@ -89,6 +90,17 @@ export default function Assets() {
       .catch(() => navigate('/login'))
   }, [navigate])
 
+  // Open AssetModal when launched via "Novo → Ativo" from the top bar.
+  useEffect(() => {
+    if (searchParams.get('compose') === 'asset') {
+      setEditing(undefined)
+      setModalOpen(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('compose')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
   useEffect(() => {
     if (!me) return
     setLoading(true)
@@ -124,12 +136,6 @@ export default function Assets() {
   }, [me, includeInactive, search])
 
   // Client-side filters: class (collapsed) + custodian. Country deferred (spec 09).
-  const fiById = useMemo(() => {
-    const m = new Map<string, FinancialInstitutionOut>()
-    for (const fi of institutions) m.set(fi.id, fi)
-    return m
-  }, [institutions])
-
   const filtered = useMemo(() => {
     let xs = assets
     if (klassSel.length) {

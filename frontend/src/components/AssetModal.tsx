@@ -14,6 +14,7 @@ const CLASS_LABELS: Record<AssetClass, string> = {
   CASH: 'Dinheiro',
   FGTS: 'FGTS',
   PRIVATE_PENSION: 'Previdência',
+  OPTION: 'Opção',
 }
 
 // PRIVATE_PENSION/FGTS/CASH behave like ticker classes but ticker is optional

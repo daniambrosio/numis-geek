@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import {
   api,
@@ -14,7 +14,7 @@ import {
   ASSET_MOVEMENT_TYPE_LABELS,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import LancamentoModal from '../components/LancamentoModal'
+import MovementComposer from '../components/MovementComposer'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
@@ -60,8 +60,9 @@ function fmtDate(iso: string): string {
   return new Intl.DateTimeFormat('pt-BR').format(new Date(iso + 'T00:00:00'))
 }
 
-export default function Lancamentos() {
+export default function AssetMovements() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [me, setMe] = useState<UserOut | null>(null)
   const [items, setItems] = useState<AssetMovementOut[]>([])
   const [assets, setAssets] = useState<AssetOut[]>([])
@@ -88,6 +89,17 @@ export default function Lancamentos() {
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
+
+  // Open MovementComposer when launched via "Novo → Lançamento" from the top bar.
+  useEffect(() => {
+    if (searchParams.get('compose') === 'movement') {
+      setEditing(undefined)
+      setModalOpen(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('compose')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     if (!me) return
@@ -404,7 +416,7 @@ export default function Lancamentos() {
       )}
 
       {modalOpen && (
-        <LancamentoModal
+        <MovementComposer
           initial={editing}
           assets={assets}
           onSave={handleSave}

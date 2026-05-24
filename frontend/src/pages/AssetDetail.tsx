@@ -273,8 +273,7 @@ export default function AssetDetail() {
               {asset.asset_class !== 'OPTION' && (
                 <button
                   onClick={() => setOptionModalOpen(true)}
-                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-white transition-colors"
-                  style={{ background: KLASS.OPTION.color }}
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" /> Opção
                 </button>
@@ -465,6 +464,7 @@ export default function AssetDetail() {
             underlyingId={asset.id}
             underlyingTicker={asset.ticker || asset.name}
             onAction={() => setOptionsRefresh(n => n + 1)}
+            onAddOption={() => setOptionModalOpen(true)}
           />
         )}
 

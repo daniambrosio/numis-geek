@@ -7,7 +7,8 @@ import AdminAudit from './pages/admin/Audit'
 import AdminAccounts from './pages/admin/Accounts'
 import Assets from './pages/admin/Assets'
 import AssetDetail from './pages/AssetDetail'
-import Lancamentos from './pages/Lancamentos'
+import AssetMovements from './pages/AssetMovements'
+import DecisionSupport from './pages/DecisionSupport'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
 import SysAdminIntegrations from './pages/sysadmin/Integrations'
@@ -32,21 +33,33 @@ export default function App() {
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
 
         {/* Investimentos */}
-        <Route path="/patrimonio" element={<PrivateRoute><ComingSoon title="Patrimônio" hint="Drilldowns por classe, país e custódia. Chega quando o spec de Patrimônio for implementado." /></PrivateRoute>} />
+        <Route path="/portfolio" element={<PrivateRoute><ComingSoon title="Patrimônio" hint="Drilldowns por classe, país e custódia. Chega quando o spec de Patrimônio for implementado." /></PrivateRoute>} />
+        <Route path="/decision-support" element={<PrivateRoute><DecisionSupport /></PrivateRoute>} />
         <Route path="/assets" element={<PrivateRoute><Assets /></PrivateRoute>} />
         <Route path="/assets/:id" element={<PrivateRoute><AssetDetail /></PrivateRoute>} />
-        <Route path="/lancamentos" element={<PrivateRoute><Lancamentos /></PrivateRoute>} />
-        <Route path="/proventos" element={<PrivateRoute><ComingSoon title="Proventos" hint="Dividendos, JCP, juros e aluguel. Depende da entidade Distribution (spec 08)." /></PrivateRoute>} />
+        <Route path="/asset-movements" element={<PrivateRoute><AssetMovements /></PrivateRoute>} />
+        <Route path="/distributions" element={<PrivateRoute><ComingSoon title="Proventos" hint="Dividendos, JCP, juros e aluguel — incl. prêmios sintéticos de opção. Chega no Spec 21." /></PrivateRoute>} />
 
         {/* Caixa & Cartões */}
-        <Route path="/movimentacoes" element={<PrivateRoute><ComingSoon title="Movimentações" hint="Transações de contas e cartões. Depende da entidade Transaction (spec 11)." /></PrivateRoute>} />
-        <Route path="/cartoes" element={<PrivateRoute><ComingSoon title="Cartões" hint="Cartões de crédito como entidade própria. Depende do spec 11." /></PrivateRoute>} />
-        <Route path="/faturas" element={<PrivateRoute><ComingSoon title="Faturas" hint="Fechamento de cartão por período. Depende do spec 11." /></PrivateRoute>} />
-        <Route path="/orcamento" element={<PrivateRoute><ComingSoon title="Orçamento" hint="Categorias × meses, com targets. Depende dos specs 11 + 12." /></PrivateRoute>} />
+        <Route path="/transactions" element={<PrivateRoute><ComingSoon title="Movimentações" hint="Transações de contas e cartões. Depende da entidade Transaction (Spec 23)." /></PrivateRoute>} />
+        <Route path="/credit-cards" element={<PrivateRoute><ComingSoon title="Cartões" hint="Cartões de crédito como entidade própria. Depende do Spec 23." /></PrivateRoute>} />
+        <Route path="/invoices" element={<PrivateRoute><ComingSoon title="Faturas" hint="Fechamento de cartão por período. Depende do Spec 23." /></PrivateRoute>} />
+        <Route path="/budget" element={<PrivateRoute><ComingSoon title="Orçamento" hint="Categorias × meses, com targets. Depende dos Specs 19 + 23." /></PrivateRoute>} />
 
         {/* Estrutura */}
-        <Route path="/instituicoes" element={<PrivateRoute><ComingSoon title="Instituições" hint="FI Hub com contas, cartões e ativos agregados. Depende dos specs 10 + 11." /></PrivateRoute>} />
+        <Route path="/financial-institutions" element={<PrivateRoute><ComingSoon title="Instituições" hint="FI Hub com contas, cartões e ativos agregados. Chega no Spec 22." /></PrivateRoute>} />
         <Route path="/accounts" element={<PrivateRoute><AdminAccounts /></PrivateRoute>} />
+
+        {/* Legacy PT routes — redirect to EN equivalents (mantido por 1 ciclo) */}
+        <Route path="/patrimonio" element={<Navigate to="/portfolio" replace />} />
+        <Route path="/onde-investir" element={<Navigate to="/decision-support" replace />} />
+        <Route path="/lancamentos" element={<Navigate to="/asset-movements" replace />} />
+        <Route path="/proventos" element={<Navigate to="/distributions" replace />} />
+        <Route path="/movimentacoes" element={<Navigate to="/transactions" replace />} />
+        <Route path="/cartoes" element={<Navigate to="/credit-cards" replace />} />
+        <Route path="/faturas" element={<Navigate to="/invoices" replace />} />
+        <Route path="/orcamento" element={<Navigate to="/budget" replace />} />
+        <Route path="/instituicoes" element={<Navigate to="/financial-institutions" replace />} />
 
         {/* Admin */}
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />

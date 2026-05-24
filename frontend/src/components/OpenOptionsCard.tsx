@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
+import { Plus } from 'lucide-react'
 import { api, type OpenOptionOut } from '../lib/api'
 import { KLASS } from '../lib/tokens'
 
 interface Props {
   underlyingId: string
   underlyingTicker: string
-  onAction?: () => void  // callback after exercise/expire/close to refresh parent
+  onAction?: () => void   // callback after exercise/expire/close to refresh parent
+  onAddOption?: () => void // opens the OptionModal in the parent
 }
 
 function fmtBRL(n: number, opts: { sign?: boolean } = {}) {
@@ -18,7 +20,7 @@ function fmtNum(n: number) {
   return n.toLocaleString('pt-BR', { maximumFractionDigits: 0 })
 }
 
-export default function OpenOptionsCard({ underlyingId, underlyingTicker, onAction }: Props) {
+export default function OpenOptionsCard({ underlyingId, underlyingTicker, onAction, onAddOption }: Props) {
   const [rows, setRows] = useState<OpenOptionOut[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -70,8 +72,31 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
       </div>
     )
   }
+  // Empty state: only render if the parent provides an add-option handler;
+  // otherwise hide the card (matches prototype behavior).
   if (rows.length === 0) {
-    return null
+    if (!onAddOption) return null
+    return (
+      <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-3 rounded-full" style={{ background: KLASS.OPTION.color }} />
+            <span className="text-[12px] font-semibold text-gray-900 dark:text-white">
+              Opções abertas sobre {underlyingTicker} · 0
+            </span>
+          </div>
+          <button
+            onClick={onAddOption}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+          >
+            <Plus className="w-3 h-3" /> Nova opção
+          </button>
+        </div>
+        <div className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
+          Sem opções abertas. Use <strong>+ Nova opção</strong> pra lançar uma covered call ou cash-secured put sobre {underlyingTicker}.
+        </div>
+      </div>
+    )
   }
   if (error) {
     return (
@@ -90,14 +115,23 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
             Opções abertas sobre {underlyingTicker} · {rows.length}
           </span>
         </div>
-        <span className="text-[11px] text-gray-500">
-          Prêmio total <span className={`tnum font-medium ${totalPremium >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>{fmtBRL(totalPremium, { sign: true })}</span>
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-500">
+            Prêmio total recebido <span className={`tnum font-medium ${totalPremium >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>{fmtBRL(totalPremium, { sign: true })}</span>
+          </span>
+          {onAddOption && (
+            <button
+              onClick={onAddOption}
+              className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+            >
+              <Plus className="w-3 h-3" /> Nova opção
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">
         {rows.map(r => {
-          const isITM = r.verdict === 'likely_exercise'
           const verdictLabel = r.verdict === 'likely_exercise' ? 'Provável exercício'
             : r.verdict === 'likely_worthless' ? 'Provável virar pó'
             : '—'
