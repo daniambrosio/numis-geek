@@ -66,6 +66,7 @@ class PortfolioOut(BaseModel):
     total_value_brl: float
     total_value_usd: float
     total_invested_brl: float
+    total_received_brl: float
     by_class: list[ClassBreakdownOut]
     by_country: list[CountryBreakdownOut]
     by_custodian: list[CustodianBreakdownOut]
@@ -105,6 +106,7 @@ def get_portfolio(
         total_value_brl=float(summary.total_value_brl),
         total_value_usd=float(summary.total_value_usd),
         total_invested_brl=float(summary.total_invested_brl),
+        total_received_brl=float(summary.total_received_brl),
         by_class=[
             ClassBreakdownOut(
                 asset_class=c.asset_class,

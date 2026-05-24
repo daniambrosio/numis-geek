@@ -112,6 +112,10 @@ export default function Dashboard() {
   // Portfolio summary (snapshot-based) drives the hero numbers + breakdowns
   // — same source as the /portfolio page, so the two stay consistent.
   // Falls back to liveAgg when no snapshot exists.
+  //
+  // Note: Notion-imported snapshots have total_invested_brl=0 on the header
+  // (the importer didn't populate it). When that happens, use the
+  // positions-derived invested instead.
   const { totalInvested, totalCurrent, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
     const hasPortfolio = !!portfolio && portfolio.source !== 'empty'
     const byClassArr = hasPortfolio
@@ -123,10 +127,19 @@ export default function Dashboard() {
     const byCountryArr = hasPortfolio
       ? portfolio!.by_country.map(c => ({ country: c.country, value: c.value_brl })).sort((a, b) => b.value - a.value)
       : []
+    // Prefer snapshot's invested; fall back to live (positions) when snapshot
+    // is missing the value or it's zero.
+    const snapInvested = hasPortfolio ? portfolio!.total_invested_brl : 0
+    const invested = snapInvested > 0 ? snapInvested : liveAgg.invested
+    // Proventos: prefer portfolio's all-time received (sums Distribution
+    // table directly, including distributions from now-inactive assets);
+    // fall back to live positions otherwise. This is what makes Dashboard
+    // and /distributions agree.
+    const received = hasPortfolio ? portfolio!.total_received_brl : liveAgg.received
     return {
-      totalInvested: hasPortfolio ? portfolio!.total_invested_brl : liveAgg.invested,
+      totalInvested: invested,
       totalCurrent: hasPortfolio ? portfolio!.total_value_brl : liveAgg.current,
-      totalReceived: liveAgg.received,  // not exposed in /portfolio yet
+      totalReceived: received,
       byClass: byClassArr,
       byFi: byFiArr,
       byCountry: byCountryArr,

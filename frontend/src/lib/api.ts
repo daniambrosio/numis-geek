@@ -813,6 +813,7 @@ export interface PortfolioOut {
   total_value_brl: number
   total_value_usd: number
   total_invested_brl: number
+  total_received_brl: number
   by_class: PortfolioClassBreakdown[]
   by_country: PortfolioCountryBreakdown[]
   by_custodian: PortfolioCustodianBreakdown[]

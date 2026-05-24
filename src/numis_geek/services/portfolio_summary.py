@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset, AssetClass
+from numis_geek.models.distribution import Distribution
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
@@ -73,6 +75,7 @@ class PortfolioSummary:
     total_value_brl: Decimal
     total_value_usd: Decimal
     total_invested_brl: Decimal
+    total_received_brl: Decimal  # all-time, derived from Distribution table
     by_class: list[ClassBreakdown]
     by_country: list[CountryBreakdown]
     by_custodian: list[CustodianBreakdown]
@@ -88,6 +91,7 @@ def _empty(source: str = "empty") -> PortfolioSummary:
         total_value_brl=Decimal("0"),
         total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"),
+        total_received_brl=Decimal("0"),
         by_class=[],
         by_country=[],
         by_custodian=[],
@@ -149,6 +153,21 @@ def _history(db: Session, workspace_id: str, limit: int = 12) -> list[HistoryPoi
     ]
 
 
+def _total_received_brl(db: Session, workspace_id: str) -> Decimal:
+    """All-time sum of Distribution.net_amount × fx_rate for the workspace.
+    Includes distributions whose underlying asset is now inactive — they
+    still happened historically. Excludes deactivated distribution rows."""
+    total = (
+        db.query(func.sum(Distribution.net_amount * Distribution.fx_rate))
+        .filter(
+            Distribution.workspace_id == workspace_id,
+            Distribution.is_active == True,  # noqa: E712
+        )
+        .scalar()
+    )
+    return Decimal(total) if total is not None else Decimal("0")
+
+
 def compute_portfolio_summary(
     db: Session, workspace_id: str
 ) -> PortfolioSummary:
@@ -164,7 +183,11 @@ def compute_portfolio_summary(
         .first()
     )
     if not latest:
-        return _empty()
+        empty = _empty()
+        # Even with no snapshot, total_received_brl can be reported from
+        # Distribution rows (Notion-imported, doesn't depend on snapshots).
+        empty.total_received_brl = _total_received_brl(db, workspace_id)
+        return empty
 
     # Pull items + joined asset/account/fi for the latest snapshot.
     rows = (
@@ -264,6 +287,7 @@ def compute_portfolio_summary(
         total_value_brl=latest.total_value_brl,
         total_value_usd=latest.total_value_usd,
         total_invested_brl=latest.total_invested_brl,
+        total_received_brl=_total_received_brl(db, workspace_id),
         by_class=class_breakdowns,
         by_country=country_breakdowns,
         by_custodian=custodian_breakdowns,

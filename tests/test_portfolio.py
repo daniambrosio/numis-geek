@@ -246,6 +246,7 @@ def test_summary_empty_workspace_returns_empty():
     assert s.source == "empty"
     assert s.as_of is None
     assert s.total_value_brl == Decimal("0")
+    assert s.total_received_brl == Decimal("0")
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────────────
