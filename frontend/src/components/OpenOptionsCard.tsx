@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ChevronRight, Plus } from 'lucide-react'
 import { api, type OpenOptionOut } from '../lib/api'
 import { KLASS } from '../lib/tokens'
 
@@ -139,7 +140,11 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
             : r.verdict === 'likely_worthless' ? 'text-emerald-500 dark:text-emerald-400'
             : 'text-gray-400'
           return (
-            <div key={r.option_id} className="p-3 -mx-1 rounded-lg border border-gray-200 dark:border-gray-800">
+            <Link
+              key={r.option_id}
+              to={`/assets/${r.option_id}`}
+              className="block p-3 -mx-1 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 hover:border-indigo-500/40 transition-colors group"
+            >
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2 min-w-0 flex-wrap">
                   <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider ${
@@ -148,14 +153,17 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
                   }`}>
                     {r.option_type} · {r.is_short ? 'vendida' : 'comprada'}
                   </span>
-                  <span className="font-mono text-[12px] font-medium text-gray-900 dark:text-white">{r.ticker}</span>
+                  <span className="font-mono text-[12px] font-medium text-gray-900 dark:text-white group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors">{r.ticker}</span>
                   <span className="text-[11px] text-gray-500">strike <span className="tnum font-medium">{fmtBRL(r.strike)}</span></span>
                 </div>
-                <div className="text-right shrink-0">
-                  <div className={`text-[11px] font-medium ${verdictColor}`}>{verdictLabel}</div>
-                  <div className="text-[10px] text-gray-500 tnum">
-                    {r.days_to_expiration === 0 ? 'venceu' : `vence em ${r.days_to_expiration}d`}
+                <div className="text-right shrink-0 flex items-center gap-2">
+                  <div>
+                    <div className={`text-[11px] font-medium ${verdictColor}`}>{verdictLabel}</div>
+                    <div className="text-[10px] text-gray-500 tnum">
+                      {r.days_to_expiration === 0 ? 'venceu' : `vence em ${r.days_to_expiration}d`}
+                    </div>
                   </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 dark:text-gray-600 group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors" />
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2 text-[11px]">
@@ -195,7 +203,7 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
               </div>
               <div className="flex items-center justify-end gap-1">
                 <button
-                  onClick={() => handleExercise(r.option_id)}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleExercise(r.option_id) }}
                   disabled={busy === r.option_id}
                   className="h-6 px-2 inline-flex items-center rounded-md text-[10px] border border-amber-200 dark:border-amber-900/40 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
                   title="Marcar como exercida — gera BUY/SELL no underlying com preço efetivo"
@@ -203,7 +211,7 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
                   Exercer
                 </button>
                 <button
-                  onClick={() => handleExpire(r.option_id)}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleExpire(r.option_id) }}
                   disabled={busy === r.option_id}
                   className="h-6 px-2 inline-flex items-center rounded-md text-[10px] border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
                   title="Marcar como vencida sem ser exercida"
@@ -211,7 +219,7 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
                   Virou pó
                 </button>
               </div>
-            </div>
+            </Link>
           )
         })}
       </div>

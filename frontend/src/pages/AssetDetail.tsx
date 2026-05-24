@@ -16,6 +16,7 @@ import {
 import { SOURCE_LABEL } from '../lib/price'
 import AppLayout from '../components/AppLayout'
 import OpenOptionsCard from '../components/OpenOptionsCard'
+import OptionContextCard from '../components/OptionContextCard'
 import OptionModal from '../components/OptionModal'
 import Sparkline from '../components/Sparkline'
 import {
@@ -129,6 +130,7 @@ export default function AssetDetail() {
   const [error, setError] = useState('')
   const [optionModalOpen, setOptionModalOpen] = useState(false)
   const [optionsRefresh, setOptionsRefresh] = useState(0)
+  const [underlying, setUnderlying] = useState<AssetOut | null>(null)
   const [refreshingPrice, setRefreshingPrice] = useState(false)
   const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
@@ -175,6 +177,13 @@ export default function AssetDetail() {
         if (acc) {
           setAccount(acc)
           setFi(fis.find(f => f.id === acc.financial_institution_id) ?? null)
+        }
+        // For OPTION assets, also load the underlying for OptionContextCard.
+        if (a.asset_class === 'OPTION' && a.underlying_id) {
+          const u = await api.getAsset(a.underlying_id).catch(() => null)
+          setUnderlying(u)
+        } else {
+          setUnderlying(null)
         }
       })
       .then(() => Promise.all([
@@ -394,6 +403,15 @@ export default function AssetDetail() {
             <KpiTile label="DY" value={fmtPct(dy, 1)} sub="anualizado" />
           </div>
         </Card>
+
+        {/* Underlying context — OPTION assets only (Spec 34) */}
+        {asset.asset_class === 'OPTION' && underlying && (
+          <OptionContextCard
+            option={asset}
+            underlying={underlying}
+            position={position}
+          />
+        )}
 
         {/* Price chart */}
         {priceSeries.length > 0 && (

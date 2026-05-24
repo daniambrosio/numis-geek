@@ -345,6 +345,29 @@ Sempre os 5, ordem fixa, valor zero ok.
 
 ---
 
+## 4.5 Navegação entre opção e underlying
+
+Bidirecional, sem o usuário precisar voltar manualmente:
+
+**Underlying → opção** (`OpenOptionsCard` no detalhe do underlying, ex. `/ativo/itub4`):
+- Cada linha de opção é um `<a href="/ativo/{optionId}">` clicável
+- Hover muda border para indigo + chevron-right indica navegação
+
+**Opção → underlying** (novo `OptionContextCard` no detalhe da opção, ex. `/ativo/itubr364`):
+- Renderiza **logo abaixo do header card**, antes do price chart
+- Mostra:
+  - Ticker do underlying + preço atual + dot de freshness + idade
+  - Strike + texto sobre exercício (PUT/CALL)
+  - Distância % do preço atual até o strike (color-coded)
+  - Badge `ITM` (amber) ou `OTM` (emerald)
+  - Dias até vencimento (amber se <14)
+  - Cenário provável + preço efetivo se exercida
+- Footer: lembrete da regra do prêmio sintético + link "Ver {underlying} →"
+
+Condição de render: `asset.klass == "OPTION" && asset.underlying`.
+
+---
+
 ## 7. Open items (não-blocking)
 
 - Sort por staleness na página Ativos
@@ -353,3 +376,6 @@ Sempre os 5, ordem fixa, valor zero ok.
 - Drill-down: clicar numa barra do chart → ir pra lista filtrada por aquele mês
 - 36M de período (hoje cai pra 24M porque só temos 24 de dados)
 - Snapshot mensal de PTAX rate populado retroativamente
+- KPIs do AtivoDetailPage **invertidos pra short options**: P&L hoje = (price - avg) × qty, mas pra opção vendida o correto é o oposto (subo no preço da opção = perda). Considerar `asset.is_short ? -pl : pl`.
+- DY/YoC não fazem sentido pra OPTION — esconder esses 2 tiles do KPI grid quando `klass=OPTION`.
+- Sparkline do preço da opção (hoje é interpolação avg→price; pra opções perto do vencimento isso fica esquisito — vale mostrar série real de mark-to-market).

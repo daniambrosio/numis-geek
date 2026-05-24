@@ -180,6 +180,12 @@ export interface AssetOut {
   external_id: string | null
   external_source: ExternalSource | null
   is_active: boolean
+  /** Option-specific fields (Spec 17). Null for non-OPTION assets. */
+  underlying_id?: string | null
+  option_type?: OptionType | null
+  strike_price?: number | null
+  expiration_date?: string | null
+  contract_size?: number | null
   created_at: string
   updated_at: string
   details: FixedIncomeDetails | PhysicalDetails | null

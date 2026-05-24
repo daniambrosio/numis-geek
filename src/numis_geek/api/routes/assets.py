@@ -176,6 +176,12 @@ class AssetOut(BaseModel):
     external_id: str | None = None
     external_source: str | None = None
     is_active: bool
+    # Option-specific fields (None for non-OPTION assets). See Spec 17.
+    underlying_id: str | None = None
+    option_type: str | None = None
+    strike_price: float | None = None
+    expiration_date: str | None = None
+    contract_size: int | None = None
     created_at: str
     updated_at: str
     details: dict[str, Any] | None = None
@@ -237,6 +243,11 @@ class AssetOut(BaseModel):
             external_id=asset.external_id,
             external_source=asset.external_source.value if asset.external_source else None,
             is_active=asset.is_active,
+            underlying_id=asset.underlying_id,
+            option_type=asset.option_type.value if asset.option_type else None,
+            strike_price=float(asset.strike_price) if asset.strike_price is not None else None,
+            expiration_date=asset.expiration_date.isoformat() if asset.expiration_date else None,
+            contract_size=asset.contract_size,
             created_at=asset.created_at.isoformat(),
             updated_at=asset.updated_at.isoformat(),
             details=details,

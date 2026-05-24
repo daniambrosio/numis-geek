@@ -4013,19 +4013,23 @@ function OpenOptionsCard({ underlyingId }) {
             ? opt.strike_price - premiumPerShare
             : opt.strike_price + premiumPerShare;
           return (
-            <div key={opt.id} className="p-3 -mx-1 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors">
+            <a key={opt.id} href={`#/ativo/${opt.id}`}
+               className="block p-3 -mx-1 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 hover:border-indigo-500/40 transition-colors group">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider
                     ${opt.option_type === "PUT" ? "bg-blue-500/15 text-blue-400" : "bg-violet-500/15 text-violet-300"}`}>
                     {opt.option_type} · vendida
                   </span>
-                  <span className="font-mono text-[13px] font-medium">{opt.ticker}</span>
-                  <span className="text-[11px] text-gray-500">strike <span className="tnum money text-gray-300">{fmtBRL(opt.strike_price)}</span></span>
+                  <span className="font-mono text-[13px] font-medium group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors">{opt.ticker}</span>
+                  <span className="text-[11px] text-gray-500">strike <span className="tnum money text-gray-700 dark:text-gray-300">{fmtBRL(opt.strike_price)}</span></span>
                 </div>
-                <div className="text-right">
-                  <div className={`text-[12px] font-medium ${v.color}`}>{v.label}</div>
-                  <div className="text-[10px] text-gray-500 tnum">vence em <span className={days < 14 ? "text-amber-400 font-medium" : ""}>{days} dias</span></div>
+                <div className="text-right flex items-center gap-2">
+                  <div>
+                    <div className={`text-[12px] font-medium ${v.color}`}>{v.label}</div>
+                    <div className="text-[10px] text-gray-500 tnum">vence em <span className={days < 14 ? "text-amber-400 font-medium" : ""}>{days} dias</span></div>
+                  </div>
+                  <Icon name="chevron-right" className="w-4 h-4 text-gray-400 dark:text-gray-600 group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors"/>
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-[11px]">
@@ -4049,7 +4053,7 @@ function OpenOptionsCard({ underlyingId }) {
                   <div className="text-[10px] text-gray-500">se exercida</div>
                 </div>
               </div>
-            </div>
+            </a>
           );
         })}
       </div>
@@ -4173,6 +4177,101 @@ function AtivoDetailPage({ assetId }) {
           <KpiTile label="DY" value={fmtPct(dy, 1)} sub="anualizado"/>
         </div>
       </Card>
+
+      {/* Underlying context — only for OPTION assets */}
+      {isOption(a) && a.underlying && (() => {
+        const u = assetById[a.underlying];
+        if (!u) return null;
+        const uMeta = priceMetaOf(u);
+        const uFresh = priceFreshness(uMeta.updated_at, uMeta.source);
+        // Distance from current underlying price to strike
+        const dist = (u.price - a.strike_price) / a.strike_price;
+        const isITM = a.option_type === "PUT" ? u.price < a.strike_price : u.price > a.strike_price;
+        // Days to expiration
+        const today = new Date("2026-05-23");
+        const exp = new Date(a.expiration_date);
+        const days = Math.max(0, Math.round((exp - today) / 86400000));
+        // Verdict
+        const verdictLabel = isITM ? "Provável exercício" : "Provável virar pó";
+        const verdictColor = isITM ? "text-amber-500 dark:text-amber-400" : "text-emerald-500 dark:text-emerald-400";
+        // Effective price if exercised (perspective: short option seller)
+        const premiumPerShare = a.avg;
+        const effectivePrice = a.option_type === "PUT"
+          ? a.strike_price - premiumPerShare   // PUT exercised → buy at strike, but premium reduced cost
+          : a.strike_price + premiumPerShare;  // CALL exercised → sell at strike, premium adds to proceeds
+        const uDotClass = uFresh.color === "emerald" ? "bg-emerald-500"
+                        : uFresh.color === "amber"   ? "bg-amber-500"
+                        :                              "bg-red-500";
+        return (
+          <Card padding="p-0" className="overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-br from-indigo-500/5 via-purple-500/5 to-transparent">
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: KLASS.OPTION.color }}/>
+                Ativo subjacente
+              </div>
+              <div className="mt-2 flex items-center gap-4 flex-wrap">
+                <a href={`#/ativo/${u.id}`}
+                   className="group inline-flex items-center gap-2 hover:opacity-90 transition-opacity">
+                  <span className="w-1 h-7 rounded-full" style={{ background: KLASS[u.klass].color }}/>
+                  <span className="text-xl font-mono font-semibold group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors">{u.ticker}</span>
+                  <CountryFlag country={u.country}/>
+                  <Icon name="arrow-up-right" className="w-3.5 h-3.5 text-gray-400 group-hover:text-indigo-500 dark:group-hover:text-indigo-300 transition-colors"/>
+                </a>
+                <span className="text-gray-300 dark:text-gray-700">│</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-semibold tnum money">{fmtMoney(u.price, u.ccy)}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${uDotClass}`} title={`Atualizado ${priceAgeStr(uMeta.updated_at)} via ${sourceLabel[uMeta.source]}`}/>
+                  <span className="text-[11px] text-gray-500 tnum">{priceAgeStr(uMeta.updated_at)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+              <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">Strike</div>
+                <div className="mt-1 text-lg font-semibold tnum money">{fmtMoney(a.strike_price, a.ccy)}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">{a.option_type === "PUT" ? "Comprador exerce vendendo" : "Comprador exerce comprando"}</div>
+              </div>
+              <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">Distância p/ strike</div>
+                <div className={`mt-1 text-lg font-semibold tnum ${dist >= 0 ? "text-emerald-500 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
+                  {dist >= 0 ? "+" : ""}{fmtPct(dist, 2)}
+                </div>
+                <div className="text-[11px] mt-0.5">
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider ${
+                    isITM
+                      ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                      : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                  }`}>
+                    {isITM ? "ITM" : "OTM"}
+                  </span>
+                  <span className="text-gray-500 ml-1.5">{isITM ? "in-the-money" : "out-of-the-money"}</span>
+                </div>
+              </div>
+              <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">Vence em</div>
+                <div className={`mt-1 text-lg font-semibold tnum ${days < 14 ? "text-amber-500 dark:text-amber-400" : ""}`}>{days} dias</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">{fmtDate(a.expiration_date)}</div>
+              </div>
+              <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">Cenário provável</div>
+                <div className={`mt-1 text-sm font-semibold ${verdictColor}`}>{verdictLabel}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">se exercida: <span className="tnum money text-gray-700 dark:text-gray-300">{fmtMoney(effectivePrice, a.ccy)}</span></div>
+              </div>
+            </div>
+
+            <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 text-[11px] text-gray-500 flex items-center justify-between flex-wrap gap-2">
+              <span>
+                <Icon name="circle-dot" className="w-3 h-3 inline mr-1 text-indigo-400"/>
+                Prêmio recebido conta como <span className="font-medium text-gray-700 dark:text-gray-300">Dividendo sintético</span> em /proventos, separado do {u.ticker}.
+              </span>
+              <a href={`#/ativo/${u.id}`} className="text-indigo-500 dark:text-indigo-400 hover:underline whitespace-nowrap">
+                Ver {u.ticker} →
+              </a>
+            </div>
+          </Card>
+        );
+      })()}
 
       {/* Price chart */}
       <Card>
