@@ -22,6 +22,7 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
   UNKNOWN: 'Nunca atualizado',
 }
 import AppLayout from '../components/AppLayout'
+import ManualPriceModal from '../components/ManualPriceModal'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionContextCard from '../components/OptionContextCard'
 import OptionModal from '../components/OptionModal'
@@ -130,6 +131,7 @@ export default function AssetDetail() {
   const [underlying, setUnderlying] = useState<AssetOut | null>(null)
   const [refreshingPrice, setRefreshingPrice] = useState(false)
   const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [manualPriceOpen, setManualPriceOpen] = useState(false)
 
   async function handleRefreshPrice() {
     if (!asset || refreshingPrice) return
@@ -153,9 +155,7 @@ export default function AssetDetail() {
   }
 
   function handleEditPrice() {
-    // Manual price edit modal lands in Spec 28. For now, send a soft hint.
-    setPriceMsg({ kind: 'err', text: 'Edição manual chega no spec 28.' })
-    window.setTimeout(() => setPriceMsg(null), 3000)
+    setManualPriceOpen(true)
   }
 
   useEffect(() => {
@@ -612,6 +612,25 @@ export default function AssetDetail() {
           underlying={asset}
           onClose={() => setOptionModalOpen(false)}
           onSaved={() => setOptionsRefresh(n => n + 1)}
+        />
+      )}
+
+      {manualPriceOpen && (
+        <ManualPriceModal
+          asset={asset}
+          onClose={() => setManualPriceOpen(false)}
+          onSaved={(result) => {
+            setManualPriceOpen(false)
+            setAsset((prev) => prev ? ({
+              ...prev,
+              current_price: result.price,
+              price_updated_at: result.price_updated_at,
+              price_source: result.price_source,
+              price_tier: 'FRESH',
+            }) : prev)
+            setPriceMsg({ kind: 'ok', text: `Preço atualizado para ${result.price.toLocaleString('pt-BR', { style: 'currency', currency: asset.currency })}` })
+            window.setTimeout(() => setPriceMsg(null), 3000)
+          }}
         />
       )}
     </AppLayout>

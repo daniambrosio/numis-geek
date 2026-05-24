@@ -702,6 +702,73 @@ def refresh_asset_price(
     )
 
 
+class ManualPriceRequest(BaseModel):
+    price: Decimal = Field(..., ge=0)
+    note: str | None = None
+
+
+class ManualPriceOut(BaseModel):
+    price: float
+    price_updated_at: str
+    price_source: str
+
+
+@router.patch("/{asset_id}/price", response_model=ManualPriceOut)
+def update_asset_price_manual(
+    asset_id: str,
+    body: ManualPriceRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 28 — manual price edit for assets with MANUAL source.
+
+    422 if asset.price_source is not MANUAL — automated sources must use
+    POST /assets/{id}/refresh-price (or the bulk /prices/refresh).
+    """
+    from numis_geek.models.asset import PriceSource
+
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+
+    if asset.price_source != PriceSource.MANUAL:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Asset has an automated price source. Use the refresh endpoint instead.",
+        )
+
+    old_price = asset.current_price
+    asset.current_price = body.price
+    asset.price_updated_at = datetime.now(timezone.utc)
+    db.flush()
+
+    actor = db.get(User, current_user.user_id)
+    email = actor.email if actor else current_user.user_id
+    details: dict[str, Any] = {
+        "ticker": asset.ticker,
+        "name": asset.name,
+        "old_price": str(old_price) if old_price is not None else None,
+        "new_price": str(body.price),
+        "source": "MANUAL",
+    }
+    if body.note:
+        details["note"] = body.note
+    AuditService(db).log(
+        user_email=email,
+        action="price.update.manual",
+        workspace_id=asset.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="asset",
+        resource_id=asset.id,
+        details=details,
+    )
+
+    return ManualPriceOut(
+        price=float(body.price),
+        price_updated_at=asset.price_updated_at.isoformat(),
+        price_source="MANUAL",
+    )
+
+
 class BulkRefreshSummaryOut(BaseModel):
     total: int
     ok: int

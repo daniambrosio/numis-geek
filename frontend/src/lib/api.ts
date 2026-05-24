@@ -721,6 +721,13 @@ export const api = {
   refreshAssetPrice: (id: string) =>
     request<PriceRefreshOut>(`/assets/${id}/refresh-price`, { method: 'POST' }),
 
+  // ── Manual price edit (spec 28) ──────────────────────────────────────────
+  updateAssetPrice: (id: string, price: string, note?: string) =>
+    request<ManualPriceOut>(`/assets/${id}/price`, {
+      method: 'PATCH',
+      body: JSON.stringify({ price, note: note ?? null }),
+    }),
+
   refreshPrices: (body?: { source?: PriceSource; asset_ids?: string[] }) =>
     request<RefreshSummaryOut>('/prices/refresh', {
       method: 'POST',
@@ -877,6 +884,12 @@ export interface BulkRefreshSummaryOut {
   skipped: number
   failed: number
   results: PriceRefreshOut[]
+}
+
+export interface ManualPriceOut {
+  price: number
+  price_updated_at: string
+  price_source: 'MANUAL'
 }
 
 export interface RefreshError {

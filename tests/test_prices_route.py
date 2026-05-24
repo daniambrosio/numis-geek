@@ -251,3 +251,69 @@ def test_legacy_bulk_endpoint_still_works_with_deprecation_headers(client, seed)
     assert r.headers.get("Deprecation") == "true"
     assert r.headers.get("Sunset") == "2026-12-31"
     assert "/prices/refresh" in (r.headers.get("Link") or "")
+
+
+# ── PATCH /assets/{id}/price — Spec 28 ──────────────────────────────────────
+
+
+def test_manual_price_patch_updates_manual_asset(client, seed):
+    r = client.patch(
+        f"/assets/{seed['asset_manual_id']}/price",
+        headers=auth(seed["tok"]),
+        json={"price": "850000.00"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["price"] == 850000.0
+    assert body["price_source"] == "MANUAL"
+    assert "price_updated_at" in body
+
+
+def test_manual_price_patch_422_on_automated_asset(client, seed):
+    r = client.patch(
+        f"/assets/{seed['asset_br_id']}/price",
+        headers=auth(seed["tok"]),
+        json={"price": "100.00"},
+    )
+    assert r.status_code == 422
+    assert "automated" in r.json()["detail"].lower()
+
+
+def test_manual_price_patch_rejects_negative(client, seed):
+    r = client.patch(
+        f"/assets/{seed['asset_manual_id']}/price",
+        headers=auth(seed["tok"]),
+        json={"price": "-1.00"},
+    )
+    assert r.status_code == 422
+
+
+def test_manual_price_patch_emits_audit_with_note(client, seed):
+    import json
+    from numis_geek.models.audit_log import AuditLog
+
+    r = client.patch(
+        f"/assets/{seed['asset_manual_id']}/price",
+        headers=auth(seed["tok"]),
+        json={"price": "920000.00", "note": "Avaliação anual feita por corretor"},
+    )
+    assert r.status_code == 200
+
+    db = TestSession()
+    try:
+        entry = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.action == "price.update.manual",
+                AuditLog.resource_id == seed["asset_manual_id"],
+            )
+            .order_by(AuditLog.created_at.desc())
+            .first()
+        )
+        assert entry is not None
+        details = json.loads(entry.details or "{}")
+        assert details["note"] == "Avaliação anual feita por corretor"
+        assert details["source"] == "MANUAL"
+        assert details["new_price"] == "920000.00"
+    finally:
+        db.close()
