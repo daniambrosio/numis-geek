@@ -170,3 +170,40 @@ def test_deactivate_admin_forbidden(client, seed):
     fi_id = r_create.json()["id"]
     r = client.put(f"/financial-institutions/{fi_id}/deactivate", headers=auth(seed["admin_token"]))
     assert r.status_code == 403
+
+
+# ── Spec 19: country (ISO-2) ─────────────────────────────────────────────────
+
+def test_create_fi_with_country(client, seed):
+    r = client.post("/financial-institutions", json={
+        "long_name": "Avenue Securities",
+        "short_name": "Avenue-T",
+        "country": "US",
+    }, headers=auth(seed["sysadmin_token"]))
+    assert r.status_code == 201
+    assert r.json()["country"] == "US"
+
+
+def test_country_defaults_to_br_when_omitted(client, seed):
+    r = client.post("/financial-institutions", json={
+        "long_name": "Banco BR S.A.",
+        "short_name": "BR-Default",
+    }, headers=auth(seed["sysadmin_token"]))
+    assert r.status_code == 201
+    assert r.json()["country"] == "BR"
+
+
+def test_update_changes_country(client, seed):
+    r = client.post("/financial-institutions", json={
+        "long_name": "Some FI",
+        "short_name": "Some-FI",
+        "country": "BR",
+    }, headers=auth(seed["sysadmin_token"]))
+    fi_id = r.json()["id"]
+    r2 = client.put(f"/financial-institutions/{fi_id}", json={
+        "long_name": "Some FI",
+        "short_name": "Some-FI",
+        "country": "US",
+    }, headers=auth(seed["sysadmin_token"]))
+    assert r2.status_code == 200
+    assert r2.json()["country"] == "US"

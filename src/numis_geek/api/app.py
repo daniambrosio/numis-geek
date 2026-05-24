@@ -6,6 +6,7 @@ from numis_geek.api.routes import (
     accounts,
     asset_movements,
     assets,
+    attachments,
     audit,
     auth,
     corporate_actions,
@@ -46,6 +47,7 @@ app.include_router(corporate_actions.router)
 app.include_router(snapshots.router)
 app.include_router(notion_sync.router)
 app.include_router(options.router)
+app.include_router(attachments.router)
 
 
 @app.get("/health")

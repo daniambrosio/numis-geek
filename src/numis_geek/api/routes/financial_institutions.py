@@ -22,6 +22,7 @@ class FinancialInstitutionOut(BaseModel):
     long_name: str
     short_name: str
     logo_slug: str | None
+    country: str
     is_active: bool
     created_at: str
     updated_at: str
@@ -33,6 +34,7 @@ class FinancialInstitutionOut(BaseModel):
             long_name=fi.long_name,
             short_name=fi.short_name,
             logo_slug=fi.logo_slug,
+            country=fi.country,
             is_active=fi.is_active,
             created_at=fi.created_at.isoformat(),
             updated_at=fi.updated_at.isoformat(),
@@ -43,6 +45,7 @@ class FinancialInstitutionRequest(BaseModel):
     long_name: str
     short_name: str
     logo_slug: str | None = None
+    country: str = "BR"  # ISO-2
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -83,6 +86,7 @@ def create_financial_institution(
         long_name=body.long_name,
         short_name=body.short_name,
         logo_slug=body.logo_slug,
+        country=body.country,
         created_at=now,
         updated_at=now,
         created_by=current_user.user_id,
@@ -113,6 +117,7 @@ def update_financial_institution(
     fi.long_name = body.long_name
     fi.short_name = body.short_name
     fi.logo_slug = body.logo_slug
+    fi.country = body.country
     fi.updated_at = datetime.now(timezone.utc)
     fi.updated_by = current_user.user_id
     db.flush()

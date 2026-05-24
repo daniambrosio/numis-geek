@@ -35,6 +35,11 @@ from numis_geek.models.integration_credential import (
     PROVIDERS_REQUIRING_CREDENTIALS,
     CredentialTestResult,
 )
+from numis_geek.models.attachment import (
+    Attachment,
+    AttachmentSourceType,
+    AttachmentKind,
+)
 
 __all__ = [
     "Workspace",
@@ -70,4 +75,7 @@ __all__ = [
     "INTEGRATION_PROVIDER_LABELS",
     "PROVIDERS_REQUIRING_CREDENTIALS",
     "CredentialTestResult",
+    "Attachment",
+    "AttachmentSourceType",
+    "AttachmentKind",
 ]

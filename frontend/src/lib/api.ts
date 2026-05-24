@@ -86,6 +86,7 @@ export interface FinancialInstitutionOut {
   long_name: string
   short_name: string
   logo_slug: string | null
+  country: string  // ISO-2
   is_active: boolean
   created_at: string
   updated_at: string

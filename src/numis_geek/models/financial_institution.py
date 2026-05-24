@@ -14,6 +14,7 @@ class FinancialInstitution(Base):
     long_name: Mapped[str] = mapped_column(String(255), nullable=False)
     short_name: Mapped[str] = mapped_column(String(100), nullable=False)
     logo_slug: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    country: Mapped[str] = mapped_column(String(2), nullable=False, default="BR")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
