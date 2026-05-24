@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   api, type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
-  type PositionOut, type SnapshotOut, type UserOut,
+  type PortfolioOut, type PositionOut, type SnapshotOut, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import { Card, SectionTitle, FILogo, CcyPill } from '../components/ui'
 import { DonutChart, HBar } from '../components/charts'
-import { KLASS, collapsedOf, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
+import { KLASS, collapsedOf, fiTokenFor } from '../lib/tokens'
 
 const OUTROS_COLOR = '#9ca3af'
 
@@ -32,6 +32,7 @@ export default function Dashboard() {
   const [positions, setPositions] = useState<Map<string, PositionOut | null>>(new Map())
   const [recent, setRecent] = useState<AssetMovementOut[]>([])
   const [snapshots, setSnapshots] = useState<SnapshotOut[]>([])
+  const [portfolio, setPortfolio] = useState<PortfolioOut | null>(null)
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -40,6 +41,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!me) return
     api.listSnapshots().then(setSnapshots).catch(() => setSnapshots([]))
+    api.getPortfolio().then(setPortfolio).catch(() => setPortfolio(null))
     Promise.all([
       api.listAssets({}),
       api.listFinancialInstitutions(),
@@ -72,13 +74,12 @@ export default function Dashboard() {
     return m
   }, [institutions])
 
-  const { totalInvested, totalCurrent, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
+  // Live aggregation from positions — used for received + movers (per-asset
+  // variation), and as a fallback when portfolio snapshot isn't loaded yet.
+  const liveAgg = useMemo(() => {
     let invested = 0
     let current = 0
     let received = 0
-    const klassMap = new Map<CollapsedClassCode, number>()
-    const fiMap = new Map<string, number>()
-    const countryMap = new Map<string, number>()
     let loaded = 0
     const moversList: Array<{ asset: AssetOut; variation: number; pnl: number }> = []
 
@@ -89,14 +90,9 @@ export default function Dashboard() {
       if (!p) continue
       invested += Number(p.total_invested_brl ?? 0)
       received += Number(p.total_received_brl ?? 0)
-      const klass = collapsedOf(a.asset_class)
       const inv = Number(p.total_invested_brl ?? 0)
-      // Prefer current market value; fall back to invested when current_price is not set.
       const cur = p.current_value_brl != null ? Number(p.current_value_brl) : inv
       current += cur
-      klassMap.set(klass, (klassMap.get(klass) ?? 0) + cur)
-      fiMap.set(a.financial_institution_id, (fiMap.get(a.financial_institution_id) ?? 0) + cur)
-      countryMap.set(a.country, (countryMap.get(a.country) ?? 0) + cur)
       if (p.variation != null) {
         moversList.push({
           asset: a,
@@ -105,28 +101,39 @@ export default function Dashboard() {
         })
       }
     }
-    const byClassArr = Array.from(klassMap.entries())
-      .map(([k, v]) => ({ klass: k, value: v }))
-      .sort((a, b) => b.value - a.value)
-    const byFiArr = Array.from(fiMap.entries())
-      .map(([id, v]) => ({ fi: id, value: v }))
-      .sort((a, b) => b.value - a.value)
-    const byCountryArr = Array.from(countryMap.entries())
-      .map(([c, v]) => ({ country: c, value: v }))
-      .sort((a, b) => b.value - a.value)
     moversList.sort((a, b) => Math.abs(b.variation) - Math.abs(a.variation))
-
     return {
-      totalInvested: invested,
-      totalCurrent: current,
-      totalReceived: received,
-      byClass: byClassArr,
-      byFi: byFiArr,
-      byCountry: byCountryArr,
+      invested, current, received,
       movers: moversList.slice(0, 5),
       loading: loaded < assets.length,
     }
   }, [assets, positions])
+
+  // Portfolio summary (snapshot-based) drives the hero numbers + breakdowns
+  // — same source as the /portfolio page, so the two stay consistent.
+  // Falls back to liveAgg when no snapshot exists.
+  const { totalInvested, totalCurrent, totalReceived, byClass, byFi, byCountry, movers, loading } = useMemo(() => {
+    const hasPortfolio = !!portfolio && portfolio.source !== 'empty'
+    const byClassArr = hasPortfolio
+      ? portfolio!.by_class.map(c => ({ klass: collapsedOf(c.asset_class), value: c.value_brl })).sort((a, b) => b.value - a.value)
+      : []
+    const byFiArr = hasPortfolio
+      ? portfolio!.by_custodian.map(c => ({ fi: c.fi_id, value: c.value_brl })).sort((a, b) => b.value - a.value)
+      : []
+    const byCountryArr = hasPortfolio
+      ? portfolio!.by_country.map(c => ({ country: c.country, value: c.value_brl })).sort((a, b) => b.value - a.value)
+      : []
+    return {
+      totalInvested: hasPortfolio ? portfolio!.total_invested_brl : liveAgg.invested,
+      totalCurrent: hasPortfolio ? portfolio!.total_value_brl : liveAgg.current,
+      totalReceived: liveAgg.received,  // not exposed in /portfolio yet
+      byClass: byClassArr,
+      byFi: byFiArr,
+      byCountry: byCountryArr,
+      movers: liveAgg.movers,
+      loading: !portfolio && liveAgg.loading,
+    }
+  }, [portfolio, liveAgg])
 
   if (!me) return null
 
