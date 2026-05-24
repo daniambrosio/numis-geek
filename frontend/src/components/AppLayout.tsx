@@ -10,6 +10,7 @@ import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
 import { getComfort, toggleComfort } from '../lib/comfort'
 import { clearToken, type UserOut } from '../lib/api'
+import PriceRefresh from './PriceRefresh'
 
 interface Props {
   user: UserOut
@@ -244,6 +245,9 @@ export default function AppLayout({ user, children }: Props) {
 
           {/* Right cluster — flushed via ml-auto */}
           <div className="flex items-center gap-2 ml-auto">
+            {/* Price refresh (Spec 25) */}
+            <PriceRefresh />
+
             {/* Novo */}
             <div className="relative" ref={novoRef}>
               <button
