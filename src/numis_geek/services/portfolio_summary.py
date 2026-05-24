@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset, AssetClass
-from numis_geek.models.distribution import Distribution
+from numis_geek.models.distribution import Distribution, DistributionType
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
@@ -76,11 +76,14 @@ class PortfolioSummary:
     total_value_usd: Decimal
     total_invested_brl: Decimal
     total_received_brl: Decimal  # all-time, derived from Distribution table
-    by_class: list[ClassBreakdown]
-    by_country: list[CountryBreakdown]
-    by_custodian: list[CustodianBreakdown]
-    top_holdings: list[HoldingOut]
-    history: list[HistoryPoint]
+    received_by_type: dict[str, Decimal] = field(default_factory=dict)
+        # All-time net BRL grouped by DistributionType — DIVIDEND, INTEREST,
+        # JCP, SECURITIES_LENDING. Same source as total_received_brl.
+    by_class: list[ClassBreakdown] = field(default_factory=list)
+    by_country: list[CountryBreakdown] = field(default_factory=list)
+    by_custodian: list[CustodianBreakdown] = field(default_factory=list)
+    top_holdings: list[HoldingOut] = field(default_factory=list)
+    history: list[HistoryPoint] = field(default_factory=list)
 
 
 def _empty(source: str = "empty") -> PortfolioSummary:
@@ -92,6 +95,7 @@ def _empty(source: str = "empty") -> PortfolioSummary:
         total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"),
         total_received_brl=Decimal("0"),
+        received_by_type={},
         by_class=[],
         by_country=[],
         by_custodian=[],
@@ -168,6 +172,29 @@ def _total_received_brl(db: Session, workspace_id: str) -> Decimal:
     return Decimal(total) if total is not None else Decimal("0")
 
 
+def _received_by_type(db: Session, workspace_id: str) -> dict[str, Decimal]:
+    """Same scope as _total_received_brl but grouped by DistributionType.
+    Always returns every type key (zero when no rows) so the UI doesn't
+    need to defend against missing entries."""
+    rows = (
+        db.query(
+            Distribution.type,
+            func.sum(Distribution.net_amount * Distribution.fx_rate),
+        )
+        .filter(
+            Distribution.workspace_id == workspace_id,
+            Distribution.is_active == True,  # noqa: E712
+        )
+        .group_by(Distribution.type)
+        .all()
+    )
+    out: dict[str, Decimal] = {t.value: Decimal("0") for t in DistributionType}
+    for type_val, total in rows:
+        key = type_val.value if hasattr(type_val, "value") else str(type_val)
+        out[key] = Decimal(total) if total is not None else Decimal("0")
+    return out
+
+
 def compute_portfolio_summary(
     db: Session, workspace_id: str
 ) -> PortfolioSummary:
@@ -184,9 +211,10 @@ def compute_portfolio_summary(
     )
     if not latest:
         empty = _empty()
-        # Even with no snapshot, total_received_brl can be reported from
-        # Distribution rows (Notion-imported, doesn't depend on snapshots).
+        # Even with no snapshot, total_received_brl and the per-type
+        # breakdown can be reported from Distribution rows directly.
         empty.total_received_brl = _total_received_brl(db, workspace_id)
+        empty.received_by_type = _received_by_type(db, workspace_id)
         return empty
 
     # Pull items + joined asset/account/fi for the latest snapshot.
@@ -288,6 +316,7 @@ def compute_portfolio_summary(
         total_value_usd=latest.total_value_usd,
         total_invested_brl=latest.total_invested_brl,
         total_received_brl=_total_received_brl(db, workspace_id),
+        received_by_type=_received_by_type(db, workspace_id),
         by_class=class_breakdowns,
         by_country=country_breakdowns,
         by_custodian=custodian_breakdowns,

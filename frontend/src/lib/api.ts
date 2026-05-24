@@ -814,6 +814,7 @@ export interface PortfolioOut {
   total_value_usd: number
   total_invested_brl: number
   total_received_brl: number
+  received_by_type: Record<string, number>  // DIVIDEND | INTEREST | JCP | SECURITIES_LENDING
   by_class: PortfolioClassBreakdown[]
   by_country: PortfolioCountryBreakdown[]
   by_custodian: PortfolioCustodianBreakdown[]

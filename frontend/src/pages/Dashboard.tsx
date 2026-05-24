@@ -310,13 +310,32 @@ export default function Dashboard() {
                 {fmtBRL(totalReceived)}
               </div>
               <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                Acumulado · spec 08 separa em Dividendos / Juros / JCP / Aluguel
+                Acumulado · líquido (após IR)
               </div>
             </div>
             <div className="mt-5 pt-4 border-t border-gray-200 dark:border-gray-800 grid grid-cols-3 gap-2 text-[11px]">
-              <Stat label="Dividendos" value="—" />
-              <Stat label="Juros / JCP" value="—" />
-              <Stat label="Aluguel" value="—" />
+              <Stat
+                label="Dividendos"
+                value={portfolio
+                  ? fmtBRL(portfolio.received_by_type.DIVIDEND ?? 0, { compact: true })
+                  : '—'}
+              />
+              <Stat
+                label="Juros / JCP"
+                value={portfolio
+                  ? fmtBRL(
+                      (portfolio.received_by_type.INTEREST ?? 0) +
+                      (portfolio.received_by_type.JCP ?? 0),
+                      { compact: true },
+                    )
+                  : '—'}
+              />
+              <Stat
+                label="Aluguel"
+                value={portfolio
+                  ? fmtBRL(portfolio.received_by_type.SECURITIES_LENDING ?? 0, { compact: true })
+                  : '—'}
+              />
             </div>
           </Card>
         </div>
