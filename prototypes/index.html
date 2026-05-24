@@ -245,6 +245,103 @@ const assetsAtFi = (fiId) => ASSETS.filter(a => assetFi(a) === fiId);
 // helper: investment accounts at an FI
 const invAccountsAtFi = (fiId) => ACCOUNTS.filter(a => a.fi === fiId && a.type === "investment");
 
+// ── Price freshness ──────────────────────────────────────────────────────────
+// Each asset gets price_updated_at + source. Sources reflect what we'd plug in
+// (B3/brapi for BR stocks/FIIs/ETFs, Yahoo for US, Coinbase for crypto, BCB
+// for Selic-linked, Tesouro for treasuries, manual for real estate/vehicle).
+// Variety is intentional so the staleness UI has something to show.
+const PRICE_NOW_ISO = "2026-05-23T18:00:00";  // "now" the topbar pretends to know about
+const PRICE_META = {
+  // XP — daily refresh (fresh)
+  petr4:    { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  itub4:    { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  vale3:    { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  bbas3:    { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  wege3:    { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  hglg11:   { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  knri11:   { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  mxrf11:   { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  bova11:   { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  ivvb11:   { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  // Treasury / CDB / LCI — daily marking, fresh
+  tdipca35: { updated_at: "2026-05-23T20:10:00", source: "tesouro"  },
+  cdbbtg27: { updated_at: "2026-05-23T19:00:00", source: "manual"   },
+  lciit26:  { updated_at: "2026-05-23T19:00:00", source: "manual"   },
+  // Avenue — Yahoo Finance, last US close
+  aapl:     { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  msft:     { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  googl:    { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  amzn:     { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  nvda:     { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  o:        { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  vici:     { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  spy:      { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  voo:      { updated_at: "2026-05-23T21:05:00", source: "yahoo"    },
+  qqq:      { updated_at: "2026-05-21T21:05:00", source: "yahoo"    },  // 2 days — stale-ish
+  ust10:    { updated_at: "2026-05-15T18:00:00", source: "manual"   },  // 8 days
+  // Coinbase — fresh
+  btc:      { updated_at: "2026-05-23T17:48:00", source: "coinbase" },
+  eth:      { updated_at: "2026-05-23T17:48:00", source: "coinbase" },
+  // Manual / monthly — intentionally stale
+  apto:     { updated_at: "2026-02-12T10:00:00", source: "manual"   },  // 100+ days
+  hrv:      { updated_at: "2025-12-20T10:00:00", source: "manual"   },  // 150+ days
+  fgts:     { updated_at: "2026-04-30T03:00:00", source: "manual"   },  // 23 days
+  vgblbtg:  { updated_at: "2026-04-30T19:00:00", source: "manual"   },  // 23 days
+  // Options — fresh (b3 intraday)
+  itubr364: { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+  itubf475: { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
+};
+const priceMetaOf = (a) => PRICE_META[a.id] || { updated_at: PRICE_NOW_ISO, source: "manual" };
+
+// Human-friendly "há 2h" / "há 3 dias" / "há 2 meses"
+function priceAgeStr(isoDate) {
+  if (!isoDate) return "—";
+  const then = new Date(isoDate);
+  const now  = new Date(PRICE_NOW_ISO);
+  const ms = now - then;
+  const mins = Math.round(ms / 60000);
+  if (mins < 1)     return "agora";
+  if (mins < 60)    return `há ${mins} min`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24)     return `há ${hrs}h`;
+  const days = Math.round(hrs / 24);
+  if (days < 30)    return `há ${days} ${days === 1 ? "dia" : "dias"}`;
+  const months = Math.round(days / 30);
+  if (months < 12)  return `há ${months} ${months === 1 ? "mês" : "meses"}`;
+  const years = Math.round(months / 12);
+  return `há ${years} ${years === 1 ? "ano" : "anos"}`;
+}
+// status: fresh (<24h) · stale (<7d) · old (≥7d). Manual assets (RE/vehicle) get
+// a softer threshold so they don't read "red" all the time.
+function priceFreshness(isoDate, source) {
+  if (!isoDate) return { tier: "old", color: "red" };
+  const ms = new Date(PRICE_NOW_ISO) - new Date(isoDate);
+  const days = ms / 86400000;
+  // Manual sources: stale at 30d, old at 90d
+  if (source === "manual") {
+    if (days <  30) return { tier: "fresh", color: "emerald" };
+    if (days <  90) return { tier: "stale", color: "amber"   };
+    return                  { tier: "old",   color: "red"     };
+  }
+  if (days <   1) return { tier: "fresh", color: "emerald" };
+  if (days <   7) return { tier: "stale", color: "amber"   };
+  return                 { tier: "old",   color: "red"     };
+}
+// Aggregate: most-stale wins (the topbar reflects the worst case).
+function aggregatePriceAge(assets) {
+  if (!assets || assets.length === 0) return { oldest: PRICE_NOW_ISO, count: 0, stale: 0, old: 0 };
+  let oldest = PRICE_NOW_ISO;
+  let stale = 0, old = 0;
+  for (const a of assets) {
+    const meta = priceMetaOf(a);
+    if (meta.updated_at < oldest) oldest = meta.updated_at;
+    const f = priceFreshness(meta.updated_at, meta.source);
+    if (f.tier === "stale") stale++;
+    if (f.tier === "old")   old++;
+  }
+  return { oldest, count: assets.length, stale, old };
+}
+
 const PROVENTOS_12M  = [3200, 2840, 4120, 3680, 5210, 4890, 3920, 4480, 5840, 6120, 4920, 5380];
 const NETWORTH_12M   = [2520, 2548, 2492, 2580, 2638, 2620, 2685, 2710, 2748, 2790, 2812, 2834]; // R$ thousands
 
@@ -592,6 +689,226 @@ function assetVerdict(a) {
   return { label: "Manter", color: "gray", reason: "Sem regra ativa" };
 }
 
+/* ─── Proventos history ────────────────────────────────────────────────────
+ * Synthetic 24-month series for the chart on /proventos and the Dashboard.
+ * In production this is replaced by `SELECT month, klass/country/fi/type,
+ * SUM(net_brl) FROM distributions GROUP BY ...` — keep the shape stable.
+ * Each row is one distribution event tagged with its dimensions for slicing.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+// 24-month axis ending in mai/26
+const PROVENTOS_MONTHS = (() => {
+  const out = [];
+  for (let i = 23; i >= 0; i--) {
+    const d = new Date(Date.UTC(2026, 4, 1));
+    d.setUTCMonth(d.getUTCMonth() - i);
+    out.push(d.toISOString().slice(0, 7));
+  }
+  return out;
+})();
+
+// Lightweight PTAX history — varies between ~4.90 and 5.30 in believable cycles
+const PTAX_HISTORY = {};
+PROVENTOS_MONTHS.forEach((ym, i) => {
+  PTAX_HISTORY[ym] = 5.0 + 0.2 * Math.sin(i * 0.6) + 0.1 * Math.cos(i * 1.3);
+});
+const ptaxOf = (ym) => PTAX_HISTORY[ym] || PTAX;
+
+// Generate history per asset based on class rules
+const PROVENTOS_HISTORY = (() => {
+  const out = [];
+  let id = 100000;
+  ASSETS.forEach(a => {
+    // Skip non-yielding assets
+    if (["OPTION", "CRYPTO", "REAL_ESTATE", "VEHICLE", "FGTS", "PRIVATE_PENSION"].includes(a.klass)) return;
+
+    PROVENTOS_MONTHS.forEach((ym, mIdx) => {
+      const monthNum = parseInt(ym.split("-")[1], 10);
+      let pays = false;
+      let type = "DIVIDEND";
+      let monthlyYieldOnPosition = 0;
+
+      if (a.klass === "REIT") {
+        pays = true;  // monthly
+        monthlyYieldOnPosition = a.country === "BR" ? 0.0082 : 0.0048;
+      } else if (a.klass === "FIXED_INCOME") {
+        type = "INTEREST";
+        if (a.id === "tdipca35")        { pays = (monthNum === 1 || monthNum === 7); monthlyYieldOnPosition = 0.038; }
+        else if (a.id === "lciit26")    { pays = true;  monthlyYieldOnPosition = 0.009; }
+        else if (a.id === "cdbbtg27")   { pays = true;  monthlyYieldOnPosition = 0.011; }
+        else if (a.id === "ust10")      { pays = (monthNum === 5 || monthNum === 11); monthlyYieldOnPosition = 0.022; }
+      } else if (a.klass === "STOCK") {
+        // BR: quarterly Feb/May/Aug/Nov plus a JCP in Jun & Dec
+        // US: quarterly Mar/Jun/Sep/Dec
+        if (a.country === "BR") {
+          pays = [2, 5, 8, 11].includes(monthNum);
+          monthlyYieldOnPosition = 0.018;
+          if ([6, 12].includes(monthNum) && (a.id.charCodeAt(0) % 2 === 0)) {
+            pays = true; type = "JCP"; monthlyYieldOnPosition = 0.011;
+          }
+        } else {
+          pays = [3, 6, 9, 12].includes(monthNum);
+          monthlyYieldOnPosition = 0.0048;
+        }
+      } else if (a.klass === "ETF") {
+        if (a.country === "BR") {
+          pays = (monthNum === 12);
+          monthlyYieldOnPosition = 0.038;
+        } else {
+          pays = [3, 6, 9, 12].includes(monthNum);
+          monthlyYieldOnPosition = 0.0058;
+        }
+      }
+
+      if (!pays) return;
+
+      // Add some month/asset-specific noise (deterministic)
+      const seed = mIdx * 31 + a.id.charCodeAt(0) + (a.id.charCodeAt(1) || 0);
+      const noise = 0.75 + ((seed * 17) % 60) / 100;  // 0.75 .. 1.35
+      const positionValue = a.qty * a.price;
+      const gross = positionValue * monthlyYieldOnPosition * noise;
+
+      let taxRate = 0;
+      if (type === "JCP") taxRate = 0.15;
+      if (type === "INTEREST" && a.country === "BR") taxRate = 0.15;  // CDB
+      if (a.country === "US" && type === "DIVIDEND") taxRate = 0.30;  // withholding
+      const tax = gross * taxRate;
+      const net = gross - tax;
+      const fxRate = a.ccy === "USD" ? ptaxOf(ym) : 1;
+
+      out.push({
+        id: "h" + (id++),
+        ym,
+        d: `${ym}-${String(((seed % 25) + 3)).padStart(2, "0")}`,
+        asset: a.id,
+        type,
+        country: a.country,
+        klass: a.klass,
+        fi: assetFi(a),
+        ccy: a.ccy,
+        gross, tax, net, fxRate,
+      });
+    });
+  });
+
+  // Add securities lending (Aluguel/BTC) on a few BR stocks — Avenue does it
+  // but at XP it's also common on liquid names. Monthly small amounts.
+  const lendingNames = ["aapl", "msft", "nvda"];
+  lendingNames.forEach(aid => {
+    const a = assetById[aid];
+    if (!a) return;
+    PROVENTOS_MONTHS.forEach((ym, mIdx) => {
+      const noise = 0.6 + ((mIdx * 11) % 80) / 100;
+      const gross = a.qty * a.price * 0.0008 * noise;
+      const tax = 0;
+      out.push({
+        id: "hsl" + aid + ym,
+        ym,
+        d: `${ym}-28`,
+        asset: a.id,
+        type: "SECURITIES_LENDING",
+        country: a.country,
+        klass: a.klass,
+        fi: assetFi(a),
+        ccy: a.ccy,
+        gross, tax, net: gross, fxRate: ptaxOf(ym),
+      });
+    });
+  });
+
+  return out;
+})();
+
+// Synthetic option premiums tagged with ym/klass/country/fi for the chart UNION
+const OPTION_PREMIUMS_TAGGED = OPTION_PREMIUMS.map(p => {
+  const opt = assetById[p.option_asset];
+  return {
+    ...p,
+    ym: p.d.slice(0, 7),
+    klass: "OPTION",
+    country: opt?.country || "BR",
+    tax: 0,
+  };
+});
+
+// Map ym → array of events. Helps later aggregations.
+const PROVENTOS_BY_YM = (() => {
+  const m = {};
+  PROVENTOS_HISTORY.forEach(p => { (m[p.ym] = m[p.ym] || []).push(p); });
+  return m;
+})();
+
+// Build aggregated chart data.
+//  params: { months, breakdown, currency, includeSynthetic }
+//  - months: subset of PROVENTOS_MONTHS to include
+//  - breakdown: "klass" | "country" | "fi" | "type" | "total"
+//  - currency: "BRL" | "USD"
+//  - includeSynthetic: bool (add OPTION_PREMIUMS)
+// Returns { rows: [{ ym, total, segments: [{key, value, color, label}] }], legend: [{key,label,color}], totals: {sum, monthlyAvg, max} }
+function proventosChartData({ months, breakdown, currency, includeSynthetic }) {
+  const monthSet = new Set(months);
+  const events = [
+    ...PROVENTOS_HISTORY.filter(p => monthSet.has(p.ym)),
+    ...(includeSynthetic ? OPTION_PREMIUMS_TAGGED.filter(p => monthSet.has(p.ym)) : []),
+  ];
+
+  // Convert each event to the target currency
+  const valueOf = (p) => {
+    if (currency === "BRL") return { ccy: "BRL", v: p.net * p.fxRate };
+    // USD: USD events stay, BRL events divided by PTAX of the event's month
+    if (p.ccy === "USD") return { ccy: "USD", v: p.net };
+    return { ccy: "USD", v: p.net / ptaxOf(p.ym) };
+  };
+
+  // Key extractor
+  const keyOf = (p) => {
+    if (breakdown === "klass")   return p.klass;
+    if (breakdown === "country") return p.country;
+    if (breakdown === "fi")      return p.fi || "—";
+    if (breakdown === "type")    return p.type;
+    return "all";
+  };
+  const labelOf = (k) => {
+    if (breakdown === "klass")   return KLASS[k]?.label || k;
+    if (breakdown === "country") return k === "BR" ? "🇧🇷 Brasil" : k === "US" ? "🇺🇸 EUA" : k;
+    if (breakdown === "fi")      return fiById[k]?.short || k;
+    if (breakdown === "type")    return typeDistributionLabel(k);
+    return "Total";
+  };
+  const colorOf = (k) => {
+    if (breakdown === "klass")   return KLASS[k]?.color || "#9ca3af";
+    if (breakdown === "country") return k === "BR" ? "#22c55e" : k === "US" ? "#3b82f6" : "#9ca3af";
+    if (breakdown === "fi")      return fiById[k]?.color || "#9ca3af";
+    if (breakdown === "type") {
+      return ({ DIVIDEND: "#22c55e", INTEREST: "#3b82f6", JCP: "#f59e0b", SECURITIES_LENDING: "#8b5cf6", OPTION_PREMIUM: "#a855f7" })[k] || "#9ca3af";
+    }
+    return "#6366f1";
+  };
+
+  const rows = months.map(ym => {
+    const monthEvts = events.filter(e => e.ym === ym);
+    const segMap = {};
+    monthEvts.forEach(p => {
+      const { v } = valueOf(p);
+      const k = keyOf(p);
+      segMap[k] = (segMap[k] || 0) + v;
+    });
+    const segments = Object.entries(segMap).map(([k, v]) => ({ key: k, value: v, label: labelOf(k), color: colorOf(k) }));
+    const total = segments.reduce((s, x) => s + x.value, 0);
+    return { ym, total, segments };
+  });
+
+  const legendKeys = new Set();
+  rows.forEach(r => r.segments.forEach(s => legendKeys.add(s.key)));
+  const legend = [...legendKeys].map(k => ({ key: k, label: labelOf(k), color: colorOf(k) }));
+
+  const sum = rows.reduce((s, r) => s + r.total, 0);
+  const monthlyAvg = rows.length ? sum / rows.length : 0;
+  const max = rows.reduce((m, r) => Math.max(m, r.total), 0);
+
+  return { rows, legend, totals: { sum, monthlyAvg, max }, currency };
+}
+
 // Activity feed derived from MOVEMENTS + DISTRIBUTIONS + TRANSACTIONS — sorted newest first.
 const ACTIVITY = [
   ...MOVEMENTS.map(m => ({ d: m.d, kind: "movement",     asset: m.asset, type: m.type, qty: m.qty, price: m.price, amt: m.net, ccy: m.ccy })),
@@ -746,6 +1063,9 @@ const ICONS = {
   "image":           "M3 5h18v14H3zM8 11a2 2 0 1 0 0-4 2 2 0 0 0 0 4M21 15l-5-5-9 9",
   "trash":           "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6",
   "download":        "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
+  "refresh":         "M21 12a9 9 0 0 1-15 6.7L3 16M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M3 21v-5h5",
+  "alert-triangle":  "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0M12 9v4M12 17h.01",
+  "edit-2":          "M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z",
 };
 
 function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
@@ -908,6 +1228,244 @@ function HBar({ value, max, color = "#6366f1", height = 6 }) {
     <div className="w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden" style={{ height }}>
       <div className="h-full rounded-full" style={{ width: pct + "%", background: color }} />
     </div>
+  );
+}
+
+/* ---------- ProventosChart — monthly stacked bars with toggles ---------- */
+
+// Format helper for chart currencies
+function fmtChart(v, ccy, compact = true) {
+  if (ccy === "USD") return "US$ " + (compact ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(v) : v.toFixed(0));
+  return "R$ " + (compact ? new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(v) : v.toFixed(0));
+}
+
+function ProventosStackedBar({ rows, breakdown, hoverIdx, setHoverIdx, height = 220, gap = 6 }) {
+  if (!rows.length) return null;
+  const max = rows.reduce((m, r) => Math.max(m, r.total), 0) || 1;
+  const cols = rows.length;
+
+  return (
+    <div className="relative w-full select-none" style={{ height }}>
+      <svg viewBox={`0 0 ${cols * 100} ${height}`} preserveAspectRatio="none" className="w-full h-full" style={{ display: "block" }}>
+        {/* Subtle baseline */}
+        <line x1="0" y1={height - 18} x2={cols * 100} y2={height - 18}
+              stroke="currentColor" strokeOpacity="0.1" strokeWidth="1"/>
+
+        {/* Bars */}
+        {rows.map((r, i) => {
+          const slotX = i * 100;
+          const w = 100 - gap;
+          const x = slotX + gap / 2;
+
+          // Stack segments bottom up; sort segments by absolute size desc so big classes are on the bottom
+          const segs = [...r.segments].sort((a, b) => b.value - a.value);
+          let acc = 0;
+          const isHover = hoverIdx === i;
+
+          return (
+            <g key={i}
+               onMouseEnter={() => setHoverIdx(i)}
+               onMouseLeave={() => setHoverIdx(null)}>
+              <rect x={slotX} y={0} width={100} height={height} fill="transparent"/>
+              {segs.map((s, j) => {
+                const h = ((Math.abs(s.value) / max) * (height - 28));
+                const y = (height - 18) - acc - h;
+                acc += h;
+                return (
+                  <rect key={j} x={x} y={y} width={w} height={h}
+                        fill={s.color}
+                        opacity={isHover ? 1 : 0.85}
+                        rx="2"/>
+                );
+              })}
+              {isHover && (
+                <rect x={x - 1} y={(height - 18) - acc - 2} width={w + 2} height={acc + 2}
+                      fill="none" stroke="currentColor" strokeOpacity="0.4" strokeWidth="1" rx="2"/>
+              )}
+            </g>
+          );
+        })}
+
+        {/* X-axis month labels */}
+        {rows.map((r, slotIdx) => {
+          const monthLabel = MONTHS_PT[parseInt(r.ym.split("-")[1], 10) - 1];
+          if (cols > 14 && slotIdx % 2 !== 0) return null;
+          return (
+            <text key={slotIdx}
+                  x={slotIdx * 100 + 50}
+                  y={height - 4}
+                  textAnchor="middle"
+                  fontSize="10"
+                  fill="currentColor"
+                  fillOpacity="0.5"
+                  style={{ fontFamily: "ui-sans-serif" }}>
+              {monthLabel}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function ProventosChart({ defaultBreakdown = "klass", defaultCurrency = "BRL", defaultPeriod = "12m", compact = false, includeSynthetic = false, onIncludeSyntheticChange, hideToggles = false, noCard = false }) {
+  const [breakdown, setBreakdown] = useState(defaultBreakdown);
+  const [currency,  setCurrency]  = useState(defaultCurrency);
+  const [period,    setPeriod]    = useState(defaultPeriod);
+  const [hoverIdx,  setHoverIdx]  = useState(null);
+
+  // Pick months for the selected period
+  const months = useMemo(() => {
+    if (period === "12m") return PROVENTOS_MONTHS.slice(-12);
+    if (period === "24m") return PROVENTOS_MONTHS.slice(-24);
+    if (period === "36m") return PROVENTOS_MONTHS.slice(-24); // we only have 24; show what we have
+    if (period === "ytd") {
+      const currentYear = "2026";
+      return PROVENTOS_MONTHS.filter(ym => ym.startsWith(currentYear));
+    }
+    return PROVENTOS_MONTHS.slice(-12);
+  }, [period]);
+
+  const data = useMemo(() => proventosChartData({ months, breakdown, currency, includeSynthetic }),
+    [months, breakdown, currency, includeSynthetic]);
+
+  // KPIs
+  const lastRow = data.rows[data.rows.length - 1];
+  const prevRow = data.rows[data.rows.length - 2];
+  const mom = (lastRow && prevRow && prevRow.total !== 0) ? (lastRow.total - prevRow.total) / prevRow.total : null;
+  const ytdRows = data.rows.filter(r => r.ym.startsWith("2026"));
+  const ytdSum = ytdRows.reduce((s, r) => s + r.total, 0);
+  const last12 = data.rows.slice(-12);
+  const trailing12mSum = last12.reduce((s, r) => s + r.total, 0);
+  const currencySymbol = currency === "USD" ? "USD" : "BRL";
+
+  const periodOpts = [
+    { id: "12m", label: "12M" },
+    { id: "24m", label: "24M" },
+    { id: "ytd", label: "YTD" },
+  ];
+  const breakdownOpts = [
+    { id: "klass",   label: "Classe" },
+    { id: "country", label: "País" },
+    { id: "fi",      label: "Custodiante" },
+    { id: "type",    label: "Tipo" },
+    { id: "total",   label: "Total" },
+  ];
+  const currencyOpts = [
+    { id: "BRL",      label: "R$" },
+    { id: "USD",      label: "US$" },
+  ];
+
+  // Hovered row for tooltip
+  const hovered = hoverIdx !== null ? data.rows[hoverIdx] : null;
+
+  const Wrapper = noCard ? "div" : Card;
+  const wrapperProps = noCard ? {} : { padding: "p-4" };
+
+  return (
+    <Wrapper {...wrapperProps}>
+      {/* Header: KPIs left, toggles right */}
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
+        <div className="flex items-end gap-5">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Último mês</div>
+            <div className="mt-0.5 text-lg font-semibold tnum money">{fmtChart(lastRow?.total || 0, currencySymbol, true)}</div>
+            {mom !== null && (
+              <div className={`text-[11px] tnum ${mom >= 0 ? "text-emerald-500 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
+                {mom >= 0 ? "↑" : "↓"} {fmtPct(Math.abs(mom), 1)} MoM
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">12M trailing</div>
+            <div className="mt-0.5 text-lg font-semibold tnum money">{fmtChart(trailing12mSum, currencySymbol, true)}</div>
+            <div className="text-[11px] text-gray-500 tnum">
+              média {fmtChart(trailing12mSum / 12, currencySymbol, true)}/mês
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">YTD</div>
+            <div className="mt-0.5 text-lg font-semibold tnum money">{fmtChart(ytdSum, currencySymbol, true)}</div>
+            <div className="text-[11px] text-gray-500 tnum">{ytdRows.length} {ytdRows.length === 1 ? "mês" : "meses"} em 2026</div>
+          </div>
+        </div>
+
+        {/* Toggles */}
+        {!hideToggles && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Moeda</span>
+              <GroupingToggle value={currency} onChange={setCurrency} options={currencyOpts}/>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Quebra</span>
+              <GroupingToggle value={breakdown} onChange={setBreakdown} options={breakdownOpts}/>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Período</span>
+              <GroupingToggle value={period} onChange={setPeriod} options={periodOpts}/>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Chart */}
+      <div className="relative">
+        <ProventosStackedBar
+          rows={data.rows}
+          breakdown={breakdown}
+          hoverIdx={hoverIdx}
+          setHoverIdx={setHoverIdx}
+          height={compact ? 120 : 220}
+        />
+        {/* Tooltip */}
+        {hovered && (
+          <div className="absolute right-2 top-2 max-w-[260px] rounded-lg border border-gray-200 dark:border-gray-800
+              bg-white dark:bg-gray-900 shadow-xl px-3 py-2 text-[11px]">
+            <div className="font-semibold text-[12px]">
+              {MONTHS_PT[parseInt(hovered.ym.split("-")[1], 10) - 1]}/{hovered.ym.split("-")[0].slice(2)}
+            </div>
+            <div className="mt-1 text-gray-500 tnum">
+              Total <span className="text-gray-700 dark:text-gray-300 font-semibold ml-1 money">{fmtChart(hovered.total, currencySymbol, true)}</span>
+            </div>
+            <div className="mt-2 space-y-0.5">
+              {[...hovered.segments].sort((a, b) => b.value - a.value).map((s, i) => {
+                const pct = hovered.total ? s.value / hovered.total : 0;
+                return (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.color }}/>
+                    <span className="text-gray-600 dark:text-gray-300 truncate flex-1">{s.label}</span>
+                    <span className="text-gray-500 tnum text-[10px]">{fmtPct(pct, 0)}</span>
+                    <span className="tnum money text-gray-700 dark:text-gray-200 font-medium">{fmtChart(s.value, currencySymbol, true)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      {!compact && data.legend.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 flex items-center gap-3 flex-wrap text-[11px] text-gray-600 dark:text-gray-400">
+          {data.legend.slice(0, 10).map(l => (
+            <div key={l.key} className="inline-flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-sm" style={{ background: l.color }}/>
+              <span>{l.label}</span>
+            </div>
+          ))}
+          {data.legend.length > 10 && <span className="text-gray-500">+ {data.legend.length - 10} outros</span>}
+        </div>
+      )}
+
+      {/* Synthetic dividend toggle (when proventos page) */}
+      {onIncludeSyntheticChange && !compact && (
+        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between">
+          <ToggleSwitch on={includeSynthetic} onChange={onIncludeSyntheticChange} label="Incluir dividendos sintéticos (prêmios de opções vendidas)"/>
+          <span className="text-[11px] text-gray-500">{data.rows.length} meses</span>
+        </div>
+      )}
+    </Wrapper>
   );
 }
 
@@ -1082,6 +1640,180 @@ function PrivacyToggle() {
   );
 }
 
+/* ---------- PriceRefresh — global atualizar preços (topbar) ---------- */
+function PriceRefresh() {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState("idle");  // idle | updating | done
+  const [result, setResult] = useState(null);   // { ok, failed, errors: [{ticker, reason}] }
+  const ref = useRef(null);
+
+  // Click-outside to close
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // Aggregate freshness across all assets — most-stale wins.
+  const summary = aggregatePriceAge(ASSETS);
+  const worstFresh = priceFreshness(summary.oldest, "brapi"); // use strict thresholds for the pill
+  // Group automatable assets by source (manual sources can't be auto-refreshed)
+  const autoSources = ["brapi", "yahoo", "coinbase", "tesouro"];
+  const bySource = {};
+  ASSETS.forEach(a => {
+    const m = priceMetaOf(a);
+    (bySource[m.source] = bySource[m.source] || []).push(a);
+  });
+  const sourceLabel = { brapi: "B3 / brapi", yahoo: "Yahoo Finance", coinbase: "Coinbase", tesouro: "Tesouro Direto", manual: "Manual" };
+  const sourceCount = (s) => (bySource[s] || []).length;
+  const automatableCount = autoSources.reduce((s, src) => s + sourceCount(src), 0);
+  const manualCount = sourceCount("manual");
+
+  // Stale list (auto-refreshable only — manual ones the user must edit)
+  const staleList = ASSETS
+    .filter(a => autoSources.includes(priceMetaOf(a).source))
+    .map(a => ({ a, m: priceMetaOf(a), f: priceFreshness(priceMetaOf(a).updated_at, priceMetaOf(a).source) }))
+    .filter(x => x.f.tier !== "fresh")
+    .sort((x, y) => x.m.updated_at.localeCompare(y.m.updated_at));
+
+  const runRefresh = () => {
+    setState("updating");
+    setResult(null);
+    // Pretend to fetch — 1.8s total, then resolve. In real code each source is parallel
+    // and per-asset success is tracked. Here we hardcode a small failure to show the UX.
+    setTimeout(() => {
+      setResult({ ok: automatableCount - 1, failed: 1, errors: [{ ticker: "QQQ", reason: "Timeout (Yahoo)" }] });
+      setState("done");
+    }, 1800);
+  };
+
+  // Pill color reflects worst-tier ignoring manual assets (else it's always red).
+  const ageStr = priceAgeStr(summary.oldest);
+  const dotClass = worstFresh.color === "emerald" ? "bg-emerald-500"
+                 : worstFresh.color === "amber"   ? "bg-amber-500"
+                 :                                  "bg-red-500";
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        title={`Preços · atualização mais antiga ${ageStr} · ${summary.stale} stale · ${summary.old} desatualizados`}
+        className="inline-flex items-center gap-2 h-8 px-2.5 rounded-lg text-[11px] font-medium
+          bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800
+          text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-700 transition-colors">
+        <Icon name="refresh" className={`w-3.5 h-3.5 ${state === "updating" ? "animate-spin" : ""}`}/>
+        <span className="hidden md:inline tnum">{ageStr}</span>
+        <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`}/>
+      </button>
+      {open && (
+        <div className="menu-pop absolute right-0 top-10 z-50 w-[360px] rounded-xl
+          bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xl shadow-black/30 overflow-hidden">
+
+          {/* Header */}
+          <div className="px-4 pt-3.5 pb-3 border-b border-gray-200 dark:border-gray-800">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[13px] font-semibold">Preços dos ativos</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">
+                  Mais antigo: <span className={`tnum font-medium text-${worstFresh.color}-${worstFresh.color === "red" ? "500" : "600"} dark:text-${worstFresh.color}-400`}>{ageStr}</span>
+                  {" · "}
+                  <span className="tnum">{summary.count} ativos</span>
+                </div>
+              </div>
+              <button
+                onClick={runRefresh}
+                disabled={state === "updating"}
+                className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors
+                  ${state === "updating"
+                    ? "bg-gray-200 dark:bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : "bg-indigo-500 hover:bg-indigo-400 text-white"}`}>
+                <Icon name="refresh" className={`w-3 h-3 ${state === "updating" ? "animate-spin" : ""}`}/>
+                {state === "updating" ? "Atualizando…" : "Atualizar agora"}
+              </button>
+            </div>
+          </div>
+
+          {/* Sources */}
+          <div className="px-4 py-3 space-y-1.5 border-b border-gray-200 dark:border-gray-800">
+            <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500 mb-1">Fontes</div>
+            {autoSources.map(src => {
+              const n = sourceCount(src);
+              if (n === 0) return null;
+              const isUpdating = state === "updating";
+              return (
+                <div key={src} className="flex items-center gap-2 text-[11px]">
+                  <span className={`w-1.5 h-1.5 rounded-full ${isUpdating ? "bg-indigo-500 animate-pulse" : state === "done" ? "bg-emerald-500" : "bg-gray-400"}`}/>
+                  <span className="text-gray-700 dark:text-gray-300 font-medium">{sourceLabel[src]}</span>
+                  <span className="text-gray-500">· {n} {n === 1 ? "ativo" : "ativos"}</span>
+                  <div className="flex-1"/>
+                  {state === "done" && src === "yahoo" ? (
+                    <span className="text-[10px] text-amber-500 dark:text-amber-400">{sourceCount(src) - 1}/{n}</span>
+                  ) : state === "done" ? (
+                    <span className="text-[10px] text-emerald-500 dark:text-emerald-400">{n}/{n}</span>
+                  ) : null}
+                </div>
+              );
+            })}
+            {manualCount > 0 && (
+              <div className="flex items-center gap-2 text-[11px] pt-1.5 mt-1 border-t border-dashed border-gray-200 dark:border-gray-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-400"/>
+                <span className="text-gray-500">Manual · {manualCount} {manualCount === 1 ? "ativo" : "ativos"} (atualizar no detalhe)</span>
+              </div>
+            )}
+          </div>
+
+          {/* Result panel after update */}
+          {state === "done" && result && (
+            <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-emerald-50/50 dark:bg-emerald-500/5">
+              <div className="flex items-center gap-2 text-[12px]">
+                <Icon name="check" className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400"/>
+                <span className="text-emerald-700 dark:text-emerald-300 font-medium">{result.ok} de {result.ok + result.failed} atualizados</span>
+              </div>
+              {result.errors.map((e, i) => (
+                <div key={i} className="mt-1.5 text-[11px] flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                  <Icon name="alert-triangle" className="w-3 h-3 shrink-0"/>
+                  <span className="font-mono">{e.ticker}</span>
+                  <span className="text-gray-500">· {e.reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Stale assets */}
+          {staleList.length > 0 && state !== "updating" && (
+            <div className="px-4 py-3 max-h-[200px] overflow-y-auto">
+              <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500 mb-1.5">
+                Mais desatualizados ({staleList.length})
+              </div>
+              {staleList.slice(0, 5).map(({ a, m, f }) => (
+                <a key={a.id} href={`#/ativo/${a.id}`} onClick={() => setOpen(false)}
+                  className="flex items-center gap-2 py-1.5 -mx-1 px-1 rounded-md text-[11px] hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors">
+                  <span className={`w-1 h-4 rounded-full ${f.color === "amber" ? "bg-amber-500" : "bg-red-500"}`}/>
+                  <span className="font-mono font-medium">{a.ticker || a.name.slice(0, 16)}</span>
+                  <div className="flex-1"/>
+                  <span className="text-gray-500 tnum">{priceAgeStr(m.updated_at)}</span>
+                </a>
+              ))}
+              {staleList.length > 5 && (
+                <a href="#/ativos" onClick={() => setOpen(false)}
+                  className="block text-[11px] text-indigo-500 dark:text-indigo-400 hover:underline mt-2">
+                  Ver todos {staleList.length} desatualizados em Ativos →
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Footer note */}
+          <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800 text-[10px] text-gray-500">
+            Atualizações automáticas diárias às 18h. Ativos manuais (imóveis, veículo) precisam ser editados no detalhe.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NovoButton({ route }) {
   const [open, setOpen] = useState(false);
   const composer = useComposer();
@@ -1197,6 +1929,7 @@ function TopBar({ breadcrumbs, route }) {
         Buscar
         <kbd className="ml-2 px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-800 text-[10px]">⌘K</kbd>
       </button>
+      <PriceRefresh />
       <NovoButton route={route} />
       <ComfortToggle />
       <PrivacyToggle />
@@ -1688,27 +2421,62 @@ function Dashboard() {
           </div>
         </Card>
 
-        <Card className="col-span-12 lg:col-span-4">
-          <SectionTitle action={<span className="text-[11px] text-gray-500">12 meses</span>}>Proventos recebidos</SectionTitle>
-          <div className="flex items-end gap-4">
-            <div>
-              <div className="text-2xl font-semibold tnum money">{fmtBRL(last12mProventos)}</div>
-              <div className="text-[11px] text-gray-500 mt-0.5">DY médio · <span className="tnum text-gray-300">2,1%</span> · YoC <span className="tnum text-emerald-400">3,8%</span></div>
-            </div>
+        <Card className="col-span-12 lg:col-span-4" padding="p-4">
+          <SectionTitle action={
+            <a href="#/proventos" className="text-[11px] text-indigo-500 dark:text-indigo-400 hover:underline">Ver todos →</a>
+          }>Proventos · 12M</SectionTitle>
+          <div className="-mt-1">
+            <ProventosChart
+              defaultBreakdown="klass"
+              defaultCurrency="BRL"
+              defaultPeriod="12m"
+              compact
+              hideToggles
+              noCard
+            />
           </div>
-          <div className="mt-4">
-            <BarMonths data={PROVENTOS_12M} w={300} h={60} color="#f59e0b" />
-            <div className="mt-2 grid grid-cols-12 gap-1 text-[9px] uppercase tracking-wider text-gray-500">
-              {["Jun","Jul","Ago","Set","Out","Nov","Dez","Jan","Fev","Mar","Abr","Mai"].map((m,i) => (
-                <div key={i} className="text-center tnum">{m}</div>
-              ))}
-            </div>
-          </div>
-          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800 grid grid-cols-3 gap-2 text-[11px]">
-            <div><div className="text-gray-500 uppercase tracking-wider text-[10px]">Dividendos</div><div className="tnum money font-medium">{fmtBRL(28_400, { compact: true })}</div></div>
-            <div><div className="text-gray-500 uppercase tracking-wider text-[10px]">Juros / JCP</div><div className="tnum money font-medium">{fmtBRL(18_200, { compact: true })}</div></div>
-            <div><div className="text-gray-500 uppercase tracking-wider text-[10px]">Aluguel</div><div className="tnum money font-medium">{fmtBRL(8_040, { compact: true })}</div></div>
-          </div>
+          {/* Always-visible Por tipo — includes Prêmio sintético (OPTION_PREMIUM) as 5th category */}
+          {(() => {
+            const last12 = PROVENTOS_MONTHS.slice(-12);
+            const monthSet = new Set(last12);
+            const events = [
+              ...PROVENTOS_HISTORY.filter(p => monthSet.has(p.ym)),
+              ...OPTION_PREMIUMS_TAGGED.filter(p => monthSet.has(p.ym)),
+            ];
+            const byT = {};
+            events.forEach(p => { byT[p.type] = (byT[p.type] || 0) + p.net * p.fxRate; });
+            const total = Object.values(byT).reduce((s, v) => s + v, 0);
+            const items = [
+              { id: "DIVIDEND",           label: "Dividendo",        color: "#22c55e" },
+              { id: "INTEREST",           label: "Juros",            color: "#3b82f6" },
+              { id: "JCP",                label: "JCP",              color: "#f59e0b" },
+              { id: "SECURITIES_LENDING", label: "Aluguel",          color: "#8b5cf6" },
+              { id: "OPTION_PREMIUM",     label: "Prêmio sintético", color: "#a855f7", synthetic: true },
+            ];
+            return (
+              <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium mb-2">Por tipo</div>
+                <div className="space-y-1">
+                  {items.map(it => {
+                    const v = byT[it.id] || 0;
+                    const pct = total ? v / total : 0;
+                    return (
+                      <div key={it.id} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: it.color }}/>
+                        <span className="text-gray-700 dark:text-gray-300 flex items-center gap-1.5 min-w-0">
+                          {it.label}
+                          {it.synthetic && <span className="inline-flex items-center px-1 py-0 rounded text-[8px] font-semibold tracking-wider bg-purple-500/15 text-purple-600 dark:text-purple-300">OPÇÕES</span>}
+                        </span>
+                        <div className="flex-1"/>
+                        <span className="text-gray-500 tnum text-[10px]">{fmtPct(pct, 0)}</span>
+                        <span className="tnum money font-medium text-gray-700 dark:text-gray-300 w-16 text-right">{fmtBRL(v, { compact: true })}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </Card>
       </div>
 
@@ -2916,6 +3684,7 @@ function AtivosTable({ assets, onSelect, dense = false, showAccount = false }) {
             <th className="text-right font-medium px-2 py-2">Valor</th>
             <th className="text-right font-medium px-2 py-2" title="Variação no preço do papel">Variação</th>
             <th className="text-right font-medium px-2 py-2" title="Variação + proventos recebidos">Rentab.</th>
+            <th className="text-right font-medium px-2 py-2" title="Quando o preço atual foi atualizado">Atualizado</th>
             <th className="px-2"/>
           </tr>
         </thead>
@@ -2926,6 +3695,11 @@ function AtivosTable({ assets, onSelect, dense = false, showAccount = false }) {
             const fi = fiById[assetFi(a)];
             const acc = accById[a.account];
             const { variation, rentabilidade, distNet } = assetReturns(a);
+            const pMeta = priceMetaOf(a);
+            const pFresh = priceFreshness(pMeta.updated_at, pMeta.source);
+            const ageDotClass = pFresh.color === "emerald" ? "bg-emerald-500"
+                              : pFresh.color === "amber"   ? "bg-amber-500"
+                              :                              "bg-red-500";
             return (
               <tr key={a.id}
                 onClick={() => onSelect && onSelect(a.id)}
@@ -2967,6 +3741,18 @@ function AtivosTable({ assets, onSelect, dense = false, showAccount = false }) {
                 <td className="px-2 text-right">
                   <div className={`tnum font-medium ${rentabilidade >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(rentabilidade, 2, true)}</div>
                   {distNet > 0 && <div className="text-[10px] text-gray-500">+ <span className="money tnum">{fmtMoney(distNet, a.ccy, { compact: true })}</span> prov.</div>}
+                </td>
+                <td className="px-2 text-right">
+                  <div className="inline-flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${ageDotClass}`}/>
+                    <span className="text-[11px] text-gray-500 tnum" title={`${pMeta.source} · ${new Date(pMeta.updated_at).toLocaleString("pt-BR")}`}>{priceAgeStr(pMeta.updated_at)}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); /* mock refresh */ }}
+                      title="Atualizar preço deste ativo"
+                      className="ml-0.5 w-5 h-5 inline-flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors">
+                      <Icon name="refresh" className="w-3 h-3"/>
+                    </button>
+                  </div>
                 </td>
                 <td className="px-2 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
               </tr>
@@ -3291,6 +4077,9 @@ function AtivoDetailPage({ assetId }) {
   const dy  = valueBRL ? distSumBRL / valueBRL : 0;
   const { variation, rentabilidade } = assetReturns(a);
   const priceDate = lastTradeAt(a);
+  const pMeta = priceMetaOf(a);
+  const pFresh = priceFreshness(pMeta.updated_at, pMeta.source);
+  const sourceLabel = { brapi: "B3 / brapi", yahoo: "Yahoo Finance", coinbase: "Coinbase", tesouro: "Tesouro Direto", manual: "Manual" };
   // Pseudo price evolution (24 months — interpolation from avg → current)
   const priceSeries = Array.from({ length: 24 }, (_, i) => {
     const t = i / 23;
@@ -3320,6 +4109,12 @@ function AtivoDetailPage({ assetId }) {
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              title={pMeta.source === "manual" ? "Editar preço manualmente" : `Buscar preço em ${sourceLabel[pMeta.source]}`}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <Icon name={pMeta.source === "manual" ? "edit-2" : "refresh"} className="w-3.5 h-3.5"/>
+              {pMeta.source === "manual" ? "Editar preço" : "Atualizar preço"}
+            </button>
             <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
               <Icon name="settings" className="w-3.5 h-3.5"/> Editar
             </button>
@@ -3336,7 +4131,18 @@ function AtivoDetailPage({ assetId }) {
         <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KpiTile label="Posição" value={fmtMoney(value, a.ccy, { compact: true })} sub={a.ccy === "USD" ? fmtBRL(valueBRL, { compact: true }) : `${fmtNum(a.qty, a.qty < 1 ? 4 : 0)} unidades`}/>
           <KpiTile label="Preço médio" value={fmtMoney(a.avg, a.ccy)}/>
-          <KpiTile label="Preço atual" value={fmtMoney(a.price, a.ccy)} sub={`atualizado · ${fmtRelDate(priceDate)}${a.ccy === "USD" ? ` · R$ ${(a.price * PTAX).toFixed(2)}` : ""}`}/>
+          <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] uppercase tracking-wider font-medium text-gray-500 dark:text-gray-400">Preço atual</div>
+              <span className={`w-1.5 h-1.5 rounded-full ${pFresh.color === "emerald" ? "bg-emerald-500" : pFresh.color === "amber" ? "bg-amber-500" : "bg-red-500"}`}
+                title={`${pFresh.tier === "fresh" ? "Atualizado" : pFresh.tier === "stale" ? "Pouco desatualizado" : "Muito desatualizado"} · ${sourceLabel[pMeta.source]}`}/>
+            </div>
+            <div className="mt-1 text-lg font-semibold tnum money">{fmtMoney(a.price, a.ccy)}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate" title={new Date(pMeta.updated_at).toLocaleString("pt-BR")}>
+              {priceAgeStr(pMeta.updated_at)} · {sourceLabel[pMeta.source]}
+              {a.ccy === "USD" && <span className="ml-1.5">· R$ {(a.price * PTAX).toFixed(2)}</span>}
+            </div>
+          </div>
           <KpiTile label="P&L" value={fmtMoney(pl, a.ccy, { sign: true, compact: true })} sub={a.ccy === "USD" ? fmtBRL(pl * PTAX, { compact: true, sign: true }) : null} intent={pl >= 0 ? "positive" : "negative"}/>
           <KpiTile label="Variação" value={fmtPct(variation, 2, true)} sub="apenas preço" intent={variation >= 0 ? "positive" : "negative"}/>
           <KpiTile label="Rentabilidade" value={fmtPct(rentabilidade, 2, true)} sub="preço + proventos" intent={rentabilidade >= 0 ? "positive" : "negative"}/>
@@ -3890,31 +4696,68 @@ function ProventosPage() {
         countLabel={`distribuições · ${new Set(DISTRIBUTIONS.filter(d => d.asset).map(d => d.asset)).size} ativos pagam`}
       />
 
-      <div className="grid grid-cols-12 gap-4">
-        <Card className="col-span-12 lg:col-span-5">
-          <SectionTitle>Total recebido</SectionTitle>
-          <div className="text-3xl font-semibold tnum money">{fmtBRL(totalNetBRL)}</div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Bruto <span className="tnum money text-gray-300">{fmtBRL(totalGrossBRL, { compact: true })}</span> · IR retido <span className="tnum money text-amber-400">{fmtBRL(totalTaxBRL, { compact: true })}</span>
-          </div>
-        </Card>
-        <Card className="col-span-12 lg:col-span-7">
-          <SectionTitle>Por tipo</SectionTitle>
-          <div className="grid grid-cols-4 gap-2">
-            {typeOpts.map(t => {
-              const v = byType[t.id] || 0;
-              return (
-                <div key={t.id} className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
-                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: t.color }}/>
-                    {t.label}
-                  </div>
-                  <div className="mt-1 text-sm font-semibold tnum money">{fmtBRL(v, { compact: true })}</div>
-                  <div className="text-[10px] text-gray-500 tnum">{totalNetBRL ? fmtPct(v / totalNetBRL, 0) : "—"}</div>
+      {/* Stacked-bar chart with currency / breakdown / period toggles */}
+      <ProventosChart
+        defaultBreakdown="klass"
+        defaultCurrency="BRL"
+        defaultPeriod="12m"
+        includeSynthetic={includeSynthetic}
+        onIncludeSyntheticChange={setIncludeSynthetic}
+      />
+
+      {/* Por tipo — 5 chips including Prêmio sintético (synthetic dividend).
+          Sempre visível: aparece com R$ 0 e badge "off" se o toggle de sintéticos estiver desligado. */}
+      <Card>
+        <SectionTitle action={
+          <span className="text-[11px] text-gray-500">
+            {includeSynthetic ? "incluindo prêmios sintéticos" : "sem prêmios sintéticos · ligue o toggle abaixo para incluir"}
+          </span>
+        }>Por tipo · {sorted.length} eventos</SectionTitle>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+          {typeOpts.map(t => {
+            const v = byType[t.id] || 0;
+            const isSynthetic = t.id === "OPTION_PREMIUM";
+            const isOff = isSynthetic && !includeSynthetic;
+            return (
+              <div key={t.id}
+                className={`px-3 py-2.5 rounded-lg border transition-colors
+                  ${isOff
+                    ? "bg-gray-50/50 dark:bg-gray-800/20 border-dashed border-gray-300 dark:border-gray-700 opacity-60"
+                    : "bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-800"}`}>
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: t.color }}/>
+                  <span className="truncate">{t.label}</span>
+                  {isSynthetic && (
+                    <span className="ml-auto inline-flex items-center px-1 py-0.5 rounded text-[8px] font-semibold tracking-wider bg-purple-500/15 text-purple-600 dark:text-purple-300">
+                      OPÇÕES
+                    </span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+                <div className={`mt-1 text-base font-semibold tnum money ${isOff ? "text-gray-400 dark:text-gray-500" : ""}`}>{fmtBRL(v, { compact: true })}</div>
+                <div className="text-[10px] text-gray-500 tnum">{totalNetBRL && !isOff ? fmtPct(v / totalNetBRL, 0) : isOff ? "desligado" : "—"}</div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Slim totals row */}
+      <div className="grid grid-cols-12 gap-3 text-[11px]">
+        <Card className="col-span-6 lg:col-span-3" padding="p-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Líquido (filtro atual)</div>
+          <div className="mt-1 text-base font-semibold tnum money">{fmtBRL(totalNetBRL, { compact: true })}</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3" padding="p-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Bruto</div>
+          <div className="mt-1 text-base font-semibold tnum money text-gray-700 dark:text-gray-300">{fmtBRL(totalGrossBRL, { compact: true })}</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3" padding="p-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">IR retido</div>
+          <div className="mt-1 text-base font-semibold tnum money text-amber-500 dark:text-amber-400">{fmtBRL(totalTaxBRL, { compact: true })}</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3" padding="p-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Eventos</div>
+          <div className="mt-1 text-base font-semibold tnum">{sorted.length}</div>
         </Card>
       </div>
 
