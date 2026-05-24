@@ -3,6 +3,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react'
 import { type AssetOut, type FinancialInstitutionOut, type PositionOut } from '../lib/api'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
 import { ClassBadge, FILogo } from './ui'
+import PriceCell from './PriceCell'
 
 interface Props {
   assets: AssetOut[]
@@ -11,6 +12,9 @@ interface Props {
   grouping: 'none' | 'klass' | 'fi'
   showWorkspaceColumn?: boolean
   onRowClick: (asset: AssetOut) => void
+  /** Called when the per-row refresh button updates a single asset.
+   * The parent should merge it back into its assets state. */
+  onAssetUpdated?: (updated: AssetOut) => void
 }
 
 interface Group {
@@ -34,7 +38,7 @@ function fmtMoney(n: number | null | undefined, currency: string, opts: { compac
 }
 
 export default function AssetTable({
-  assets, positions, institutions, grouping, showWorkspaceColumn, onRowClick,
+  assets, positions, institutions, grouping, showWorkspaceColumn, onRowClick, onAssetUpdated,
 }: Props) {
   const fiById = useMemo(() => {
     const m = new Map<string, FinancialInstitutionOut>()
@@ -87,6 +91,7 @@ export default function AssetTable({
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
           onRowClick={onRowClick}
+          onAssetUpdated={onAssetUpdated}
         />
       </Card>
     )
@@ -102,6 +107,7 @@ export default function AssetTable({
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
           onRowClick={onRowClick}
+          onAssetUpdated={onAssetUpdated}
         />
       ))}
     </div>
@@ -117,13 +123,14 @@ function Card({ children }: { children: React.ReactNode }) {
 }
 
 function GroupCard({
-  group, positions, fiById, showWorkspaceColumn, onRowClick,
+  group, positions, fiById, showWorkspaceColumn, onRowClick, onAssetUpdated,
 }: {
   group: Group
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
   showWorkspaceColumn?: boolean
   onRowClick: (a: AssetOut) => void
+  onAssetUpdated?: (updated: AssetOut) => void
 }) {
   const [open, setOpen] = useState(true)
   return (
@@ -145,6 +152,7 @@ function GroupCard({
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
           onRowClick={onRowClick}
+          onAssetUpdated={onAssetUpdated}
         />
       )}
     </div>
@@ -152,13 +160,14 @@ function GroupCard({
 }
 
 function Table({
-  assets, positions, fiById, showWorkspaceColumn, onRowClick,
+  assets, positions, fiById, showWorkspaceColumn, onRowClick, onAssetUpdated,
 }: {
   assets: AssetOut[]
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
   showWorkspaceColumn?: boolean
   onRowClick: (a: AssetOut) => void
+  onAssetUpdated?: (updated: AssetOut) => void
 }) {
   if (assets.length === 0) {
     return (
@@ -182,6 +191,7 @@ function Table({
             <th className="text-right font-medium px-2 py-2">Valor</th>
             <th className="text-right font-medium px-2 py-2" title="Variação no preço do papel">Variação</th>
             <th className="text-right font-medium px-2 py-2" title="Variação + proventos recebidos">Rentab.</th>
+            <th className="text-left font-medium px-2 py-2">Atualizado</th>
             <th className="px-2"></th>
           </tr>
         </thead>
@@ -194,6 +204,7 @@ function Table({
               fi={fiById.get(a.financial_institution_id) ?? null}
               showWorkspaceColumn={showWorkspaceColumn}
               onClick={() => onRowClick(a)}
+              onAssetUpdated={onAssetUpdated}
             />
           ))}
         </tbody>
@@ -203,13 +214,14 @@ function Table({
 }
 
 function Row({
-  asset, position, fi, showWorkspaceColumn, onClick,
+  asset, position, fi, showWorkspaceColumn, onClick, onAssetUpdated,
 }: {
   asset: AssetOut
   position: PositionOut | null
   fi: FinancialInstitutionOut | null
   showWorkspaceColumn?: boolean
   onClick: () => void
+  onAssetUpdated?: (updated: AssetOut) => void
 }) {
   const klass = collapsedOf(asset.asset_class)
   const color = KLASS[klass].color
@@ -289,6 +301,9 @@ function Row({
         {position?.rentabilidade == null
           ? '—'
           : `${position.rentabilidade >= 0 ? '+' : ''}${(position.rentabilidade * 100).toFixed(2)}%`}
+      </td>
+      <td className="px-2">
+        <PriceCell asset={asset} onUpdated={onAssetUpdated} />
       </td>
       <td className="px-2 text-gray-500">
         <ChevronRight className="w-4 h-4" />

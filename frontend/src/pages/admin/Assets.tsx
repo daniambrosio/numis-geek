@@ -236,6 +236,9 @@ export default function Assets() {
             institutions={institutions}
             grouping={grouping}
             onRowClick={(a) => navigate(`/assets/${a.id}`)}
+            onAssetUpdated={(updated) =>
+              setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))
+            }
           />
         )}
       </div>

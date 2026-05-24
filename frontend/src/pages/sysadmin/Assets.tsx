@@ -245,6 +245,9 @@ export default function SysadminAssets() {
             grouping={grouping}
             showWorkspaceColumn
             onRowClick={setSelected}
+            onAssetUpdated={(updated) =>
+              setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))
+            }
           />
         )}
       </div>
