@@ -14,6 +14,9 @@ import {
 import AppLayout from '../components/AppLayout'
 import DistributionComposer from '../components/DistributionComposer'
 import DistributionDetailPanel from '../components/DistributionDetailPanel'
+import DistributionTotalsLine from '../components/DistributionTotalsLine'
+import ProventosByTypeCard from '../components/ProventosByTypeCard'
+import ProventosChart from '../components/ProventosChart'
 import {
   Card, FilterGroup, GroupingToggle, MultiChips, PageHeader, SearchInput,
 } from '../components/ui'
@@ -28,6 +31,8 @@ const TYPE_COLOR: Record<DistributionType, string> = {
   SECURITIES_LENDING: '#8b5cf6',
 }
 
+// Filter chips (DIVIDEND/INTEREST/JCP/SECURITIES_LENDING) — the 5-chip
+// "Por tipo" card uses its own constants (spec 32) and includes OPTION_PREMIUM.
 const TYPE_OPTS = TYPE_ORDER.map(id => ({
   id,
   label: DISTRIBUTION_TYPE_LABELS[id],
@@ -62,10 +67,6 @@ function fmtMoney(n: number, ccy: string, opts: { sign?: boolean } = {}) {
   return sign + v.toLocaleString('pt-BR', { style: 'currency', currency: ccy })
 }
 
-function fmtPct(n: number, digits = 0) {
-  return (n * 100).toFixed(digits) + '%'
-}
-
 function fmtDate(iso: string) {
   return new Intl.DateTimeFormat('pt-BR').format(new Date(iso + 'T00:00:00'))
 }
@@ -90,6 +91,9 @@ export default function Distributions() {
   const [search, setSearch] = useState('')
   const [typesSel, setTypesSel] = useState<string[]>([])
   const [view, setView] = useState<'month' | 'asset'>('month')
+
+  // Spec 32 — synthetic toggle shared between chart and 5-chip card.
+  const [includeSynthetic, setIncludeSynthetic] = useState(true)
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -254,47 +258,20 @@ export default function Distributions() {
           }
         />
 
-        {/* Totals + by-type */}
-        <div className="grid grid-cols-12 gap-4">
-          <Card className="col-span-12 lg:col-span-5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
-              Total recebido (líquido)
-            </div>
-            <div className="text-3xl font-semibold tnum money">{fmtBRL(stats.totalNet)}</div>
-            <div className="text-[11px] text-gray-500 mt-1">
-              Bruto <span className="tnum money text-gray-700 dark:text-gray-300">{fmtBRL(stats.totalGross, { compact: true })}</span>
-              {' · '}
-              IR retido <span className="tnum money text-amber-600 dark:text-amber-400">{fmtBRL(stats.totalTax, { compact: true })}</span>
-            </div>
-          </Card>
-          <Card className="col-span-12 lg:col-span-7">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
-              Por tipo
-            </div>
-            <div className="grid grid-cols-4 gap-2">
-              {TYPE_OPTS.map(t => {
-                const v = stats.byType[t.id] || 0
-                return (
-                  <div
-                    key={t.id}
-                    className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800"
-                  >
-                    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: t.color }} />
-                      {t.label}
-                    </div>
-                    <div className="mt-1 text-sm font-semibold tnum money">
-                      {fmtBRL(v, { compact: true })}
-                    </div>
-                    <div className="text-[10px] text-gray-500 tnum">
-                      {stats.totalNet ? fmtPct(v / stats.totalNet) : '—'}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </Card>
-        </div>
+        {/* Spec 32 — chart on top, 5-chip "Por tipo", slim totals line */}
+        <ProventosChart
+          includeSynthetic={includeSynthetic}
+          onIncludeSyntheticChange={setIncludeSynthetic}
+        />
+
+        <ProventosByTypeCard includeSynthetic={includeSynthetic} />
+
+        <DistributionTotalsLine
+          netBRL={stats.totalNet}
+          grossBRL={stats.totalGross}
+          taxBRL={stats.totalTax}
+          eventCount={stats.count}
+        />
 
         {/* Filters */}
         <Card padding="p-3" className="space-y-3">
