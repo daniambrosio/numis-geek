@@ -1,39 +1,123 @@
-/* Spec 35 — /snapshots/{ym}: frozen monthly report + pendency review. */
+/* Spec 35 — /snapshots/{ym} — Mirrors prototypes/index.html
+ * FechamentoDetailPage (~6983) section-by-section. Adaptations vs the
+ * prototype, locked by the user on 2026-05-25:
+ *   - The PTAX tile stays a dedicated KPI (the user explicitly asked
+ *     us to keep it separate from the "Patrimônio fim do mês" tile).
+ *   - "Patrimônio fim do mês" KPI renders the full number without
+ *     centavos (e.g. "R$ 12.468.724"), per user request.
+ *   - "Origem dos dados" card uses live PendencyReason counts from
+ *     the backend rather than the prototype's mock SOURCES enum.
+ */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, RotateCcw } from 'lucide-react'
+import {
+  AlertTriangle, ArrowLeft, ArrowRight, ChevronRight, Download, Edit2,
+  Lock, RefreshCw, RotateCcw, Upload,
+} from 'lucide-react'
 
 import {
   api,
   type AssetOut,
+  type DistributionOut,
   type SnapshotItemOut,
   type SnapshotOut,
   type SnapshotPendencyOut,
   type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import PendencyPanel from '../components/PendencyPanel'
-import SourceMixBar from '../components/SourceMixBar'
 import StatusPill from '../components/StatusPill'
-import { Card, PageHeader } from '../components/ui'
+import { Card, ClassBadge, SectionTitle } from '../components/ui'
+import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
 
-const MONTH_NAMES = [
+const MONTH_NAMES_LONG = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
 ]
+const MONTH_NAMES_SHORT = [
+  'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+  'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
+]
+const WEEKDAYS = [
+  'Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado',
+]
 
-function fmtBRL(n: number, opts: { compact?: boolean } = {}) {
+function ymLabelLong(ym: string): string {
+  const [y, m] = ym.split('-')
+  return `${MONTH_NAMES_LONG[parseInt(m, 10) - 1]} ${y}`
+}
+function ymLabelShort(ym: string): string {
+  const [y, m] = ym.split('-')
+  return `${MONTH_NAMES_SHORT[parseInt(m, 10) - 1]}/${y.slice(2)}`
+}
+function fmtDateBR(iso: string): string {
+  return new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('pt-BR')
+}
+function dayOfWeekPT(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  return WEEKDAYS[d.getDay()]
+}
+function fmtBRL(n: number, opts: { compact?: boolean; decimals?: number } = {}) {
+  if (opts.compact && Math.abs(n) >= 1000) {
+    return n.toLocaleString('pt-BR', {
+      style: 'currency', currency: 'BRL',
+      notation: 'compact', maximumFractionDigits: 1,
+    })
+  }
+  const dp = opts.decimals ?? 0
   return n.toLocaleString('pt-BR', {
     style: 'currency', currency: 'BRL',
-    notation: opts.compact ? 'compact' : 'standard',
-    maximumFractionDigits: opts.compact ? 1 : 0,
+    minimumFractionDigits: dp, maximumFractionDigits: dp,
+  })
+}
+function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
+  if (opts.compact && Math.abs(n) >= 1000) {
+    return n.toLocaleString('pt-BR', {
+      style: 'currency', currency: 'USD',
+      notation: 'compact', maximumFractionDigits: 1,
+    })
+  }
+  return n.toLocaleString('pt-BR', {
+    style: 'currency', currency: 'USD',
+    maximumFractionDigits: 0,
   })
 }
 
-function ymLabel(ym: string): string {
-  const [y, m] = ym.split('-')
-  return `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`
+// ── reason → bucket counts for the Origem card ──────────────────────────────
+function bucketCounts(
+  items: SnapshotItemOut[],
+  pendencies: SnapshotPendencyOut[],
+  assetById: Map<string, AssetOut>,
+) {
+  let api_ok = 0, manual_done = 0, api_failed = 0, manual_pending = 0, upload_pending = 0
+  const openByAsset = new Map<string, SnapshotPendencyOut>()
+  for (const p of pendencies) if (!p.resolved_at) openByAsset.set(p.asset_id, p)
+  for (const it of items) {
+    const asset = assetById.get(it.asset_id)
+    if (!asset) continue
+    const open = openByAsset.get(it.asset_id)
+    if (open) {
+      if (open.reason === 'API_FAILED' || open.reason === 'STALE_PRICE') api_failed++
+      else if (open.reason === 'UPLOAD_REQUIRED') upload_pending++
+      else manual_pending++
+    } else if (asset.price_source === 'MANUAL' || asset.price_source == null) {
+      manual_done++
+    } else {
+      api_ok++
+    }
+  }
+  return { api_ok, manual_done, api_failed, manual_pending, upload_pending }
 }
+
+// ── HBar matching prototype ────────────────────────────────────────────────
+function HBar({ value, max, color, height = 6 }: { value: number; max: number; color: string; height?: number }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
+  return (
+    <div className="w-full rounded-full overflow-hidden bg-gray-200 dark:bg-gray-800" style={{ height }}>
+      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+    </div>
+  )
+}
+
 
 export default function SnapshotDetail() {
   const { ym } = useParams<{ ym: string }>()
@@ -43,9 +127,11 @@ export default function SnapshotDetail() {
   const [items, setItems] = useState<SnapshotItemOut[]>([])
   const [pendencies, setPendencies] = useState<SnapshotPendencyOut[]>([])
   const [assets, setAssets] = useState<AssetOut[]>([])
+  const [distributions, setDistributions] = useState<DistributionOut[]>([])
+  const [allSnaps, setAllSnaps] = useState<SnapshotOut[]>([])
+  const [prevItems, setPrevItems] = useState<SnapshotItemOut[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [allSnaps, setAllSnaps] = useState<SnapshotOut[]>([])
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -54,35 +140,55 @@ export default function SnapshotDetail() {
   useEffect(() => {
     if (!me || !ym) return
     let cancelled = false
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
 
     api.listSnapshots()
       .then(async list => {
         if (cancelled) return
         setAllSnaps(list)
         const match = list.find(s => s.period_end_date.startsWith(ym))
-        if (!match) {
-          setError(`Sem snapshot para ${ym}.`)
-          setLoading(false)
-          return
-        }
+        if (!match) { setError(`Sem snapshot para ${ym}.`); setLoading(false); return }
         setSnap(match)
-        const [its, pens, as] = await Promise.all([
+        const [its, pens, as, distPage] = await Promise.all([
           api.listSnapshotItems(match.id),
           api.listSnapshotPendencies(match.id),
           api.listAssets({ include_inactive: true }),
+          api.listDistributions({
+            from: `${ym}-01`,
+            to: match.period_end_date,
+            page_size: 200,
+          }),
         ])
         if (cancelled) return
         setItems(its)
         setPendencies(pens)
         setAssets(as)
+        setDistributions(distPage.items)
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Erro'))
       .finally(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true }
   }, [me, ym])
+
+  // Prev snapshot for MoM + movers
+  const sortedSnaps = useMemo(
+    () => [...allSnaps].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)),
+    [allSnaps],
+  )
+  const idx = useMemo(
+    () => snap ? sortedSnaps.findIndex(s => s.id === snap.id) : -1,
+    [snap, sortedSnaps],
+  )
+  const prevSnap = idx > 0 ? sortedSnaps[idx - 1] : null
+  const nextSnap = idx >= 0 && idx < sortedSnaps.length - 1 ? sortedSnaps[idx + 1] : null
+  const prevYm = prevSnap ? prevSnap.period_end_date.slice(0, 7) : null
+  const nextYm = nextSnap ? nextSnap.period_end_date.slice(0, 7) : null
+
+  useEffect(() => {
+    if (!prevSnap) { setPrevItems([]); return }
+    api.listSnapshotItems(prevSnap.id).then(setPrevItems).catch(() => setPrevItems([]))
+  }, [prevSnap])
 
   const assetById = useMemo(() => {
     const m = new Map<string, AssetOut>()
@@ -92,10 +198,11 @@ export default function SnapshotDetail() {
 
   async function refreshPendencies() {
     if (!snap) return
-    const pens = await api.listSnapshotPendencies(snap.id)
-    setPendencies(pens)
-    const fresh = await api.listSnapshots()
-    setAllSnaps(fresh)
+    const [pens, fresh] = await Promise.all([
+      api.listSnapshotPendencies(snap.id),
+      api.listSnapshots(),
+    ])
+    setPendencies(pens); setAllSnaps(fresh)
     setSnap(fresh.find(s => s.id === snap.id) ?? snap)
   }
 
@@ -123,78 +230,151 @@ export default function SnapshotDetail() {
     }
   }
 
-  // Compute source mix for the audit card.
-  const sourceMix = useMemo(() => {
-    let api_ok = 0, manual_ok = 0, api_fail = 0, manual_pend = 0, upload_pend = 0
-    const openByAsset = new Map<string, SnapshotPendencyOut>()
-    for (const p of pendencies) {
-      if (!p.resolved_at) openByAsset.set(p.asset_id, p)
-    }
+  // Derived
+  const totalBRL = snap ? Number(snap.total_value_brl) : 0
+  const totalUSD = snap ? Number(snap.total_value_usd) : 0
+  const fxRate = snap?.fx_rate_usd_brl ? Number(snap.fx_rate_usd_brl) : null
+
+  const prevTotal = prevSnap ? Number(prevSnap.total_value_brl) : null
+  const momDelta = prevTotal && prevTotal > 0
+    ? (totalBRL - prevTotal) / prevTotal
+    : null
+
+  const proventosBRL = distributions.reduce(
+    (s, d) => s + Number(d.net_amount) * Number(d.fx_rate || 1),
+    0,
+  )
+  const yieldPct = totalBRL > 0 ? proventosBRL / totalBRL : 0
+
+  const byClass = useMemo(() => {
+    const acc: Record<string, number> = {}
     for (const it of items) {
       const a = assetById.get(it.asset_id)
       if (!a) continue
-      const pen = openByAsset.get(it.asset_id)
-      if (pen) {
-        if (pen.reason === 'API_FAILED' || pen.reason === 'STALE_PRICE') api_fail++
-        else if (pen.reason === 'UPLOAD_REQUIRED') upload_pend++
-        else manual_pend++
-      } else if (a.price_source === 'MANUAL' || a.price_source == null) {
-        manual_ok++
-      } else {
-        api_ok++
-      }
+      const k = collapsedOf(a.asset_class)
+      acc[k] = (acc[k] || 0) + Number(it.market_value_brl ?? 0)
     }
-    return [
-      { label: 'API ok',         count: api_ok,      color: '#22c55e' },
-      { label: 'Manual ok',      count: manual_ok,   color: '#3b82f6' },
-      { label: 'API falhou',     count: api_fail,    color: '#ef4444' },
-      { label: 'Manual pend.',   count: manual_pend, color: '#f59e0b' },
-      { label: 'Upload pend.',   count: upload_pend, color: '#a855f7' },
-    ]
-  }, [items, pendencies, assetById])
+    return acc
+  }, [items, assetById])
 
-  // Prev/next by period_end ordering.
-  const sortedSnaps = useMemo(
-    () => [...allSnaps].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)),
-    [allSnaps],
+  const proventosByType = useMemo(() => {
+    const acc: Record<string, number> = {}
+    for (const d of distributions) {
+      const k = d.type
+      acc[k] = (acc[k] || 0) + Number(d.net_amount) * Number(d.fx_rate || 1)
+    }
+    return acc
+  }, [distributions])
+
+  const movers = useMemo(() => {
+    if (prevItems.length === 0) return [] as { asset: AssetOut; valueBRL: number; pct: number }[]
+    const prevByAsset = new Map<string, number>()
+    for (const it of prevItems) {
+      if (it.market_value_brl != null) prevByAsset.set(it.asset_id, Number(it.market_value_brl))
+    }
+    const rows: { asset: AssetOut; valueBRL: number; pct: number }[] = []
+    for (const it of items) {
+      const a = assetById.get(it.asset_id)
+      if (!a) continue
+      const v = Number(it.market_value_brl ?? 0)
+      const prev = prevByAsset.get(it.asset_id) ?? 0
+      if (prev <= 0 || v <= 0) continue
+      rows.push({ asset: a, valueBRL: v, pct: (v - prev) / prev })
+    }
+    return rows.sort((a, b) => b.pct - a.pct)
+  }, [items, prevItems, assetById])
+  const topUp = movers.slice(0, 5)
+  const topDown = movers.slice(-5).reverse()
+
+  const sortedPositions = useMemo(
+    () => [...items].sort(
+      (a, b) => Number(b.market_value_brl ?? 0) - Number(a.market_value_brl ?? 0),
+    ),
+    [items],
   )
-  const idx = useMemo(
-    () => snap ? sortedSnaps.findIndex(s => s.id === snap.id) : -1,
-    [snap, sortedSnaps],
+
+  const isPending = snap?.status === 'IN_REVIEW'
+  const sources = useMemo(
+    () => bucketCounts(items, pendencies, assetById),
+    [items, pendencies, assetById],
   )
-  const prevSnap = idx > 0 ? sortedSnaps[idx - 1] : null
-  const nextSnap = idx >= 0 && idx < sortedSnaps.length - 1 ? sortedSnaps[idx + 1] : null
+  const pendingTotal = sources.api_failed + sources.manual_pending + sources.upload_pending
+  const resolvedAssets = sources.api_ok + sources.manual_done
+  const totalAssetsCount = items.length
 
   if (!me) return null
 
   return (
     <AppLayout user={me}>
       <div className="space-y-6">
-        <PageHeader
-          title={snap ? `Fechamento · ${ymLabel(ym ?? '')}` : 'Fechamento'}
-          action={
-            <div className="flex items-center gap-2">
+        {/* ── 1. Header (prototype line 7042) ────────────────────────── */}
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
               <Link
                 to="/snapshots"
-                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                className="text-[11px] text-gray-500 hover:text-indigo-500 inline-flex items-center gap-1"
               >
-                <ArrowLeft className="w-3.5 h-3.5" /> Lista
+                <ArrowLeft className="w-3 h-3" /> Voltar pra fechamentos
               </Link>
-              {snap?.status === 'CLOSED' && (
-                <button
-                  onClick={handleReopen}
-                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Reabrir
-                </button>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl font-semibold tracking-tight">
+                {ym ? ymLabelLong(ym) : ''}
+              </h1>
+              {snap && <StatusPill status={snap.status} />}
+            </div>
+            <div className="text-[12px] text-gray-500 mt-1">
+              {snap && (
+                <>
+                  Posições congeladas em{' '}
+                  <span className="text-gray-700 dark:text-gray-300">
+                    {fmtDateBR(snap.period_end_date)} ({dayOfWeekPT(snap.period_end_date)})
+                  </span>
+                  {snap.closed_at && (
+                    <> · fechado em {new Date(snap.closed_at).toLocaleDateString('pt-BR')}</>
+                  )}
+                </>
               )}
             </div>
-          }
-        />
+          </div>
 
-        {loading && (
-          <div className="text-[12px] text-gray-500">Carregando…</div>
-        )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {prevYm && (
+              <Link
+                to={`/snapshots/${prevYm}`}
+                className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              >
+                <ArrowLeft className="w-3 h-3" /> {ymLabelShort(prevYm)}
+              </Link>
+            )}
+            {nextYm && (
+              <Link
+                to={`/snapshots/${nextYm}`}
+                className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              >
+                {ymLabelShort(nextYm)} <ArrowRight className="w-3 h-3" />
+              </Link>
+            )}
+            <button
+              disabled
+              title="Exportar PDF — em breve"
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed"
+            >
+              <Download className="w-3.5 h-3.5" /> Exportar PDF
+            </button>
+            {snap && !isPending && (
+              <button
+                onClick={handleReopen}
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Reabrir
+              </button>
+            )}
+          </div>
+        </div>
+
+        {loading && <div className="text-[12px] text-gray-500">Carregando…</div>}
         {error && (
           <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/20 p-4 text-[13px] text-red-700 dark:text-red-300">
             {error}
@@ -203,121 +383,394 @@ export default function SnapshotDetail() {
 
         {snap && !loading && (
           <>
-            {/* Header card */}
-            <Card>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
-                  Período {snap.period_end_date}
-                </span>
-                <StatusPill status={snap.status} />
-                <span className="text-[10px] uppercase tracking-wider text-gray-500">
-                  {snap.source}
-                </span>
-                {snap.closed_at && (
-                  <span className="text-[10px] text-gray-500">
-                    fechado em {new Date(snap.closed_at).toLocaleString('pt-BR')}
-                  </span>
-                )}
-                <div className="flex-1" />
-                {prevSnap && (
-                  <Link
-                    to={`/snapshots/${prevSnap.period_end_date.slice(0, 7)}`}
-                    className="text-[11px] text-indigo-500 hover:underline"
+            {/* ── 2. Pendency panel (prototype line 7081) ─────────────── */}
+            {isPending && (
+              <Card padding="p-5" className="border-amber-500/30 bg-amber-500/[0.04]">
+                <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                      <h3 className="text-sm font-semibold">
+                        Resolver pendências antes de fechar
+                      </h3>
+                    </div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      {pendingTotal} de {totalAssetsCount} ativos sem preço atualizado para{' '}
+                      {fmtDateBR(snap.period_end_date)}. Resolva todos e clique em{' '}
+                      <strong className="text-amber-700 dark:text-amber-300">
+                        Confirmar fechamento
+                      </strong>.
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleConfirm}
+                    disabled={pendingTotal > 0}
+                    title={pendingTotal > 0 ? `Faltam ${pendingTotal} ativos` : 'Tudo pronto'}
+                    className={`h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+                      pendingTotal > 0
+                        ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
+                        : 'bg-emerald-500 text-white hover:bg-emerald-400'
+                    }`}
                   >
-                    ← {prevSnap.period_end_date.slice(0, 7)}
-                  </Link>
-                )}
-                {nextSnap && (
-                  <Link
-                    to={`/snapshots/${nextSnap.period_end_date.slice(0, 7)}`}
-                    className="text-[11px] text-indigo-500 hover:underline"
-                  >
-                    {nextSnap.period_end_date.slice(0, 7)} →
-                  </Link>
-                )}
-              </div>
+                    <Lock className="w-3.5 h-3.5" />
+                    Confirmar fechamento
+                  </button>
+                </div>
 
-              <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <KpiTile
-                  label="Patrimônio"
-                  value={fmtBRL(Number(snap.total_value_brl), { compact: true })}
-                  sub={snap.total_value_usd ? `${Number(snap.total_value_usd).toLocaleString('pt-BR', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 })}` : undefined}
-                />
-                <KpiTile label="PTAX USD/BRL" value={snap.fx_rate_usd_brl ? Number(snap.fx_rate_usd_brl).toFixed(4) : '—'} />
-                <KpiTile label="Itens" value={String(snap.items_count)} />
-                <KpiTile
-                  label="Pendências"
-                  value={`${snap.pendencies_open}/${snap.pendencies_total}`}
-                  sub={snap.pendencies_open === 0 ? 'tudo resolvido' : 'aguardando'}
-                />
-              </div>
-            </Card>
+                {/* Progress */}
+                <div className="mb-4">
+                  <div className="flex items-center justify-between text-[11px] mb-1.5">
+                    <span className="text-gray-500">
+                      {resolvedAssets} de {totalAssetsCount} resolvidos
+                    </span>
+                    <span className="text-gray-500 tnum">
+                      {totalAssetsCount > 0
+                        ? Math.round((resolvedAssets / totalAssetsCount) * 100)
+                        : 0}%
+                    </span>
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all"
+                      style={{
+                        width: totalAssetsCount > 0
+                          ? `${(resolvedAssets / totalAssetsCount) * 100}%`
+                          : '0%',
+                      }}
+                    />
+                  </div>
+                </div>
 
-            {/* Pendency panel (only when IN_REVIEW) */}
-            {snap.status === 'IN_REVIEW' && (
-              <PendencyPanel
-                pendencies={pendencies}
-                onResolved={refreshPendencies}
-                onConfirm={handleConfirm}
-              />
+                {/* Per-asset pending list */}
+                <div className="space-y-2">
+                  {pendencies.filter(p => !p.resolved_at).map(p => (
+                    <PendencyRow
+                      key={p.id}
+                      pendency={p}
+                      asset={assetById.get(p.asset_id)}
+                      onResolved={refreshPendencies}
+                    />
+                  ))}
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-gray-500">
+                  <strong className="text-gray-700 dark:text-gray-300">
+                    Como o sistema processa:
+                  </strong>{' '}
+                  upload de PDF/screenshot/CSV/XLSX vai disparar LLM agent
+                  (spec 38) pra extrair cotação, posição ou rendimento. Por
+                  ora o upload registra uma nota textual.
+                </div>
+              </Card>
             )}
 
-            {/* Source audit */}
+            {/* ── 3. KPI grid (prototype line 7167) ──────────────────── */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <KpiTile
+                label="Patrimônio fim do mês"
+                value={fmtBRL(totalBRL)}
+                sub={`${fmtUSD(totalUSD, { compact: true })}${fxRate ? ` · PTAX ${fxRate.toFixed(4)}` : ''}`}
+              />
+              <KpiTile
+                label="Variação MoM"
+                value={
+                  momDelta == null
+                    ? '—'
+                    : `${momDelta >= 0 ? '+' : ''}${(momDelta * 100).toFixed(2)}%`
+                }
+                intent={momDelta == null ? undefined : momDelta >= 0 ? 'positive' : 'negative'}
+                sub={prevSnap
+                  ? `vs ${fmtBRL(prevTotal ?? 0, { compact: true })}`
+                  : 'primeiro fechamento'}
+              />
+              <KpiTile
+                label="Proventos recebidos"
+                value={fmtBRL(proventosBRL, { compact: true })}
+                sub={`${distributions.length} evento${distributions.length === 1 ? '' : 's'}`}
+              />
+              <KpiTile
+                label="Yield on portfolio"
+                value={`${(yieldPct * 100).toFixed(2)}%`}
+                sub="proventos / patrimônio fim"
+              />
+            </div>
+
+            {/* ── 4. Composição + Proventos do mês (prototype 7192) ─── */}
+            <div className="grid grid-cols-12 gap-4">
+              <Card className="col-span-12 lg:col-span-7">
+                <SectionTitle>
+                  Composição por classe · {fmtDateBR(snap.period_end_date)}
+                </SectionTitle>
+                <div className="space-y-2">
+                  {Object.entries(byClass)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([k, v]) => {
+                      const meta = KLASS[k as CollapsedClassCode]
+                      if (!meta) return null
+                      return (
+                        <div key={k} className="flex items-center gap-3">
+                          <span
+                            className="w-1.5 h-1.5 rounded-full shrink-0"
+                            style={{ background: meta.color }}
+                          />
+                          <span className="text-[12px] text-gray-700 dark:text-gray-300 w-28 shrink-0">
+                            {meta.label}
+                          </span>
+                          <div className="flex-1">
+                            <HBar value={v} max={totalBRL} color={meta.color} height={6} />
+                          </div>
+                          <span className="text-[11px] tnum text-gray-500 w-12 text-right">
+                            {totalBRL > 0 ? ((v / totalBRL) * 100).toFixed(1) : '0.0'}%
+                          </span>
+                          <span className="text-[11px] tnum text-gray-700 dark:text-gray-300 w-20 text-right">
+                            {fmtBRL(v, { compact: true })}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  {Object.keys(byClass).length === 0 && (
+                    <div className="text-[12px] text-gray-500 italic py-4 text-center">
+                      Sem posições neste snapshot
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              <Card className="col-span-12 lg:col-span-5">
+                <SectionTitle
+                  action={
+                    <span className="text-[10px] text-gray-500 uppercase">
+                      {distributions.length} eventos
+                    </span>
+                  }
+                >
+                  Proventos do mês
+                </SectionTitle>
+                {distributions.length === 0 ? (
+                  <div className="text-[12px] text-gray-500 italic py-4 text-center">
+                    Sem proventos neste mês
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {Object.entries(proventosByType)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([type, v]) => {
+                        const meta = TYPE_META[type] ?? { label: type, color: '#94a3b8' }
+                        return (
+                          <div key={type} className="flex items-center gap-3">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full"
+                              style={{ background: meta.color }}
+                            />
+                            <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">
+                              {meta.label}
+                            </span>
+                            <span className="text-[11px] tnum text-gray-500">
+                              {proventosBRL > 0 ? ((v / proventosBRL) * 100).toFixed(0) : '0'}%
+                            </span>
+                            <span className="text-[12px] tnum font-medium text-amber-700 dark:text-amber-300 w-20 text-right">
+                              {fmtBRL(v, { compact: true })}
+                            </span>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            {/* ── 5. Top movers (prototype 7250) ───────────────────────── */}
+            <div className="grid grid-cols-12 gap-4">
+              <Card className="col-span-12 md:col-span-6">
+                <SectionTitle>Maiores altas · MoM</SectionTitle>
+                {topUp.length === 0 ? (
+                  <div className="text-[12px] text-gray-500 italic py-4 text-center">
+                    {prevSnap ? 'Sem deltas significativos' : 'Sem snapshot anterior'}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {topUp.map(m => (
+                      <Link
+                        key={m.asset.id}
+                        to={`/assets/${m.asset.id}`}
+                        className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40"
+                      >
+                        <div
+                          className="w-1 h-6 rounded-full"
+                          style={{ background: KLASS[collapsedOf(m.asset.asset_class)]?.color || '#9ca3af' }}
+                        />
+                        <span className="font-mono text-[12px] font-medium flex-1">
+                          {m.asset.ticker || m.asset.name}
+                        </span>
+                        <span className="text-[11px] text-gray-500 tnum w-20 text-right">
+                          {fmtBRL(m.valueBRL, { compact: true })}
+                        </span>
+                        <span className="text-[12px] tnum text-emerald-500 dark:text-emerald-400 w-16 text-right">
+                          +{(m.pct * 100).toFixed(2)}%
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </Card>
+              <Card className="col-span-12 md:col-span-6">
+                <SectionTitle>Maiores quedas · MoM</SectionTitle>
+                {topDown.length === 0 ? (
+                  <div className="text-[12px] text-gray-500 italic py-4 text-center">
+                    {prevSnap ? 'Sem deltas significativos' : 'Sem snapshot anterior'}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {topDown.map(m => (
+                      <Link
+                        key={m.asset.id}
+                        to={`/assets/${m.asset.id}`}
+                        className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40"
+                      >
+                        <div
+                          className="w-1 h-6 rounded-full"
+                          style={{ background: KLASS[collapsedOf(m.asset.asset_class)]?.color || '#9ca3af' }}
+                        />
+                        <span className="font-mono text-[12px] font-medium flex-1">
+                          {m.asset.ticker || m.asset.name}
+                        </span>
+                        <span className="text-[11px] text-gray-500 tnum w-20 text-right">
+                          {fmtBRL(m.valueBRL, { compact: true })}
+                        </span>
+                        <span className="text-[12px] tnum text-red-500 dark:text-red-400 w-16 text-right">
+                          {(m.pct * 100).toFixed(2)}%
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            {/* ── 6. Origem dos dados (prototype 7282) ─────────────────── */}
             <Card>
-              <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">
-                Auditoria de fontes
+              <SectionTitle>Origem dos dados deste fechamento</SectionTitle>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <SourceCard
+                  label="API OK" value={sources.api_ok}
+                  hint="brapi · finnhub · coinbase"
+                  bg="bg-emerald-500/10" border="border-emerald-500/20"
+                  text="text-emerald-700 dark:text-emerald-400"
+                />
+                <SourceCard
+                  label="Manual OK" value={sources.manual_done}
+                  hint="você confirmou"
+                  bg="bg-indigo-500/10" border="border-indigo-500/20"
+                  text="text-indigo-700 dark:text-indigo-400"
+                />
+                <SourceCard
+                  label="API falhou" value={sources.api_failed}
+                  hint="timeout / 5xx / stale"
+                  bg="bg-red-500/10" border="border-red-500/20"
+                  text="text-red-700 dark:text-red-400"
+                />
+                <SourceCard
+                  label="Manual pendente" value={sources.manual_pending}
+                  hint="imóvel · cripto · FGTS"
+                  bg="bg-amber-500/10" border="border-amber-500/20"
+                  text="text-amber-700 dark:text-amber-400"
+                />
+                <SourceCard
+                  label="Upload pendente" value={sources.upload_pending}
+                  hint="extrato / nota"
+                  bg="bg-amber-500/10" border="border-amber-500/20"
+                  text="text-amber-700 dark:text-amber-400"
+                />
               </div>
-              <SourceMixBar slices={sourceMix} />
             </Card>
 
-            {/* Frozen positions */}
+            {/* ── 7. Posições congeladas (prototype 7314) ────────────── */}
             <Card padding="p-3">
-              <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2 px-2">
-                Posições congeladas
+              <div className="px-2 pt-2 pb-3 flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  Posições congeladas · {items.length} ativos
+                </h3>
+                <button
+                  disabled
+                  title="Em breve"
+                  className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed"
+                >
+                  <Download className="w-3 h-3" /> CSV
+                </button>
               </div>
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-[12px]">
                   <thead>
                     <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                      <th className="text-left font-medium px-2 py-2">Ativo</th>
-                      <th className="text-right font-medium px-2 py-2">Qtd</th>
-                      <th className="text-right font-medium px-2 py-2">Preço</th>
-                      <th className="text-right font-medium px-2 py-2">Valor BRL</th>
+                      <th className="text-left font-medium px-3 py-2">Ativo</th>
+                      <th className="text-left font-medium px-3 py-2">Classe</th>
+                      <th className="text-right font-medium px-3 py-2">Qtd</th>
+                      <th className="text-right font-medium px-3 py-2">Preço fim</th>
+                      <th className="text-right font-medium px-3 py-2">Valor (BRL)</th>
+                      <th className="text-right font-medium px-3 py-2">% portfólio</th>
+                      <th className="px-2" />
                     </tr>
                   </thead>
                   <tbody>
-                    {items
-                      .slice()
-                      .sort((a, b) => Number(b.market_value_brl ?? 0) - Number(a.market_value_brl ?? 0))
-                      .map(it => {
-                        const a = assetById.get(it.asset_id)
-                        return (
-                          <tr
-                            key={it.asset_id}
-                            className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
-                          >
-                            <td className="px-2 py-2">
-                              {a ? (
-                                <Link to={`/assets/${a.id}`} className="font-mono font-medium hover:text-indigo-500">
-                                  {a.ticker ?? a.name}
-                                </Link>
-                              ) : it.asset_id.slice(0, 8)}
-                              {a && (
-                                <div className="text-[10px] text-gray-500 truncate max-w-[260px]">{a.name}</div>
-                              )}
-                            </td>
-                            <td className="px-2 text-right tnum">{Number(it.quantity).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</td>
-                            <td className="px-2 text-right tnum text-gray-500">
-                              {it.unit_price != null ? Number(it.unit_price).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—'}
-                            </td>
-                            <td className="px-2 text-right tnum font-medium">
-                              {it.market_value_brl != null ? fmtBRL(Number(it.market_value_brl), { compact: true }) : '—'}
-                            </td>
-                          </tr>
-                        )
-                      })}
+                    {sortedPositions.slice(0, 20).map(it => {
+                      const a = assetById.get(it.asset_id)
+                      if (!a) return null
+                      const klass = collapsedOf(a.asset_class)
+                      const valueBRL = Number(it.market_value_brl ?? 0)
+                      const pct = totalBRL > 0 ? (valueBRL / totalBRL) * 100 : 0
+                      const closePrice = it.unit_price != null ? Number(it.unit_price) : null
+                      return (
+                        <tr
+                          key={it.asset_id}
+                          onClick={() => navigate(`/assets/${a.id}`)}
+                          className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer"
+                        >
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-1 h-5 rounded-full"
+                                style={{ background: KLASS[klass]?.color || '#9ca3af' }}
+                              />
+                              <div>
+                                <div className="font-mono font-medium">
+                                  {a.ticker || a.name}
+                                </div>
+                                <div className="text-[10px] text-gray-500 truncate max-w-[180px]">
+                                  {a.name}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3"><ClassBadge klass={klass} size="xs" withDot={false} /></td>
+                          <td className="px-3 text-right tnum text-gray-700 dark:text-gray-300">
+                            {Number(it.quantity).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}
+                          </td>
+                          <td className="px-3 text-right tnum text-gray-500">
+                            {closePrice == null
+                              ? '—'
+                              : a.currency === 'USD'
+                                ? `$ ${closePrice.toFixed(2)}`
+                                : `R$ ${closePrice.toFixed(2)}`}
+                          </td>
+                          <td className="px-3 text-right tnum font-medium">
+                            {fmtBRL(valueBRL, { compact: true })}
+                          </td>
+                          <td className="px-3 text-right tnum text-gray-500">
+                            {pct.toFixed(2)}%
+                          </td>
+                          <td className="px-3 text-gray-400">
+                            <ChevronRight className="w-4 h-4" />
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
+                {sortedPositions.length > 20 && (
+                  <div className="px-3 py-2 text-[11px] text-gray-500 text-center">
+                    + {sortedPositions.length - 20} ativos
+                  </div>
+                )}
               </div>
             </Card>
           </>
@@ -327,14 +780,141 @@ export default function SnapshotDetail() {
   )
 }
 
+
+// ── Sub-components ──────────────────────────────────────────────────────────
+
+const TYPE_META: Record<string, { label: string; color: string }> = {
+  DIVIDEND:           { label: 'Dividendo',     color: '#22c55e' },
+  JCP:                { label: 'JCP',           color: '#f59e0b' },
+  INTEREST:           { label: 'Juros / Cupom', color: '#3b82f6' },
+  SECURITIES_LENDING: { label: 'Aluguel',       color: '#8b5cf6' },
+  OPTION_PREMIUM:     { label: 'Prêmio sintético', color: '#a855f7' },
+}
+
 function KpiTile({
-  label, value, sub,
-}: { label: string; value: string; sub?: string }) {
+  label, value, sub, intent,
+}: { label: string; value: string; sub?: string; intent?: 'positive' | 'negative' }) {
+  const intentColor =
+    intent === 'negative' ? 'text-red-500 dark:text-red-400'
+    : intent === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
+    : ''
   return (
     <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
       <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold tnum">{value}</div>
+      <div className={`mt-1 text-lg font-semibold tnum ${intentColor}`}>{value}</div>
       {sub && <div className="text-[11px] text-gray-500 mt-0.5">{sub}</div>}
+    </div>
+  )
+}
+
+function SourceCard({
+  label, value, hint, bg, border, text,
+}: {
+  label: string; value: number; hint: string;
+  bg: string; border: string; text: string;
+}) {
+  return (
+    <div className={`px-3 py-3 rounded-lg ${bg} border ${border}`}>
+      <div className={`text-[10px] uppercase tracking-wider font-semibold ${text}`}>
+        {label}
+      </div>
+      <div className={`text-xl font-semibold tnum mt-1 ${text}`}>{value}</div>
+      <div className="text-[10px] text-gray-500 mt-1">{hint}</div>
+    </div>
+  )
+}
+
+function PendencyRow({
+  pendency, asset, onResolved,
+}: {
+  pendency: SnapshotPendencyOut
+  asset: AssetOut | undefined
+  onResolved: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const isManual = pendency.reason === 'MANUAL_SOURCE' || pendency.reason === 'UPLOAD_REQUIRED'
+
+  async function handleRetry() {
+    setBusy(true); setErr(null)
+    try { await api.retrySnapshotPendencyApi(pendency.id); onResolved() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
+  }
+  async function handleEdit() {
+    const raw = window.prompt(
+      `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
+    )
+    if (!raw) return
+    const n = Number(raw.replace(/\./g, '').replace(',', '.').trim())
+    if (!Number.isFinite(n) || n < 0) { setErr('Informe um número >= 0'); return }
+    setBusy(true); setErr(null)
+    try { await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) }); onResolved() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
+  }
+  async function handleUploadStub() {
+    const note = window.prompt(
+      `Upload de extrato pra ${pendency.asset_ticker ?? pendency.asset_name} chega no spec 38. Marcar resolvido com uma nota?`,
+      'Extrato conferido manualmente',
+    )
+    if (note === null) return
+    setBusy(true); setErr(null)
+    try { await api.resolveSnapshotPendency(pendency.id, { note }); onResolved() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div
+      className="flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
+      data-testid={`pendency-row-${pendency.id}`}
+    >
+      <span className={`w-1 h-8 rounded-full ${isManual ? 'bg-amber-500' : 'bg-red-500'}`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to={`/assets/${pendency.asset_id}`}
+            className="font-mono font-medium text-[13px] text-gray-900 dark:text-gray-100 hover:text-indigo-500"
+          >
+            {pendency.asset_ticker ?? pendency.asset_name}
+          </Link>
+          {asset && (
+            <ClassBadge klass={collapsedOf(asset.asset_class)} size="xs" withDot={false} />
+          )}
+        </div>
+        <div className="text-[11px] text-gray-500 truncate">
+          {pendency.detail ?? pendency.asset_name}
+        </div>
+        {err && <div className="text-[10px] text-red-500 mt-0.5">{err}</div>}
+      </div>
+      <div className="flex items-center gap-1.5">
+        {pendency.action_type === 'RETRY_API' && (
+          <button
+            onClick={handleRetry}
+            disabled={busy}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
+          </button>
+        )}
+        {pendency.action_type === 'UPLOAD_FILE' && (
+          <button
+            onClick={handleUploadStub}
+            disabled={busy}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 disabled:opacity-50"
+          >
+            <Upload className="w-3 h-3" /> Upload extrato
+          </button>
+        )}
+        <button
+          onClick={handleEdit}
+          disabled={busy}
+          className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          <Edit2 className="w-3 h-3" /> Editar
+        </button>
+      </div>
     </div>
   )
 }
