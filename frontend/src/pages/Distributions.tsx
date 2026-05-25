@@ -109,6 +109,20 @@ export default function Distributions() {
     }
   }, [searchParams, setSearchParams])
 
+  // Spec 33 — `?type=KEY` arrives from Dashboard ProventosTypeList click.
+  // OPTION_PREMIUM has no filter chip (it's never persisted as a
+  // Distribution row), so we just consume and drop it.
+  useEffect(() => {
+    const t = searchParams.get('type')
+    if (!t) return
+    if (TYPE_ORDER.includes(t as DistributionType)) {
+      setTypesSel([t])
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('type')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
+
   useEffect(() => {
     if (!me) return
     setLoading(true)

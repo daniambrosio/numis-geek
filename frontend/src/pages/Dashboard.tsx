@@ -5,6 +5,8 @@ import {
   type PortfolioOut, type PositionOut, type SnapshotOut, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
+import ProventosChart from '../components/ProventosChart'
+import ProventosTypeList from '../components/ProventosTypeList'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import { AlertTriangle } from 'lucide-react'
 import { Card, SectionTitle, FILogo, CcyPill } from '../components/ui'
@@ -35,6 +37,9 @@ export default function Dashboard() {
   const [recent, setRecent] = useState<AssetMovementOut[]>([])
   const [snapshots, setSnapshots] = useState<SnapshotOut[]>([])
   const [portfolio, setPortfolio] = useState<PortfolioOut | null>(null)
+  // Spec 33 — local synthetic-on toggle for Dashboard Proventos card.
+  // No UI toggle on Dashboard, so this stays at the default.
+  const [syntheticOnDashboard, setSyntheticOnDashboard] = useState(true)
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -304,42 +309,31 @@ export default function Dashboard() {
             )}
           </Card>
 
-          <Card className="col-span-12 lg:col-span-4">
-            <SectionTitle action={<span className="text-[11px] text-gray-500">12 meses</span>}>
-              Proventos recebidos
+          <Card className="col-span-12 lg:col-span-4" padding="p-4">
+            <SectionTitle action={
+              <Link to="/distributions" className="text-[11px] text-indigo-500 dark:text-indigo-400 hover:opacity-80">
+                Ver todos →
+              </Link>
+            }>
+              Proventos · 12M
             </SectionTitle>
-            <div>
-              <div className="text-2xl font-semibold tnum money text-gray-900 dark:text-white">
-                {fmtBRL(totalReceived)}
-              </div>
-              <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                Acumulado · líquido (após IR)
-              </div>
-            </div>
-            <div className="mt-5 pt-4 border-t border-gray-200 dark:border-gray-800 grid grid-cols-3 gap-2 text-[11px]">
-              <Stat
-                label="Dividendos"
-                value={portfolio
-                  ? fmtBRL(portfolio.received_by_type.DIVIDEND ?? 0, { compact: true })
-                  : '—'}
-              />
-              <Stat
-                label="Juros / JCP"
-                value={portfolio
-                  ? fmtBRL(
-                      (portfolio.received_by_type.INTEREST ?? 0) +
-                      (portfolio.received_by_type.JCP ?? 0),
-                      { compact: true },
-                    )
-                  : '—'}
-              />
-              <Stat
-                label="Aluguel"
-                value={portfolio
-                  ? fmtBRL(portfolio.received_by_type.SECURITIES_LENDING ?? 0, { compact: true })
-                  : '—'}
+            <div className="-mt-1">
+              <ProventosChart
+                defaultBreakdown="klass"
+                defaultCurrency="BRL"
+                defaultPeriod="12m"
+                includeSynthetic={syntheticOnDashboard}
+                onIncludeSyntheticChange={setSyntheticOnDashboard}
+                compact
+                hideToggles
+                noCard
               />
             </div>
+            <ProventosTypeList
+              includeSynthetic={syntheticOnDashboard}
+              currency="BRL"
+              period="12m"
+            />
           </Card>
         </div>
 
@@ -543,17 +537,6 @@ function Pill({ label, value, hint, money, tone }: {
       <div className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">{label}</div>
       <div className={`text-sm font-semibold tnum ${toneCls}`}>
         {money ? <span className="money">{value}</span> : value}
-      </div>
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-gray-500 dark:text-gray-400 uppercase tracking-wider text-[10px]">{label}</div>
-      <div className={`tnum font-medium ${value === '—' ? 'text-gray-300 dark:text-gray-700' : 'text-gray-900 dark:text-white money'}`}>
-        {value}
       </div>
     </div>
   )
