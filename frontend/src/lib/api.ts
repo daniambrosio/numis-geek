@@ -790,12 +790,35 @@ export const api = {
     return request<BulkRefreshSummaryOut>(`/assets/refresh-prices/bulk${qs}`, { method: 'POST' })
   },
 
-  // ── Snapshots (spec 14) ──────────────────────────────────────────────────
+  // ── Snapshots (spec 14 + 35) ─────────────────────────────────────────────
   listSnapshots: () => request<SnapshotOut[]>('/snapshots'),
   createSnapshot: (period_end_date: string) =>
     request<SnapshotOut>('/snapshots', {
       method: 'POST',
       body: JSON.stringify({ period_end_date }),
+    }),
+  listSnapshotItems: (snapshot_id: string) =>
+    request<SnapshotItemOut[]>(`/snapshots/${snapshot_id}/items`),
+  listSnapshotPendencies: (snapshot_id: string) =>
+    request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/pendencies`),
+  confirmSnapshot: (snapshot_id: string) =>
+    request<SnapshotOut>(`/snapshots/${snapshot_id}/confirm`, { method: 'POST' }),
+  reopenSnapshot: (snapshot_id: string, reason: string) =>
+    request<SnapshotOut>(`/snapshots/${snapshot_id}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  resolveSnapshotPendency: (
+    pendency_id: string,
+    body: { new_price?: string; file_id?: string; note?: string },
+  ) =>
+    request<SnapshotPendencyOut>(`/snapshots/pendencies/${pendency_id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  retrySnapshotPendencyApi: (pendency_id: string) =>
+    request<SnapshotPendencyOut>(`/snapshots/pendencies/${pendency_id}/retry-api`, {
+      method: 'POST',
     }),
 
   // ── Notion sync (spec 16) ────────────────────────────────────────────────
@@ -903,6 +926,19 @@ export interface PortfolioOut {
   history: PortfolioHistoryPoint[]
 }
 
+export type SnapshotStatus = 'SCHEDULED' | 'IN_REVIEW' | 'CLOSED'
+
+export type PendencyReason =
+  | 'API_FAILED'
+  | 'MANUAL_SOURCE'
+  | 'UPLOAD_REQUIRED'
+  | 'STALE_PRICE'
+
+export type PendencyAction =
+  | 'RETRY_API'
+  | 'EDIT_PRICE'
+  | 'UPLOAD_FILE'
+
 export interface SnapshotOut {
   id: string
   workspace_id: string
@@ -914,6 +950,40 @@ export interface SnapshotOut {
   total_received_brl: string
   source: string
   items_count: number
+  // Spec 35
+  status: SnapshotStatus
+  closed_at: string | null
+  closed_by: string | null
+  scheduled_at: string | null
+  auto_run_at: string | null
+  pendencies_total: number
+  pendencies_open: number
+}
+
+export interface SnapshotPendencyOut {
+  id: string
+  snapshot_id: string
+  asset_id: string
+  asset_ticker: string | null
+  asset_name: string
+  reason: PendencyReason
+  action_type: PendencyAction
+  detail: string | null
+  resolved_at: string | null
+  resolved_by: string | null
+  resolution_note: string | null
+  created_at: string
+}
+
+export interface SnapshotItemOut {
+  asset_id: string
+  quantity: string
+  unit_price: string | null
+  market_value_native: string | null
+  market_value_brl: string | null
+  market_value_usd: string | null
+  average_cost_brl: string | null
+  total_invested_brl: string | null
 }
 
 export interface PriceRefreshOut {

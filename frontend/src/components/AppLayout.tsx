@@ -4,12 +4,13 @@ import {
   LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
-  Plug, DollarSign, Sparkles,
+  Plug, DollarSign, Sparkles, ClipboardCheck,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
 import { getComfort, toggleComfort } from '../lib/comfort'
 import { clearToken, type UserOut } from '../lib/api'
+import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import PriceRefresh from './PriceRefresh'
 
 interface Props {
@@ -45,6 +46,7 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Ativos', href: '/assets', icon: LineChart },
   { kind: 'item', label: 'Lançamentos', href: '/asset-movements', icon: ArrowDownUp },
   { kind: 'item', label: 'Proventos', href: '/distributions', icon: Coins },
+  { kind: 'item', label: 'Fechamentos', href: '/snapshots', icon: ClipboardCheck },
 
   { kind: 'section', label: 'Caixa & Cartões' },
   { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
@@ -116,6 +118,7 @@ export default function AppLayout({ user, children }: Props) {
   const avatarRef = useRef<HTMLDivElement>(null)
   const novoRef = useRef<HTMLDivElement>(null)
   const novoDefault = defaultNovoItem(location.pathname)
+  const inReview = useInReviewSnapshot()
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -217,6 +220,15 @@ export default function AppLayout({ user, children }: Props) {
               >
                 <Icon className="w-4 h-4" strokeWidth={active ? 2.2 : 1.6} />
                 <span className="flex-1">{n.label}</span>
+                {n.href === '/snapshots' && inReview && (
+                  <span
+                    className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] font-bold"
+                    title="Fechamento em revisão"
+                    data-testid="sidebar-snapshot-badge"
+                  >
+                    !
+                  </span>
+                )}
                 {n.placeholder && (
                   <span className="text-[9px] uppercase tracking-wider text-gray-500 dark:text-gray-600">soon</span>
                 )}

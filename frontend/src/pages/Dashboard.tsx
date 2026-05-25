@@ -5,6 +5,8 @@ import {
   type PortfolioOut, type PositionOut, type SnapshotOut, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
+import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
+import { AlertTriangle } from 'lucide-react'
 import { Card, SectionTitle, FILogo, CcyPill } from '../components/ui'
 import { DonutChart, HBar } from '../components/charts'
 import { KLASS, collapsedOf, fiTokenFor } from '../lib/tokens'
@@ -167,6 +169,7 @@ export default function Dashboard() {
   return (
     <AppLayout user={me}>
       <div className="space-y-6">
+        <SnapshotReviewBanner />
         {/* Hero */}
         <Card padding="p-0" className="overflow-hidden">
           <div className="grid grid-cols-12 gap-0">
@@ -446,6 +449,30 @@ export default function Dashboard() {
         </Card>
       </div>
     </AppLayout>
+  )
+}
+
+/* Spec 35 — discreet amber banner when a snapshot is in review. */
+function SnapshotReviewBanner() {
+  const inReview = useInReviewSnapshot()
+  if (!inReview) return null
+  const ym = inReview.period_end_date.slice(0, 7)
+  return (
+    <div
+      className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 flex items-center gap-3"
+      data-testid="dashboard-snapshot-banner"
+    >
+      <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+      <div className="flex-1 text-[12px] text-amber-700 dark:text-amber-300">
+        Fechamento de <strong>{ym}</strong> em revisão · {inReview.pendencies_open} pendência{inReview.pendencies_open === 1 ? '' : 's'} aberta{inReview.pendencies_open === 1 ? '' : 's'}.
+      </div>
+      <Link
+        to={`/snapshots/${ym}`}
+        className="text-[12px] font-medium text-amber-700 dark:text-amber-300 hover:underline"
+      >
+        Resolver →
+      </Link>
+    </div>
   )
 }
 

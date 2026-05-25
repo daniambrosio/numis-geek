@@ -11,6 +11,8 @@ import AssetMovements from './pages/AssetMovements'
 import DecisionSupport from './pages/DecisionSupport'
 import Portfolio from './pages/Portfolio'
 import Distributions from './pages/Distributions'
+import Snapshots from './pages/Snapshots'
+import SnapshotDetail from './pages/SnapshotDetail'
 import SysAdminFinancialInstitutions from './pages/sysadmin/FinancialInstitutions'
 import SysAdminAssets from './pages/sysadmin/Assets'
 import SysAdminIntegrations from './pages/sysadmin/Integrations'
@@ -41,6 +43,8 @@ export default function App() {
         <Route path="/assets/:id" element={<PrivateRoute><AssetDetail /></PrivateRoute>} />
         <Route path="/asset-movements" element={<PrivateRoute><AssetMovements /></PrivateRoute>} />
         <Route path="/distributions" element={<PrivateRoute><Distributions /></PrivateRoute>} />
+        <Route path="/snapshots" element={<PrivateRoute><Snapshots /></PrivateRoute>} />
+        <Route path="/snapshots/:ym" element={<PrivateRoute><SnapshotDetail /></PrivateRoute>} />
 
         {/* Caixa & Cartões */}
         <Route path="/transactions" element={<PrivateRoute><ComingSoon title="Movimentações" hint="Transações de contas e cartões. Depende da entidade Transaction (Spec 23)." /></PrivateRoute>} />

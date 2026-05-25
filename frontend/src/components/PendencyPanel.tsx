@@ -1,0 +1,210 @@
+/* Spec 35 — full pendency review panel.
+ *
+ * Shown on /snapshots/{id} when status === IN_REVIEW. Lists each pendency
+ * grouped by reason with the appropriate resolution action button. */
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Edit2, RefreshCw, Upload } from 'lucide-react'
+
+import { api, type PendencyReason, type SnapshotPendencyOut } from '../lib/api'
+
+const REASON_META: Record<PendencyReason, { label: string; color: string }> = {
+  API_FAILED:      { label: 'API falhou',     color: '#ef4444' },
+  STALE_PRICE:     { label: 'Preço antigo',   color: '#f59e0b' },
+  MANUAL_SOURCE:   { label: 'Manual',         color: '#3b82f6' },
+  UPLOAD_REQUIRED: { label: 'Upload',         color: '#a855f7' },
+}
+
+interface Props {
+  pendencies: SnapshotPendencyOut[]
+  onResolved: () => void
+  onConfirm?: () => void
+}
+
+export default function PendencyPanel({ pendencies, onResolved, onConfirm }: Props) {
+  const open = pendencies.filter(p => !p.resolved_at)
+  const closed = pendencies.length - open.length
+  const allResolved = open.length === 0 && pendencies.length > 0
+
+  return (
+    <div className="rounded-xl bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[12px] font-semibold text-gray-900 dark:text-gray-100">
+            Pendências
+          </div>
+          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+            {closed} resolvidas · {open.length} abertas
+          </div>
+        </div>
+        {onConfirm && (
+          <button
+            onClick={onConfirm}
+            disabled={!allResolved}
+            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+            title={allResolved ? 'Fechar snapshot' : 'Resolva todas pendências antes de fechar'}
+          >
+            Confirmar fechamento
+          </button>
+        )}
+      </div>
+
+      {/* Progress */}
+      <div className="h-1.5 w-full rounded-sm bg-gray-200 dark:bg-gray-800 overflow-hidden">
+        <div
+          className="h-full bg-emerald-500 transition-all"
+          style={{ width: pendencies.length ? `${(closed / pendencies.length) * 100}%` : '0%' }}
+        />
+      </div>
+
+      {pendencies.length === 0 ? (
+        <div className="text-[11px] text-gray-500 dark:text-gray-400 py-2">
+          Sem pendências — pode confirmar.
+        </div>
+      ) : (
+        <div className="space-y-2 pt-2">
+          {pendencies.map(p => (
+            <PendencyRow key={p.id} pendency={p} onResolved={onResolved} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PendencyRow({
+  pendency, onResolved,
+}: { pendency: SnapshotPendencyOut; onResolved: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const resolved = pendency.resolved_at != null
+  const meta = REASON_META[pendency.reason]
+
+  async function handleRetry() {
+    setBusy(true); setErr(null)
+    try {
+      await api.retrySnapshotPendencyApi(pendency.id)
+      onResolved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Erro')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleEdit() {
+    // Minimal inline prompt — the full ManualPriceModal is spec-28 territory
+    // and we don't have a clean way to inject it here without lifting state.
+    const raw = window.prompt(
+      `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
+    )
+    if (!raw) return
+    const normalized = raw.replace(/\./g, '').replace(',', '.').trim()
+    const n = Number(normalized)
+    if (!Number.isFinite(n) || n < 0) {
+      setErr('Informe um número >= 0')
+      return
+    }
+    setBusy(true); setErr(null)
+    try {
+      await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) })
+      onResolved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Erro')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleUploadStub() {
+    const note = window.prompt(
+      `Upload de extrato para ${pendency.asset_ticker ?? pendency.asset_name} ainda não está habilitado (spec 38). Marcar como resolvido manualmente com uma nota?`,
+      'Extrato conferido manualmente',
+    )
+    if (note === null) return
+    setBusy(true); setErr(null)
+    try {
+      await api.resolveSnapshotPendency(pendency.id, { note })
+      onResolved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Erro')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
+        resolved
+          ? 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900'
+          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-800'
+      }`}
+      data-testid={`pendency-row-${pendency.id}`}
+    >
+      <span
+        className="w-1 h-8 rounded-full shrink-0"
+        style={{ background: meta.color }}
+      />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to={`/assets/${pendency.asset_id}`}
+            className="text-[12px] font-mono font-medium text-gray-900 dark:text-gray-100 hover:text-indigo-500 dark:hover:text-indigo-300"
+          >
+            {pendency.asset_ticker ?? pendency.asset_name}
+          </Link>
+          <span
+            className="inline-flex items-center px-1.5 py-px rounded text-[9px] font-semibold uppercase tracking-wider"
+            style={{ background: meta.color + '26', color: meta.color }}
+          >
+            {meta.label}
+          </span>
+          {resolved && (
+            <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
+              ✓ resolvido
+            </span>
+          )}
+        </div>
+        <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+          {pendency.detail ?? pendency.asset_name}
+        </div>
+        {err && (
+          <div className="text-[10px] text-red-500 dark:text-red-400 mt-0.5">{err}</div>
+        )}
+      </div>
+
+      {!resolved && (
+        <div className="flex items-center gap-1 shrink-0">
+          {pendency.action_type === 'RETRY_API' && (
+            <button
+              onClick={handleRetry}
+              disabled={busy}
+              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white"
+            >
+              <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
+            </button>
+          )}
+          {pendency.action_type === 'EDIT_PRICE' && (
+            <button
+              onClick={handleEdit}
+              disabled={busy}
+              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+            >
+              <Edit2 className="w-3 h-3" /> Editar
+            </button>
+          )}
+          {pendency.action_type === 'UPLOAD_FILE' && (
+            <button
+              onClick={handleUploadStub}
+              disabled={busy}
+              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+            >
+              <Upload className="w-3 h-3" /> Upload
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
