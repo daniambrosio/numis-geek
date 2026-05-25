@@ -20,8 +20,43 @@ from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
+from numis_geek.services.proventos import (
+    aggregate_proventos,
+    Breakdown,
+    Currency as ChartCurrency,
+    Period,
+)
 
 router = APIRouter(prefix="/distributions", tags=["distributions"])
+
+
+# ── Chart schemas (Spec 30) ─────────────────────────────────────────────────
+
+
+class ChartSegmentOut(BaseModel):
+    key: str
+    label: str
+    color: str
+    value: float | None = None
+
+
+class ChartRowOut(BaseModel):
+    ym: str
+    total: float
+    segments: list[ChartSegmentOut]
+
+
+class ChartTotalsOut(BaseModel):
+    sum: float
+    monthly_avg: float
+    max: float
+
+
+class ChartDataOut(BaseModel):
+    rows: list[ChartRowOut]
+    legend: list[ChartSegmentOut]
+    totals: ChartTotalsOut
+    currency: str
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -273,6 +308,76 @@ def list_distributions(
         for d in rows
     ]
     return DistributionListPage(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/chart", response_model=ChartDataOut)
+def get_distributions_chart(
+    period: Period = Query(default="12m"),
+    breakdown: Breakdown = Query(default="klass"),
+    currency: ChartCurrency = Query(default="BRL"),
+    include_synthetic: bool = Query(default=True),
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 30 — monthly proventos chart data for /distributions and /dashboard.
+
+    Aggregates real distributions + synthetic OPTION_PREMIUM rows into
+    monthly buckets by the chosen breakdown dimension, in BRL or USD.
+    """
+    if current_user.role == UserRole.sysadmin:
+        if workspace_id and not db.get(Workspace, workspace_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found."
+            )
+        ws = workspace_id  # None = cross-workspace
+    else:
+        if not current_user.workspace_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No workspace bound to user.",
+            )
+        if workspace_id and workspace_id != current_user.workspace_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cross-workspace not allowed.",
+            )
+        ws = current_user.workspace_id
+
+    data = aggregate_proventos(
+        db, ws,
+        period=period,
+        breakdown=breakdown,
+        currency=currency,
+        include_synthetic=include_synthetic,
+    )
+
+    return ChartDataOut(
+        rows=[
+            ChartRowOut(
+                ym=r.ym,
+                total=float(r.total),
+                segments=[
+                    ChartSegmentOut(
+                        key=s.key, label=s.label, color=s.color,
+                        value=float(s.value) if s.value is not None else None,
+                    )
+                    for s in r.segments
+                ],
+            )
+            for r in data.rows
+        ],
+        legend=[
+            ChartSegmentOut(key=s.key, label=s.label, color=s.color, value=None)
+            for s in data.legend
+        ],
+        totals=ChartTotalsOut(
+            sum=float(data.totals.sum),
+            monthly_avg=float(data.totals.monthly_avg),
+            max=float(data.totals.max),
+        ),
+        currency=data.currency,
+    )
 
 
 @router.get("/{did}", response_model=DistributionOut)

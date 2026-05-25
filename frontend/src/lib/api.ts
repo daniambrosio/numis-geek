@@ -355,6 +355,38 @@ export interface DistributionListPage {
   page_size: number
 }
 
+// ── Spec 30 — proventos chart ────────────────────────────────────────────────
+
+export type ChartPeriod = '12m' | '24m' | 'ytd'
+export type ChartBreakdown = 'klass' | 'country' | 'fi' | 'type' | 'total'
+export type ChartCurrency = 'BRL' | 'USD'
+
+export interface ChartSegmentOut {
+  key: string
+  label: string
+  color: string
+  value: number | null
+}
+
+export interface ChartRowOut {
+  ym: string
+  total: number
+  segments: ChartSegmentOut[]
+}
+
+export interface ChartTotalsOut {
+  sum: number
+  monthly_avg: number
+  max: number
+}
+
+export interface ChartDataOut {
+  rows: ChartRowOut[]
+  legend: ChartSegmentOut[]
+  totals: ChartTotalsOut
+  currency: ChartCurrency
+}
+
 export interface DistributionRequest {
   financial_institution_id: string
   asset_id?: string | null
@@ -674,6 +706,24 @@ export const api = {
 
   deactivateDistribution: (id: string) =>
     request<DistributionOut>(`/distributions/${id}/deactivate`, { method: 'PUT' }),
+
+  // ── Spec 30 — proventos chart ────────────────────────────────────────────
+  getDistributionsChart: (params?: {
+    period?: ChartPeriod
+    breakdown?: ChartBreakdown
+    currency?: ChartCurrency
+    include_synthetic?: boolean
+    workspace_id?: string
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.period) qs.set('period', params.period)
+    if (params?.breakdown) qs.set('breakdown', params.breakdown)
+    if (params?.currency) qs.set('currency', params.currency)
+    if (params?.include_synthetic !== undefined) qs.set('include_synthetic', String(params.include_synthetic))
+    if (params?.workspace_id) qs.set('workspace_id', params.workspace_id)
+    const suffix = qs.toString()
+    return request<ChartDataOut>(`/distributions/chart${suffix ? `?${suffix}` : ''}`)
+  },
 
   listAccountsByCustodian: (workspace_id?: string) => {
     const qs = workspace_id ? `?workspace_id=${workspace_id}` : ''
