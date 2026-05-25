@@ -35,6 +35,33 @@ class SnapshotSource(str, enum.Enum):
     AUTOMATED = "AUTOMATED"
 
 
+class SnapshotStatus(str, enum.Enum):
+    """Spec 35 — lifecycle of a monthly snapshot.
+
+    SCHEDULED: job pending (hasn't run yet for this period)
+    IN_REVIEW: job ran but pendencies (manual/upload/stale) are blocking close
+    CLOSED:    frozen, ready for downstream consumers
+    """
+    SCHEDULED = "SCHEDULED"
+    IN_REVIEW = "IN_REVIEW"
+    CLOSED = "CLOSED"
+
+
+class PendencyReason(str, enum.Enum):
+    """Spec 35 — why an asset blocks the close."""
+    API_FAILED = "API_FAILED"
+    MANUAL_SOURCE = "MANUAL_SOURCE"
+    UPLOAD_REQUIRED = "UPLOAD_REQUIRED"
+    STALE_PRICE = "STALE_PRICE"
+
+
+class PendencyAction(str, enum.Enum):
+    """Spec 35 — how the user resolves a pendency."""
+    RETRY_API = "RETRY_API"
+    EDIT_PRICE = "EDIT_PRICE"
+    UPLOAD_FILE = "UPLOAD_FILE"
+
+
 class PortfolioSnapshot(Base):
     __tablename__ = "portfolio_snapshot"
 
@@ -52,6 +79,15 @@ class PortfolioSnapshot(Base):
     source: Mapped[SnapshotSource] = mapped_column(Enum(SnapshotSource), nullable=False, default=SnapshotSource.MANUAL)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Spec 35 lifecycle
+    status: Mapped[SnapshotStatus] = mapped_column(
+        Enum(SnapshotStatus), nullable=False, default=SnapshotStatus.CLOSED,
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    auto_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_source: Mapped[ExternalSource | None] = mapped_column(
@@ -129,4 +165,32 @@ class PortfolioSnapshotItem(Base):
             sqlite_where=text("external_id IS NOT NULL"),
             postgresql_where=text("external_id IS NOT NULL"),
         ),
+    )
+
+
+class SnapshotPendency(Base):
+    """Spec 35 — one row per asset that blocks a snapshot close.
+
+    Detection happens inside create_snapshot. Resolution updates Asset
+    price/attachment and marks resolved_at. Confirm refuses to close
+    while any pendency on the snapshot has resolved_at IS NULL.
+    """
+    __tablename__ = "snapshot_pendency"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("portfolio_snapshot.id"), nullable=False,
+    )
+    asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id"), nullable=False)
+    reason: Mapped[PendencyReason] = mapped_column(Enum(PendencyReason), nullable=False)
+    action_type: Mapped[PendencyAction] = mapped_column(Enum(PendencyAction), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_pendency_snapshot", "snapshot_id"),
+        UniqueConstraint("snapshot_id", "asset_id", name="ux_pendency_snap_asset"),
     )

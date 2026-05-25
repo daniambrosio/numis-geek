@@ -27,6 +27,10 @@ from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
     PortfolioSnapshotItem,
     SnapshotSource,
+    SnapshotStatus,
+    SnapshotPendency,
+    PendencyReason,
+    PendencyAction,
 )
 from numis_geek.models.integration_credential import (
     IntegrationCredential,
@@ -70,6 +74,10 @@ __all__ = [
     "PortfolioSnapshot",
     "PortfolioSnapshotItem",
     "SnapshotSource",
+    "SnapshotStatus",
+    "SnapshotPendency",
+    "PendencyReason",
+    "PendencyAction",
     "IntegrationCredential",
     "IntegrationProvider",
     "INTEGRATION_PROVIDER_LABELS",

@@ -104,14 +104,27 @@ def test_create_snapshot_captures_positions(db):
 
 
 def test_create_snapshot_replaces_existing(db):
+    """Spec 35: replacing a CLOSED snapshot now requires force_reopen=True
+    to guard against accidental overwrite."""
     world = _seed_full(db)
     r1 = create_snapshot(db, workspace_id=world["ws_id"], period_end=date(2026, 4, 30))
-    r2 = create_snapshot(db, workspace_id=world["ws_id"], period_end=date(2026, 4, 30))
+    r2 = create_snapshot(
+        db, workspace_id=world["ws_id"], period_end=date(2026, 4, 30),
+        force_reopen=True,
+    )
     assert r1.snapshot_id != r2.snapshot_id
     count = db.query(PortfolioSnapshot).filter(
         PortfolioSnapshot.workspace_id == world["ws_id"]
     ).count()
     assert count == 1
+
+
+def test_create_snapshot_refuses_overwrite_without_force(db):
+    """Spec 35 guard: closed snapshot can't be silently overwritten."""
+    world = _seed_full(db)
+    create_snapshot(db, workspace_id=world["ws_id"], period_end=date(2026, 4, 30))
+    with pytest.raises(ValueError, match="CLOSED"):
+        create_snapshot(db, workspace_id=world["ws_id"], period_end=date(2026, 4, 30))
 
 
 def test_snapshot_skips_zero_quantity_assets(db):
