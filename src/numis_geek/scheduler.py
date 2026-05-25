@@ -20,6 +20,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from numis_geek.db.session import SessionLocal
+from numis_geek.jobs.snapshot_auto import (
+    JOB_ID as SNAPSHOT_JOB_ID,
+    run_monthly_snapshot,
+)
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.price_update import refresh_all_automated
 
@@ -83,9 +87,22 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # Spec 35 — auto monthly snapshot at 06:30 on the 1st of each month.
+    sched.add_job(
+        run_monthly_snapshot,
+        CronTrigger(day=1, hour=6, minute=30),
+        id=SNAPSHOT_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     sched.start()
-    next_run = sched.get_job(CRON_JOB_ID).next_run_time
-    logger.info("scheduler started: %s next=%s", CRON_JOB_ID, next_run)
+    next_price = sched.get_job(CRON_JOB_ID).next_run_time
+    next_snap = sched.get_job(SNAPSHOT_JOB_ID).next_run_time
+    logger.info(
+        "scheduler started: %s next=%s; %s next=%s",
+        CRON_JOB_ID, next_price, SNAPSHOT_JOB_ID, next_snap,
+    )
     app.state.scheduler = sched
     return sched
 

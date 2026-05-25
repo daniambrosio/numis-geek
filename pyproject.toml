@@ -17,6 +17,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
     "apscheduler>=3.10,<4",
+    "holidays>=0.50",
 ]
 
 [project.optional-dependencies]
