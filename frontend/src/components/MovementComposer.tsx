@@ -98,7 +98,10 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
   const useValueOnly = isNonCotado && isCotadoOrValueType
   const showQuantity = cfg.qty && !useValueOnly
   const showUnitPrice = cfg.price && !useValueOnly
-  const showFee = cfg.fee && !useValueOnly
+  // Fee applies to non-cotado too (Tesouro Direto charges custody fee,
+  // broker fee, IR retido na fonte — user wants to track these apart
+  // from the gross value).
+  const showFee = cfg.fee
   const showTax = cfg.tax
   const showNotaNegociacao = NOTA_NEGOCIACAO_TYPES.includes(type)
   const assetInactive = !!selectedAsset && selectedAsset.is_active === false
@@ -110,7 +113,10 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
   const qN = num(quantity), pN = num(unitPrice), feeN = num(fee), tN = num(tax), gN = num(grossAmount)
   let net = 0
   if (useValueOnly) {
-    net = type === 'BUY' || type === 'SUBSCRIPTION' ? -gN : gN
+    // Non-cotado: gross + optional fee. Fee adds to cost on buy/sub,
+    // subtracts from proceeds on sell/redemption (matches backend
+    // net_amount calc in asset_movements.py).
+    net = type === 'BUY' || type === 'SUBSCRIPTION' ? -(gN + feeN) : (gN - feeN)
   } else if (type === 'BUY')             net = -(qN * pN + feeN)
   else if (type === 'SELL')              net = qN * pN - feeN
   else if (type === 'BONUS')             net = 0
