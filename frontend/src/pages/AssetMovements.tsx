@@ -368,7 +368,7 @@ export default function AssetMovements() {
                     <th className="text-right font-medium px-2 py-2">Qtd</th>
                     <th className="text-right font-medium px-2 py-2">Preço unit.</th>
                     <th className="text-right font-medium px-2 py-2">Net</th>
-                    <th className="text-right font-medium px-2 py-2">FX</th>
+                    <th className="text-right font-medium px-2 py-2" title="PTAX USD/BRL do dia do evento — usado para visualização dolarizada">PTAX</th>
                     <th className="px-2"></th>
                   </tr>
                 </thead>
@@ -504,8 +504,10 @@ function Row({
         <div className={`tnum money font-medium ${netTone}`}>{fmtMoney(l.net_amount, l.currency, { sign: true })}</div>
         <CcyPill ccy={l.currency} />
       </td>
-      <td className="px-2 text-right tnum text-[11px] text-gray-500">
-        {l.currency === 'USD' ? `R$ ${Number(l.fx_rate).toFixed(4)}` : '—'}
+      <td className="px-2 text-right tnum text-[11px] text-gray-500" title="PTAX USD/BRL na data do evento">
+        {l.fx_rate && Number(l.fx_rate) !== 1
+          ? `R$ ${Number(l.fx_rate).toFixed(4)}`
+          : '—'}
       </td>
       <td className="px-2 text-gray-500">
         <MoreHorizontal className="w-4 h-4" />

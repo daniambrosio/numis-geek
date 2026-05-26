@@ -44,3 +44,29 @@ def fx_rate_on(
             f"No PTAX rate found within {max_walkback_days} days of {target_date}"
         )
     return row.rate
+
+
+def resolve_fx_rate(
+    db: Session,
+    target_date: date,
+    *,
+    client_value: Decimal | None = None,
+    fallback: Decimal = Decimal("1.0"),
+) -> Decimal:
+    """Pick the fx_rate to persist on a Movement/Distribution/etc.
+
+    Honors `client_value` when given (manual override). Otherwise resolves
+    PTAX via `fx_rate_on`, falling back to `fallback` (1.0) if the PTAX
+    table has nothing within the walkback window.
+
+    Applies to BRL AND USD — the bimoneda design (CLAUDE.md feature #3
+    "Dolarized portfolio view") requires every movement to carry the
+    canonical USD/BRL PTAX of its event_date. See memory
+    `multicurrency_fx_rate_design`.
+    """
+    if client_value is not None:
+        return client_value
+    try:
+        return fx_rate_on(db, target_date)
+    except FxRateNotFound:
+        return fallback

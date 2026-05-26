@@ -17,6 +17,7 @@ from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.auth import UserContext
+from numis_geek.services.fx import resolve_fx_rate
 from numis_geek.services.option_lifecycle import (
     OptionLifecycleError,
     compute_open_options,
@@ -252,7 +253,7 @@ def create_option(
         tax=body.tax,
         net_amount=net,
         currency=underlying.currency,
-        fx_rate=Decimal("1"),
+        fx_rate=resolve_fx_rate(db, body.movement_date),
         notes=body.notes,
         is_active=True,
         created_at=now,
@@ -372,7 +373,7 @@ def close_manual(
         tax=Decimal("0"),
         net_amount=net,
         currency=opt.currency,
-        fx_rate=Decimal("1"),
+        fx_rate=resolve_fx_rate(db, body.close_date),
         notes=body.notes,
         is_active=True,
         created_at=now,

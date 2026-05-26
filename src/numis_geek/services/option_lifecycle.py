@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.models.asset import Asset, AssetClass, OptionType
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+from numis_geek.services.fx import resolve_fx_rate
 
 
 # ── BR ticker parser ─────────────────────────────────────────────────────────
@@ -276,7 +277,7 @@ def exercise_option(
         tax=Decimal("0"),
         net_amount=net,
         currency=underlying.currency,
-        fx_rate=Decimal("1"),
+        fx_rate=resolve_fx_rate(db, exercise_date),
         notes=f"Exercício de {opt.ticker} · prêmio R$ {prem_per_share:.4f}/ação aplicado ao strike",
         is_active=True,
         created_at=now,
@@ -301,7 +302,7 @@ def exercise_option(
         tax=Decimal("0"),
         net_amount=Decimal("0"),
         currency=opt.currency,
-        fx_rate=Decimal("1"),
+        fx_rate=resolve_fx_rate(db, exercise_date),
         notes=f"Underlying adquirido via movement id={underlying_mov.id}",
         related_movement_id=underlying_mov.id,
         is_active=True,
@@ -351,7 +352,7 @@ def expire_option(
         tax=Decimal("0"),
         net_amount=Decimal("0"),
         currency=opt.currency,
-        fx_rate=Decimal("1"),
+        fx_rate=resolve_fx_rate(db, when),
         notes="Opção venceu sem ser exercida (virou pó).",
         is_active=True,
         created_at=now,

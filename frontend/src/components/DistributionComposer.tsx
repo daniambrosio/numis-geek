@@ -118,7 +118,9 @@ export default function DistributionComposer({
         tax: taxN > 0 ? taxN : null,
         net_amount: net,
         currency,
-        fx_rate: currency === 'USD' ? 1.0 : 1.0,  // TODO: PTAX integration
+        // fx_rate omitted on purpose — backend auto-fills PTAX of event_date
+        // (services/fx.resolve_fx_rate). Applies to BRL AND USD per the
+        // bimoneda design (CLAUDE.md feature #3 "Dolarized portfolio view").
         notes: notes.trim() || null,
       }
       await onSave(payload)

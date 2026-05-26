@@ -19,6 +19,7 @@ from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
+from numis_geek.services.fx import resolve_fx_rate
 from numis_geek.services.auth import UserContext
 from numis_geek.services.proventos import (
     aggregate_proventos,
@@ -414,7 +415,7 @@ def create_distribution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Distribution currency must match asset's ({asset.currency.value}).",
         )
-    fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
+    fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
     net = _compute_net(body)
 
     now = datetime.now(timezone.utc)
@@ -471,7 +472,7 @@ def update_distribution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Distribution currency must match asset's ({asset.currency.value}).",
         )
-    fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
+    fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
     net = _compute_net(body)
 
     d.financial_institution_id = fi.id

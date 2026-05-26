@@ -19,6 +19,7 @@ from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
+from numis_geek.services.fx import resolve_fx_rate
 
 router = APIRouter(prefix="/asset-movements", tags=["asset-movements"])
 
@@ -368,7 +369,7 @@ def create_asset_movement(
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
 
     currency = body.currency or asset.currency
-    fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
+    fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
     gross = _resolve_gross(body)
 
     persisted_gross: Decimal | None
@@ -430,7 +431,7 @@ def update_asset_movement(
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
 
     currency = body.currency or asset.currency
-    fx_rate = body.fx_rate if body.fx_rate is not None else Decimal("1.0")
+    fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
     gross = _resolve_gross(body)
 
     persisted_gross: Decimal | None
