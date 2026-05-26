@@ -12,6 +12,7 @@ from numis_geek.api.routes import (
     attachments,
     audit,
     auth,
+    backup,
     corporate_actions,
     distributions,
     financial_institutions,
@@ -62,6 +63,7 @@ app.include_router(options.router)
 app.include_router(attachments.router)
 app.include_router(portfolio.router)
 app.include_router(prices.router)
+app.include_router(backup.router)
 
 
 @app.get("/health")

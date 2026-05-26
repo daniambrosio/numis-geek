@@ -19,12 +19,16 @@ from typing import TYPE_CHECKING
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from pathlib import Path
+
+from numis_geek.config import DATABASE_URL
 from numis_geek.db.session import SessionLocal
 from numis_geek.jobs.snapshot_auto import (
     JOB_ID as SNAPSHOT_JOB_ID,
     run_monthly_snapshot,
 )
 from numis_geek.models.workspace import Workspace
+from numis_geek.services.backup import create_backup, rotate_backups
 from numis_geek.services.price_update import refresh_all_automated
 from numis_geek.services.ptax_sync import sync_ptax
 
@@ -39,6 +43,9 @@ CRON_AUDIT_ACTION = "price.refresh.cron"
 CRON_USER_EMAIL = "system@cron"
 
 PTAX_JOB_ID = "ptax_sync_daily"
+
+BACKUP_JOB_ID = "backup_daily"
+BACKUP_DIR = Path("data/backups")
 
 
 def run_daily_price_refresh() -> None:
@@ -67,6 +74,25 @@ def run_daily_price_refresh() -> None:
                 logger.exception("cron price refresh failed for ws=%s", ws_id)
     finally:
         db.close()
+
+
+def run_daily_backup() -> None:
+    """Spec 37 — daily SQLite snapshot + rotation.
+
+    Atomic via SQLite native backup API. Idempotent — re-running on the
+    same day creates a second timestamped file; rotation keeps only the
+    latest per day (up to 7 days) + last-of-month (up to 12 months).
+    """
+    try:
+        result = create_backup(DATABASE_URL, BACKUP_DIR)
+        rotated = rotate_backups(BACKUP_DIR)
+        logger.info(
+            "cron daily backup: path=%s size=%dMB pages=%d kept=%d deleted=%d",
+            result.path.name, result.size_bytes // (1024 * 1024),
+            result.pages_copied, len(rotated.kept), len(rotated.deleted),
+        )
+    except Exception:
+        logger.exception("cron daily backup failed")
 
 
 def run_daily_ptax_sync() -> None:
@@ -132,14 +158,25 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # Spec 37 — daily DB backup at 07:00 SP. Aligned with start of
+    # business day, before the user starts adding new movements.
+    sched.add_job(
+        run_daily_backup,
+        CronTrigger(hour=7, minute=0),
+        id=BACKUP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     sched.start()
     next_price = sched.get_job(CRON_JOB_ID).next_run_time
     next_snap = sched.get_job(SNAPSHOT_JOB_ID).next_run_time
     next_ptax = sched.get_job(PTAX_JOB_ID).next_run_time
+    next_backup = sched.get_job(BACKUP_JOB_ID).next_run_time
     logger.info(
-        "scheduler started: %s next=%s; %s next=%s; %s next=%s",
+        "scheduler started: %s next=%s; %s next=%s; %s next=%s; %s next=%s",
         CRON_JOB_ID, next_price, SNAPSHOT_JOB_ID, next_snap,
-        PTAX_JOB_ID, next_ptax,
+        PTAX_JOB_ID, next_ptax, BACKUP_JOB_ID, next_backup,
     )
     app.state.scheduler = sched
     return sched
