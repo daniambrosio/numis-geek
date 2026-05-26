@@ -26,6 +26,7 @@ from numis_geek.jobs.snapshot_auto import (
 )
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.price_update import refresh_all_automated
+from numis_geek.services.ptax_sync import sync_ptax
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 CRON_JOB_ID = "price_refresh_daily"
 CRON_AUDIT_ACTION = "price.refresh.cron"
 CRON_USER_EMAIL = "system@cron"
+
+PTAX_JOB_ID = "ptax_sync_daily"
 
 
 def run_daily_price_refresh() -> None:
@@ -62,6 +65,28 @@ def run_daily_price_refresh() -> None:
             except Exception:
                 db.rollback()
                 logger.exception("cron price refresh failed for ws=%s", ws_id)
+    finally:
+        db.close()
+
+
+def run_daily_ptax_sync() -> None:
+    """Spec 11 finalizer — sync PTAX incremental from BCB.
+
+    Idempotent: re-runs over the same range upsert in-place. Weekends and
+    holidays return fetched_count=0 (BCB does not publish on those days).
+    """
+    db = SessionLocal()
+    try:
+        result = sync_ptax(db, mode="incremental")
+        db.commit()
+        logger.info(
+            "cron ptax sync: mode=%s range=%s..%s fetched=%d inserted=%d updated=%d",
+            result.mode, result.range_start, result.range_end,
+            result.fetched_count, result.inserted_count, result.updated_count,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("cron ptax sync failed")
     finally:
         db.close()
 
@@ -96,12 +121,25 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # Spec 11 finalizer — daily PTAX sync at 20:00 SP. BCB publishes the
+    # day's PTAX venda between 13h-17h SP; 20h is a safe margin and
+    # avoids colliding with the 18h price refresh.
+    sched.add_job(
+        run_daily_ptax_sync,
+        CronTrigger(hour=20, minute=0),
+        id=PTAX_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     sched.start()
     next_price = sched.get_job(CRON_JOB_ID).next_run_time
     next_snap = sched.get_job(SNAPSHOT_JOB_ID).next_run_time
+    next_ptax = sched.get_job(PTAX_JOB_ID).next_run_time
     logger.info(
-        "scheduler started: %s next=%s; %s next=%s",
+        "scheduler started: %s next=%s; %s next=%s; %s next=%s",
         CRON_JOB_ID, next_price, SNAPSHOT_JOB_ID, next_snap,
+        PTAX_JOB_ID, next_ptax,
     )
     app.state.scheduler = sched
     return sched
