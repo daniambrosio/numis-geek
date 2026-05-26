@@ -35,7 +35,10 @@ const TYPE_ORDER: AssetMovementType[] = ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION',
 
 // Non-cotado classes — for BUY/SELL/SUBSCRIPTION/FULL_REDEMPTION, show a
 // single "Valor" (gross_amount) input instead of qty × unit_price.
-const NON_COTADO_CLASSES: AssetClass[] = ['FIXED_INCOME', 'FGTS', 'PRIVATE_PENSION', 'CASH']
+// FIXED_INCOME is intentionally NOT here: Tesouro Direto and debêntures
+// have qty + valor_título separately on the broker statement, and even
+// CDBs work with qty=1, unit_price=valor. Forcing value-only lost data.
+const NON_COTADO_CLASSES: AssetClass[] = ['FGTS', 'PRIVATE_PENSION', 'CASH']
 const NOTA_NEGOCIACAO_TYPES: AssetMovementType[] = ['BUY', 'SELL', 'FULL_REDEMPTION', 'SUBSCRIPTION']
 
 interface Props {
@@ -358,6 +361,17 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
                 <Sparkles className="w-3 h-3" />
                 Pré-visualização
               </div>
+              {showQuantity && showUnitPrice && qN > 0 && pN > 0 && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-gray-500 dark:text-gray-400">Bruto</span>
+                  <span className="tnum text-gray-700 dark:text-gray-300">
+                    {fmtMoney(qN * pN, ccy)}
+                    {feeN > 0 && (
+                      <span className="text-gray-400 dark:text-gray-500"> · taxa {fmtMoney(feeN, ccy)}</span>
+                    )}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-[12px] text-gray-500 dark:text-gray-400">Net</span>
                 <span className={`tnum text-base font-semibold ${net < 0 ? 'text-red-500 dark:text-red-400' : net > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
