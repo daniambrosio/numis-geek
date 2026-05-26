@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Sparkles, X } from 'lucide-react'
 import {
   type AssetOut,
@@ -62,7 +62,13 @@ export default function DistributionComposer({
 
   // Asset list filtered by selected FI (via asset.account → fi).
   // Since AssetOut already carries financial_institution_id, this is direct.
-  const assetsAtSelectedFi = assets.filter(a => a.financial_institution_id === fiId)
+  // Sorted by ticker (fallback name) so native-select type-ahead matches
+  // what the user types.
+  const assetsAtSelectedFi = useMemo(() => {
+    const filtered = assets.filter(a => a.financial_institution_id === fiId)
+    const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
+    return filtered.sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
+  }, [assets, fiId])
 
   // When FI changes, reset asset selection so the dropdown isn't stale.
   useEffect(() => {

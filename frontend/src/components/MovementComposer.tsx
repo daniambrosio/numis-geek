@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { X, Sparkles } from 'lucide-react'
 import {
   type AssetClass,
@@ -83,6 +83,14 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
   const [error, setError] = useState('')
 
   const selectedAsset = assets.find(a => a.id === assetId) ?? preselectedAsset
+
+  // Sort by ticker (fallback to name) so native-select type-ahead lands
+  // on the ticker the user types — e.g. typing "W" jumps to WEGE3, not
+  // to assets whose company name starts with W.
+  const sortedAssets = useMemo(() => {
+    const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
+    return [...assets].sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
+  }, [assets])
   const cfg = TYPE_CFG[type]
   const ccy: 'BRL' | 'USD' = selectedAsset?.currency ?? 'BRL'
   const isNonCotado = !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
@@ -242,8 +250,8 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
                 required
                 className={inputCls}
               >
-                {assets.length === 0 && <option value="">Nenhum ativo</option>}
-                {assets.map(a => (
+                {sortedAssets.length === 0 && <option value="">Nenhum ativo</option>}
+                {sortedAssets.map(a => (
                   <option key={a.id} value={a.id}>
                     {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
                   </option>
