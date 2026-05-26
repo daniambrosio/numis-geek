@@ -22,6 +22,14 @@ interface TypeCfg {
   tax: boolean
 }
 
+// SELL.tax=false is deliberate (deferred): IRRF on sales (Tesouro/FII/
+// swing trade) is real and gets retained by the broker, but BR tax rules
+// change often. A proper "tax engine" inside the app (regressive table,
+// FII 20%, prejuízo compensável, day-trade) is too much maintenance for
+// a personal-use tool right now — defer until either a 3rd-party tax
+// library matures or the workload justifies it. Users record IRRF as a
+// separate Transaction in the cash flow instead. Revisit per
+// [[tax_engine_deferred]] memory.
 const TYPE_CFG: Record<string, TypeCfg> = {
   BUY:             { label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
   SELL:            { label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
