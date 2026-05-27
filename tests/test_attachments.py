@@ -24,6 +24,7 @@ import numis_geek.models  # noqa: F401
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+from numis_geek.models.attachment import Attachment
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
 from numis_geek.services import attachment_storage
@@ -352,7 +353,19 @@ def test_download_cross_workspace_blocked(client, seed):
 
 # ── Delete (soft) ─────────────────────────────────────────────────────────────
 
-def test_delete_soft(client, seed):
+def test_delete_hard_removes_row_and_file(client, seed):
+    """Spec 43 — DELETE is now a HARD delete: row is gone and the file
+    on disk is unlinked."""
+    # Capture the on-disk path before deleting.
+    db = TestSession()
+    try:
+        att_row = db.get(Attachment, seed["att_id"])
+        assert att_row is not None
+        full_path = attachment_storage.absolute_path(att_row.storage_key)
+        assert full_path.exists()
+    finally:
+        db.close()
+
     r = client.delete(
         f"/attachments/{seed['att_id']}",
         headers=auth(seed["admin_a_token"]),
@@ -368,8 +381,18 @@ def test_delete_soft(client, seed):
     ids = [it["id"] for it in r2.json()]
     assert seed["att_id"] not in ids
 
+    # Row is gone from the DB.
+    db2 = TestSession()
+    try:
+        assert db2.get(Attachment, seed["att_id"]) is None
+    finally:
+        db2.close()
 
-def test_delete_already_inactive_404(client, seed):
+    # File is gone from disk.
+    assert not full_path.exists()
+
+
+def test_delete_missing_returns_404(client, seed):
     r = client.delete(
         f"/attachments/{seed['att_id']}",
         headers=auth(seed["admin_a_token"]),

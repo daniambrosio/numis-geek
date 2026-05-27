@@ -225,21 +225,58 @@ def delete_attachment(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
+    """Hard delete: remove the file from disk **and** the DB row.
+
+    Spec 43 — replaces the previous soft-delete behaviour. Rejected (409)
+    when an ExtractionJob still references the attachment; otherwise the
+    file is unlinked and the row is dropped. Audit log preserves the
+    record of the deletion.
+    """
+    from numis_geek.models.extraction_job import ExtractionJob  # local import to keep route loose
+
     att = db.get(Attachment, attachment_id)
-    if not att or not att.is_active:
+    if not att:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
     if current_user.role != UserRole.sysadmin and att.workspace_id != current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
 
-    att.is_active = False
+    # Guard against breaking an extraction job that still references this file.
+    in_use = (
+        db.query(ExtractionJob)
+        .filter(ExtractionJob.attachment_id == att.id)
+        .first()
+    )
+    if in_use is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Anexo referenciado pelo job de extração {in_use.id}; remova o job antes."
+            ),
+        )
+
+    snapshot = {
+        "filename": att.filename,
+        "storage_key": att.storage_key,
+        "size_bytes": att.size_bytes,
+        "workspace_id": att.workspace_id,
+    }
+
+    # Best-effort unlink: if the file is missing on disk we still drop the
+    # row (the FS was already out of sync).
+    try:
+        attachment_storage.delete(att.storage_key)
+    except (FileNotFoundError, ValueError):
+        pass
+
+    db.delete(att)
     db.flush()
 
     actor = db.get(User, current_user.user_id)
     AuditService(db).log(
         user_email=actor.email if actor else current_user.user_id,
-        action="attachment.deactivated",
+        action="attachment.deleted",
         resource_type="attachment",
-        resource_id=att.id,
-        details={"filename": att.filename, "storage_key": att.storage_key},
+        resource_id=attachment_id,
+        details=snapshot,
     )
     return None

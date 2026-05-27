@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 import { Edit2, RefreshCw, Upload } from 'lucide-react'
 
 import { api, type PendencyReason, type SnapshotPendencyOut } from '../lib/api'
+import ExtractionUploadModal from './ExtractionUploadModal'
 
 const REASON_META: Record<PendencyReason, { label: string; color: string }> = {
   API_FAILED:      { label: 'API falhou',     color: '#ef4444' },
@@ -77,6 +78,7 @@ function PendencyRow({
 }: { pendency: SnapshotPendencyOut; onResolved: () => void }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
   const resolved = pendency.resolved_at != null
   const meta = REASON_META[pendency.reason]
 
@@ -116,22 +118,9 @@ function PendencyRow({
     }
   }
 
-  async function handleUploadStub() {
-    const note = window.prompt(
-      `Upload de extrato para ${pendency.asset_ticker ?? pendency.asset_name} ainda não está habilitado (spec 38). Marcar como resolvido manualmente com uma nota?`,
-      'Extrato conferido manualmente',
-    )
-    if (note === null) return
-    setBusy(true); setErr(null)
-    try {
-      await api.resolveSnapshotPendency(pendency.id, { note })
-      onResolved()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro')
-    } finally {
-      setBusy(false)
-    }
-  }
+  // Spec 38 — Upload button opens the LLM extraction modal. The legacy
+  // "mark as resolved with a note" path stays available behind an explicit
+  // user gesture (skip button inside the modal).
 
   return (
     <div
@@ -196,14 +185,23 @@ function PendencyRow({
           )}
           {pendency.action_type === 'UPLOAD_FILE' && (
             <button
-              onClick={handleUploadStub}
+              onClick={() => setUploadOpen(true)}
               disabled={busy}
               className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+              data-testid={`pendency-upload-${pendency.id}`}
             >
               <Upload className="w-3 h-3" /> Upload
             </button>
           )}
         </div>
+      )}
+
+      {uploadOpen && (
+        <ExtractionUploadModal
+          pendency={pendency}
+          onResolved={onResolved}
+          onClose={() => setUploadOpen(false)}
+        />
       )}
     </div>
   )

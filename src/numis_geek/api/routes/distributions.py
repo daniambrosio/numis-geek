@@ -27,6 +27,13 @@ from numis_geek.services.proventos import (
     Currency as ChartCurrency,
     Period,
 )
+from numis_geek.utils.audit_diff import diff as audit_diff, snapshot as audit_snapshot
+
+# Fields tracked in the audit diff on update (Spec 37).
+_TRACKED_FIELDS = [
+    "financial_institution_id", "asset_id", "type", "event_date",
+    "gross_amount", "tax", "net_amount", "currency", "fx_rate", "notes",
+]
 
 router = APIRouter(prefix="/distributions", tags=["distributions"])
 
@@ -219,8 +226,22 @@ def _compute_net(body: DistributionRequest) -> Decimal:
     return body.gross_amount - (body.tax or Decimal("0"))
 
 
-def _audit(db: Session, current_user: UserContext, action: str, d: Distribution) -> None:
+def _audit(
+    db: Session,
+    current_user: UserContext,
+    action: str,
+    d: Distribution,
+    *,
+    diff: dict | None = None,
+) -> None:
     actor = db.get(User, current_user.user_id)
+    details: dict = {
+        "asset_id": d.asset_id,
+        "type": d.type.value,
+        "event_date": d.event_date.isoformat(),
+    }
+    if diff is not None:
+        details["diff"] = diff
     AuditService(db).log(
         user_email=actor.email if actor else current_user.user_id,
         action=action,
@@ -228,11 +249,7 @@ def _audit(db: Session, current_user: UserContext, action: str, d: Distribution)
         user_id=current_user.user_id,
         resource_type="distribution",
         resource_id=d.id,
-        details={
-            "asset_id": d.asset_id,
-            "type": d.type.value,
-            "event_date": d.event_date.isoformat(),
-        },
+        details=details,
     )
 
 
@@ -475,6 +492,7 @@ def update_distribution(
     fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
     net = _compute_net(body)
 
+    before = audit_snapshot(d, _TRACKED_FIELDS)
     d.financial_institution_id = fi.id
     d.asset_id = asset.id if asset else None
     d.type = body.type
@@ -490,7 +508,8 @@ def update_distribution(
     d.updated_at = datetime.now(timezone.utc)
     d.updated_by = current_user.user_id
     db.flush()
-    _audit(db, current_user, "distribution.updated", d)
+    after = audit_snapshot(d, _TRACKED_FIELDS)
+    _audit(db, current_user, "distribution.updated", d, diff=audit_diff(before, after))
 
     return DistributionOut.from_orm(
         d,

@@ -16,9 +16,11 @@ import {
 import AppLayout from '../components/AppLayout'
 import MovementComposer from '../components/MovementComposer'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
+import OptionModal from '../components/OptionModal'
+import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
-  QuickAddBar, TypeBadge, CcyPill,
+  QuickAddBar, TypeBadge,
 } from '../components/ui'
 import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 
@@ -70,7 +72,9 @@ export default function AssetMovements() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const [optionModalOpen, setOptionModalOpen] = useState(false)
   const [editing, setEditing] = useState<AssetMovementOut | undefined>(undefined)
+  const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
   const [selected, setSelected] = useState<AssetMovementOut | null>(null)
 
@@ -91,10 +95,17 @@ export default function AssetMovements() {
   }, [navigate])
 
   // Open MovementComposer when launched via "Novo → Lançamento" from the top bar.
+  // Open OptionModal when launched via "Novo → Opção" (Spec 36).
   useEffect(() => {
-    if (searchParams.get('compose') === 'movement') {
+    const compose = searchParams.get('compose')
+    if (compose === 'movement') {
       setEditing(undefined)
       setModalOpen(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('compose')
+      setSearchParams(next, { replace: true })
+    } else if (compose === 'option') {
+      setOptionModalOpen(true)
       const next = new URLSearchParams(searchParams)
       next.delete('compose')
       setSearchParams(next, { replace: true })
@@ -201,9 +212,54 @@ export default function AssetMovements() {
       const updated = await api.updateAssetMovement(editing.id, data)
       setItems(prev => prev.map(l => l.id === updated.id ? updated : l))
       if (selected?.id === updated.id) setSelected(updated)
+      return updated
     } else {
       const created = await api.createAssetMovement(data)
       setItems(prev => [created, ...prev])
+      return created
+    }
+  }
+
+  async function handleUploadDrafts(entityId: string, drafts: AttachmentDraft[]) {
+    // Upload in parallel; collect failures so the user can retry.
+    const results = await Promise.allSettled(
+      drafts.map(d => api.uploadAttachment('movement', entityId, d.file)),
+    )
+    const failed = results
+      .map((r, i) => ({ r, name: drafts[i].name }))
+      .filter(x => x.r.status === 'rejected')
+    if (failed.length) {
+      const reason = failed
+        .map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message ?? 'erro desconhecido'}`)
+        .join(' · ')
+      throw new Error(reason)
+    }
+  }
+
+  async function handleRemovePersistedAttachment(attachmentId: string) {
+    await api.deleteAttachment(attachmentId)
+    // Refresh attachments for the currently-edited row.
+    if (editing) {
+      const list = await api.listAttachments('movement', editing.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    }
+  }
+
+  async function openEdit(l: AssetMovementOut) {
+    setEditing(l)
+    setModalOpen(true)
+    try {
+      const list = await api.listAttachments('movement', l.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    } catch {
+      // Listing attachments must NOT redirect to login — silently degrade.
+      setEditingAttachments([])
     }
   }
 
@@ -409,7 +465,7 @@ export default function AssetMovements() {
             })()
           }
           onClose={() => setSelected(null)}
-          onEdit={() => { setEditing(selected); setModalOpen(true) }}
+          onEdit={() => { void openEdit(selected) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
           onSyncUpdated={handleSyncUpdated}
         />
@@ -420,7 +476,37 @@ export default function AssetMovements() {
           initial={editing}
           assets={assets}
           onSave={handleSave}
-          onClose={() => { setModalOpen(false); setEditing(undefined) }}
+          onOptionLifecycleSaved={async () => {
+            // Refresh both assets (some lifecycle ops mark the option
+            // inactive) and movements (server creates the rows for us).
+            try {
+              const [a, m] = await Promise.all([
+                api.listAssets({ include_inactive: false }),
+                api.listAssetMovements({ include_inactive: false, page_size: 200 }),
+              ])
+              setAssets(a)
+              setItems(m.items)
+            } catch { /* fail-soft */ }
+          }}
+          onClose={() => { setModalOpen(false); setEditing(undefined); setEditingAttachments([]) }}
+          persistedAttachments={editing ? editingAttachments : undefined}
+          onUploadDrafts={handleUploadDrafts}
+          onRemovePersistedAttachment={handleRemovePersistedAttachment}
+        />
+      )}
+
+      {optionModalOpen && (
+        <OptionModal
+          candidates={assets}
+          onClose={() => setOptionModalOpen(false)}
+          onSaved={() => {
+            // Refresh assets list so the new OPTION appears in the picker,
+            // and refresh movements so the SELL_OPEN/BUY_TO_OPEN shows up.
+            api.listAssets({ include_inactive: false }).then(setAssets).catch(() => {})
+            api.listAssetMovements({ include_inactive: false, page_size: 200 })
+              .then(r => setItems(r.items))
+              .catch(() => {})
+          }}
         />
       )}
 
@@ -502,7 +588,6 @@ function Row({
       </td>
       <td className="px-2 text-right">
         <div className={`tnum money font-medium ${netTone}`}>{fmtMoney(l.net_amount, l.currency, { sign: true })}</div>
-        <CcyPill ccy={l.currency} />
       </td>
       <td className="px-2 text-right tnum text-[11px] text-gray-500" title="PTAX USD/BRL na data do evento">
         {l.fx_rate && Number(l.fx_rate) !== 1

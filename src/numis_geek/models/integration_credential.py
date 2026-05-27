@@ -14,6 +14,7 @@ class IntegrationProvider(str, enum.Enum):
     FINNHUB = "FINNHUB"
     YFINANCE = "YFINANCE"
     NOTION = "NOTION"
+    ANTHROPIC = "ANTHROPIC"   # Spec 38 — LLM extraction
 
 
 INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
@@ -22,12 +23,14 @@ INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
     IntegrationProvider.FINNHUB: "Finnhub (cotação US)",
     IntegrationProvider.YFINANCE: "Yahoo Finance (histórico US)",
     IntegrationProvider.NOTION: "Notion (sync Numis → Notion)",
+    IntegrationProvider.ANTHROPIC: "Anthropic Claude (LLM extraction)",
 }
 
 PROVIDERS_REQUIRING_CREDENTIALS: set[IntegrationProvider] = {
     IntegrationProvider.BRAPI,
     IntegrationProvider.FINNHUB,
     IntegrationProvider.NOTION,
+    IntegrationProvider.ANTHROPIC,
 }
 
 

@@ -44,6 +44,11 @@ from numis_geek.models.attachment import (
     AttachmentSourceType,
     AttachmentKind,
 )
+from numis_geek.models.extraction_job import (
+    ExtractionJob,
+    ExtractionStatus,
+    ExtractionSourceHint,
+)
 
 __all__ = [
     "Workspace",
@@ -86,4 +91,7 @@ __all__ = [
     "Attachment",
     "AttachmentSourceType",
     "AttachmentKind",
+    "ExtractionJob",
+    "ExtractionStatus",
+    "ExtractionSourceHint",
 ]

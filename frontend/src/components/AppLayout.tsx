@@ -4,7 +4,7 @@ import {
   LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
-  Plug, DollarSign, Sparkles, ClipboardCheck,
+  Plug, DollarSign, Sparkles, ClipboardCheck, Sigma,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
@@ -84,8 +84,11 @@ interface NovoItem {
 }
 
 // Mirrors prototype index.html:1115-1124. Order within each group preserved.
+// "Opção" (Spec 36) sits between Lançamento and Provento — the canonical
+// compound-create entry inside Investimentos.
 const NOVO_ITEMS: NovoItem[] = [
   { key: 'movement',     label: 'Lançamento',           desc: 'Compra, venda, bonificação…',           icon: ArrowDownUp,  group: 'Investimentos',    shortcut: 'L', enabled: true, composeRoute: '/asset-movements' },
+  { key: 'option',       label: 'Opção',                desc: 'PUT/CALL: cria + lança abertura',       icon: Sigma,        group: 'Investimentos',    shortcut: 'O', enabled: true, composeRoute: '/asset-movements' },
   { key: 'distribution', label: 'Provento',             desc: 'Dividendo, juros, JCP, aluguel',        icon: Coins,        group: 'Investimentos',    shortcut: 'P', enabled: true, composeRoute: '/distributions' },
   { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: false },
   { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: false },

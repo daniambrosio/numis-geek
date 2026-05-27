@@ -20,6 +20,16 @@ from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 from numis_geek.services.fx import resolve_fx_rate
+from numis_geek.utils.audit_diff import diff as audit_diff, snapshot as audit_snapshot
+
+# Fields tracked in the audit diff on update (Spec 37). Fields that change as a
+# side-effect (updated_at, updated_by, net_amount when computed) are excluded
+# to keep the diff readable.
+_TRACKED_FIELDS = [
+    "asset_id", "type", "event_date", "settlement_date",
+    "quantity", "unit_price", "gross_amount", "fee", "tax", "net_amount",
+    "currency", "fx_rate", "notes", "nota_negociacao_number",
+]
 
 router = APIRouter(prefix="/asset-movements", tags=["asset-movements"])
 
@@ -265,8 +275,22 @@ def _resolve_gross(body: AssetMovementRequest) -> Decimal:
     raise HTTPException(status_code=400, detail=f"Cannot compute gross_amount for type {t.value}.")
 
 
-def _audit(db: Session, current_user: UserContext, action: str, m: AssetMovement) -> None:
+def _audit(
+    db: Session,
+    current_user: UserContext,
+    action: str,
+    m: AssetMovement,
+    *,
+    diff: dict | None = None,
+) -> None:
     actor = db.get(User, current_user.user_id)
+    details: dict = {
+        "asset_id": m.asset_id,
+        "type": m.type.value,
+        "event_date": m.event_date.isoformat(),
+    }
+    if diff is not None:
+        details["diff"] = diff
     AuditService(db).log(
         user_email=actor.email if actor else current_user.user_id,
         action=action,
@@ -274,11 +298,7 @@ def _audit(db: Session, current_user: UserContext, action: str, m: AssetMovement
         user_id=current_user.user_id,
         resource_type="asset_movement",
         resource_id=m.id,
-        details={
-            "asset_id": m.asset_id,
-            "type": m.type.value,
-            "event_date": m.event_date.isoformat(),
-        },
+        details=details,
     )
 
 
@@ -446,6 +466,7 @@ def update_asset_movement(
 
     net = body.net_amount if body.net_amount is not None else _compute_net_amount(body, gross)
 
+    before = audit_snapshot(m, _TRACKED_FIELDS)
     m.asset_id = asset.id
     m.type = body.type
     m.event_date = body.event_date
@@ -465,7 +486,8 @@ def update_asset_movement(
     m.updated_at = datetime.now(timezone.utc)
     m.updated_by = current_user.user_id
     db.flush()
-    _audit(db, current_user, "asset_movement.updated", m)
+    after = audit_snapshot(m, _TRACKED_FIELDS)
+    _audit(db, current_user, "asset_movement.updated", m, diff=audit_diff(before, after))
 
     return AssetMovementOut.from_orm(m, asset_name=asset.name, asset_ticker=asset.ticker)
 

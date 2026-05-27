@@ -838,6 +838,204 @@ const PROVENTOS_BY_YM = (() => {
   return m;
 })();
 
+/* =====================================================================
+ * SNAPSHOTS / FECHAMENTOS — apuração mensal
+ *
+ * Modelo mental:
+ *   - 1 snapshot por workspace × period_end_date
+ *   - period_end_date = último dia útil do mês (job pula fim de semana)
+ *   - status: "fechado" | "em_revisao" | "agendado"
+ *       fechado     = patrimônio congelado, dados completos
+ *       em_revisao  = job rodou, mas faltam inputs manuais (upload extrato,
+ *                     edit preço pra ativos sem API)
+ *       agendado    = ainda não rodou; mostra countdown
+ *   - sources: counts api_ok / api_failed / manual_pending / upload_pending
+ *
+ * Para a demo: hoje é 2026-05-24.
+ *   - 2024-06 .. 2026-03 → fechado
+ *   - 2026-04 → em_revisao (rodou no 2026-05-01, faltam 4 manuais)
+ *   - 2026-05 → agendado (próximo run: 2026-06-01 06h)
+ * =================================================================== */
+
+// last business day of a YM (skips weekends, ignores holidays — proto)
+function lastBusinessDay(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  let d = new Date(Date.UTC(y, m, 0)); // last day of month
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+// First business day of the FOLLOWING month — when the job is scheduled
+function firstBusinessDay(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  // ym refers to the month being closed; job runs on dia 1 of next month
+  let d = new Date(Date.UTC(y, m, 1));
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+const NOW_DATE = "2026-05-24";          // today, for demo
+const CURRENT_YM = "2026-05";           // month being closed soon
+const CLOSING_YM = "2026-04";           // most recent closing (em_revisao)
+
+// 24 months total wealth pattern (BRL, in thousands) — extends NETWORTH_12M
+// backward by 12 months. Most recent 12 stay = NETWORTH_12M.
+const NETWORTH_24M_BASE = [
+  2200, 2240, 2280, 2245, 2310, 2360, 2350, 2400, 2440, 2415, 2480, 2495,
+  ...NETWORTH_12M,
+];
+
+const SNAPSHOTS = (() => {
+  // Only include months <= CLOSING_YM (older 23 months are "fechado", CLOSING_YM is "em_revisao")
+  const monthsToBuild = PROVENTOS_MONTHS; // 24 months from PROVENTOS_MONTHS
+  const closingIdx = monthsToBuild.indexOf(CLOSING_YM);
+  const list = [];
+
+  monthsToBuild.forEach((ym, i) => {
+    if (i > closingIdx) return; // skip CURRENT_YM (not yet snapshotted)
+
+    const periodEnd = lastBusinessDay(ym);
+    const isClosing = ym === CLOSING_YM;
+    const status = isClosing ? "em_revisao" : "fechado";
+
+    const totalBRL = NETWORTH_24M_BASE[i] * 1000;
+    const fx = ptaxOf(ym);
+    const totalUSD = totalBRL / fx;
+
+    const proventos = (PROVENTOS_BY_YM[ym] || []).reduce(
+      (s, p) => s + p.net * p.fxRate, 0
+    );
+
+    const optPrem = OPTION_PREMIUMS_TAGGED
+      .filter(p => p.ym === ym)
+      .reduce((s, p) => s + p.net * (p.ccy === "USD" ? ptaxOf(ym) : 1), 0);
+
+    // Sources breakdown — counts of assets by data source state at close time
+    const apiAssets = ASSETS.filter(a => {
+      const src = (PRICE_META[a.id] || {}).source;
+      return src && src !== "manual";
+    }).length;
+    const manualAssets = ASSETS.filter(a => {
+      const src = (PRICE_META[a.id] || {}).source;
+      return src === "manual";
+    }).length;
+
+    // For em_revisao snapshot: 2 API failures + 4 manual pending (apto, vehic, fgts, btc precisam upload/edit)
+    const apiFailed = isClosing ? 2 : 0;
+    const apiOk = apiAssets - apiFailed;
+    const manualPending = isClosing ? 4 : 0;
+    const manualDone = manualAssets - manualPending;
+
+    // closed_at: a few days after period_end for fechado; null for em_revisao
+    const closedAt = isClosing
+      ? null
+      : (() => {
+          const d = new Date(periodEnd + "T00:00:00Z");
+          d.setUTCDate(d.getUTCDate() + 1);
+          while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+            d.setUTCDate(d.getUTCDate() + 1);
+          }
+          return d.toISOString().slice(0, 10);
+        })();
+
+    const closedBy = isClosing ? null : (i % 3 === 0 ? "daniel.ambrosio@gmail.com" : "auto-job");
+
+    list.push({
+      id: `snap-${ym}`,
+      ym,
+      period_end: periodEnd,
+      status,
+      total_brl: totalBRL,
+      total_usd: totalUSD,
+      fx_rate: fx,
+      proventos_brl: proventos,
+      option_premium_brl: optPrem,
+      mom_delta: i > 0 ? (totalBRL - NETWORTH_24M_BASE[i - 1] * 1000) / (NETWORTH_24M_BASE[i - 1] * 1000) : 0,
+      mom_delta_brl: i > 0 ? totalBRL - NETWORTH_24M_BASE[i - 1] * 1000 : 0,
+      assets_count: apiAssets + manualAssets,
+      sources: { api_ok: apiOk, api_failed: apiFailed, manual_done: manualDone, manual_pending: manualPending, upload_pending: isClosing ? 1 : 0 },
+      closed_at: closedAt,
+      closed_by: closedBy,
+      source_label: i % 3 === 0 ? "MANUAL" : "AUTO",
+    });
+  });
+
+  return list;
+})();
+
+const snapshotByYm = (() => {
+  const m = {};
+  SNAPSHOTS.forEach(s => { m[s.ym] = s; });
+  return m;
+})();
+
+// Mock pending assets list for the em_revisao snapshot
+const PENDING_ASSETS_FOR_REVIEW = (() => {
+  // 2 API failures + 4 manual pending
+  const apiFails = ["qqq", "voo"]; // simulating API outage on US ETFs
+  const manualPend = ["apto", "veic", "fgts", "btc"];
+  return [
+    ...apiFails.map(id => ({ id, reason: "API yahoo timeout", action_type: "refresh", source: "yahoo" })),
+    ...manualPend.map(id => {
+      const meta = PRICE_META[id] || {};
+      return {
+        id,
+        reason: id === "btc" ? "Sem cotação automática para alocação satélite" :
+                id === "apto" ? "Imóvel — sem fonte automatizada" :
+                id === "veic" ? "Veículo — preço FIPE manual" :
+                "FGTS — saldo de extrato bancário",
+        action_type: id === "btc" ? "edit" : "upload",
+        source: meta.source || "manual",
+      };
+    }),
+  ];
+})();
+
+// Next scheduled run = first business day of (CURRENT_YM + 1 month)
+const NEXT_AUTO_RUN_DATE = firstBusinessDay(CURRENT_YM);
+const NEXT_AUTO_RUN_PERIOD_END = lastBusinessDay(CURRENT_YM);
+
+function statusMeta(status) {
+  if (status === "fechado")
+    return { label: "Fechado", color: "emerald", icon: "lock", bg: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" };
+  if (status === "em_revisao")
+    return { label: "Em revisão", color: "amber", icon: "alert-triangle", bg: "bg-amber-500/10 text-amber-400 border-amber-500/20" };
+  return { label: "Agendado", color: "indigo", icon: "clock", bg: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20" };
+}
+
+function daysBetween(aISO, bISO) {
+  const a = new Date(aISO + "T00:00:00Z");
+  const b = new Date(bISO + "T00:00:00Z");
+  return Math.round((b - a) / 86400000);
+}
+
+function ymLabelLong(ym) {
+  const [y, m] = ym.split("-");
+  const FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  return `${FULL[parseInt(m, 10) - 1]} / ${y}`;
+}
+
+function ymLabelShort(ym) {
+  const [y, m] = ym.split("-");
+  const SHORT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+  return `${SHORT[parseInt(m, 10) - 1]}/${y.slice(2)}`;
+}
+
+function fmtDateBR(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function dayOfWeekPT(iso) {
+  const d = new Date(iso + "T12:00:00Z");
+  return ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][d.getUTCDay()];
+}
+
 // Build aggregated chart data.
 //  params: { months, breakdown, currency, includeSynthetic }
 //  - months: subset of PROVENTOS_MONTHS to include
@@ -1066,6 +1264,15 @@ const ICONS = {
   "refresh":         "M21 12a9 9 0 0 1-15 6.7L3 16M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M3 21v-5h5",
   "alert-triangle":  "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0M12 9v4M12 17h.01",
   "edit-2":          "M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z",
+  "calendar-check":  "M3 5h18v16H3zM3 9h18M8 3v4M16 3v4M9 14l2 2 4-4",
+  "clock":           "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 7v5l3 2",
+  "lock":            "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
+  "lock-open":       "M5 11h14v10H5zM8 11V7a4 4 0 0 1 7.46-2",
+  "play":            "M5 3l14 9-14 9z",
+  "upload-cloud":    "M16 16l-4-4-4 4M12 12v9M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3",
+  "check-circle":    "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M8 12l3 3 5-6",
+  "history":         "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2",
+  "rotate-ccw":      "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5",
 };
 
 function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
@@ -1479,6 +1686,9 @@ const NAV = [
 
   { kind: "section", label: "Investimentos" },
   { kind: "item", label: "Patrimônio",     href: "#/patrimonio",     icon: "trending-up" },
+  { kind: "item", label: "Fechamentos",    href: "#/fechamentos",    icon: "calendar-check",
+    badge: SNAPSHOTS.some(s => s.status === "em_revisao") ? "!" : null,
+    badgeIntent: "warn" },
   { kind: "item", label: "Onde investir",  href: "#/onde-investir",  icon: "target" },
   { kind: "item", label: "Ativos",         href: "#/ativos",         icon: "line-chart", badge: ASSETS.length.toString() },
   { kind: "item", label: "Lançamentos",    href: "#/lancamentos",    icon: "arrow-down-up", badge: MOVEMENTS.length.toString() },
@@ -1541,7 +1751,8 @@ function Sidebar({ route }) {
             (route.startsWith("/cartao")  && n.href === "#/cartoes")       ||
             (route === "/instituicoes"    && n.href === "#/instituicoes")  ||
             (route === "/contas"          && n.href === "#/contas")        ||
-            (route === "/cartoes"         && n.href === "#/cartoes");
+            (route === "/cartoes"         && n.href === "#/cartoes")       ||
+            (route.startsWith("/fechamento") && n.href === "#/fechamentos");
           return (
             <a key={i} href={n.href}
               className={`group flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[13px] mb-0.5 transition-colors
@@ -1551,8 +1762,10 @@ function Sidebar({ route }) {
               <Icon name={n.icon} className="w-4 h-4" strokeWidth={active ? 2.2 : 1.6} />
               <span className="flex-1">{n.label}</span>
               {n.badge && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-md tnum
-                  ${active ? "bg-indigo-500/20 text-indigo-300" : "bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400"}`}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-md tnum font-semibold
+                  ${n.badgeIntent === "warn"
+                    ? "bg-amber-500/20 text-amber-400"
+                    : (active ? "bg-indigo-500/20 text-indigo-300" : "bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400")}`}>
                   {n.badge}
                 </span>
               )}
@@ -1846,6 +2059,7 @@ function NovoButton({ route }) {
 
   const items = [
     { id: "movement",     label: "Lançamento",     desc: "Compra, venda, bonificação…",          icon: "arrow-down-up", group: "Investimentos" },
+    { id: "option",       label: "Opção",          desc: "PUT/CALL: cria ativo + lança abertura", icon: "sparkles",     group: "Investimentos" },
     { id: "distribution", label: "Provento",       desc: "Dividendo, juros, JCP, aluguel",       icon: "coins",         group: "Investimentos" },
     { id: "transaction",  label: "Movimentação",   desc: "Cash flow em conta corrente",          icon: "wallet",        group: "Caixa & Cartões" },
     { id: "card-tx",      label: "Lançamento de cartão", desc: "Compra na fatura aberta",        icon: "credit-card",   group: "Caixa & Cartões" },
@@ -1902,7 +2116,7 @@ function NovoButton({ route }) {
   );
 }
 function itemShortcut(id) {
-  return ({ movement: "L", distribution: "P", transaction: "M", "card-tx": "F", asset: "A", "new-account": "C", "new-card": "K" })[id] || "";
+  return ({ movement: "L", option: "O", distribution: "P", transaction: "M", "card-tx": "F", asset: "A", "new-account": "C", "new-card": "K" })[id] || "";
 }
 
 function TopBar({ breadcrumbs, route }) {
@@ -2132,27 +2346,29 @@ const ComposerContext = createContext({ open: () => {}, close: () => {} });
 const useComposer = () => useContext(ComposerContext);
 
 function ComposerProvider({ children }) {
-  const [state, setState] = useState({ type: null, prefill: null });
+  const [state, setState] = useState({ type: null, prefill: null, editing: false });
   const value = useMemo(() => ({
     type: state.type,
-    open:  (type, prefill = {}) => setState({ type, prefill }),
-    close: () => setState({ type: null, prefill: null }),
+    open:  (type, prefill = {}, editing = false) => setState({ type, prefill, editing }),
+    edit:  (type, prefill = {}) => setState({ type, prefill, editing: true }),
+    close: () => setState({ type: null, prefill: null, editing: false }),
   }), [state.type]);
   return (
     <ComposerContext.Provider value={value}>
       {children}
-      {state.type && <ComposerHost type={state.type} prefill={state.prefill} onClose={value.close}/>}
+      {state.type && <ComposerHost type={state.type} prefill={state.prefill} editing={state.editing} onClose={value.close}/>}
     </ComposerContext.Provider>
   );
 }
 
-function ComposerHost({ type, prefill, onClose }) {
+function ComposerHost({ type, prefill, editing, onClose }) {
   return (
     <Modal onClose={onClose}>
-      {type === "movement"     && <MovementComposer    prefill={prefill} onClose={onClose}/>}
-      {type === "distribution" && <DistributionComposer prefill={prefill} onClose={onClose}/>}
-      {type === "transaction"  && <TransactionComposer prefill={prefill} onClose={onClose}/>}
-      {type === "card-tx"      && <CardTxComposer      prefill={prefill} onClose={onClose}/>}
+      {type === "movement"     && <MovementComposer    prefill={prefill} editing={editing} onClose={onClose}/>}
+      {type === "option"       && <OptionComposer      prefill={prefill} editing={editing} onClose={onClose}/>}
+      {type === "distribution" && <DistributionComposer prefill={prefill} editing={editing} onClose={onClose}/>}
+      {type === "transaction"  && <TransactionComposer prefill={prefill} editing={editing} onClose={onClose}/>}
+      {type === "card-tx"      && <CardTxComposer      prefill={prefill} editing={editing} onClose={onClose}/>}
       {type === "asset"       && <NewAssetComposer prefill={prefill} onClose={onClose}/>}
       {type === "new-account" && <NewAccountComposer prefill={prefill} onClose={onClose}/>}
       {type === "new-card"    && <NewCardComposer prefill={prefill} onClose={onClose}/>}
@@ -2307,8 +2523,36 @@ function Dashboard() {
   const fiOutros = fisSorted.slice(5);
   const fiOutrosSum = fiOutros.reduce((s, x) => s + x.value, 0);
 
+  // CTA banner — visible when there's a closing in review
+  const pendingClosing = SNAPSHOTS.find(s => s.status === "em_revisao");
+
   return (
     <div className="space-y-6">
+      {/* Fechamento em revisão — CTA discreto */}
+      {pendingClosing && (
+        <a href={`#/fechamento/${pendingClosing.ym}`}
+          className="block rounded-xl border border-amber-500/30 bg-amber-500/[0.06] hover:bg-amber-500/[0.10] transition-colors p-3 group">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+              <Icon name="calendar-check" className="w-4 h-4 text-amber-400"/>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium">
+                Fechamento de {ymLabelLong(pendingClosing.ym)} aguardando
+                <span className="ml-2 text-[11px] font-normal text-amber-400">
+                  {pendingClosing.sources.api_failed + pendingClosing.sources.manual_pending + pendingClosing.sources.upload_pending} pendência{(pendingClosing.sources.api_failed + pendingClosing.sources.manual_pending + pendingClosing.sources.upload_pending) > 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                Posições congeladas em {fmtDateBR(pendingClosing.period_end)} · faltam uploads e edições manuais
+              </div>
+            </div>
+            <span className="text-[11px] text-amber-400 font-medium inline-flex items-center gap-1 group-hover:gap-2 transition-all">
+              Resolver <Icon name="arrow-right" className="w-3.5 h-3.5"/>
+            </span>
+          </div>
+        </a>
+      )}
       {/* Hero */}
       <Card padding="p-0" className="overflow-hidden">
         <div className="grid grid-cols-12 gap-0">
@@ -2331,14 +2575,17 @@ function Dashboard() {
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Investimentos</div>
                 <div className="text-sm font-semibold tnum money text-emerald-400">+ {fmtBRL(totalInvest, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">+ {fmtUSD(totalInvest / PTAX, { compact: true })}</div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Caixa</div>
                 <div className="text-sm font-semibold tnum money text-emerald-400">+ {fmtBRL(cashBRL, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">+ {fmtUSD(cashBRL / PTAX, { compact: true })}</div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Cartões abertos</div>
                 <div className="text-sm font-semibold tnum money text-red-400">− {fmtBRL(cardDebtBRL, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">− {fmtUSD(cardDebtBRL / PTAX, { compact: true })}</div>
               </div>
             </div>
             <div className="mt-5 flex items-center gap-4">
@@ -3950,9 +4197,69 @@ function NotesAttachments({ meta, label = "Notas & documentos" }) {
   );
 }
 
+/* Composer-grade field: notes textarea + attachments list + dropzone.
+   Used inside the four composers (MovementComposer, DistributionComposer,
+   TransactionComposer, CardTxComposer) so the create flow has the same
+   affordances as the detail panels' NotesAttachments. Files state is
+   local to the composer (prototype doesn't persist). */
+function NotesAttachmentsField({ notes, setNotes, files = [], onFilesChange, placeholder }) {
+  const [localFiles, setLocalFiles] = useState(files);
+  useEffect(() => { onFilesChange && onFilesChange(localFiles); }, [localFiles]);
+  const removeAt = (idx) => setLocalFiles(localFiles.filter((_, i) => i !== idx));
+  return (
+    <div className="space-y-3">
+      <Field label="Notas & anexos" hint="opcional · ⌘V cola imagem · arraste PDF">
+        <textarea
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+          rows={2}
+          placeholder={placeholder || "ex: tese, motivo da compra, link pra notícia…"}
+          className={inputClsArea}
+        />
+      </Field>
+      {localFiles.length > 0 && (
+        <div className="space-y-0.5">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium px-0.5">Anexos · {localFiles.length}</div>
+          {localFiles.map((f, i) => (
+            <div key={i} className="group flex items-center gap-3 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-800">
+              <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0
+                ${f.kind === "image" ? "bg-blue-500/15 text-blue-400" : "bg-red-500/15 text-red-400"}`}>
+                <Icon name={f.kind === "image" ? "image" : "file-text"} className="w-3.5 h-3.5"/>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[12px] font-medium truncate">{f.name}</div>
+                <div className="text-[10px] text-gray-500 tnum">{f.size}</div>
+              </div>
+              <button
+                onClick={() => removeAt(i)}
+                className="w-6 h-6 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-red-400 hover:bg-red-500/10"
+                title="Remover">
+                <Icon name="trash" className="w-3 h-3"/>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="p-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-700 text-center hover:border-indigo-500/50 transition-colors cursor-pointer"
+        onClick={() => {
+          // Mock: simulate a picked file in prototype
+          setLocalFiles([...localFiles, { name: "documento.pdf", size: "248 KB", kind: "pdf" }]);
+        }}>
+        <Icon name="paperclip" className="w-4 h-4 mx-auto text-gray-500"/>
+        <p className="text-[11px] text-gray-500 mt-1.5">
+          Cole com <kbd className="px-1 py-0.5 mx-0.5 rounded bg-gray-200 dark:bg-gray-800 text-[9px] font-mono">⌘V</kbd>,
+          arraste ou{" "}
+          <span className="text-indigo-400 hover:text-indigo-300 underline-offset-2 hover:underline">selecione um arquivo</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Open options card (rendered inside AtivoDetailPage of an underlying) ---------- */
 
 function OpenOptionsCard({ underlyingId }) {
+  const composer = useComposer();
   const options = openOptionsOnAsset(underlyingId);
   if (options.length === 0) return null;
   const underlying = assetById[underlyingId];
@@ -3987,7 +4294,9 @@ function OpenOptionsCard({ underlyingId }) {
       <SectionTitle action={
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-gray-500">Prêmio total recebido <span className="tnum money font-medium text-emerald-400">{fmtBRL(totalPremium, { sign: true, compact: true })}</span></span>
-          <button className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+          <button
+            onClick={() => composer.open("option", { underlyingId: underlying.id })}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
             <Icon name="plus" className="w-3 h-3"/> Nova opção
           </button>
         </div>
@@ -4450,8 +4759,8 @@ function AtivoDetailPage({ assetId }) {
               : ""
         }
       >
-        {selected?.type === "movement" && <LancamentoDetailPanel mvId={selected.id}/>}
-        {selected?.type === "distribution" && <DistributionDetailPanel distId={selected.id}/>}
+        {selected?.type === "movement" && <LancamentoDetailPanel mvId={selected.id} onClose={() => setSelected(null)}/>}
+        {selected?.type === "distribution" && <DistributionDetailPanel distId={selected.id} onClose={() => setSelected(null)}/>}
       </SidePanel>
     </div>
   );
@@ -4459,13 +4768,29 @@ function AtivoDetailPage({ assetId }) {
 
 /* ---------- Lançamento detail panel (slide-over with notes + files) ---------- */
 
-function LancamentoDetailPanel({ mvId }) {
+function LancamentoDetailPanel({ mvId, onClose }) {
+  const composer = useComposer();
   const m = mvById[mvId];
   if (!m) return null;
   const a = assetById[m.asset];
   const fi = fiById[assetFi(a)];
   const acc = accById[a.account];
   const meta = MOVEMENT_NOTES[m.id] || { notes: "", files: [] };
+
+  const handleEdit = () => {
+    composer.edit("movement", {
+      type: m.type,
+      date: m.d.slice(0, 10),
+      asset: m.asset,
+      qty: m.qty != null ? String(m.qty) : "",
+      price: m.price != null ? String(m.price) : "",
+      fee: m.fee ? String(m.fee) : "",
+      tax: m.tax ? String(m.tax) : "",
+      notes: meta.notes,
+      files: meta.files,
+    });
+    onClose?.();
+  };
 
   const fields = [
     { label: "Data evento",     value: fmtDate(m.d) },
@@ -4526,6 +4851,9 @@ function LancamentoDetailPanel({ mvId }) {
           <Icon name="arrow-up-right" className="w-3.5 h-3.5"/> Ver página do ativo
         </a>
         <div className="flex-1"/>
+        <button onClick={handleEdit} className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+          <Icon name="edit-2" className="w-3.5 h-3.5"/> Editar
+        </button>
         <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-red-400 hover:bg-red-500/10 transition-colors">
           <Icon name="trash" className="w-3.5 h-3.5"/> Inativar
         </button>
@@ -4536,13 +4864,29 @@ function LancamentoDetailPanel({ mvId }) {
 
 /* ---------- Distribution detail panel (slide-over) ---------- */
 
-function DistributionDetailPanel({ distId }) {
+function DistributionDetailPanel({ distId, onClose }) {
+  const composer = useComposer();
   const d = distById[distId];
   if (!d) return null;
   const a = d.asset ? assetById[d.asset] : null;
   const fi = fiById[d.fi];
   const acc = a ? accById[a.account] : null;
   const meta = DISTRIBUTION_NOTES[d.id] || { notes: "", files: [] };
+
+  const handleEdit = () => {
+    composer.edit("distribution", {
+      type: d.type,
+      date: d.d.slice(0, 10),
+      fi: d.fi,
+      asset: d.asset || "",
+      gross: String(d.gross),
+      tax: d.tax ? String(d.tax) : "",
+      ccy: d.ccy,
+      notes: meta.notes,
+      files: meta.files,
+    });
+    onClose?.();
+  };
 
   const fields = [
     { label: "Data evento",  raw: <span className="tnum">{fmtDate(d.d)}</span> },
@@ -4609,6 +4953,9 @@ function DistributionDetailPanel({ distId }) {
           </a>
         )}
         <div className="flex-1"/>
+        <button onClick={handleEdit} className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+          <Icon name="edit-2" className="w-3.5 h-3.5"/> Editar
+        </button>
         <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-red-400 hover:bg-red-500/10 transition-colors">
           <Icon name="trash" className="w-3.5 h-3.5"/> Inativar
         </button>
@@ -4753,7 +5100,7 @@ function LancamentosPage() {
         subtitle="Lançamento"
         title={selected ? `${typeMovementLabel(mvById[selected]?.type)} · ${assetById[mvById[selected]?.asset]?.ticker || assetById[mvById[selected]?.asset]?.name}` : ""}
       >
-        {selected && <LancamentoDetailPanel mvId={selected}/>}
+        {selected && <LancamentoDetailPanel mvId={selected} onClose={() => setSelected(null)}/>}
       </SidePanel>
     </div>
   );
@@ -5037,7 +5384,7 @@ function ProventosPage() {
         subtitle="Provento"
         title={selected ? `${typeDistributionLabel(distById[selected]?.type)} · ${distById[selected]?.asset ? (assetById[distById[selected]?.asset]?.ticker || assetById[distById[selected]?.asset]?.name) : "Sem ticker"}` : ""}
       >
-        {selected && <DistributionDetailPanel distId={selected}/>}
+        {selected && <DistributionDetailPanel distId={selected} onClose={() => setSelected(null)}/>}
       </SidePanel>
     </div>
   );
@@ -5213,7 +5560,15 @@ const MV_TYPE_CFG = {
   FULL_REDEMPTION: { label: "Resgate Total", sign:  1, qty: true,  price: true,  fee: false, tax: false, hint: "vencimento ou liquidação" },
 };
 
-function MovementComposer({ prefill = {}, onClose }) {
+/* OPTION lifecycle — só aparece quando o asset selecionado é uma opção */
+const MV_OPTION_CFG = {
+  SELL_TO_CLOSE: { label: "Vender / encerrar",   sign:  1, qty: true,  price: true,  fee: true,  tax: false, hint: "recompra opção vendida" },
+  BUY_TO_CLOSE:  { label: "Comprar / encerrar",  sign: -1, qty: true,  price: true,  fee: true,  tax: false, hint: "encerra opção comprada" },
+  EXERCISED:     { label: "Exercida",            sign:  0, qty: true,  price: false, fee: false, tax: false, hint: "strike atingido · transfere ações" },
+  EXPIRED:       { label: "Virou pó",            sign:  0, qty: false, price: false, fee: false, tax: false, hint: "vencimento sem exercício" },
+};
+
+function MovementComposer({ prefill = {}, editing = false, onClose }) {
   const [type,    setType]    = useState(prefill.type    || "BUY");
   const [date,    setDate]    = useState(prefill.date    || TODAY_ISO);
   const [assetId, setAssetId] = useState(prefill.asset   || "");
@@ -5222,13 +5577,22 @@ function MovementComposer({ prefill = {}, onClose }) {
   const [fee,     setFee]     = useState(prefill.fee     || "");
   const [tax,     setTax]     = useState(prefill.tax     || "");
   const [notes,   setNotes]   = useState(prefill.notes   || "");
+  const [files,   setFiles]   = useState(prefill.files   || []);
 
-  const cfg = MV_TYPE_CFG[type];
   const a = assetId ? assetById[assetId] : null;
+  const isOption = a?.klass === "OPTION";
+  const TYPE_CFG = isOption ? MV_OPTION_CFG : MV_TYPE_CFG;
+  // Reset to a valid type for the current config if asset class changes
+  useEffect(() => {
+    if (!a) return;
+    if (!TYPE_CFG[type]) setType(isOption ? "SELL_TO_CLOSE" : "BUY");
+  }, [a?.klass]);
+  const cfg = TYPE_CFG[type] || (isOption ? MV_OPTION_CFG.SELL_TO_CLOSE : MV_TYPE_CFG.BUY);
   const ccy = a?.ccy || "BRL";
   const fxRate = ccy === "USD" ? PTAX : 1.0;
 
   const qN = num(qty), pN = num(price), feeN = num(fee), tN = num(tax);
+  const contractMult = isOption ? (a.contract_size || 100) : 1;
   let net = 0;
   if (type === "BUY")             net = -(qN * pN + feeN);
   else if (type === "SELL")       net =   qN * pN - feeN;
@@ -5236,11 +5600,18 @@ function MovementComposer({ prefill = {}, onClose }) {
   else if (type === "SUBSCRIPTION")    net = -(qN * pN + feeN);
   else if (type === "COME_COTAS")      net = -tN;
   else if (type === "FULL_REDEMPTION") net =   qN * pN;
+  // OPTION lifecycle
+  else if (type === "SELL_TO_CLOSE") net =   qN * pN * contractMult - feeN;
+  else if (type === "BUY_TO_CLOSE")  net = -(qN * pN * contractMult + feeN);
+  else if (type === "EXERCISED")     net =   0;  // cash effect rolls to underlying movement
+  else if (type === "EXPIRED")       net =   0;  // premium already earned (or paid) at SELL_OPEN
 
   const currentQty = a?.qty || 0;
   let newQty = currentQty;
   if (type === "BUY" || type === "BONUS" || type === "SUBSCRIPTION") newQty = currentQty + qN;
   else if (type === "SELL" || type === "FULL_REDEMPTION")            newQty = currentQty - qN;
+  else if (type === "SELL_TO_CLOSE" || type === "BUY_TO_CLOSE")      newQty = Math.max(0, currentQty - qN);
+  else if (type === "EXERCISED" || type === "EXPIRED")               newQty = 0;
 
   const acc = a ? accById[a.account] : null;
   const fi  = a ? fiById[assetFi(a)] : null;
@@ -5250,12 +5621,15 @@ function MovementComposer({ prefill = {}, onClose }) {
 
   return (
     <Fragment>
-      <ModalHeader title="Novo Lançamento" subtitle="Movimento de posição em ativo" onClose={onClose}/>
+      <ModalHeader
+        title={editing ? "Editar Lançamento" : "Novo Lançamento"}
+        subtitle={editing ? "Atualiza os campos do movimento" : "Movimento de posição em ativo"}
+        onClose={onClose}/>
       <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
-        {/* Type picker */}
-        <Field label="Tipo">
-          <div className="grid grid-cols-3 gap-2">
-            {Object.entries(MV_TYPE_CFG).map(([id, c]) => (
+        {/* Type picker — dinâmico baseado na classe do asset */}
+        <Field label={isOption ? "Tipo · lifecycle de opção" : "Tipo"}>
+          <div className={`grid gap-2 ${isOption ? "grid-cols-2" : "grid-cols-3"}`}>
+            {Object.entries(TYPE_CFG).map(([id, c]) => (
               <button key={id} onClick={() => setType(id)}
                 className={`px-3 py-2.5 rounded-lg text-left border transition-colors
                   ${type === id
@@ -5266,6 +5640,12 @@ function MovementComposer({ prefill = {}, onClose }) {
               </button>
             ))}
           </div>
+          {isOption && (
+            <div className="mt-2 text-[11px] text-gray-500 px-1">
+              <Icon name="sparkles" className="w-3 h-3 inline -mt-0.5 text-indigo-400"/> Asset selecionado é opção — picker mudou pro lifecycle de opções.
+              Para criar uma <strong>nova</strong> opção, use <kbd className="px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-800 text-[10px] font-mono">+ Novo → Opção</kbd>.
+            </div>
+          )}
         </Field>
 
         {/* Form fields */}
@@ -5339,13 +5719,257 @@ function MovementComposer({ prefill = {}, onClose }) {
 
         {/* Notes */}
         <div className="mt-5">
-          <Field label="Notas" hint="opcional · ⌘V cola imagem">
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="ex: tese, motivo da compra, link pra notícia…" className={inputClsArea}/>
-          </Field>
+          <NotesAttachmentsField
+            notes={notes}
+            setNotes={setNotes}
+            files={files}
+            onFilesChange={setFiles}
+            placeholder="ex: tese, motivo da compra, link pra notícia…"
+          />
         </div>
       </div>
-      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}
+      <ModalFooter
+        onCancel={onClose} onSave={onClose}
+        saveDisabled={!valid}
+        saveLabel={editing ? "Salvar alterações" : "Salvar"}
         leftSlot={<span className="text-[11px] text-gray-500"><kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-200 dark:bg-gray-800 text-[10px] font-mono">⌘↵</kbd> salvar · <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-200 dark:bg-gray-800 text-[10px] font-mono">esc</kbd> fechar</span>}
+      />
+    </Fragment>
+  );
+}
+
+/* ---------- OptionComposer — compound: cria Asset OPTION + abertura ---------- */
+
+function parseBROptionTicker(t) {
+  // ITUBR364 → { underlying_guess: "ITUB", type: "PUT" (R=PUT, X/A=CALL in B3 codes),
+  //              strike_suggested: 36.4 (last digits / 10) }
+  // ITUBE415 → CALL etc.
+  // This is a deterministic hint, not a parser. Real parser comes from backend.
+  const m = String(t || "").toUpperCase().match(/^([A-Z]{4})([A-Z])(\d{2,4})$/);
+  if (!m) return null;
+  const [, underlying_guess, letter, digits] = m;
+  // B3 series letter convention (simplified): A-L = CALL, M-X = PUT
+  const isPut = letter >= "M";
+  const strike = parseInt(digits, 10) / (digits.length === 4 ? 100 : 10);
+  return { underlying_guess, type: isPut ? "PUT" : "CALL", strike };
+}
+
+function OptionComposer({ prefill = {}, editing = false, onClose }) {
+  const [underlyingId, setUnderlyingId] = useState(prefill.underlyingId || "");
+  const [ticker,       setTicker]       = useState(prefill.ticker || "");
+  const [optionType,   setOptionType]   = useState(prefill.optionType || "PUT");
+  const [strike,       setStrike]       = useState(prefill.strike || "");
+  const [expiration,   setExpiration]   = useState(prefill.expiration || "");
+  const [contractSize, setContractSize] = useState(prefill.contractSize || "100");
+  const [movementType, setMovementType] = useState(prefill.movementType || "SELL_OPEN");
+  const [movementDate, setMovementDate] = useState(prefill.movementDate || TODAY_ISO);
+  const [qty,          setQty]          = useState(prefill.qty || "");
+  const [pricePerShare,setPricePerShare]= useState(prefill.pricePerShare || "");
+  const [fee,          setFee]          = useState(prefill.fee || "");
+  const [notes,        setNotes]        = useState(prefill.notes || "");
+  const [files,        setFiles]        = useState(prefill.files || []);
+  const [savedToast,   setSavedToast]   = useState(null);
+
+  const underlyingFixed = !!prefill.underlyingId;     // veio do AssetDetail, esconde picker
+  const eligibleUnderlying = ASSETS.filter(a => ["STOCK", "REIT", "ETF"].includes(a.klass) && a.country === "BR");
+  const u = underlyingId ? assetById[underlyingId] : null;
+
+  // Auto-parse ticker → suggest strike + type
+  useEffect(() => {
+    if (!ticker) return;
+    const parsed = parseBROptionTicker(ticker);
+    if (parsed) {
+      setOptionType(parsed.type);
+      if (!strike) setStrike(parsed.strike.toFixed(2).replace(".", ","));
+    }
+  }, [ticker]);
+
+  const qN = num(qty), pN = num(pricePerShare), sN = num(strike), feeN = num(fee), csN = num(contractSize) || 100;
+  const totalShares = qN * csN;
+  const premium = qN * pN * csN;          // SELL_OPEN: credit; BUY_TO_OPEN: debit
+  const isCredit = movementType === "SELL_OPEN";
+  const cashEffect = isCredit ? premium - feeN : -(premium + feeN);
+
+  const valid = !!u && ticker.trim().length >= 5 && sN > 0 && !!expiration && qN > 0 && pN > 0;
+
+  const handleSaveAndNext = () => {
+    setSavedToast(`Opção ${ticker.toUpperCase()} criada · ${isCredit ? "+" : "−"}${fmtBRL(Math.abs(cashEffect), { compact: true })}`);
+    setTimeout(() => setSavedToast(null), 2400);
+    // Limpa só ticker/strike/expiry/qty/price/fee/notes/files — mantém underlying + optionType
+    setTicker(""); setStrike(""); setExpiration(""); setQty(""); setPricePerShare(""); setFee(""); setNotes(""); setFiles([]);
+  };
+
+  return (
+    <Fragment>
+      <ModalHeader
+        title={editing ? "Editar Opção" : "Nova Opção"}
+        subtitle={editing ? "Atualiza o ativo de opção e/ou o movimento de abertura" : "Cria a opção e lança a abertura (compound)"}
+        onClose={onClose}/>
+      <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
+        {savedToast && (
+          <div className="mb-4 px-3 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 text-[12px] flex items-center gap-2">
+            <Icon name="check-circle" className="w-4 h-4"/>
+            {savedToast}
+          </div>
+        )}
+
+        {/* Underlying picker — só quando não veio por prop */}
+        {!underlyingFixed && (
+          <Field label="Underlying" hint="ativo BR · STOCK / REIT / ETF">
+            <select value={underlyingId} onChange={e => setUnderlyingId(e.target.value)} className={inputCls}>
+              <option value="">Selecione…</option>
+              {eligibleUnderlying
+                .sort((a, b) => (a.ticker || a.name).localeCompare(b.ticker || b.name))
+                .map(a => (
+                  <option key={a.id} value={a.id}>
+                    {a.ticker} · {a.name} (R$ {a.price.toFixed(2)})
+                  </option>
+                ))}
+            </select>
+          </Field>
+        )}
+
+        {underlyingFixed && u && (
+          <div className="mb-4 px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-1 h-6 rounded-full" style={{ background: KLASS[u.klass].color }}/>
+              <span className="font-mono text-[13px] font-medium">{u.ticker}</span>
+              <CountryFlag country={u.country}/>
+              <span className="text-[11px] text-gray-500">cotação atual <span className="tnum money">R$ {u.price.toFixed(2)}</span></span>
+            </div>
+            <span className="text-[10px] uppercase tracking-wider text-gray-500">underlying</span>
+          </div>
+        )}
+
+        {/* Ticker + Type + Strike + Expiration */}
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Ticker da opção" hint="ex: ITUBR364 · auto-detecta">
+            <input
+              value={ticker}
+              onChange={e => setTicker(e.target.value.toUpperCase())}
+              placeholder="ITUBR364"
+              className={inputCls + " font-mono"}
+            />
+          </Field>
+          <Field label="Tipo">
+            <div className="grid grid-cols-2 gap-2">
+              {["PUT", "CALL"].map(t => (
+                <button key={t} onClick={() => setOptionType(t)}
+                  className={`h-10 rounded-lg text-[12px] font-medium border transition-colors
+                    ${optionType === t
+                      ? (t === "PUT" ? "bg-blue-500/15 border-blue-500 text-blue-400" : "bg-violet-500/15 border-violet-500 text-violet-300")
+                      : "bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700 text-gray-500"}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Strike · R$">
+            <input value={strike} onChange={e => setStrike(e.target.value)} placeholder="ex: 36,40" className={inputCls}/>
+          </Field>
+          <Field label="Vencimento">
+            <input type="date" value={expiration} onChange={e => setExpiration(e.target.value)} className={inputCls}/>
+          </Field>
+          <Field label="Contract size">
+            <input value={contractSize} onChange={e => setContractSize(e.target.value)} placeholder="100" className={inputCls + " tnum"}/>
+          </Field>
+          {/* ITM/OTM hint inline */}
+          {u && sN > 0 && (
+            <div className="self-end">
+              {(optionType === "PUT" ? u.price < sN : u.price > sN) ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] bg-amber-500/15 text-amber-400">
+                  <Icon name="alert-triangle" className="w-3 h-3"/> ITM · prov. exercício
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] bg-emerald-500/15 text-emerald-400">
+                  <Icon name="check" className="w-3 h-3"/> OTM · prov. virar pó
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Movement (open position) */}
+        <div className="mt-6 pt-5 border-t border-gray-200 dark:border-gray-800">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-gray-500 mb-3">Lançamento de abertura</div>
+          <Field label="Tipo de abertura">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: "SELL_OPEN",   label: "Vender (SELL_OPEN)",  hint: "recebe prêmio · crédito em conta" },
+                { id: "BUY_TO_OPEN", label: "Comprar (BUY_TO_OPEN)", hint: "paga prêmio · débito em conta" },
+              ].map(opt => (
+                <button key={opt.id} onClick={() => setMovementType(opt.id)}
+                  className={`px-3 py-2.5 rounded-lg text-left border transition-colors
+                    ${movementType === opt.id
+                      ? "bg-indigo-500/15 border-indigo-500"
+                      : "bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700"}`}>
+                  <div className={`text-[12px] font-semibold ${movementType === opt.id ? "text-indigo-700 dark:text-indigo-300" : "text-gray-700 dark:text-gray-300"}`}>{opt.label}</div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">{opt.hint}</div>
+                </button>
+              ))}
+            </div>
+          </Field>
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <Field label="Data">
+              <input type="date" value={movementDate} onChange={e => setMovementDate(e.target.value)} className={inputCls}/>
+            </Field>
+            <Field label="Quantidade · contratos">
+              <input value={qty} onChange={e => setQty(e.target.value)} placeholder="ex: 1" className={inputCls + " tnum"}/>
+            </Field>
+            <Field label="Prêmio · R$/ação">
+              <input value={pricePerShare} onChange={e => setPricePerShare(e.target.value)} placeholder="ex: 0,42" className={inputCls + " tnum"}/>
+            </Field>
+            <Field label="Taxa · opcional">
+              <input value={fee} onChange={e => setFee(e.target.value)} placeholder="ex: 1,50" className={inputCls + " tnum"}/>
+            </Field>
+          </div>
+        </div>
+
+        {/* Preview */}
+        {u && qN > 0 && pN > 0 && (
+          <div className="mt-5">
+            <PreviewBlock>
+              <PreviewRow label={isCredit ? "Prêmio recebido" : "Prêmio pago"} value={fmtBRL(Math.abs(premium), { compact: true })} valueClass={`text-base ${isCredit ? "text-emerald-400" : "text-red-400"}`}/>
+              <div className="flex items-center justify-between text-[12px] text-gray-400">
+                <span className="text-gray-500">Cobertura</span>
+                <span className="text-gray-300 tnum">{totalShares.toLocaleString("pt-BR")} ações de {u.ticker}</span>
+              </div>
+              <div className="flex items-center justify-between text-[12px] text-gray-400">
+                <span className="text-gray-500">Cash side</span>
+                <span className="text-gray-300">{isCredit ? "Credita" : "Debita"} {fmtBRL(Math.abs(cashEffect))} em conta {accById[u.account]?.name}</span>
+              </div>
+              {sN > 0 && (
+                <div className="flex items-center justify-between text-[12px] text-gray-500">
+                  <span>Preço efetivo se exercida</span>
+                  <span className="tnum money">R$ {(optionType === "PUT" ? sN - pN : sN + pN).toFixed(2)}</span>
+                </div>
+              )}
+            </PreviewBlock>
+          </div>
+        )}
+
+        {/* Notes & files */}
+        <div className="mt-5">
+          <NotesAttachmentsField
+            notes={notes}
+            setNotes={setNotes}
+            files={files}
+            onFilesChange={setFiles}
+            placeholder="ex: tese da venda coberta, IV implícita, plano se for exercida…"
+          />
+        </div>
+      </div>
+      <ModalFooter
+        onCancel={onClose}
+        onSave={onClose}
+        saveDisabled={!valid}
+        saveLabel={editing ? "Salvar alterações" : "Salvar"}
+        leftSlot={!editing && valid && (
+          <button onClick={handleSaveAndNext}
+            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-indigo-400 hover:bg-gray-200 dark:hover:bg-gray-700 font-medium">
+            <Icon name="plus" className="w-3.5 h-3.5"/> Salvar e abrir outra
+          </button>
+        )}
       />
     </Fragment>
   );
@@ -5358,15 +5982,16 @@ const DIST_TYPE_CFG = {
   SECURITIES_LENDING: { label: "Aluguel",     hint: "empréstimo de ativos · ticker pode estar ausente" },
 };
 
-function DistributionComposer({ prefill = {}, onClose }) {
+function DistributionComposer({ prefill = {}, editing = false, onClose }) {
   const [type,    setType]    = useState(prefill.type    || "DIVIDEND");
   const [date,    setDate]    = useState(prefill.date    || TODAY_ISO);
   const [fiId,    setFiId]    = useState(prefill.fi      || "xp");
   const [assetId, setAssetId] = useState(prefill.asset   || "");
-  const [gross,   setGross]   = useState("");
-  const [tax,     setTax]     = useState("");
+  const [gross,   setGross]   = useState(prefill.gross   || "");
+  const [tax,     setTax]     = useState(prefill.tax     || "");
   const [ccy,     setCcy]     = useState(prefill.ccy     || "BRL");
-  const [notes,   setNotes]   = useState("");
+  const [notes,   setNotes]   = useState(prefill.notes   || "");
+  const [files,   setFiles]   = useState(prefill.files   || []);
 
   const cfg = DIST_TYPE_CFG[type];
   const a = assetId ? assetById[assetId] : null;
@@ -5388,7 +6013,10 @@ function DistributionComposer({ prefill = {}, onClose }) {
 
   return (
     <Fragment>
-      <ModalHeader title="Novo Provento" subtitle="Rendimento, dividendo, JCP ou aluguel" onClose={onClose}/>
+      <ModalHeader
+        title={editing ? "Editar Provento" : "Novo Provento"}
+        subtitle={editing ? "Atualiza os campos do provento" : "Rendimento, dividendo, JCP ou aluguel"}
+        onClose={onClose}/>
       <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
         <Field label="Tipo">
           <div className="grid grid-cols-2 gap-2">
@@ -5452,24 +6080,30 @@ function DistributionComposer({ prefill = {}, onClose }) {
         )}
 
         <div className="mt-5">
-          <Field label="Notas" hint="opcional">
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder={!assetRequired && fiId === "avenue" ? "ex: 'Aluguel genérico mensal — confirmar com extrato Avenue.'" : "ex: trimestre 1T26, link RI…"} className={inputClsArea}/>
-          </Field>
+          <NotesAttachmentsField
+            notes={notes}
+            setNotes={setNotes}
+            files={files}
+            onFilesChange={setFiles}
+            placeholder={!assetRequired && fiId === "avenue" ? "ex: 'Aluguel genérico mensal — confirmar com extrato Avenue.'" : "ex: trimestre 1T26, link RI…"}
+          />
         </div>
       </div>
-      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}/>
+      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}
+        saveLabel={editing ? "Salvar alterações" : "Salvar"}/>
     </Fragment>
   );
 }
 
-function TransactionComposer({ prefill = {}, onClose }) {
+function TransactionComposer({ prefill = {}, editing = false, onClose }) {
   const [accId,  setAccId]  = useState(prefill.acc || "itau-cc");
   const [date,   setDate]   = useState(prefill.date || TODAY_ISO);
   const [direction, setDirection] = useState(prefill.direction || "out"); // in | out
-  const [amount, setAmount] = useState("");
-  const [desc,   setDesc]   = useState("");
-  const [catId,  setCatId]  = useState("");
-  const [notes,  setNotes]  = useState("");
+  const [amount, setAmount] = useState(prefill.amount || "");
+  const [desc,   setDesc]   = useState(prefill.desc || "");
+  const [catId,  setCatId]  = useState(prefill.catId || "");
+  const [notes,  setNotes]  = useState(prefill.notes || "");
+  const [files,  setFiles]  = useState(prefill.files || []);
 
   const acc = accById[accId];
   const ccy = acc?.currency || "BRL";
@@ -5496,7 +6130,10 @@ function TransactionComposer({ prefill = {}, onClose }) {
 
   return (
     <Fragment>
-      <ModalHeader title="Nova Movimentação" subtitle="Cash flow em conta corrente" onClose={onClose}/>
+      <ModalHeader
+        title={editing ? "Editar Movimentação" : "Nova Movimentação"}
+        subtitle={editing ? "Atualiza a movimentação de caixa" : "Cash flow em conta corrente"}
+        onClose={onClose}/>
       <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
         {/* Direction toggle */}
         <Field label="Direção">
@@ -5568,27 +6205,33 @@ function TransactionComposer({ prefill = {}, onClose }) {
         )}
 
         <div className="mt-5">
-          <Field label="Notas" hint="opcional">
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="ex: motivo, contexto…" className={inputClsArea}/>
-          </Field>
+          <NotesAttachmentsField
+            notes={notes}
+            setNotes={setNotes}
+            files={files}
+            onFilesChange={setFiles}
+            placeholder="ex: motivo, contexto…"
+          />
         </div>
       </div>
-      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}/>
+      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}
+        saveLabel={editing ? "Salvar alterações" : "Salvar"}/>
     </Fragment>
   );
 }
 
-function CardTxComposer({ prefill = {}, onClose }) {
+function CardTxComposer({ prefill = {}, editing = false, onClose }) {
   const [cardId, setCardId] = useState(prefill.card || "itau-visa");
   const [date,   setDate]   = useState(prefill.date || TODAY_ISO);
-  const [desc,   setDesc]   = useState("");
-  const [amount, setAmount] = useState("");
-  const [usdMode, setUsdMode] = useState(false);
-  const [usdAmount, setUsdAmount] = useState("");
-  const [iof,    setIof]    = useState("");
-  const [catId,  setCatId]  = useState("");
-  const [parc,   setParc]   = useState("");
-  const [notes,  setNotes]  = useState("");
+  const [desc,   setDesc]   = useState(prefill.desc || "");
+  const [amount, setAmount] = useState(prefill.amount || "");
+  const [usdMode, setUsdMode] = useState(prefill.usdMode || false);
+  const [usdAmount, setUsdAmount] = useState(prefill.usdAmount || "");
+  const [iof,    setIof]    = useState(prefill.iof || "");
+  const [catId,  setCatId]  = useState(prefill.catId || "");
+  const [parc,   setParc]   = useState(prefill.parc || "");
+  const [notes,  setNotes]  = useState(prefill.notes || "");
+  const [files,  setFiles]  = useState(prefill.files || []);
 
   const card = cardById[cardId];
   const ccy = card?.currency || "BRL";
@@ -5603,7 +6246,10 @@ function CardTxComposer({ prefill = {}, onClose }) {
 
   return (
     <Fragment>
-      <ModalHeader title="Lançamento de Cartão" subtitle="Compra na fatura aberta" onClose={onClose}/>
+      <ModalHeader
+        title={editing ? "Editar Lançamento de Cartão" : "Lançamento de Cartão"}
+        subtitle={editing ? "Atualiza a compra na fatura" : "Compra na fatura aberta"}
+        onClose={onClose}/>
       <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
         <div className="grid grid-cols-2 gap-4">
           <Field label="Cartão">
@@ -5676,12 +6322,17 @@ function CardTxComposer({ prefill = {}, onClose }) {
         )}
 
         <div className="mt-5">
-          <Field label="Notas" hint="opcional · ⌘V cola comprovante">
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="ex: contexto, contato comercial, motivo do parcelamento…" className={inputClsArea}/>
-          </Field>
+          <NotesAttachmentsField
+            notes={notes}
+            setNotes={setNotes}
+            files={files}
+            onFilesChange={setFiles}
+            placeholder="ex: contexto, contato comercial, motivo do parcelamento…"
+          />
         </div>
       </div>
-      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}/>
+      <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled={!valid}
+        saveLabel={editing ? "Salvar alterações" : "Salvar"}/>
     </Fragment>
   );
 }
@@ -6241,14 +6892,17 @@ function PatrimonioPage() {
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Investimentos</div>
                 <div className="text-sm font-semibold tnum money text-emerald-400">+ {fmtBRL(totalInvest, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">+ {fmtUSD(totalInvest / PTAX, { compact: true })}</div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Caixa</div>
                 <div className="text-sm font-semibold tnum money text-emerald-400">+ {fmtBRL(cashBRL, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">+ {fmtUSD(cashBRL / PTAX, { compact: true })}</div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Cartões</div>
                 <div className="text-sm font-semibold tnum money text-red-400">− {fmtBRL(cardDebt, { compact: true })}</div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">− {fmtUSD(cardDebt / PTAX, { compact: true })}</div>
               </div>
             </div>
           </div>
@@ -6397,7 +7051,7 @@ function PatrimonioPage() {
                 <th className="text-left font-medium px-2 py-2">Ativo</th>
                 <th className="text-left font-medium px-2 py-2">Classe</th>
                 <th className="text-left font-medium px-2 py-2">Custodiante</th>
-                <th className="text-right font-medium px-2 py-2">Valor (BRL)</th>
+                <th className="text-right font-medium px-2 py-2">Valor</th>
                 <th className="text-right font-medium px-2 py-2">% portfólio</th>
                 <th className="px-2"/>
               </tr>
@@ -6421,7 +7075,10 @@ function PatrimonioPage() {
                     </td>
                     <td className="px-2"><ClassBadge klass={a.klass} size="xs" withDot={false}/></td>
                     <td className="px-2"><div className="flex items-center gap-1.5"><FILogo fi={fi.id} size="sm"/><span className="text-[11px] text-gray-400">{fi.short}</span></div></td>
-                    <td className="px-2 text-right tnum money font-medium">{fmtBRL(a.valueBRL, { compact: true })}</td>
+                    <td className="px-2 text-right">
+                      <div className="tnum money font-medium">{fmtBRL(a.valueBRL, { compact: true })}</div>
+                      <div className="tnum money text-[10px] text-gray-500 dark:text-gray-600">{fmtUSD(a.valueBRL / PTAX, { compact: true })}</div>
+                    </td>
                     <td className="px-2 text-right tnum text-gray-400">{fmtPct(a.valueBRL / totalInvest, 2)}</td>
                     <td className="px-2 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
                   </tr>
@@ -6432,6 +7089,1047 @@ function PatrimonioPage() {
         </div>
       </Card>
     </div>
+  );
+}
+
+/* =====================================================================
+ * FECHAMENTOS — list + monthly closing report
+ * =================================================================== */
+
+function StatusPill({ status, size = "md" }) {
+  const meta = statusMeta(status);
+  const sizeCls = size === "sm" ? "text-[10px] px-1.5 py-0.5" : "text-[11px] px-2 py-0.5";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md border font-medium ${meta.bg} ${sizeCls}`}>
+      <Icon name={meta.icon} className="w-3 h-3"/>
+      {meta.label}
+    </span>
+  );
+}
+
+function SourceMixBar({ sources, height = 6 }) {
+  const total = sources.api_ok + sources.api_failed + sources.manual_done + sources.manual_pending + sources.upload_pending;
+  if (total === 0) return null;
+  const segs = [
+    { key: "api_ok",         color: "#10b981", v: sources.api_ok },
+    { key: "manual_done",    color: "#6366f1", v: sources.manual_done },
+    { key: "api_failed",     color: "#ef4444", v: sources.api_failed },
+    { key: "manual_pending", color: "#f59e0b", v: sources.manual_pending },
+    { key: "upload_pending", color: "#f59e0b", v: sources.upload_pending },
+  ];
+  return (
+    <div className="flex w-full overflow-hidden rounded" style={{ height }}>
+      {segs.filter(s => s.v > 0).map(s => (
+        <div key={s.key} style={{ background: s.color, width: `${(s.v / total) * 100}%` }} title={`${s.key}: ${s.v}`}/>
+      ))}
+    </div>
+  );
+}
+
+function FechamentosPage() {
+  // Build a chart of last 12 snapshots' total_brl
+  const last12 = SNAPSHOTS.slice(-12);
+  const sparkBRL = last12.map(s => s.total_brl);
+  const closing = snapshotByYm[CLOSING_YM];
+  const closingMeta = statusMeta(closing.status);
+  const daysToNext = daysBetween(NOW_DATE, NEXT_AUTO_RUN_DATE);
+  const nextDow = dayOfWeekPT(NEXT_AUTO_RUN_DATE);
+
+  // Pre-compute YoY deltas for the table
+  const rows = [...SNAPSHOTS].reverse(); // most recent first
+
+  return (
+    <div className="space-y-6">
+      {/* HERO — current closing status + next auto-run */}
+      <Card padding="p-6" className="bg-gradient-to-br from-indigo-500/[0.04] to-violet-500/[0.04] border-indigo-500/15 dark:border-indigo-500/20">
+        <div className="grid grid-cols-12 gap-6">
+          {/* Left: current closing in review */}
+          <div className="col-span-12 lg:col-span-7">
+            <div className="flex items-center gap-2 mb-2">
+              <StatusPill status={closing.status}/>
+              <span className="text-[11px] text-gray-500">{ymLabelLong(closing.ym)}</span>
+            </div>
+            <div className="text-xl font-semibold tracking-tight">
+              Fechamento de {ymLabelLong(closing.ym)} aguardando você
+            </div>
+            <div className="mt-1 text-[13px] text-gray-500">
+              Job automático rodou em {fmtDateBR(firstBusinessDay(closing.ym))} e capturou preços do último dia útil
+              <span className="text-gray-300"> · {fmtDateBR(closing.period_end)} ({dayOfWeekPT(closing.period_end)})</span>.
+              {" "}Faltam {closing.sources.manual_pending + closing.sources.api_failed + closing.sources.upload_pending} ativos pra confirmar.
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              <div className="px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">API OK</div>
+                <div className="text-base font-semibold tnum text-emerald-300">{closing.sources.api_ok}</div>
+              </div>
+              <div className="px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                <div className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Pendentes</div>
+                <div className="text-base font-semibold tnum text-amber-300">
+                  {closing.sources.manual_pending + closing.sources.api_failed + closing.sources.upload_pending}
+                </div>
+              </div>
+              <div className="px-3 py-2.5 rounded-lg bg-gray-200/40 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Total ativos</div>
+                <div className="text-base font-semibold tnum">{closing.assets_count}</div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center gap-2">
+              <a href={`#/fechamento/${closing.ym}`}
+                className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-indigo-500 text-white hover:bg-indigo-400 transition-colors">
+                <Icon name="play" className="w-3.5 h-3.5"/>
+                Resolver pendências
+              </a>
+              <button className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                <Icon name="refresh" className="w-3.5 h-3.5"/>
+                Reprocessar APIs
+              </button>
+            </div>
+          </div>
+
+          {/* Right: next scheduled run */}
+          <div className="col-span-12 lg:col-span-5">
+            <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Icon name="clock" className="w-3.5 h-3.5 text-indigo-400"/>
+                <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Próximo fechamento</span>
+              </div>
+              <div className="text-base font-semibold">
+                {ymLabelLong(CURRENT_YM)}
+              </div>
+              <div className="mt-1 text-[12px] text-gray-500">
+                Job roda em <span className="text-gray-300 font-medium">{fmtDateBR(NEXT_AUTO_RUN_DATE)} ({nextDow})</span> às 06:00
+                {daysToNext > 0 && <> · em <span className="text-gray-300">{daysToNext} {daysToNext === 1 ? "dia" : "dias"}</span></>}
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 text-[11px] text-gray-500 space-y-1.5">
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 mt-0.5">•</span>
+                  <span>Captura preços do último dia útil <span className="text-gray-300">({fmtDateBR(NEXT_AUTO_RUN_PERIOD_END)} · {dayOfWeekPT(NEXT_AUTO_RUN_PERIOD_END)})</span></span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 mt-0.5">•</span>
+                  <span>Atualiza via brapi, yahoo, B3, ANBIMA</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="text-amber-400 mt-0.5">•</span>
+                  <span>Marca em revisão se houver ativos manuais (imóvel, FGTS, cripto)</span>
+                </div>
+              </div>
+              <div className="mt-3 flex items-center justify-between pt-3 border-t border-gray-200 dark:border-gray-800">
+                <span className="text-[10px] text-gray-500">Você pode antecipar</span>
+                <button className="text-[11px] inline-flex items-center gap-1 px-2 py-1 rounded-md text-indigo-400 hover:bg-indigo-500/10">
+                  <Icon name="play" className="w-3 h-3"/>
+                  Rodar agora
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Evolution chart — sparkline of last 12 closings */}
+      <Card>
+        <SectionTitle action={
+          <div className="text-[11px] text-gray-500">
+            12 meses · último {fmtDateBR(closing.period_end)}
+          </div>
+        }>Patrimônio fechado · evolução</SectionTitle>
+        <div className="grid grid-cols-12 gap-6 items-end">
+          <div className="col-span-12 md:col-span-4 space-y-3">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Último fechamento</div>
+              <div className="text-xl font-semibold tnum money mt-0.5">{fmtBRL(closing.total_brl, { compact: true })}</div>
+              <div className="text-[11px] text-gray-500 tnum">{fmtUSD(closing.total_usd, { compact: true })} · PTAX {closing.fx_rate.toFixed(4)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Variação MoM</div>
+              <div className={`text-base font-semibold tnum ${closing.mom_delta >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {closing.mom_delta >= 0 ? "+" : ""}{(closing.mom_delta * 100).toFixed(2)}%
+              </div>
+              <div className="text-[11px] text-gray-500 tnum">{closing.mom_delta_brl >= 0 ? "+" : ""}{fmtBRL(closing.mom_delta_brl, { compact: true })}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500">Proventos do mês</div>
+              <div className="text-base font-semibold tnum text-amber-400">{fmtBRL(closing.proventos_brl, { compact: true })}</div>
+              {closing.option_premium_brl > 0 && (
+                <div className="text-[10px] text-gray-500">+ {fmtBRL(closing.option_premium_brl, { compact: true })} prêmio sintético</div>
+              )}
+            </div>
+          </div>
+          <div className="col-span-12 md:col-span-8">
+            <SnapshotChart data={last12}/>
+          </div>
+        </div>
+      </Card>
+
+      {/* History table */}
+      <Card padding="p-3">
+        <div className="flex items-center justify-between px-3 pt-2 pb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Histórico · {SNAPSHOTS.length} fechamentos</h3>
+          <div className="flex items-center gap-2">
+            <button className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+              <Icon name="filter" className="w-3 h-3"/> Filtros
+            </button>
+            <button className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+              <Icon name="download" className="w-3 h-3"/> Exportar
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                <th className="text-left font-medium px-3 py-2">Mês</th>
+                <th className="text-left font-medium px-3 py-2">Status</th>
+                <th className="text-left font-medium px-3 py-2">Período</th>
+                <th className="text-right font-medium px-3 py-2">Patrimônio</th>
+                <th className="text-right font-medium px-3 py-2">Δ MoM</th>
+                <th className="text-right font-medium px-3 py-2">Proventos</th>
+                <th className="text-left font-medium px-3 py-2 min-w-[120px]">Fontes</th>
+                <th className="text-left font-medium px-3 py-2">Origem</th>
+                <th className="px-2"/>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => {
+                const pending = s.sources.api_failed + s.sources.manual_pending + s.sources.upload_pending;
+                return (
+                  <tr key={s.id}
+                    onClick={() => { window.location.hash = `#/fechamento/${s.ym}`; }}
+                    className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
+                    <td className="px-3 py-2.5">
+                      <div className="font-medium">{ymLabelShort(s.ym)}</div>
+                      <div className="text-[10px] text-gray-500">{ymLabelLong(s.ym).split(" / ")[0]}</div>
+                    </td>
+                    <td className="px-3"><StatusPill status={s.status} size="sm"/></td>
+                    <td className="px-3 text-gray-500 text-[11px]">
+                      <div>até {fmtDateBR(s.period_end)}</div>
+                      <div className="text-[10px]">
+                        {s.closed_at ? `fechou ${fmtDateBR(s.closed_at)}` : "aguardando confirmação"}
+                      </div>
+                    </td>
+                    <td className="px-3 text-right">
+                      <div className="tnum money font-medium">{fmtBRL(s.total_brl, { compact: true })}</div>
+                      <div className="tnum money text-[10px] text-gray-500 dark:text-gray-600">{fmtUSD(s.total_usd, { compact: true })}</div>
+                    </td>
+                    <td className={`px-3 text-right tnum ${s.mom_delta >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {s.mom_delta >= 0 ? "+" : ""}{(s.mom_delta * 100).toFixed(2)}%
+                    </td>
+                    <td className="px-3 text-right tnum text-amber-400">{fmtBRL(s.proventos_brl, { compact: true })}</td>
+                    <td className="px-3">
+                      <div className="w-24"><SourceMixBar sources={s.sources}/></div>
+                      {pending > 0 && (
+                        <div className="text-[10px] text-amber-400 mt-1">{pending} pendente{pending > 1 ? "s" : ""}</div>
+                      )}
+                    </td>
+                    <td className="px-3">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.source_label === "AUTO" ? "bg-indigo-500/15 text-indigo-300" : "bg-gray-200 dark:bg-gray-800 text-gray-400"}`}>
+                        {s.source_label === "AUTO" ? "auto" : "manual"}
+                      </span>
+                      {s.closed_by && (
+                        <div className="text-[10px] text-gray-500 mt-0.5 truncate max-w-[110px]">{s.closed_by === "auto-job" ? "job 06h" : s.closed_by.split("@")[0]}</div>
+                      )}
+                    </td>
+                    <td className="px-3 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3 px-3 pb-2 flex items-center gap-3 text-[10px] text-gray-500">
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-emerald-500"/>API OK</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-indigo-500"/>Manual OK</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-amber-500"/>Pendente (manual/upload)</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-red-500"/>API falhou</span>
+        </div>
+      </Card>
+
+      {/* CLI tip */}
+      <Card padding="p-4">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+            <Icon name="external-link" className="w-4 h-4 text-gray-500"/>
+          </div>
+          <div className="flex-1">
+            <div className="text-[12px] font-medium">Também dá pra rodar pelo terminal</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">Útil pra retroativos ou pra forçar uma data específica.</div>
+            <code className="block mt-2 text-[11px] font-mono bg-gray-100 dark:bg-gray-800/60 rounded px-2 py-1.5 text-gray-700 dark:text-gray-300">
+              python -m scripts.create_snapshot --workspace "Família Ambrosio" --period 2026-04-30
+            </code>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------- Mini chart of monthly total_brl with proventos overlay ---------- */
+function SnapshotChart({ data }) {
+  const w = 560, h = 160, pad = { l: 12, r: 12, t: 12, b: 22 };
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const values = data.map(d => d.total_brl);
+  const min = Math.min(...values) * 0.97;
+  const max = Math.max(...values) * 1.02;
+  const range = max - min || 1;
+  const stepX = innerW / (data.length - 1 || 1);
+  const yOf = v => pad.t + innerH - ((v - min) / range) * innerH;
+  const pts = data.map((d, i) => [pad.l + i * stepX, yOf(d.total_brl)]);
+  const path = "M " + pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L ");
+  const area = path + ` L ${pad.l + (data.length - 1) * stepX},${pad.t + innerH} L ${pad.l},${pad.t + innerH} Z`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-40 overflow-visible">
+      <path d={area} fill="#a78bfa" fillOpacity="0.12"/>
+      <path d={path} fill="none" stroke="#a78bfa" strokeWidth="2"/>
+      {data.map((d, i) => (
+        <g key={i}>
+          <circle cx={pad.l + i * stepX} cy={yOf(d.total_brl)} r="3" fill="#a78bfa"/>
+          {(i === 0 || i === data.length - 1 || i % 3 === 0) && (
+            <text x={pad.l + i * stepX} y={h - 6} fontSize="9" textAnchor="middle" fill="#6b7280">{ymLabelShort(d.ym).split("/")[0]}</text>
+          )}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/* =====================================================================
+ * FECHAMENTO DETAIL — relatório congelado do mês
+ * =================================================================== */
+
+function FechamentoDetailPage({ ym }) {
+  const snap = snapshotByYm[ym];
+  const [uploadAsset, setUploadAsset] = useState(null);
+  if (!snap) return <NotFound/>;
+
+  const meta = statusMeta(snap.status);
+  const prevYm = (() => {
+    const idx = PROVENTOS_MONTHS.indexOf(ym);
+    return idx > 0 ? PROVENTOS_MONTHS[idx - 1] : null;
+  })();
+  const nextYm = (() => {
+    const idx = PROVENTOS_MONTHS.indexOf(ym);
+    return idx >= 0 && idx < PROVENTOS_MONTHS.length - 1 && snapshotByYm[PROVENTOS_MONTHS[idx + 1]]
+      ? PROVENTOS_MONTHS[idx + 1] : null;
+  })();
+  const prevSnap = prevYm ? snapshotByYm[prevYm] : null;
+
+  const proventosOfMonth = PROVENTOS_BY_YM[ym] || [];
+  const proventosByType = proventosOfMonth.reduce((acc, p) => {
+    const k = p.type;
+    acc[k] = (acc[k] || 0) + p.net * p.fxRate;
+    return acc;
+  }, {});
+
+  // Mock per-asset values at period_end: scale current price by a class-deterministic factor
+  // (purely for demo; real impl would read from PortfolioSnapshotItem)
+  const months_ago = PROVENTOS_MONTHS.length - 1 - PROVENTOS_MONTHS.indexOf(ym);
+  const positions = ASSETS.map(a => {
+    const baseValueBRL = a.qty * a.price * (a.ccy === "USD" ? snap.fx_rate : 1);
+    // simulate that prices were a bit different N months ago
+    const drift = 1 - (months_ago * 0.012) + Math.sin(a.id.charCodeAt(0) + months_ago) * 0.04;
+    const valueAtClose = baseValueBRL * Math.max(0.5, drift);
+    return { ...a, valueBRL: valueAtClose };
+  }).sort((x, y) => y.valueBRL - x.valueBRL);
+
+  const totalAtClose = positions.reduce((s, p) => s + p.valueBRL, 0);
+  // Normalize so it matches snap.total_brl
+  const factor = totalAtClose ? snap.total_brl / totalAtClose : 1;
+  positions.forEach(p => { p.valueBRL *= factor; });
+
+  // Movers (top 5 up, top 5 down) — synthetic, but plausible
+  const movers = positions.map(p => ({
+    ...p,
+    pct: ((p.id.charCodeAt(0) % 7) - 3) / 100 + Math.sin(months_ago + p.id.charCodeAt(0)) * 0.04,
+  })).sort((a, b) => b.pct - a.pct);
+  const topUp = movers.slice(0, 5);
+  const topDown = movers.slice(-5).reverse();
+
+  // Composition aggregates
+  const byClass = {};
+  positions.forEach(p => { byClass[p.klass] = (byClass[p.klass] || 0) + p.valueBRL; });
+  const byCountry = {};
+  positions.forEach(p => { byCountry[p.country] = (byCountry[p.country] || 0) + p.valueBRL; });
+
+  const isPending = snap.status === "em_revisao";
+  const pendingTotal = snap.sources.api_failed + snap.sources.manual_pending + snap.sources.upload_pending;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <a href="#/fechamentos" className="text-[11px] text-gray-500 hover:text-indigo-400 inline-flex items-center gap-1">
+              <Icon name="arrow-left" className="w-3 h-3"/> Voltar pra fechamentos
+            </a>
+          </div>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">{ymLabelLong(ym)}</h1>
+            <StatusPill status={snap.status}/>
+          </div>
+          <div className="text-[12px] text-gray-500 mt-1">
+            Posições congeladas em <span className="text-gray-300">{fmtDateBR(snap.period_end)} ({dayOfWeekPT(snap.period_end)})</span>
+            {snap.closed_at && <> · fechado em {fmtDateBR(snap.closed_at)} por {snap.closed_by === "auto-job" ? "job automático" : snap.closed_by}</>}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {prevYm && snapshotByYm[prevYm] && (
+            <a href={`#/fechamento/${prevYm}`} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+              <Icon name="arrow-left" className="w-3 h-3"/> {ymLabelShort(prevYm)}
+            </a>
+          )}
+          {nextYm && (
+            <a href={`#/fechamento/${nextYm}`} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+              {ymLabelShort(nextYm)} <Icon name="arrow-right" className="w-3 h-3"/>
+            </a>
+          )}
+          <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+            <Icon name="download" className="w-3.5 h-3.5"/> Exportar PDF
+          </button>
+          {!isPending && (
+            <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+              <Icon name="rotate-ccw" className="w-3.5 h-3.5"/> Reabrir
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Pendências panel — visible only when em_revisao */}
+      {isPending && (
+        <Card padding="p-5" className="border-amber-500/30 bg-amber-500/[0.04]">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Icon name="alert-triangle" className="w-4 h-4 text-amber-400"/>
+                <h3 className="text-sm font-semibold">Resolver pendências antes de fechar</h3>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                {pendingTotal} de {snap.assets_count} ativos sem preço atualizado para {fmtDateBR(snap.period_end)}.
+                Resolva todos e clique em <strong className="text-amber-300">Confirmar fechamento</strong>.
+              </div>
+            </div>
+            <button
+              disabled={pendingTotal > 0}
+              className={`h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+                pendingTotal > 0
+                  ? "bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed"
+                  : "bg-emerald-500 text-white hover:bg-emerald-400"
+              }`}
+              title={pendingTotal > 0 ? `Faltam ${pendingTotal} ativos` : "Tudo pronto"}>
+              <Icon name="lock" className="w-3.5 h-3.5"/>
+              Confirmar fechamento
+            </button>
+          </div>
+
+          {/* Progress bar */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between text-[11px] mb-1.5">
+              <span className="text-gray-500">
+                {snap.sources.api_ok + snap.sources.manual_done} de {snap.assets_count} resolvidos
+              </span>
+              <span className="text-gray-400 tnum">{Math.round(((snap.sources.api_ok + snap.sources.manual_done) / snap.assets_count) * 100)}%</span>
+            </div>
+            <SourceMixBar sources={snap.sources} height={8}/>
+          </div>
+
+          {/* Per-asset pending list */}
+          <div className="space-y-2">
+            {PENDING_ASSETS_FOR_REVIEW.map((p, i) => {
+              const a = assetById[p.id];
+              if (!a) return null;
+              const isManual = p.source === "manual";
+              return (
+                <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
+                  <span className={`w-1 h-8 rounded-full ${isManual ? "bg-amber-500" : "bg-red-500"}`}/>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-medium text-[13px]">{a.ticker || a.name}</span>
+                      <CountryFlag country={a.country}/>
+                      <ClassBadge klass={a.klass} size="xs" withDot={false}/>
+                    </div>
+                    <div className="text-[11px] text-gray-500 truncate">{p.reason}</div>
+                  </div>
+                  <div className="text-[11px] text-gray-500 tnum text-right">
+                    <div>último: R$ {(a.qty * a.price).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}</div>
+                    <div className="text-[10px]">{a.qty} {a.qty === 1 ? "unidade" : "unidades"}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {p.action_type === "refresh" && (
+                      <button className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25">
+                        <Icon name="refresh" className="w-3 h-3"/> Retry
+                      </button>
+                    )}
+                    {p.action_type === "upload" && (
+                      <button
+                        onClick={() => setUploadAsset({ asset: a, pendency: p })}
+                        className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-300 hover:bg-amber-500/25">
+                        <Icon name="upload-cloud" className="w-3 h-3"/> Upload extrato
+                      </button>
+                    )}
+                    <button className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+                      <Icon name="edit-2" className="w-3 h-3"/> Editar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-gray-500">
+            <strong className="text-gray-300">Como o sistema processa:</strong> upload de PDF/screenshot/CSV/XLSX dispara LLM agent
+            que extrai cotação, posição ou rendimento e preenche o snapshot. Você revisa antes de confirmar.
+          </div>
+        </Card>
+      )}
+
+      {/* KPI grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiTile
+          label="Patrimônio fim do mês"
+          value={fmtBRL(snap.total_brl, { compact: true })}
+          sub={`${fmtUSD(snap.total_usd, { compact: true })} · PTAX ${snap.fx_rate.toFixed(4)}`}
+        />
+        <KpiTile
+          label="Variação MoM"
+          value={`${snap.mom_delta >= 0 ? "+" : ""}${(snap.mom_delta * 100).toFixed(2)}%`}
+          intent={snap.mom_delta >= 0 ? "positive" : "negative"}
+          sub={prevSnap
+            ? `${snap.mom_delta_brl >= 0 ? "+" : ""}${fmtBRL(snap.mom_delta_brl, { compact: true })} · ${snap.mom_delta_brl >= 0 ? "+" : ""}${fmtUSD(snap.mom_delta_brl / snap.fx_rate, { compact: true })}`
+            : "primeiro fechamento"}
+        />
+        <KpiTile
+          label="Proventos recebidos"
+          value={fmtBRL(snap.proventos_brl, { compact: true })}
+          sub={`${fmtUSD(snap.proventos_brl / snap.fx_rate, { compact: true })} · ${proventosOfMonth.length} eventos`}
+        />
+        <KpiTile
+          label="Yield on portfolio"
+          value={`${((snap.proventos_brl / snap.total_brl) * 100).toFixed(2)}%`}
+          sub="proventos / patrimônio fim"
+        />
+      </div>
+
+      {/* Composition + proventos by type */}
+      <div className="grid grid-cols-12 gap-6">
+        <Card className="col-span-12 lg:col-span-7">
+          <SectionTitle>Composição por classe · {fmtDateBR(snap.period_end)}</SectionTitle>
+          <div className="space-y-2">
+            {Object.entries(byClass).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+              const meta = KLASS[k];
+              if (!meta) return null;
+              return (
+                <div key={k} className="flex items-center gap-3">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }}/>
+                  <span className="text-[12px] text-gray-300 w-32 shrink-0">{meta.label}</span>
+                  <div className="flex-1"><HBar value={v} max={snap.total_brl} color={meta.color} height={6}/></div>
+                  <span className="text-[11px] tnum text-gray-500 w-12 text-right">{((v / snap.total_brl) * 100).toFixed(1)}%</span>
+                  <span className="text-[11px] tnum money text-gray-300 w-20 text-right">{fmtBRL(v, { compact: true })}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        <Card className="col-span-12 lg:col-span-5">
+          <SectionTitle action={<span className="text-[10px] text-gray-500 uppercase">{proventosOfMonth.length} eventos</span>}>Proventos do mês</SectionTitle>
+          {proventosOfMonth.length === 0 ? (
+            <div className="text-[12px] text-gray-500 italic py-4 text-center">Sem proventos neste mês</div>
+          ) : (
+            <div className="space-y-2">
+              {Object.entries(proventosByType).sort((a, b) => b[1] - a[1]).map(([type, v]) => {
+                const meta = {
+                  DIVIDEND: { label: "Dividendo", color: "#10b981" },
+                  JCP: { label: "JCP", color: "#a78bfa" },
+                  INTEREST: { label: "Juros / Cupom", color: "#3b82f6" },
+                  SECURITIES_LENDING: { label: "Aluguel", color: "#f59e0b" },
+                  RENT: { label: "Aluguel FII", color: "#fbbf24" },
+                }[type] || { label: type, color: "#9ca3af" };
+                return (
+                  <div key={type} className="flex items-center gap-3">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }}/>
+                    <span className="text-[12px] text-gray-300 flex-1">{meta.label}</span>
+                    <span className="text-[11px] tnum text-gray-500">{((v / snap.proventos_brl) * 100).toFixed(0)}%</span>
+                    <span className="text-[12px] tnum money font-medium text-amber-300 w-20 text-right">{fmtBRL(v, { compact: true })}</span>
+                  </div>
+                );
+              })}
+              {snap.option_premium_brl > 0 && (
+                <div className="pt-2 mt-2 border-t border-gray-200 dark:border-gray-800">
+                  <div className="flex items-center gap-3">
+                    <span className="w-1.5 h-1.5 rounded-full bg-violet-400"/>
+                    <span className="text-[12px] text-gray-400 flex-1 italic">+ Prêmio sintético (opções)</span>
+                    <span className="text-[12px] tnum money font-medium text-violet-300 w-20 text-right">{fmtBRL(snap.option_premium_brl, { compact: true })}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Top movers */}
+      <div className="grid grid-cols-12 gap-6">
+        <Card className="col-span-12 md:col-span-6">
+          <SectionTitle>Maiores altas · MoM</SectionTitle>
+          <div className="space-y-2">
+            {topUp.map(m => (
+              <a key={m.id} href={`#/ativo/${m.id}`} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40">
+                <div className="w-1 h-6 rounded-full" style={{ background: KLASS[m.klass]?.color || "#9ca3af" }}/>
+                <span className="font-mono text-[12px] font-medium flex-1">{m.ticker || m.name}</span>
+                <CountryFlag country={m.country}/>
+                <span className="text-[11px] text-gray-500 tnum w-20 text-right">{fmtBRL(m.valueBRL, { compact: true })}</span>
+                <span className="text-[12px] tnum text-emerald-400 w-16 text-right">+{(m.pct * 100).toFixed(2)}%</span>
+              </a>
+            ))}
+          </div>
+        </Card>
+        <Card className="col-span-12 md:col-span-6">
+          <SectionTitle>Maiores quedas · MoM</SectionTitle>
+          <div className="space-y-2">
+            {topDown.map(m => (
+              <a key={m.id} href={`#/ativo/${m.id}`} className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40">
+                <div className="w-1 h-6 rounded-full" style={{ background: KLASS[m.klass]?.color || "#9ca3af" }}/>
+                <span className="font-mono text-[12px] font-medium flex-1">{m.ticker || m.name}</span>
+                <CountryFlag country={m.country}/>
+                <span className="text-[11px] text-gray-500 tnum w-20 text-right">{fmtBRL(m.valueBRL, { compact: true })}</span>
+                <span className="text-[12px] tnum text-red-400 w-16 text-right">{(m.pct * 100).toFixed(2)}%</span>
+              </a>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      {/* Sources audit */}
+      <Card>
+        <SectionTitle>Origem dos dados deste fechamento</SectionTitle>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="px-3 py-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+            <div className="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">API OK</div>
+            <div className="text-xl font-semibold tnum text-emerald-300 mt-1">{snap.sources.api_ok}</div>
+            <div className="text-[10px] text-gray-500 mt-1">brapi · yahoo · B3</div>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+            <div className="text-[10px] uppercase tracking-wider text-indigo-400 font-semibold">Manual OK</div>
+            <div className="text-xl font-semibold tnum text-indigo-300 mt-1">{snap.sources.manual_done}</div>
+            <div className="text-[10px] text-gray-500 mt-1">você confirmou</div>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-red-500/10 border border-red-500/20">
+            <div className="text-[10px] uppercase tracking-wider text-red-400 font-semibold">API falhou</div>
+            <div className="text-xl font-semibold tnum text-red-300 mt-1">{snap.sources.api_failed}</div>
+            <div className="text-[10px] text-gray-500 mt-1">timeout / 5xx</div>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <div className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Manual pendente</div>
+            <div className="text-xl font-semibold tnum text-amber-300 mt-1">{snap.sources.manual_pending}</div>
+            <div className="text-[10px] text-gray-500 mt-1">imóvel · cripto · FGTS</div>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <div className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Upload pendente</div>
+            <div className="text-xl font-semibold tnum text-amber-300 mt-1">{snap.sources.upload_pending}</div>
+            <div className="text-[10px] text-gray-500 mt-1">extrato / nota</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Positions table */}
+      <Card padding="p-3">
+        <div className="px-3 pt-2 pb-3 flex items-center justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Posições congeladas · {positions.length} ativos</h3>
+          <button className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+            <Icon name="download" className="w-3 h-3"/> CSV
+          </button>
+        </div>
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                <th className="text-left font-medium px-3 py-2">Ativo</th>
+                <th className="text-left font-medium px-3 py-2">Classe</th>
+                <th className="text-right font-medium px-3 py-2">Qtd</th>
+                <th className="text-right font-medium px-3 py-2">Preço fim</th>
+                <th className="text-right font-medium px-3 py-2">Valor (BRL)</th>
+                <th className="text-right font-medium px-3 py-2">% portfólio</th>
+                <th className="px-2"/>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.slice(0, 20).map(p => {
+                const closePrice = p.valueBRL / p.qty / (p.ccy === "USD" ? snap.fx_rate : 1);
+                return (
+                  <tr key={p.id}
+                    onClick={() => { window.location.hash = `#/ativo/${p.id}`; }}
+                    className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1 h-5 rounded-full" style={{ background: KLASS[p.klass]?.color || "#9ca3af" }}/>
+                        <div>
+                          <div className="font-mono font-medium flex items-center gap-1.5">{p.ticker || p.name} <CountryFlag country={p.country}/></div>
+                          <div className="text-[10px] text-gray-500 truncate max-w-[180px]">{p.name}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3"><ClassBadge klass={p.klass} size="xs" withDot={false}/></td>
+                    <td className="px-3 text-right tnum text-gray-300">{p.qty.toLocaleString("pt-BR", { maximumFractionDigits: 4 })}</td>
+                    <td className="px-3 text-right tnum text-gray-400">
+                      {p.ccy === "USD" ? `$ ${closePrice.toFixed(2)}` : `R$ ${closePrice.toFixed(2)}`}
+                    </td>
+                    <td className="px-3 text-right tnum money font-medium">{fmtBRL(p.valueBRL, { compact: true })}</td>
+                    <td className="px-3 text-right tnum text-gray-400">{((p.valueBRL / snap.total_brl) * 100).toFixed(2)}%</td>
+                    <td className="px-3 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {positions.length > 20 && (
+            <div className="px-3 py-2 text-[11px] text-gray-500 text-center">
+              + {positions.length - 20} ativos · <button className="text-indigo-400 hover:text-indigo-300">ver todos</button>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Spec 38 — Upload extraction modal */}
+      {uploadAsset && (
+        <ExtractionUploadModal
+          asset={uploadAsset.asset}
+          pendency={uploadAsset.pendency}
+          onClose={() => setUploadAsset(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+ * SPEC 38 — ExtractionUploadModal
+ * Fluxo: drop file → escolhe hint → loading (LLM mock) → preview editável → confirma → toast.
+ * =================================================================== */
+
+const EXTRACTION_HINTS = {
+  BROKER_POSITION:  { label: "Extrato de posição",   desc: "Quantidade + preço por ativo no fechamento" },
+  BROKER_INCOME:    { label: "Extrato de proventos", desc: "Dividendos, JCP, aluguel por ticker" },
+  B3_TRADE_NOTE:    { label: "Nota de corretagem",   desc: "Operações de compra e venda do dia" },
+  FGTS_BALANCE:     { label: "Saldo FGTS",           desc: "Saldo total disponível na data" },
+  SCREENSHOT_PRICE: { label: "Screenshot de cotação", desc: "Imagem do app/site com preço atual" },
+  GENERIC:          { label: "Detectar automaticamente", desc: "LLM tenta classificar e extrair" },
+};
+
+function ConfidencePill({ value }) {
+  const pct = Math.round(value * 100);
+  const tier =
+    value >= 0.9 ? { bg: "bg-emerald-500/15", color: "text-emerald-400" } :
+    value >= 0.7 ? { bg: "bg-amber-500/15", color: "text-amber-400" } :
+                   { bg: "bg-red-500/15", color: "text-red-400" };
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold tnum ${tier.bg} ${tier.color}`}>
+      {pct}%
+    </span>
+  );
+}
+
+function TickerResolutionBadge({ raw, normalized }) {
+  if (!normalized) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-red-500/15 text-red-400">
+        <Icon name="alert-triangle" className="w-3 h-3"/> não resolvido
+      </span>
+    );
+  }
+  if (raw === normalized) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-400">
+        <Icon name="check" className="w-3 h-3"/> ok
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-500/15 text-blue-400" title={`${raw} → ${normalized}`}>
+      <Icon name="check" className="w-3 h-3"/> normalizado
+    </span>
+  );
+}
+
+// Mock data the LLM would return — different per asset class
+function mockExtractionFor(asset, hint) {
+  const base = {
+    as_of_date: "2026-04-30",
+    broker_name: asset.id === "apto" ? "FIPE Imóveis" : asset.id === "veic" ? "Tabela FIPE" : asset.id === "fgts" ? "Caixa Econômica" : asset.id === "btc" ? "Coinbase" : "Avenue Securities",
+    confidence: 0.88,
+    detected_hint: hint === "GENERIC" ? "BROKER_POSITION" : hint,
+  };
+  if (hint === "FGTS_BALANCE" || asset.id === "fgts") {
+    return { ...base, kind: "single", payload: { ticker: "FGTS", value: 18450.32, currency: "BRL", confidence: 0.99 } };
+  }
+  if (hint === "SCREENSHOT_PRICE" || asset.klass === "CRYPTO") {
+    return { ...base, kind: "single", payload: { ticker: asset.ticker || asset.name, value: asset.price * (0.98 + Math.random() * 0.04), currency: asset.ccy, confidence: 0.85 } };
+  }
+  if (hint === "BROKER_INCOME") {
+    return {
+      ...base, kind: "multi",
+      rows: [
+        { ticker_raw: "AAPL", ticker_normalized: "AAPL", type: "DIVIDEND", gross: 24.50, tax: 7.35, net: 17.15, currency: "USD", confidence: 0.96 },
+        { ticker_raw: "MSFT", ticker_normalized: "MSFT", type: "DIVIDEND", gross: 18.20, tax: 5.46, net: 12.74, currency: "USD", confidence: 0.94 },
+        { ticker_raw: "Aluguel BTC", ticker_normalized: null, type: "SECURITIES_LENDING", gross: 4.82, tax: 0, net: 4.82, currency: "USD", confidence: 0.62 },
+      ],
+    };
+  }
+  // Default — BROKER_POSITION
+  return {
+    ...base, kind: "multi",
+    rows: [
+      { ticker_raw: "PETR4", ticker_normalized: "PETR4", quantity: 200, unit_price: 38.45, market_value: 7690.00, currency: "BRL", confidence: 0.97 },
+      { ticker_raw: "ITUB4", ticker_normalized: "ITUB4", quantity: 150, unit_price: 32.10, market_value: 4815.00, currency: "BRL", confidence: 0.95 },
+      { ticker_raw: "VALE3", ticker_normalized: "VALE3", quantity: 100, unit_price: 64.20, market_value: 6420.00, currency: "BRL", confidence: 0.93 },
+      { ticker_raw: "MGLU3?", ticker_normalized: null,   quantity: 500, unit_price: 12.40, market_value: 6200.00, currency: "BRL", confidence: 0.45 },
+    ],
+  };
+}
+
+function ExtractionUploadModal({ asset, pendency, onClose }) {
+  // 4 estados internos: pick → uploading → review → applied
+  const [stage, setStage] = useState("pick");        // pick | uploading | review | applied
+  const [hint, setHint]   = useState("GENERIC");
+  const [filename, setFilename] = useState(null);
+  const [extraction, setExtraction] = useState(null);
+  const [appliedSummary, setAppliedSummary] = useState(null);
+
+  const handlePickFile = () => {
+    // Mock: simula seleção de arquivo
+    setFilename("extrato_avenue_2026-04.pdf");
+    setStage("uploading");
+    // Mock LLM call: 1.6s
+    setTimeout(() => {
+      setExtraction(mockExtractionFor(asset, hint));
+      setStage("review");
+    }, 1600);
+  };
+
+  const handleConfirm = () => {
+    const applied = extraction.kind === "multi"
+      ? extraction.rows.filter(r => r.ticker_normalized).length
+      : 1;
+    const skipped = extraction.kind === "multi"
+      ? extraction.rows.filter(r => !r.ticker_normalized).length
+      : 0;
+    setAppliedSummary({ applied, skipped });
+    setStage("applied");
+    setTimeout(onClose, 1800);
+  };
+
+  return (
+    <Modal onClose={onClose} width="max-w-3xl">
+      <ModalHeader
+        title={stage === "applied" ? "Pendência resolvida" : "Extrair dados do extrato"}
+        subtitle={`${asset.ticker || asset.name} · ${pendency.reason.replace(/_/g, " ").toLowerCase()}`}
+        onClose={onClose}/>
+
+      <div className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin">
+        {/* STAGE 1: Pick file + hint */}
+        {stage === "pick" && (
+          <Fragment>
+            <Field label="Tipo do documento" hint="ajuda o LLM a saber o schema esperado">
+              <select value={hint} onChange={e => setHint(e.target.value)} className={inputCls}>
+                {Object.entries(EXTRACTION_HINTS).map(([id, h]) => (
+                  <option key={id} value={id}>{h.label}</option>
+                ))}
+              </select>
+              <div className="mt-1 text-[11px] text-gray-500 px-0.5">{EXTRACTION_HINTS[hint].desc}</div>
+            </Field>
+
+            <div className="mt-5">
+              <div
+                onClick={handlePickFile}
+                className="p-12 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-700 text-center hover:border-indigo-500/60 hover:bg-indigo-500/5 transition-colors cursor-pointer">
+                <Icon name="upload-cloud" className="w-10 h-10 mx-auto text-gray-400"/>
+                <div className="mt-3 text-[14px] font-medium">Solte o arquivo aqui</div>
+                <div className="mt-1 text-[12px] text-gray-500">
+                  PDF · XLSX · PNG · JPG · CSV · máx 10 MB
+                </div>
+                <button className="mt-4 h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white">
+                  <Icon name="paperclip" className="w-3.5 h-3.5"/> Selecionar arquivo
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 px-3 py-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 text-[11px] text-gray-500">
+              <Icon name="sparkles" className="w-3.5 h-3.5 inline -mt-0.5 text-indigo-400"/>
+              {" "}LLM (Claude Sonnet 4.5) extrai os dados estruturados. Você revisa e edita antes de aplicar. Custo médio por extração: ~$0,03.
+            </div>
+          </Fragment>
+        )}
+
+        {/* STAGE 2: Uploading + LLM running */}
+        {stage === "uploading" && (
+          <div className="py-16 flex flex-col items-center">
+            <div className="relative">
+              <Icon name="sparkles" className="w-10 h-10 text-indigo-400 animate-pulse"/>
+            </div>
+            <div className="mt-5 text-[14px] font-medium">Extraindo dados de {filename}</div>
+            <div className="mt-1 text-[12px] text-gray-500">~10s · LLM analisando o documento</div>
+            <div className="mt-6 w-64 h-1.5 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+              <div className="h-full bg-indigo-500 animate-pulse" style={{ width: "60%" }}/>
+            </div>
+          </div>
+        )}
+
+        {/* STAGE 3: Review preview */}
+        {stage === "review" && extraction && (
+          <Fragment>
+            {/* Header com confidence + hint */}
+            <div className="flex items-center justify-between mb-4 px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+              <div className="flex items-center gap-3">
+                <Icon name="check-circle" className="w-4 h-4 text-emerald-400"/>
+                <div>
+                  <div className="text-[12px] font-medium">{filename}</div>
+                  <div className="text-[10px] text-gray-500">Identificado como <strong>{EXTRACTION_HINTS[extraction.detected_hint]?.label || extraction.detected_hint}</strong> · {extraction.broker_name}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-gray-500">confiança geral</span>
+                <ConfidencePill value={extraction.confidence}/>
+              </div>
+            </div>
+
+            {/* Editable preview — single value (FGTS, screenshot) */}
+            {extraction.kind === "single" && (
+              <div className="space-y-4">
+                <Field label="Ativo">
+                  <input value={extraction.payload.ticker} readOnly className={inputCls + " font-mono opacity-70"}/>
+                </Field>
+                <div className="grid grid-cols-2 gap-4">
+                  <Field label={`Valor extraído · ${extraction.payload.currency}`} hint="você pode editar antes de aplicar">
+                    <input
+                      value={extraction.payload.value.toFixed(2)}
+                      onChange={e => setExtraction({ ...extraction, payload: { ...extraction.payload, value: parseFloat(e.target.value) || 0 } })}
+                      className={inputCls + " tnum"}
+                    />
+                  </Field>
+                  <Field label="Confiança">
+                    <div className="h-10 px-3 inline-flex items-center"><ConfidencePill value={extraction.payload.confidence}/></div>
+                  </Field>
+                </div>
+              </div>
+            )}
+
+            {/* Editable table — multi rows (positions, income) */}
+            {extraction.kind === "multi" && (
+              <div className="rounded-lg border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <table className="w-full text-[12px]">
+                  <thead className="bg-gray-100 dark:bg-gray-800/40">
+                    <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                      <th className="text-left font-medium px-3 py-2">Ticker (raw)</th>
+                      <th className="text-left font-medium px-3 py-2">Resolvido</th>
+                      {extraction.rows[0].quantity !== undefined && <th className="text-right font-medium px-3 py-2">Qtd</th>}
+                      {extraction.rows[0].unit_price !== undefined && <th className="text-right font-medium px-3 py-2">Preço unit.</th>}
+                      {extraction.rows[0].gross !== undefined && <th className="text-right font-medium px-3 py-2">Bruto</th>}
+                      {extraction.rows[0].tax !== undefined && <th className="text-right font-medium px-3 py-2">IR</th>}
+                      {extraction.rows[0].net !== undefined && <th className="text-right font-medium px-3 py-2">Líquido</th>}
+                      {extraction.rows[0].market_value !== undefined && <th className="text-right font-medium px-3 py-2">Valor</th>}
+                      <th className="text-center font-medium px-3 py-2">Conf.</th>
+                      <th className="px-2"/>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {extraction.rows.map((row, i) => (
+                      <tr key={i} className={`border-t border-gray-100 dark:border-gray-800 ${row.ticker_normalized ? "" : "bg-red-500/[0.04]"}`}>
+                        <td className="px-3 py-2 font-mono text-gray-400">{row.ticker_raw}</td>
+                        <td className="px-3"><TickerResolutionBadge raw={row.ticker_raw} normalized={row.ticker_normalized}/></td>
+                        {row.quantity !== undefined && (
+                          <td className="px-3 text-right tnum">
+                            <input value={row.quantity} onChange={e => {
+                              const rows = [...extraction.rows];
+                              rows[i] = { ...rows[i], quantity: parseFloat(e.target.value) || 0 };
+                              setExtraction({ ...extraction, rows });
+                            }} className="w-20 bg-transparent text-right focus:outline-none focus:bg-gray-100 dark:focus:bg-gray-800/40 rounded px-1"/>
+                          </td>
+                        )}
+                        {row.unit_price !== undefined && (
+                          <td className="px-3 text-right tnum">
+                            <input value={row.unit_price.toFixed(2)} onChange={e => {
+                              const rows = [...extraction.rows];
+                              rows[i] = { ...rows[i], unit_price: parseFloat(e.target.value) || 0 };
+                              setExtraction({ ...extraction, rows });
+                            }} className="w-20 bg-transparent text-right focus:outline-none focus:bg-gray-100 dark:focus:bg-gray-800/40 rounded px-1"/>
+                          </td>
+                        )}
+                        {row.gross !== undefined && <td className="px-3 text-right tnum text-gray-400">{row.gross.toFixed(2)}</td>}
+                        {row.tax !== undefined && <td className="px-3 text-right tnum text-amber-400">{row.tax > 0 ? `−${row.tax.toFixed(2)}` : "—"}</td>}
+                        {row.net !== undefined && <td className="px-3 text-right tnum text-emerald-400">{row.net.toFixed(2)}</td>}
+                        {row.market_value !== undefined && <td className="px-3 text-right tnum money font-medium">{row.market_value.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td>}
+                        <td className="px-3 text-center"><ConfidencePill value={row.confidence}/></td>
+                        <td className="px-2 text-right">
+                          <button
+                            onClick={() => setExtraction({ ...extraction, rows: extraction.rows.filter((_, idx) => idx !== i) })}
+                            className="w-6 h-6 inline-flex items-center justify-center text-gray-500 hover:text-red-400" title="Remover linha">
+                            <Icon name="trash" className="w-3 h-3"/>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Warnings */}
+            {extraction.kind === "multi" && extraction.rows.some(r => !r.ticker_normalized) && (
+              <div className="mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 flex items-start gap-2">
+                <Icon name="alert-triangle" className="w-3.5 h-3.5 mt-0.5 shrink-0"/>
+                <div>
+                  <strong>{extraction.rows.filter(r => !r.ticker_normalized).length} ticker(s)</strong> não foram identificados nos seus ativos.
+                  Essas linhas serão <strong>puladas</strong> na aplicação. Pra criar o ativo, edite na próxima etapa ou cancela e cadastra antes.
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 text-[10px] text-gray-500 flex items-center justify-between">
+              <span>
+                <Icon name="sparkles" className="w-3 h-3 inline -mt-0.5 text-indigo-400"/>
+                {" "}Tokens: 2.4K in / 1.1K out · custo: $0,028 · modelo: Sonnet 4.5
+              </span>
+              <span>v.1.0 do prompt</span>
+            </div>
+          </Fragment>
+        )}
+
+        {/* STAGE 4: Applied summary */}
+        {stage === "applied" && appliedSummary && (
+          <div className="py-12 flex flex-col items-center">
+            <div className="w-16 h-16 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <Icon name="check-circle" className="w-8 h-8 text-emerald-400"/>
+            </div>
+            <div className="mt-4 text-[15px] font-medium">Aplicado</div>
+            <div className="mt-1 text-[12px] text-gray-500 text-center">
+              {appliedSummary.applied} {appliedSummary.applied === 1 ? "registro atualizado" : "registros atualizados"}
+              {appliedSummary.skipped > 0 && <> · {appliedSummary.skipped} pulado{appliedSummary.skipped > 1 ? "s" : ""}</>}
+            </div>
+            <div className="mt-4 text-[11px] text-gray-500">Pendência do {asset.ticker || asset.name} marcada como resolvida</div>
+          </div>
+        )}
+      </div>
+
+      {stage === "review" && (
+        <ModalFooter
+          onCancel={onClose}
+          onSave={handleConfirm}
+          saveLabel="Confirmar e aplicar"
+          leftSlot={
+            <button
+              onClick={() => setStage("pick")}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-red-400 hover:bg-red-500/10">
+              <Icon name="trash" className="w-3.5 h-3.5"/> Descartar e re-enviar
+            </button>
+          }
+        />
+      )}
+      {stage === "pick" && (
+        <ModalFooter onCancel={onClose} onSave={onClose} saveDisabled saveLabel="Aguardando arquivo"/>
+      )}
+    </Modal>
   );
 }
 
@@ -6974,6 +8672,17 @@ function App() {
   } else if (route === "/patrimonio") {
     page = <PatrimonioPage/>;
     breadcrumbs = [{ label: "Investimentos" }, { label: "Patrimônio" }];
+  } else if (route === "/fechamentos") {
+    page = <FechamentosPage/>;
+    breadcrumbs = [{ label: "Investimentos" }, { label: "Fechamentos" }];
+  } else if (route.startsWith("/fechamento/")) {
+    const ym = route.split("/")[2];
+    page = <FechamentoDetailPage ym={ym}/>;
+    breadcrumbs = [
+      { label: "Investimentos" },
+      { label: "Fechamentos", href: "#/fechamentos" },
+      { label: ymLabelLong(ym) }
+    ];
   } else if (route === "/onde-investir") {
     page = <OndeInvestirPage/>;
     breadcrumbs = [{ label: "Investimentos" }, { label: "Onde investir" }];

@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import {
   api,
-  type AssetOut, type OptionCreateRequest, type OptionType, type ParsedOptionTicker,
+  type AssetOut, type OptionCreateRequest, type OptionOut, type OptionType,
+  type ParsedOptionTicker,
 } from '../lib/api'
 
+// Underlyings allowed for new options. Spec 36 §2.2: `STOCK/REIT/ETF` only —
+// no options-on-options, no FGTS, etc.
+const UNDERLYING_CLASSES = new Set(['STOCK', 'REIT', 'ETF'])
+
 interface Props {
-  underlying: AssetOut         // pre-selected underlying asset
+  /** Pre-selected underlying. When omitted, the modal shows an asset
+   *  picker as the first field (Spec 36 §2.2). */
+  underlying?: AssetOut
+  /** Used to populate the picker when `underlying` is absent. */
+  candidates?: AssetOut[]
   onClose: () => void
-  onSaved: () => void
+  onSaved: (asset?: OptionOut) => void
 }
 
-export default function OptionModal({ underlying, onClose, onSaved }: Props) {
+export default function OptionModal({ underlying, candidates, onClose, onSaved }: Props) {
+  const [selectedUnderlyingId, setSelectedUnderlyingId] = useState<string>(underlying?.id ?? '')
   const [ticker, setTicker] = useState('')
   const [parsed, setParsed] = useState<ParsedOptionTicker | null>(null)
   const [optionType, setOptionType] = useState<OptionType>('PUT')
@@ -26,9 +36,25 @@ export default function OptionModal({ underlying, onClose, onSaved }: Props) {
   const [notes, setNotes] = useState('')
   const [parsing, setParsing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingAndNew, setSavingAndNew] = useState(false)
   const [error, setError] = useState('')
+  const [toast, setToast] = useState<string | null>(null)
+  const tickerRef = useRef<HTMLInputElement>(null)
 
-  // Parse ticker automatically
+  // Filter candidates by class — `underlying` prop bypasses the picker.
+  const pickerOptions = useMemo(() => {
+    if (underlying || !candidates) return []
+    return candidates
+      .filter(a => UNDERLYING_CLASSES.has(a.asset_class) && a.is_active !== false)
+      .sort((a, b) =>
+        (a.ticker ?? a.name).localeCompare(b.ticker ?? b.name, 'pt-BR'),
+      )
+  }, [underlying, candidates])
+
+  const selectedUnderlying: AssetOut | undefined =
+    underlying ?? candidates?.find(a => a.id === selectedUnderlyingId)
+
+  // Parse ticker automatically (uses the selected underlying's price as hint).
   useEffect(() => {
     const t = ticker.trim().toUpperCase()
     if (t.length < 5) {
@@ -36,7 +62,7 @@ export default function OptionModal({ underlying, onClose, onSaved }: Props) {
       return
     }
     setParsing(true)
-    api.parseOption(t, underlying.current_price ?? undefined)
+    api.parseOption(t, selectedUnderlying?.current_price ?? undefined)
       .then(p => {
         setParsed(p)
         setOptionType(p.option_type)
@@ -44,18 +70,21 @@ export default function OptionModal({ underlying, onClose, onSaved }: Props) {
       })
       .catch(() => setParsed(null))
       .finally(() => setParsing(false))
-  }, [ticker, underlying.current_price])
+  }, [ticker, selectedUnderlying?.current_price])
 
-  async function handleSave() {
-    setError('')
+  function buildBody(): OptionCreateRequest | null {
+    if (!selectedUnderlying) {
+      setError('Selecione o underlying.')
+      return null
+    }
     if (!ticker || !strike || !expiration || !quantity || !pricePerShare) {
       setError('Preencha ticker, strike, vencimento, quantidade e preço.')
-      return
+      return null
     }
-    const body: OptionCreateRequest = {
+    return {
       ticker: ticker.toUpperCase().trim(),
-      underlying_id: underlying.id,
-      account_id: underlying.account_id,
+      underlying_id: selectedUnderlying.id,
+      account_id: selectedUnderlying.account_id,
       option_type: optionType,
       strike_price: Number(strike),
       expiration_date: expiration,
@@ -67,33 +96,89 @@ export default function OptionModal({ underlying, onClose, onSaved }: Props) {
       fee: Number(fee) || 0,
       notes: notes || undefined,
     }
-    setSaving(true)
+  }
+
+  async function save({ keepOpen }: { keepOpen: boolean }) {
+    setError('')
+    const body = buildBody()
+    if (!body) return
+    keepOpen ? setSavingAndNew(true) : setSaving(true)
     try {
-      await api.createOption(body)
-      onSaved()
-      onClose()
+      const created = await api.createOption(body)
+      const premium = body.quantity * body.price_per_share
+      onSaved(created)
+      if (keepOpen) {
+        // Reset everything EXCEPT underlying + optionType (Spec 36 §2.3 —
+        // user typically opens multiple PUTs in a row).
+        setTicker('')
+        setParsed(null)
+        setStrike('')
+        setExpiration('')
+        setQuantity('')
+        setPricePerShare('')
+        setFee('0')
+        setNotes('')
+        setToast(`Opção ${body.ticker} criada · prêmio R$ ${premium.toFixed(2)}`)
+        setTimeout(() => setToast(null), 3000)
+        // Focus back on ticker for fast batch entry.
+        setTimeout(() => tickerRef.current?.focus(), 0)
+      } else {
+        onClose()
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
+      setSavingAndNew(false)
     }
   }
+
+  // ESC closes the modal (consistent with the other composers).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const headerTitle = selectedUnderlying
+    ? `Nova opção sobre ${selectedUnderlying.ticker || selectedUnderlying.name}`
+    : 'Nova opção'
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl flex flex-col max-h-[90vh]">
         <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
-            Nova opção sobre {underlying.ticker || underlying.name}
-          </h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">{headerTitle}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="p-5 space-y-3 text-[12px] overflow-y-auto">
+          {/* Underlying picker — only when not pre-selected. */}
+          {!underlying && (
+            <Field label="Underlying (STOCK / REIT / ETF)">
+              <select
+                value={selectedUnderlyingId}
+                onChange={e => setSelectedUnderlyingId(e.target.value)}
+                className="w-full h-8 px-2 rounded-md bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white"
+                data-testid="option-underlying-picker"
+              >
+                <option value="">Selecione…</option>
+                {pickerOptions.map(a => (
+                  <option key={a.id} value={a.id}>
+                    {(a.ticker || a.name)}{a.current_price != null ? ` · ${a.currency} ${a.current_price.toFixed(2)}` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           <Field label="Ticker B3 (ex: ITUBR364)">
             <input
+              ref={tickerRef}
               value={ticker}
               onChange={e => setTicker(e.target.value.toUpperCase())}
               placeholder="ITUBR364"
@@ -208,19 +293,30 @@ export default function OptionModal({ underlying, onClose, onSaved }: Props) {
           {error && (
             <div className="text-[11px] text-red-600 dark:text-red-400">{error}</div>
           )}
+          {toast && (
+            <div className="text-[11px] text-emerald-600 dark:text-emerald-400" data-testid="option-toast">{toast}</div>
+          )}
         </div>
 
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex justify-end gap-2">
           <button
             onClick={onClose}
-            disabled={saving}
+            disabled={saving || savingAndNew}
             className="h-8 px-3 inline-flex items-center rounded-md text-[12px] text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
           >
             Cancelar
           </button>
           <button
-            onClick={handleSave}
-            disabled={saving}
+            onClick={() => void save({ keepOpen: true })}
+            disabled={saving || savingAndNew}
+            className="h-8 px-3 inline-flex items-center rounded-md border border-indigo-500 text-indigo-600 dark:text-indigo-300 text-[12px] font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20 disabled:opacity-50"
+            data-testid="option-save-and-new"
+          >
+            {savingAndNew ? 'Salvando…' : 'Salvar e abrir outra'}
+          </button>
+          <button
+            onClick={() => void save({ keepOpen: false })}
+            disabled={saving || savingAndNew}
             className="h-8 px-3 inline-flex items-center rounded-md bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium disabled:opacity-50"
           >
             {saving ? 'Salvando...' : 'Criar opção'}

@@ -14,6 +14,7 @@ import {
 import AppLayout from '../components/AppLayout'
 import DistributionComposer from '../components/DistributionComposer'
 import DistributionDetailPanel from '../components/DistributionDetailPanel'
+import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
 import DistributionTotalsLine from '../components/DistributionTotalsLine'
 import ProventosByTypeCard from '../components/ProventosByTypeCard'
 import ProventosChart from '../components/ProventosChart'
@@ -84,6 +85,7 @@ export default function Distributions() {
   // Composer + detail panel state
   const [composerOpen, setComposerOpen] = useState(false)
   const [editing, setEditing] = useState<DistributionOut | undefined>(undefined)
+  const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [selected, setSelected] = useState<DistributionOut | null>(null)
   const [confirmDeactivate, setConfirmDeactivate] = useState<DistributionOut | null>(null)
 
@@ -239,9 +241,51 @@ export default function Distributions() {
       const updated = await api.updateDistribution(editing.id, data)
       setItems(prev => prev.map(d => d.id === updated.id ? updated : d))
       if (selected?.id === updated.id) setSelected(updated)
+      return updated
     } else {
       const created = await api.createDistribution(data)
       setItems(prev => [created, ...prev])
+      return created
+    }
+  }
+
+  async function handleUploadDrafts(entityId: string, drafts: AttachmentDraft[]) {
+    const results = await Promise.allSettled(
+      drafts.map(d => api.uploadAttachment('distribution', entityId, d.file)),
+    )
+    const failed = results
+      .map((r, i) => ({ r, name: drafts[i].name }))
+      .filter(x => x.r.status === 'rejected')
+    if (failed.length) {
+      const reason = failed
+        .map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message ?? 'erro desconhecido'}`)
+        .join(' · ')
+      throw new Error(reason)
+    }
+  }
+
+  async function handleRemovePersistedAttachment(attachmentId: string) {
+    await api.deleteAttachment(attachmentId)
+    if (editing) {
+      const list = await api.listAttachments('distribution', editing.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    }
+  }
+
+  async function openEdit(d: DistributionOut) {
+    setEditing(d)
+    setComposerOpen(true)
+    try {
+      const list = await api.listAttachments('distribution', d.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    } catch {
+      setEditingAttachments([])
     }
   }
 
@@ -480,7 +524,10 @@ export default function Distributions() {
           institutions={institutions}
           assets={assets}
           onSave={handleSave}
-          onClose={() => { setComposerOpen(false); setEditing(undefined) }}
+          onClose={() => { setComposerOpen(false); setEditing(undefined); setEditingAttachments([]) }}
+          persistedAttachments={editing ? editingAttachments : undefined}
+          onUploadDrafts={handleUploadDrafts}
+          onRemovePersistedAttachment={handleRemovePersistedAttachment}
         />
       )}
 
@@ -491,7 +538,7 @@ export default function Distributions() {
           asset={selected.asset_id ? assetById.get(selected.asset_id) || null : null}
           fi={fiById.get(selected.financial_institution_id) || null}
           onClose={() => setSelected(null)}
-          onEdit={() => { setEditing(selected); setComposerOpen(true) }}
+          onEdit={() => { void openEdit(selected) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
         />
       )}

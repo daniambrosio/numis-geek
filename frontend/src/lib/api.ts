@@ -867,6 +867,119 @@ export const api = {
     const qs = workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''
     return request<PortfolioOut>(`/portfolio${qs}`)
   },
+
+  // ── Attachments (Spec 19) ────────────────────────────────────────────────
+  listAttachments: (source_type: AttachmentSourceType, source_id: string) => {
+    const qs = new URLSearchParams({ source_type, source_id })
+    return request<AttachmentOut[]>(`/attachments?${qs}`)
+  },
+  uploadAttachment: async (source_type: AttachmentSourceType, source_id: string, file: File): Promise<AttachmentOut> => {
+    const token = getToken()
+    const form = new FormData()
+    form.append('source_type', source_type)
+    form.append('source_id', source_id)
+    form.append('file', file, file.name)
+    const res = await fetch(`${BASE}/attachments`, {
+      method: 'POST',
+      body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (!res.ok) {
+      let detail: string | null = null
+      try {
+        const body = await res.json() as { detail?: string }
+        detail = body?.detail ?? null
+      } catch { /* not JSON */ }
+      throw new Error(detail ?? `HTTP ${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<AttachmentOut>
+  },
+  deleteAttachment: (id: string) =>
+    request<void>(`/attachments/${id}`, { method: 'DELETE' }),
+
+  // ── Extractions (Spec 38) ─────────────────────────────────────────────
+  createExtraction: (body: CreateExtractionBody) =>
+    request<ExtractionJobOut>('/extractions', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  getExtraction: (id: string) =>
+    request<ExtractionJobOut>(`/extractions/${id}`),
+  confirmExtraction: (id: string, edited_payload?: Record<string, unknown> | null) =>
+    request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
+      method: 'POST', body: JSON.stringify({ edited_payload: edited_payload ?? null }),
+    }),
+  rejectExtraction: (id: string, reason?: string) =>
+    request<ExtractionJobOut>(`/extractions/${id}/reject`, {
+      method: 'POST', body: JSON.stringify({ reason: reason ?? null }),
+    }),
+}
+
+// ── Extractions (Spec 38) ────────────────────────────────────────────────────
+export type ExtractionSourceHint =
+  | 'BROKER_POSITION'
+  | 'BROKER_INCOME'
+  | 'B3_TRADE_NOTE'
+  | 'FGTS_BALANCE'
+  | 'SCREENSHOT_PRICE'
+  | 'GENERIC'
+
+export type ExtractionStatus =
+  | 'PENDING' | 'RUNNING' | 'EXTRACTED' | 'CONFIRMED' | 'REJECTED' | 'FAILED'
+
+export interface CreateExtractionBody {
+  attachment_id: string
+  source_hint?: ExtractionSourceHint
+  pendency_id?: string | null
+  snapshot_id?: string | null
+  asset_id?: string | null
+}
+
+export interface ExtractionJobOut {
+  id: string
+  workspace_id: string
+  status: ExtractionStatus
+  source_hint: ExtractionSourceHint
+  attachment_id: string
+  pendency_id: string | null
+  snapshot_id: string | null
+  asset_id: string | null
+  extracted_json: Record<string, unknown> | null
+  confidence: number | null
+  detected_hint: ExtractionSourceHint | null
+  model: string | null
+  prompt_version: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_usd: string | null
+  error_message: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  confirmed_at: string | null
+}
+
+export interface ExtractionApplyResultOut {
+  applied_count: number
+  skipped_count: number
+  errors: string[]
+}
+
+// ── Attachments (Spec 19) ────────────────────────────────────────────────────
+export type AttachmentSourceType = 'asset' | 'movement' | 'distribution'
+export type AttachmentKind = 'image' | 'pdf' | 'csv' | 'other'
+
+export interface AttachmentOut {
+  id: string
+  workspace_id: string
+  source_type: AttachmentSourceType
+  source_id: string
+  kind: AttachmentKind
+  filename: string
+  mime_type: string
+  size_bytes: number
+  uploaded_at: string
+  uploaded_by: string | null
+  is_active: boolean
 }
 
 // ── Portfolio (Spec 20) ──────────────────────────────────────────────────────

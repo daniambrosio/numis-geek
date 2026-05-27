@@ -503,6 +503,55 @@ def test_audit_log_created_for_lancamento_mutations(client, seed):
     assert "asset_movement.deactivated" in actions
 
 
+def test_update_audit_log_records_field_diff(client, seed):
+    """Spec 37 — PUT /asset-movements/{id} writes a JSON diff under
+    `details.diff` so audit consumers can see exactly what changed."""
+    import json
+
+    r = client.post("/asset-movements", json={
+        "asset_id": seed["asset_a"],
+        "type": "BUY",
+        "event_date": _today_iso(),
+        "quantity": 10,
+        "unit_price": 20.0,
+        "notes": "before",
+    }, headers=auth(seed["admin_token_a"]))
+    lan_id = r.json()["id"]
+
+    r2 = client.put(f"/asset-movements/{lan_id}", json={
+        "asset_id": seed["asset_a"],
+        "type": "BUY",
+        "event_date": _today_iso(),
+        "quantity": 12,           # changed
+        "unit_price": 20.0,       # unchanged
+        "notes": "after",         # changed
+    }, headers=auth(seed["admin_token_a"]))
+    assert r2.status_code == 200
+
+    db = TestSession()
+    try:
+        log = (
+            db.query(AuditLog)
+            .filter(AuditLog.resource_id == lan_id, AuditLog.action == "asset_movement.updated")
+            .first()
+        )
+        assert log is not None
+        details = json.loads(log.details)
+    finally:
+        db.close()
+
+    diff = details["diff"]
+    # quantity, notes, gross_amount (computed from qty*price), net_amount changed.
+    assert "quantity" in diff
+    assert float(diff["quantity"]["old"]) == 10.0
+    assert float(diff["quantity"]["new"]) == 12.0
+    assert "notes" in diff
+    assert diff["notes"] == {"old": "before", "new": "after"}
+    # Unchanged fields are NOT in the diff.
+    assert "unit_price" not in diff
+    assert "type" not in diff
+
+
 # ── Tests: USD currency / fx_rate ──────────────────────────────────────────
 
 def test_usd_asset_defaults_currency_usd(client, seed):

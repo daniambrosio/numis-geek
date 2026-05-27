@@ -26,6 +26,11 @@ dev = [
     "pytest-cov>=5.0",
     "httpx>=0.27",
 ]
+# Spec 38 — Anthropic Claude for snapshot extraction. Optional because the
+# extraction service falls back to a stub when the SDK is missing.
+llm = [
+    "anthropic>=0.40",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -7,6 +7,9 @@ import {
   type DistributionType,
   type FinancialInstitutionOut,
 } from '../lib/api'
+import NotesAttachmentsField, {
+  type AttachmentDraft, type PersistedAttachment,
+} from './NotesAttachmentsField'
 
 interface TypeCfg {
   label: string
@@ -27,8 +30,11 @@ interface Props {
   initial?: DistributionOut
   institutions: FinancialInstitutionOut[]
   assets: AssetOut[]
-  onSave: (data: DistributionRequest) => Promise<void>
+  onSave: (data: DistributionRequest) => Promise<DistributionOut | void>
   onClose: () => void
+  persistedAttachments?: PersistedAttachment[]
+  onUploadDrafts?: (entityId: string, drafts: AttachmentDraft[]) => Promise<void>
+  onRemovePersistedAttachment?: (attachmentId: string) => Promise<void>
 }
 
 const num = (s: string): number => {
@@ -43,6 +49,7 @@ const fmtMoney = (n: number, ccy: 'BRL' | 'USD', opts: { sign?: boolean } = {}) 
 
 export default function DistributionComposer({
   initial, institutions, assets, onSave, onClose,
+  persistedAttachments, onUploadDrafts, onRemovePersistedAttachment,
 }: Props) {
   const [type, setType] = useState<DistributionType>(initial?.type ?? 'DIVIDEND')
   const [fiId, setFiId] = useState<string>(
@@ -56,6 +63,8 @@ export default function DistributionComposer({
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDraft[]>([])
+  const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
 
   const cfg = TYPE_CFG[type]
   const selectedAsset = assets.find(a => a.id === assetId)
@@ -123,7 +132,19 @@ export default function DistributionComposer({
         // bimoneda design (CLAUDE.md feature #3 "Dolarized portfolio view").
         notes: notes.trim() || null,
       }
-      await onSave(payload)
+      const saved = await onSave(payload)
+      if (attachmentDrafts.length && onUploadDrafts && saved && 'id' in saved) {
+        try {
+          await onUploadDrafts(saved.id, attachmentDrafts)
+        } catch (attErr) {
+          setAttachmentWarning(
+            attErr instanceof Error
+              ? `Provento salvo, mas alguns anexos falharam: ${attErr.message}`
+              : 'Provento salvo, mas alguns anexos falharam.',
+          )
+          return
+        }
+      }
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
@@ -272,16 +293,20 @@ export default function DistributionComposer({
             </div>
           )}
 
-          <Field label="Notas" hint="opcional · ⌘V cola imagem">
-            <textarea
-              value={notes} onChange={e => setNotes(e.target.value)}
-              rows={2}
-              placeholder="ex: trimestre 1T26, link RI…"
-              className={`${inputCls} py-2 resize-none`}
-            />
-          </Field>
+          <NotesAttachmentsField
+            notes={notes}
+            onNotesChange={setNotes}
+            files={attachmentDrafts}
+            onFilesChange={setAttachmentDrafts}
+            persisted={persistedAttachments}
+            onRemovePersisted={onRemovePersistedAttachment}
+            placeholder="ex: trimestre 1T26, link RI…"
+          />
 
           {error && <p className="text-[12px] text-red-600 dark:text-red-400">{error}</p>}
+          {attachmentWarning && (
+            <p className="text-[12px] text-amber-600 dark:text-amber-400">{attachmentWarning}</p>
+          )}
         </form>
 
         {/* Footer */}
@@ -305,7 +330,7 @@ export default function DistributionComposer({
               disabled={!isValid || saving}
               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {saving ? 'Salvando…' : '✓ Salvar'}
+              {saving ? 'Salvando…' : (initial ? '✓ Salvar alterações' : '✓ Salvar')}
             </button>
           </div>
         </div>

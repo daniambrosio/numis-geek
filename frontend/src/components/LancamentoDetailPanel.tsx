@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, AlertTriangle, Clock, XCircle, RefreshCw, X } from 'lucide-react'
 import {
   api,
-  type AssetOut, type FinancialInstitutionOut, type AssetMovementOut,
+  type AssetOut, type AttachmentOut, type FinancialInstitutionOut,
+  type AssetMovementOut, type AssetMovementRequest,
   type NotionSyncStatus, type SyncOut,
 } from '../lib/api'
 import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 import { CcyPill, ClassBadge, FILogo, TypeBadge } from './ui'
+import NotesAttachmentsCard from './NotesAttachmentsCard'
 
 interface Props {
   lancamento: AssetMovementOut
@@ -16,6 +18,9 @@ interface Props {
   onEdit: () => void
   onDeactivate: () => void
   onSyncUpdated?: (out: SyncOut) => void
+  /** Optional: caller can supply an "Updated" hook so the parent list
+   *  shows fresh notes / attachments after edits made inside the panel. */
+  onUpdated?: (m: AssetMovementOut) => void
 }
 
 function fmtMoney(n: number | null | undefined, currency: string, opts: { sign?: boolean } = {}) {
@@ -31,13 +36,60 @@ function fmtNum(n: number | null | undefined, digits = 8) {
 }
 
 export default function LancamentoDetailPanel({
-  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onSyncUpdated,
+  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onSyncUpdated, onUpdated,
 }: Props) {
+  const [attachments, setAttachments] = useState<AttachmentOut[]>([])
+  const [notes, setNotes] = useState<string>(l.notes ?? '')
+
+  // Resync local state when the parent swaps to a different lançamento.
+  useEffect(() => { setNotes(l.notes ?? '') }, [l.id, l.notes])
+
+  // Load persisted attachments for this lançamento.
+  useEffect(() => {
+    let cancelled = false
+    api.listAttachments('movement', l.id)
+      .then(list => { if (!cancelled) setAttachments(list) })
+      .catch(() => { if (!cancelled) setAttachments([]) })
+    return () => { cancelled = true }
+  }, [l.id])
+
   useEffect(() => {
     function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onEsc)
     return () => document.removeEventListener('keydown', onEsc)
   }, [onClose])
+
+  async function refreshAttachments() {
+    try {
+      const list = await api.listAttachments('movement', l.id)
+      setAttachments(list)
+    } catch { /* fail-soft */ }
+  }
+
+  async function saveNotes(next: string): Promise<void> {
+    // PUT requires the full payload — reconstruct from the current entity.
+    const payload: AssetMovementRequest = {
+      asset_id: l.asset_id,
+      type: l.type,
+      event_date: l.event_date,
+      settlement_date: l.settlement_date,
+      quantity: l.quantity,
+      unit_price: l.unit_price,
+      gross_amount: l.gross_amount,
+      fee: l.fee,
+      tax: l.tax,
+      net_amount: l.net_amount,
+      currency: l.currency,
+      fx_rate: l.fx_rate,
+      notes: next.trim() ? next : null,
+      nota_negociacao_number: l.nota_negociacao_number,
+      external_id: l.external_id,
+      external_source: l.external_source,
+    }
+    const updated = await api.updateAssetMovement(l.id, payload)
+    setNotes(updated.notes ?? '')
+    onUpdated?.(updated)
+  }
 
   const typeColor = lanTypeColor(l.type)
   const klass = asset ? collapsedOf(asset.asset_class) : null
@@ -119,17 +171,15 @@ export default function LancamentoDetailPanel({
           {/* Notion sync */}
           <NotionSyncSection l={l} onUpdated={onSyncUpdated} />
 
-          {/* Notes */}
-          <div>
-            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-              Notas
-            </div>
-            {l.notes ? (
-              <p className="text-[12px] text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{l.notes}</p>
-            ) : (
-              <p className="text-[12px] text-gray-400 dark:text-gray-600">—</p>
-            )}
-          </div>
+          {/* Notes & attachments — mirrors prototype NotesAttachments (index.html:4168) */}
+          <NotesAttachmentsCard
+            notes={notes}
+            onNotesSave={saveNotes}
+            sourceType="movement"
+            sourceId={l.id}
+            attachments={attachments}
+            onAttachmentsChanged={refreshAttachments}
+          />
         </div>
 
         {/* Footer */}

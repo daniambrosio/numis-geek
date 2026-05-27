@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Sparkles } from 'lucide-react'
 import {
+  api,
   type AssetClass,
   type AssetOut,
   type AssetMovementOut,
   type AssetMovementRequest,
   type AssetMovementType,
 } from '../lib/api'
+import NotesAttachmentsField, {
+  type AttachmentDraft, type PersistedAttachment,
+} from './NotesAttachmentsField'
 
-// 6 normal types only — option lifecycle types (SELL_OPEN, BUY_TO_OPEN,
-// SELL_TO_CLOSE, BUY_TO_CLOSE, EXERCISED, EXPIRED) are handled via the
-// dedicated option flow on the underlying's detail page (`OptionModal` +
-// `OpenOptionsCard` actions), per `options-rationale.md` §7 and the
-// prototype's MovementComposer.
+// 6 normal types for non-OPTION assets; the 4 lifecycle closers
+// (SELL_TO_CLOSE, BUY_TO_CLOSE, EXERCISED, EXPIRED) appear when the
+// selected asset is an OPTION (Spec 36 §3). Openers (SELL_OPEN /
+// BUY_TO_OPEN) still go through `OptionModal` because they create the
+// Asset row at the same time as the movement.
 interface TypeCfg {
   label: string
   hint: string
@@ -41,6 +45,19 @@ const TYPE_CFG: Record<string, TypeCfg> = {
 
 const TYPE_ORDER: AssetMovementType[] = ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION']
 
+// Option lifecycle types (Spec 36 §3.3). When the selected asset is an
+// OPTION, the type picker replaces the normal 3×2 grid with these 4.
+// SELL_TO_CLOSE/BUY_TO_CLOSE behave like SELL/BUY for cash; EXERCISED
+// transfers shares to the underlying; EXPIRED zeroes the position.
+const OPTION_LIFECYCLE_TYPES: Record<string, TypeCfg> = {
+  SELL_TO_CLOSE: { label: 'Vender / Encerrar', hint: 'Recompra a opção vendida',           qty: true,  price: true,  fee: true,  tax: false },
+  BUY_TO_CLOSE:  { label: 'Comprar / Encerrar',hint: 'Encerra opção que estava comprada', qty: true,  price: true,  fee: true,  tax: false },
+  EXERCISED:     { label: 'Exercida',          hint: 'Strike atingido · transfere shares', qty: true,  price: false, fee: false, tax: false },
+  EXPIRED:       { label: 'Virou pó',          hint: 'Vencimento sem exercício · cash 0',  qty: false, price: false, fee: false, tax: false },
+}
+
+const OPTION_LIFECYCLE_ORDER: AssetMovementType[] = ['SELL_TO_CLOSE', 'BUY_TO_CLOSE', 'EXERCISED', 'EXPIRED']
+
 // Non-cotado classes — for BUY/SELL/SUBSCRIPTION/FULL_REDEMPTION, show a
 // single "Valor" (gross_amount) input instead of qty × unit_price.
 // FIXED_INCOME is intentionally NOT here: Tesouro Direto and debêntures
@@ -54,8 +71,25 @@ interface Props {
   /** Pre-selected asset (used when opening from /assets detail). */
   preselectedAsset?: AssetOut
   assets: AssetOut[]
-  onSave: (data: AssetMovementRequest) => Promise<void>
+  /**
+   * Save the movement payload and return the saved entity (so the composer
+   * can upload pending attachments against the new ID). Returning void from
+   * `onSave` disables attachment upload — keep the typed return when callers
+   * need attachments.
+   */
+  onSave: (data: AssetMovementRequest) => Promise<AssetMovementOut | void>
+  /** Called after an OPTION lifecycle action (close/exercise/expire) so the
+   *  parent can refresh its movement list (the lifecycle endpoints create
+   *  movements server-side that the standard `onSave` flow doesn't know
+   *  about). */
+  onOptionLifecycleSaved?: () => void | Promise<void>
   onClose: () => void
+  /** Already-persisted attachments shown above drafts in edit mode. */
+  persistedAttachments?: PersistedAttachment[]
+  /** Called once the composer has new drafts ready to upload, returning the
+   *  saved entity id. */
+  onUploadDrafts?: (entityId: string, drafts: AttachmentDraft[]) => Promise<void>
+  onRemovePersistedAttachment?: (attachmentId: string) => Promise<void>
 }
 
 const num = (s: string): number => {
@@ -71,7 +105,10 @@ const fmtMoney = (n: number, ccy: 'BRL' | 'USD', opts: { sign?: boolean } = {}) 
 const fmtNum = (n: number, digits = 2) =>
   n.toLocaleString('pt-BR', { maximumFractionDigits: digits })
 
-export default function MovementComposer({ initial, preselectedAsset, assets, onSave, onClose }: Props) {
+export default function MovementComposer({
+  initial, preselectedAsset, assets, onSave, onOptionLifecycleSaved, onClose,
+  persistedAttachments, onUploadDrafts, onRemovePersistedAttachment,
+}: Props) {
   // Asset selector lists ALL assets (incl. OPTION) — same as the prototype's
   // MovementComposer (`index.html:4312-4316`). Option lifecycle types
   // (SELL_OPEN/BUY_TO_OPEN/EXERCISED/EXPIRED) are NOT exposed here; the
@@ -92,6 +129,8 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
   const [confirmInactive, setConfirmInactive] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDraft[]>([])
+  const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
 
   const selectedAsset = assets.find(a => a.id === assetId) ?? preselectedAsset
 
@@ -102,9 +141,22 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
     const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
     return [...assets].sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
   }, [assets])
-  const cfg = TYPE_CFG[type]
+  const isOptionAsset = selectedAsset?.asset_class === 'OPTION'
+  // OPTION assets get the lifecycle config; everything else uses TYPE_CFG.
+  // When the asset switches to OPTION mid-edit (rare), force the type back
+  // into the valid lifecycle set.
+  useEffect(() => {
+    if (isOptionAsset && !OPTION_LIFECYCLE_ORDER.includes(type)) {
+      setType('SELL_TO_CLOSE')
+    } else if (!isOptionAsset && OPTION_LIFECYCLE_ORDER.includes(type)) {
+      setType('BUY')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOptionAsset])
+
+  const cfg = isOptionAsset ? OPTION_LIFECYCLE_TYPES[type] ?? OPTION_LIFECYCLE_TYPES.SELL_TO_CLOSE : TYPE_CFG[type]
   const ccy: 'BRL' | 'USD' = selectedAsset?.currency ?? 'BRL'
-  const isNonCotado = !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
+  const isNonCotado = !isOptionAsset && !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
   const isCotadoOrValueType = ['BUY', 'SELL', 'SUBSCRIPTION', 'FULL_REDEMPTION'].includes(type)
   const useValueOnly = isNonCotado && isCotadoOrValueType
   const showQuantity = cfg.qty && !useValueOnly
@@ -187,7 +239,49 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
         payload.quantity = null
         payload.unit_price = null
       }
-      await onSave(payload)
+
+      // OPTION lifecycle routes through dedicated backend endpoints (Spec 36
+      // §4). The composer skips the parent's onSave because those endpoints
+      // build the AssetMovement(s) server-side. The parent uses
+      // `onOptionLifecycleSaved` to refresh its list.
+      let saved: AssetMovementOut | void
+      if (isOptionAsset && !initial && OPTION_LIFECYCLE_ORDER.includes(type)) {
+        const optId = selectedAsset!.id
+        if (type === 'EXPIRED') {
+          await api.expireOption(optId, eventDate)
+        } else if (type === 'EXERCISED') {
+          await api.exerciseOption(optId, eventDate)
+        } else {
+          // SELL_TO_CLOSE / BUY_TO_CLOSE
+          await api.closeOption(optId, {
+            close_date: eventDate,
+            quantity: num(quantity),
+            price_per_share: num(unitPrice),
+            movement_type: type as 'SELL_TO_CLOSE' | 'BUY_TO_CLOSE',
+            fee: fee ? num(fee) : 0,
+            notes: notes.trim() || undefined,
+          })
+        }
+        saved = undefined
+        if (onOptionLifecycleSaved) await onOptionLifecycleSaved()
+      } else {
+        saved = await onSave(payload)
+      }
+
+      // After the row is persisted, upload pending attachments. A partial
+      // failure leaves the row but raises a warning so the user can retry.
+      if (attachmentDrafts.length && onUploadDrafts && saved && 'id' in saved) {
+        try {
+          await onUploadDrafts(saved.id, attachmentDrafts)
+        } catch (attErr) {
+          setAttachmentWarning(
+            attErr instanceof Error
+              ? `Lançamento salvo, mas alguns anexos falharam: ${attErr.message}`
+              : 'Lançamento salvo, mas alguns anexos falharam.',
+          )
+          return
+        }
+      }
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
@@ -220,12 +314,15 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
 
         {/* Body */}
         <form id="movement-form" onSubmit={handleSubmit} className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin space-y-5">
-          {/* Type picker — 3x2 grid */}
+          {/* Type picker — 3×2 grid for normal assets, 2×2 for OPTION assets (Spec 36 §3.2). */}
           <div>
             <FieldLabel>Tipo</FieldLabel>
-            <div className="grid grid-cols-3 gap-2 mt-1.5">
-              {TYPE_ORDER.map(id => {
-                const c = TYPE_CFG[id]
+            <div
+              className={`grid gap-2 mt-1.5 ${isOptionAsset ? 'grid-cols-2' : 'grid-cols-3'}`}
+              data-testid="movement-type-grid"
+            >
+              {(isOptionAsset ? OPTION_LIFECYCLE_ORDER : TYPE_ORDER).map(id => {
+                const c = isOptionAsset ? OPTION_LIFECYCLE_TYPES[id] : TYPE_CFG[id]
                 const active = type === id
                 return (
                   <button
@@ -405,18 +502,21 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
             </div>
           )}
 
-          {/* Notes */}
-          <Field label="Notas" hint="opcional · ⌘V cola imagem">
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              rows={2}
-              placeholder="ex: tese, motivo da compra, link pra notícia…"
-              className={`${inputCls} py-2 resize-none`}
-            />
-          </Field>
+          {/* Notes + anexos */}
+          <NotesAttachmentsField
+            notes={notes}
+            onNotesChange={setNotes}
+            files={attachmentDrafts}
+            onFilesChange={setAttachmentDrafts}
+            persisted={persistedAttachments}
+            onRemovePersisted={onRemovePersistedAttachment}
+            placeholder="ex: tese, motivo da compra, link pra notícia…"
+          />
 
           {error && <p className="text-[12px] text-red-600 dark:text-red-400">{error}</p>}
+          {attachmentWarning && (
+            <p className="text-[12px] text-amber-600 dark:text-amber-400">{attachmentWarning}</p>
+          )}
         </form>
 
         {/* Footer */}
@@ -440,7 +540,7 @@ export default function MovementComposer({ initial, preselectedAsset, assets, on
               disabled={!isValid || saving}
               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {saving ? 'Salvando…' : '✓ Salvar'}
+              {saving ? 'Salvando…' : (initial ? '✓ Salvar alterações' : '✓ Salvar')}
             </button>
           </div>
         </div>

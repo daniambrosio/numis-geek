@@ -1,10 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import {
-  type AssetOut, type DistributionOut, type FinancialInstitutionOut,
+  api,
+  type AssetOut, type AttachmentOut, type DistributionOut,
+  type DistributionRequest, type FinancialInstitutionOut,
 } from '../lib/api'
 import { KLASS, collapsedOf } from '../lib/tokens'
 import { CcyPill, ClassBadge, FILogo } from './ui'
+import NotesAttachmentsCard from './NotesAttachmentsCard'
 
 interface Props {
   distribution: DistributionOut
@@ -13,6 +16,7 @@ interface Props {
   onClose: () => void
   onEdit: () => void
   onDeactivate: () => void
+  onUpdated?: (d: DistributionOut) => void
 }
 
 function fmtMoney(n: number | null | undefined, currency: string, opts: { sign?: boolean } = {}) {
@@ -30,13 +34,51 @@ const TYPE_COLOR: Record<string, string> = {
 }
 
 export default function DistributionDetailPanel({
-  distribution: d, asset, fi, onClose, onEdit, onDeactivate,
+  distribution: d, asset, fi, onClose, onEdit, onDeactivate, onUpdated,
 }: Props) {
+  const [attachments, setAttachments] = useState<AttachmentOut[]>([])
+  const [notes, setNotes] = useState<string>(d.notes ?? '')
+
+  useEffect(() => { setNotes(d.notes ?? '') }, [d.id, d.notes])
+
+  useEffect(() => {
+    let cancelled = false
+    api.listAttachments('distribution', d.id)
+      .then(list => { if (!cancelled) setAttachments(list) })
+      .catch(() => { if (!cancelled) setAttachments([]) })
+    return () => { cancelled = true }
+  }, [d.id])
+
   useEffect(() => {
     function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onEsc)
     return () => document.removeEventListener('keydown', onEsc)
   }, [onClose])
+
+  async function refreshAttachments() {
+    try { setAttachments(await api.listAttachments('distribution', d.id)) }
+    catch { /* fail-soft */ }
+  }
+
+  async function saveNotes(next: string): Promise<void> {
+    const payload: DistributionRequest = {
+      financial_institution_id: d.financial_institution_id,
+      asset_id: d.asset_id,
+      type: d.type,
+      event_date: d.event_date,
+      gross_amount: d.gross_amount,
+      tax: d.tax,
+      net_amount: d.net_amount,
+      currency: d.currency,
+      fx_rate: d.fx_rate,
+      notes: next.trim() ? next : null,
+      external_id: d.external_id,
+      external_source: d.external_source,
+    }
+    const updated = await api.updateDistribution(d.id, payload)
+    setNotes(updated.notes ?? '')
+    onUpdated?.(updated)
+  }
 
   const typeColor = TYPE_COLOR[d.type] || '#9ca3af'
   const klass = asset ? collapsedOf(asset.asset_class) : null
@@ -137,17 +179,15 @@ export default function DistributionDetailPanel({
             <Field label="Status" value={d.is_active ? 'Ativo' : 'Inativo'} />
           </dl>
 
-          {/* Notes */}
-          <div>
-            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-              Notas
-            </div>
-            {d.notes ? (
-              <p className="text-[12px] text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{d.notes}</p>
-            ) : (
-              <p className="text-[12px] text-gray-400 dark:text-gray-600">—</p>
-            )}
-          </div>
+          {/* Notes & attachments — mirrors prototype NotesAttachments (index.html:4168) */}
+          <NotesAttachmentsCard
+            notes={notes}
+            onNotesSave={saveNotes}
+            sourceType="distribution"
+            sourceId={d.id}
+            attachments={attachments}
+            onAttachmentsChanged={refreshAttachments}
+          />
         </div>
 
         {/* Footer */}

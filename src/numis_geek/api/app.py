@@ -15,6 +15,7 @@ from numis_geek.api.routes import (
     backup,
     corporate_actions,
     distributions,
+    extractions,
     financial_institutions,
     integrations,
     notion_sync,
@@ -64,6 +65,7 @@ app.include_router(attachments.router)
 app.include_router(portfolio.router)
 app.include_router(prices.router)
 app.include_router(backup.router)
+app.include_router(extractions.router)
 
 
 @app.get("/health")
