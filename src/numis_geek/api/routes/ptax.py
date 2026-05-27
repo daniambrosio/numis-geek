@@ -15,6 +15,7 @@ from numis_geek.services.auth import UserContext
 from numis_geek.services.ptax_sync import PtaxSyncResult, sync_ptax
 
 router = APIRouter(prefix="/sysadmin/ptax", tags=["ptax"])
+workspace_router = APIRouter(prefix="/ptax", tags=["ptax"])
 
 
 class PTAXRateOut(BaseModel):
@@ -129,6 +130,46 @@ def trigger_sync(
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
+    try:
+        result = sync_ptax(db, mode=body.mode)
+    except BCBError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"BCB SGS unreachable or malformed: {e}",
+        )
+    return PTAXSyncResultOut.from_dto(result)
+
+
+# ─── Workspace-level (Spec 44) ───────────────────────────────────────────────
+# Same status + sync surface but no sysadmin gate. Rationale: portfolio
+# values in USD depend on fresh PTAX; if the daily cron (Spec 11) misses,
+# any authenticated workspace user should be able to unblock by triggering
+# a sync. Admin-only listing of every row stays on /sysadmin/ptax.
+
+
+@workspace_router.get("/status", response_model=PTAXStatusOut)
+def ptax_status_workspace(
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),  # noqa: ARG001
+):
+    total: int = db.query(func.count(PTAXRate.id)).scalar() or 0
+    last_date = db.query(func.max(PTAXRate.date)).scalar()
+    oldest_date = db.query(func.min(PTAXRate.date)).scalar()
+    last_fetched = db.query(func.max(PTAXRate.fetched_at)).scalar()
+    return PTAXStatusOut(
+        total_rows=total,
+        last_date=last_date.isoformat() if last_date else None,
+        oldest_date=oldest_date.isoformat() if oldest_date else None,
+        last_fetched_at=last_fetched.isoformat() if last_fetched else None,
+    )
+
+
+@workspace_router.post("/sync", response_model=PTAXSyncResultOut)
+def trigger_sync_workspace(
+    body: PTAXSyncRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),  # noqa: ARG001
+):
     try:
         result = sync_ptax(db, mode=body.mode)
     except BCBError as e:

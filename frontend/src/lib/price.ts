@@ -42,6 +42,30 @@ export function formatRelative(iso: string | null, now: Date = new Date()): stri
   return `há ${years} a`
 }
 
+const TIER_RANK_FULL: Record<PriceTier, number> = {
+  FRESH: 0, STALE: 1, OLD: 2, UNKNOWN: 3,
+}
+
+/** PTAX freshness (Spec 44). BCB cron runs daily 20h SP, so anything
+ *  ≤24h is FRESH, 1–3 dias STALE, > 3 dias OLD. */
+export function ptaxTier(lastDateIso: string | null, now: Date = new Date()): PriceTier {
+  if (!lastDateIso) return 'UNKNOWN'
+  // lastDateIso is a YYYY-MM-DD (BR business day). Use end-of-day SP as baseline.
+  const ts = new Date(lastDateIso + 'T23:59:59').getTime()
+  const diffH = (now.getTime() - ts) / 3_600_000
+  if (diffH <= 24) return 'FRESH'
+  if (diffH <= 72) return 'STALE'
+  return 'OLD'
+}
+
+/** Take the worst of two tiers — UNKNOWN is treated as "no signal" and
+ *  doesn't downgrade a real tier (Spec 44). */
+export function worstOfTiers(a: PriceTier, b: PriceTier): PriceTier {
+  if (a === 'UNKNOWN') return b
+  if (b === 'UNKNOWN') return a
+  return TIER_RANK_FULL[a] >= TIER_RANK_FULL[b] ? a : b
+}
+
 export interface SourceBreakdown {
   source: PriceSource
   count: number

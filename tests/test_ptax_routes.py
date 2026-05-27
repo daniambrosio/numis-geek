@@ -142,3 +142,37 @@ def test_sync_route_calls_service(client, seed):
     assert r.status_code == 200
     assert captured == ["incremental"]
     assert r.json()["duration_ms"] == 42
+
+
+# ── Spec 44 — workspace-level routes (non-sysadmin allowed) ─────────────
+
+
+def test_workspace_status_allows_admin_user(client, seed):
+    r = client.get("/ptax/status", headers=auth(seed["admin_tok"]))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_rows"] >= 3
+    assert body["last_date"] == "2026-05-15"
+    assert body["oldest_date"] == "2026-05-13"
+
+
+def test_workspace_sync_allows_admin_user(client, seed):
+    captured = []
+
+    def fake_sync(db, *, mode):
+        captured.append(mode)
+        from numis_geek.services.ptax_sync import PtaxSyncResult
+        return PtaxSyncResult(
+            mode=mode, fetched_count=1, inserted_count=1, updated_count=0,
+            range_start=date(2026, 5, 18), range_end=date(2026, 5, 18), duration_ms=7,
+        )
+
+    with patch("numis_geek.api.routes.ptax.sync_ptax", side_effect=fake_sync):
+        r = client.post(
+            "/ptax/sync",
+            headers=auth(seed["admin_tok"]),
+            json={"mode": "incremental"},
+        )
+    assert r.status_code == 200
+    assert captured == ["incremental"]
+    assert r.json()["inserted_count"] == 1

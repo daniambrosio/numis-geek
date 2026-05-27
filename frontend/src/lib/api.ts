@@ -767,6 +767,15 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
 
+  // ── PTAX (Spec 44 — workspace-accessible) ────────────────────────────────
+  ptaxStatusWorkspace: () => request<PTAXStatusOut>('/ptax/status'),
+
+  syncPtaxWorkspace: (mode: PTAXSyncMode) =>
+    request<PTAXSyncResultOut>('/ptax/sync', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
+
   // ── Price refresh (spec 12 + 23) ─────────────────────────────────────────
   refreshAssetPrice: (id: string) =>
     request<PriceRefreshOut>(`/assets/${id}/refresh-price`, { method: 'POST' }),
