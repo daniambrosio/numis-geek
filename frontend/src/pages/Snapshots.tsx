@@ -199,8 +199,7 @@ export default function Snapshots() {
                   <tr className="text-[10px] uppercase tracking-wider text-gray-500">
                     <th className="text-left font-medium px-2 py-2">Período</th>
                     <th className="text-left font-medium px-2 py-2">Status</th>
-                    <th className="text-right font-medium px-2 py-2">Patrimônio BRL</th>
-                    <th className="text-right font-medium px-2 py-2">USD</th>
+                    <th className="text-right font-medium px-2 py-2">Patrimônio</th>
                     <th className="text-right font-medium px-2 py-2">Itens</th>
                     <th className="text-left font-medium px-2 py-2">Origem</th>
                     <th className="text-right font-medium px-2 py-2">Pendências</th>
@@ -224,14 +223,16 @@ export default function Snapshots() {
                           </span>
                         </td>
                         <td className="px-2"><StatusPill status={s.status} /></td>
-                        <td className="px-2 text-right tnum font-medium">
-                          {fmtBRL(Number(s.total_value_brl), { compact: true })}
-                        </td>
-                        <td className="px-2 text-right tnum text-gray-500">
-                          {Number(s.total_value_usd).toLocaleString('pt-BR', {
-                            style: 'currency', currency: 'USD',
-                            notation: 'compact', maximumFractionDigits: 1,
-                          })}
+                        <td className="px-2 text-right">
+                          <div className="tnum money font-medium">
+                            {fmtBRL(Number(s.total_value_brl), { compact: true })}
+                          </div>
+                          <div className="tnum money text-[10px] text-gray-500 dark:text-gray-600">
+                            {Number(s.total_value_usd).toLocaleString('en-US', {
+                              style: 'currency', currency: 'USD',
+                              notation: 'compact', maximumFractionDigits: 1,
+                            })}
+                          </div>
                         </td>
                         <td className="px-2 text-right tnum text-gray-500">{s.items_count}</td>
                         <td className="px-2 text-[10px] uppercase tracking-wider text-gray-500">

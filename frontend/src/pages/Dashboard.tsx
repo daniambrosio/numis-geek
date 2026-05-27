@@ -9,7 +9,7 @@ import ProventosChart from '../components/ProventosChart'
 import ProventosTypeList from '../components/ProventosTypeList'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import { AlertTriangle } from 'lucide-react'
-import { Card, SectionTitle, FILogo, CcyPill } from '../components/ui'
+import { Card, SectionTitle, FILogo } from '../components/ui'
 import { DonutChart, HBar } from '../components/charts'
 import { KLASS, collapsedOf, fiTokenFor } from '../lib/tokens'
 
@@ -22,6 +22,15 @@ function fmtBRL(n: number, opts: { compact?: boolean } = {}) {
     })
   }
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+}
+
+function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
+  if (opts.compact && Math.abs(n) >= 1000) {
+    return n.toLocaleString('en-US', {
+      style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1,
+    })
+  }
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 }
 
 function fmtMoney(n: number, currency: string) {
@@ -155,6 +164,8 @@ export default function Dashboard() {
     }
   }, [portfolio, liveAgg])
 
+  const ptaxRate = portfolio?.ptax_rate ?? null
+
   if (!me) return null
 
   const TOP_N = 5
@@ -192,22 +203,39 @@ export default function Dashboard() {
                 <div className="text-4xl lg:text-5xl font-semibold tracking-tight tnum money text-gray-900 dark:text-white">
                   {loading && totalCurrent === 0 ? '…' : fmtBRL(totalCurrent)}
                 </div>
-                <CcyPill ccy="BRL" />
               </div>
+              {ptaxRate && (
+                <div className="mt-1 flex items-baseline gap-2">
+                  <div className="text-base text-gray-500 dark:text-gray-400 tnum money">
+                    {fmtUSD(totalCurrent / ptaxRate)}
+                  </div>
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                    PTAX R$ {ptaxRate.toFixed(4)}
+                  </span>
+                </div>
+              )}
               <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                Patrimônio investido em valor de mercado (USD via PTAX) · Caixa & Cartões chegam com spec futura
+                Patrimônio investido em valor de mercado · Caixa & Cartões chegam com spec futura
               </div>
               <div className="mt-5 grid grid-cols-3 gap-3">
-                <Pill label="Investido" value={fmtBRL(totalInvested, { compact: true })} />
+                <Pill
+                  label="Investido"
+                  value={fmtBRL(totalInvested, { compact: true })}
+                  usdValue={ptaxRate ? fmtUSD(totalInvested / ptaxRate, { compact: true }) : undefined}
+                />
                 <Pill
                   label="Ganho/perda"
                   value={`${totalCurrent - totalInvested >= 0 ? '+' : ''}${fmtBRL(totalCurrent - totalInvested, { compact: true })}`}
+                  usdValue={ptaxRate
+                    ? `${totalCurrent - totalInvested >= 0 ? '+' : ''}${fmtUSD((totalCurrent - totalInvested) / ptaxRate, { compact: true })}`
+                    : undefined}
                   tone={totalCurrent - totalInvested >= 0 ? 'positive' : 'negative'}
                   money
                 />
                 <Pill
                   label="Proventos"
                   value={fmtBRL(totalReceived, { compact: true })}
+                  usdValue={ptaxRate ? fmtUSD(totalReceived / ptaxRate, { compact: true }) : undefined}
                   tone={totalReceived > 0 ? 'positive' : undefined}
                   money
                 />
@@ -520,9 +548,10 @@ function SnapshotSeries({ snapshots, currentBrl }: { snapshots: SnapshotOut[]; c
   )
 }
 
-function Pill({ label, value, hint, money, tone }: {
+export function Pill({ label, value, usdValue, hint, money, tone }: {
   label: string
   value: string
+  usdValue?: string
   hint?: string
   money?: boolean
   tone?: 'positive' | 'negative' | 'neutral'
@@ -538,6 +567,11 @@ function Pill({ label, value, hint, money, tone }: {
       <div className={`text-sm font-semibold tnum ${toneCls}`}>
         {money ? <span className="money">{value}</span> : value}
       </div>
+      {usdValue && (
+        <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">
+          {usdValue}
+        </div>
+      )}
     </div>
   )
 }
@@ -599,7 +633,6 @@ function ActivityFeed({ items, assets }: { items: AssetMovementOut[]; assets: As
                 <span className="text-[12px] tnum money font-medium text-gray-900 dark:text-white shrink-0">
                   {fmtMoney(it.net_amount, it.currency)}
                 </span>
-                <CcyPill ccy={it.currency} />
               </Link>
             )
           })}

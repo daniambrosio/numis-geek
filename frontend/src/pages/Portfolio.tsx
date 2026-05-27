@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type PortfolioOut, type UserOut } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import { Card, CcyPill, ClassBadge, FILogo, SectionTitle } from '../components/ui'
+import { Card, ClassBadge, FILogo, SectionTitle } from '../components/ui'
 import { DonutChart, HBar, type DonutDatum } from '../components/charts'
 import Sparkline from '../components/Sparkline'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
@@ -151,14 +151,12 @@ function PortfolioContent({ data }: { data: PortfolioOut }) {
               <div className="text-4xl lg:text-5xl font-semibold tracking-tight tnum money">
                 {fmtBRL(totalInvest)}
               </div>
-              <CcyPill ccy="BRL" />
             </div>
             <div className="mt-1 flex items-baseline gap-2">
               <div className="text-base text-gray-500 tnum money">
                 {fmtUSD(data.total_value_usd)}
               </div>
-              <CcyPill ccy="USD" />
-              <span className="text-[11px] text-gray-500 ml-2">
+              <span className="text-[11px] text-gray-500">
                 PTAX R$ {ptax.toFixed(4)}
               </span>
             </div>
@@ -168,11 +166,17 @@ function PortfolioContent({ data }: { data: PortfolioOut }) {
                 <div className="text-sm font-semibold tnum money text-gray-700 dark:text-gray-200">
                   {fmtBRL(data.total_invested_brl, { compact: true })}
                 </div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">
+                  {fmtUSD(data.total_invested_brl / ptax, { compact: true })}
+                </div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Valor atual</div>
                 <div className="text-sm font-semibold tnum money text-emerald-500 dark:text-emerald-400">
                   {fmtBRL(totalInvest, { compact: true })}
+                </div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">
+                  {fmtUSD(data.total_value_usd, { compact: true })}
                 </div>
               </div>
               <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
@@ -183,6 +187,9 @@ function PortfolioContent({ data }: { data: PortfolioOut }) {
                     : 'text-red-500 dark:text-red-400'
                 }`}>
                   {fmtBRL(totalInvest - data.total_invested_brl, { compact: true })}
+                </div>
+                <div className="text-[10px] tnum money text-gray-500 dark:text-gray-600 mt-0.5">
+                  {fmtUSD((totalInvest - data.total_invested_brl) / ptax, { compact: true })}
                 </div>
               </div>
             </div>
@@ -374,7 +381,7 @@ function PortfolioContent({ data }: { data: PortfolioOut }) {
                 <th className="text-left font-medium px-2 py-2">Ativo</th>
                 <th className="text-left font-medium px-2 py-2">Classe</th>
                 <th className="text-left font-medium px-2 py-2">Custodiante</th>
-                <th className="text-right font-medium px-2 py-2">Valor (BRL)</th>
+                <th className="text-right font-medium px-2 py-2">Valor</th>
                 <th className="text-right font-medium px-2 py-2">% portfólio</th>
               </tr>
             </thead>
@@ -409,8 +416,13 @@ function PortfolioContent({ data }: { data: PortfolioOut }) {
                       <span className="text-[11px] text-gray-500 dark:text-gray-400">{h.fi_short}</span>
                     </div>
                   </td>
-                  <td className="px-2 text-right tnum money font-medium">
-                    {fmtBRL(h.value_brl, { compact: true })}
+                  <td className="px-2 text-right">
+                    <div className="tnum money font-medium">
+                      {fmtBRL(h.value_brl, { compact: true })}
+                    </div>
+                    <div className="tnum money text-[10px] text-gray-500 dark:text-gray-600">
+                      {fmtUSD(h.value_brl / ptax, { compact: true })}
+                    </div>
                   </td>
                   <td className="px-2 text-right tnum text-gray-500">{fmtPct(h.pct, 2)}</td>
                 </tr>

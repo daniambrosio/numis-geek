@@ -236,9 +236,14 @@ export default function SnapshotDetail() {
   const fxRate = snap?.fx_rate_usd_brl ? Number(snap.fx_rate_usd_brl) : null
 
   const prevTotal = prevSnap ? Number(prevSnap.total_value_brl) : null
+  const prevTotalUSD = prevSnap ? Number(prevSnap.total_value_usd) : null
   const momDelta = prevTotal && prevTotal > 0
     ? (totalBRL - prevTotal) / prevTotal
     : null
+  const momDeltaBRL = prevTotal != null ? totalBRL - prevTotal : null
+  // Spec 41 formula B: Δ$ = snap.total_usd − prev.total_usd. Each total
+  // was stamped with its own PTAX, so this captures cambial drift.
+  const momDeltaUSD = prevTotalUSD != null ? totalUSD - prevTotalUSD : null
 
   const proventosBRL = distributions.reduce(
     (s, d) => s + Number(d.net_amount) * Number(d.fx_rate || 1),
@@ -479,14 +484,22 @@ export default function SnapshotDetail() {
                     : `${momDelta >= 0 ? '+' : ''}${(momDelta * 100).toFixed(2)}%`
                 }
                 intent={momDelta == null ? undefined : momDelta >= 0 ? 'positive' : 'negative'}
-                sub={prevSnap
-                  ? `vs ${fmtBRL(prevTotal ?? 0, { compact: true })}`
-                  : 'primeiro fechamento'}
+                sub={
+                  momDeltaBRL == null
+                    ? 'primeiro fechamento'
+                    : momDeltaUSD == null
+                      ? `${momDeltaBRL >= 0 ? '+' : ''}${fmtBRL(momDeltaBRL, { compact: true })}`
+                      : `${momDeltaBRL >= 0 ? '+' : ''}${fmtBRL(momDeltaBRL, { compact: true })} · ${momDeltaUSD >= 0 ? '+' : ''}${fmtUSD(momDeltaUSD, { compact: true })}`
+                }
               />
               <KpiTile
                 label="Proventos recebidos"
                 value={fmtBRL(proventosBRL, { compact: true })}
-                sub={`${distributions.length} evento${distributions.length === 1 ? '' : 's'}`}
+                sub={
+                  fxRate
+                    ? `${fmtUSD(proventosBRL / fxRate, { compact: true })} · ${distributions.length} evento${distributions.length === 1 ? '' : 's'}`
+                    : `${distributions.length} evento${distributions.length === 1 ? '' : 's'}`
+                }
               />
               <KpiTile
                 label="Yield on portfolio"
