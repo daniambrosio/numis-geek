@@ -141,3 +141,113 @@ def test_scheduler_registers_ptax_job(monkeypatch):
         assert "minute='0'" in trigger_repr
     finally:
         scheduler.stop_scheduler(app)
+
+
+# ── Spec 44 follow-up: startup catchup ──────────────────────────────────
+
+
+def test_run_ptax_catchup_skips_when_fresh():
+    """If today's PTAX (SP) already exists, the catchup must NOT call BCB."""
+    from datetime import datetime
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+    from numis_geek import scheduler
+
+    s = TestSession()
+    try:
+        # Wipe and seed with today's date (SP).
+        s.query(PTAXRate).delete()
+        today_sp = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+        s.add(PTAXRate(
+            date=today_sp, rate=Decimal("5.0000"),
+            source="BCB_SGS", fetched_at=datetime.now(),
+        ))
+        s.commit()
+    finally:
+        s.close()
+
+    called = {"sync": False}
+
+    def must_not_be_called(db, *, mode):
+        called["sync"] = True
+        raise AssertionError("sync_ptax should not be called when fresh")
+
+    with patch(
+        "numis_geek.scheduler.sync_ptax", side_effect=must_not_be_called,
+    ), patch(
+        "numis_geek.scheduler.SessionLocal", lambda: TestSession(),
+    ):
+        scheduler.run_ptax_catchup()
+
+    assert called["sync"] is False
+
+
+def test_run_ptax_catchup_syncs_when_stale():
+    """When last_date < today (SP), catchup fires sync_ptax(incremental)."""
+    from datetime import date, datetime
+    from decimal import Decimal
+    from numis_geek import scheduler
+
+    s = TestSession()
+    try:
+        s.query(PTAXRate).delete()
+        # Seed with a clearly old date.
+        s.add(PTAXRate(
+            date=date(2026, 5, 18), rate=Decimal("4.9000"),
+            source="BCB_SGS", fetched_at=datetime.now(),
+        ))
+        s.commit()
+    finally:
+        s.close()
+
+    captured = {}
+    fake_result = PtaxSyncResult(
+        mode="incremental",
+        fetched_count=2,
+        inserted_count=2,
+        updated_count=0,
+        range_start=date(2026, 5, 19),
+        range_end=date(2026, 5, 26),
+        duration_ms=12,
+    )
+
+    def fake_sync(db, *, mode):
+        captured["mode"] = mode
+        return fake_result
+
+    with patch(
+        "numis_geek.scheduler.sync_ptax", side_effect=fake_sync,
+    ), patch(
+        "numis_geek.scheduler.SessionLocal", lambda: TestSession(),
+    ):
+        scheduler.run_ptax_catchup()
+
+    assert captured["mode"] == "incremental"
+
+
+def test_scheduler_wires_ptax_catchup(monkeypatch):
+    """start_scheduler adds the one-shot catchup job. We patch add_job so
+    we can observe the wiring (the actual one-shot fires immediately and
+    disappears, so a get_job lookup races and is unreliable)."""
+    from numis_geek import scheduler
+
+    monkeypatch.delenv("DISABLE_SCHEDULER", raising=False)
+
+    captured_ids: list[str] = []
+    original_add_job = None
+
+    def spy_add_job(self, func, trigger=None, **kwargs):
+        captured_ids.append(kwargs.get("id"))
+        return original_add_job(self, func, trigger, **kwargs)
+
+    from apscheduler.schedulers.background import BackgroundScheduler
+    original_add_job = BackgroundScheduler.add_job
+    monkeypatch.setattr(BackgroundScheduler, "add_job", spy_add_job)
+
+    app = MagicMock()
+    app.state = MagicMock()
+    sched = scheduler.start_scheduler(app)
+    try:
+        assert scheduler.PTAX_CATCHUP_JOB_ID in captured_ids
+    finally:
+        scheduler.stop_scheduler(app)

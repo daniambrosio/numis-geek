@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
+from sqlalchemy import func
 
 from pathlib import Path
 
@@ -27,6 +31,7 @@ from numis_geek.jobs.snapshot_auto import (
     JOB_ID as SNAPSHOT_JOB_ID,
     run_monthly_snapshot,
 )
+from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.backup import create_backup, rotate_backups
 from numis_geek.services.price_update import refresh_all_automated
@@ -43,6 +48,7 @@ CRON_AUDIT_ACTION = "price.refresh.cron"
 CRON_USER_EMAIL = "system@cron"
 
 PTAX_JOB_ID = "ptax_sync_daily"
+PTAX_CATCHUP_JOB_ID = "ptax_sync_startup_catchup"
 
 BACKUP_JOB_ID = "backup_daily"
 BACKUP_DIR = Path("data/backups")
@@ -117,6 +123,43 @@ def run_daily_ptax_sync() -> None:
         db.close()
 
 
+def run_ptax_catchup() -> None:
+    """Spec 44 follow-up — startup safety net for missed PTAX cron.
+
+    The in-process scheduler only fires while the FastAPI server is up.
+    Local-dev usage closes the laptop / kills ./dev.sh, so the 20h SP
+    daily cron is routinely missed. On every app boot, if today's PTAX
+    isn't already in the DB (and BCB has had time to publish it), fire
+    an incremental sync.
+
+    Skips work when `last_date == today (SP)` — idempotent anyway, but
+    saves a BCB roundtrip when the user restarts the dev server mid-day.
+    """
+    db = SessionLocal()
+    try:
+        last_date = db.query(func.max(PTAXRate.date)).scalar()
+        today_sp = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+        if last_date == today_sp:
+            logger.info("ptax catchup: already up-to-date (last_date=%s)", last_date)
+            return
+        logger.info(
+            "ptax catchup: last_date=%s today_sp=%s → syncing",
+            last_date, today_sp,
+        )
+        result = sync_ptax(db, mode="incremental")
+        db.commit()
+        logger.info(
+            "ptax catchup done: range=%s..%s fetched=%d inserted=%d updated=%d",
+            result.range_start, result.range_end,
+            result.fetched_count, result.inserted_count, result.updated_count,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("ptax catchup failed")
+    finally:
+        db.close()
+
+
 def _enabled() -> bool:
     """Disable via DISABLE_SCHEDULER=true (pytest, dev opt-out)."""
     return os.environ.get("DISABLE_SCHEDULER", "").lower() not in (
@@ -164,6 +207,18 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         run_daily_backup,
         CronTrigger(hour=7, minute=0),
         id=BACKUP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Spec 44 follow-up — one-shot PTAX catchup right after start. The
+    # 20h SP cron is missed whenever ./dev.sh isn't running at 20h
+    # (laptop closed, weekend, etc.). DateTrigger(now) fires once as
+    # soon as the scheduler picks it up.
+    sched.add_job(
+        run_ptax_catchup,
+        DateTrigger(run_date=datetime.now()),
+        id=PTAX_CATCHUP_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,
