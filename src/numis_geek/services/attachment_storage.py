@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from numis_geek.models.attachment import AttachmentKind
+from numis_geek.models.attachment import Attachment, AttachmentKind
 
 ROOT = Path("./data/attachments")
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -91,8 +91,36 @@ def absolute_path(storage_key: str) -> Path:
     return candidate
 
 
+def absolute_path_for(att: Attachment) -> Path:
+    """Defense-in-depth resolver (Spec 43 §2).
+
+    Like `absolute_path` but ALSO verifies the storage_key lives under
+    the attachment's own workspace subdir. Guards against a corrupted
+    row whose storage_key would otherwise point at a file from a
+    different workspace.
+
+    Prefer this over `absolute_path()` whenever you hold an Attachment
+    instance (download / delete routes, extraction service, etc.).
+    """
+    expected_prefix = f"{att.workspace_id}/"
+    if not att.storage_key.startswith(expected_prefix):
+        raise ValueError(
+            f"Attachment {att.id} storage_key {att.storage_key!r} "
+            f"escapes its workspace subdir (expected prefix {expected_prefix!r})"
+        )
+    return absolute_path(att.storage_key)
+
+
 def delete(storage_key: str) -> None:
     """Remove the file from disk. Idempotent — missing files are tolerated."""
     path = absolute_path(storage_key)
+    if path.exists():
+        os.remove(path)
+
+
+def delete_for(att: Attachment) -> None:
+    """Like `delete` but applies the workspace validation from
+    `absolute_path_for` before unlinking (Spec 43 §2)."""
+    path = absolute_path_for(att)
     if path.exists():
         os.remove(path)

@@ -414,3 +414,51 @@ def test_save_bytes_creates_per_workspace_dir():
     full = attachment_storage.absolute_path(saved.storage_key)
     assert full.exists()
     assert full.read_bytes() == png_bytes()
+
+
+# ── Spec 43 §2 — workspace storage_key validation ─────────────────────────────
+
+
+def _stub_attachment(workspace_id: str, storage_key: str) -> Attachment:
+    """Cheap in-memory Attachment instance — we only exercise the two
+    fields the storage helper looks at, not a full DB round-trip."""
+    return Attachment(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        source_type='asset',
+        source_id=str(uuid.uuid4()),
+        kind='image',
+        filename='probe.png',
+        mime_type='image/png',
+        size_bytes=1,
+        storage_key=storage_key,
+        is_active=True,
+        uploaded_at=datetime.now(timezone.utc),
+        uploaded_by=None,
+    )
+
+
+def test_absolute_path_for_accepts_matching_workspace_prefix():
+    """storage_key under the row's own workspace subdir → resolves cleanly."""
+    att = _stub_attachment("ws-good", "ws-good/file.png")
+    # No exception; returns a Path under ROOT.
+    resolved = attachment_storage.absolute_path_for(att)
+    assert str(resolved).endswith("ws-good/file.png")
+
+
+def test_absolute_path_for_rejects_cross_workspace_storage_key():
+    """Defense-in-depth: a corrupted row pointing at another workspace's
+    file must raise — even though the path-traversal check alone would
+    pass (it's still under ROOT)."""
+    att = _stub_attachment("ws-A", "ws-B/file.png")
+    with pytest.raises(ValueError) as exc:
+        attachment_storage.absolute_path_for(att)
+    assert "escapes its workspace subdir" in str(exc.value)
+
+
+def test_delete_for_rejects_cross_workspace_storage_key():
+    """`delete_for` shares the validation — the FS file (if any) is
+    NOT touched when the row is corrupted."""
+    att = _stub_attachment("ws-A", "ws-B/file.png")
+    with pytest.raises(ValueError):
+        attachment_storage.delete_for(att)

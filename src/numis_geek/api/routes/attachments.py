@@ -201,7 +201,7 @@ def download_attachment(
     if current_user.role != UserRole.sysadmin and att.workspace_id != current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
     try:
-        path = attachment_storage.absolute_path(att.storage_key)
+        path = attachment_storage.absolute_path_for(att)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -264,7 +264,7 @@ def delete_attachment(
     # Best-effort unlink: if the file is missing on disk we still drop the
     # row (the FS was already out of sync).
     try:
-        attachment_storage.delete(att.storage_key)
+        attachment_storage.delete_for(att)
     except (FileNotFoundError, ValueError):
         pass
 

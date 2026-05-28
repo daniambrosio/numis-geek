@@ -174,7 +174,7 @@ class _Payload:
 
 def _read_attachment_payload(attachment: Attachment) -> _Payload:
     """Convert the on-disk attachment into LLM input (image bytes OR text)."""
-    path = attachment_storage.absolute_path(attachment.storage_key)
+    path = attachment_storage.absolute_path_for(attachment)
     blob = Path(path).read_bytes()
     if attachment.kind == AttachmentKind.IMAGE:
         return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
