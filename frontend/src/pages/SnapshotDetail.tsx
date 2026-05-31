@@ -11,8 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowLeft, ArrowRight, ChevronRight, Download, Edit2,
-  Lock, RefreshCw, RotateCcw, Upload,
+  ArrowLeft, ArrowRight, ChevronRight, Download, RotateCcw,
 } from 'lucide-react'
 
 import {
@@ -25,6 +24,7 @@ import {
   type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
+import PendencyPanel from '../components/PendencyPanel'
 import StatusPill from '../components/StatusPill'
 import { Card, ClassBadge, SectionTitle } from '../components/ui'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
@@ -114,32 +114,6 @@ function bucketCounts(
 }
 
 // ── HBar matching prototype ────────────────────────────────────────────────
-const UNGROUPED_FI_LABEL = 'Sem instituição'
-
-function groupPendenciesByFI(
-  pendencies: SnapshotPendencyOut[],
-): Array<{ name: string; items: SnapshotPendencyOut[] }> {
-  const map = new Map<string, SnapshotPendencyOut[]>()
-  for (const p of pendencies) {
-    const k = p.asset_institution_short_name ?? UNGROUPED_FI_LABEL
-    if (!map.has(k)) map.set(k, [])
-    map.get(k)!.push(p)
-  }
-  const groups = Array.from(map.entries())
-    .map(([name, items]) => ({ name, items }))
-    .sort((a, b) => {
-      if (a.name === UNGROUPED_FI_LABEL) return 1
-      if (b.name === UNGROUPED_FI_LABEL) return -1
-      return a.name.localeCompare(b.name)
-    })
-  for (const g of groups) {
-    g.items.sort((a, b) =>
-      (a.asset_ticker ?? a.asset_name).localeCompare(b.asset_ticker ?? b.asset_name),
-    )
-  }
-  return groups
-}
-
 function HBar({ value, max, color, height = 6 }: { value: number; max: number; color: string; height?: number }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
   return (
@@ -434,100 +408,18 @@ export default function SnapshotDetail() {
 
         {snap && !loading && (
           <>
-            {/* ── 2. Pendency panel (prototype line 7081) ─────────────── */}
+            {/* ── 2. Pendency panel (Spec 47 — single source of truth) ── */}
             {isPending && (
-              <Card padding="p-5" className="border-amber-500/30 bg-amber-500/[0.04]">
-                <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-                      <h3 className="text-sm font-semibold">
-                        Resolver pendências antes de fechar
-                      </h3>
-                    </div>
-                    <div className="text-[11px] text-gray-500 mt-0.5">
-                      {pendingTotal} de {totalAssetsCount} ativos sem preço atualizado para{' '}
-                      {fmtDateBR(snap.period_end_date)}. Resolva todos e clique em{' '}
-                      <strong className="text-amber-700 dark:text-amber-300">
-                        Confirmar fechamento
-                      </strong>.
-                    </div>
-                  </div>
-                  <button
-                    onClick={handleConfirm}
-                    disabled={pendingTotal > 0}
-                    title={pendingTotal > 0 ? `Faltam ${pendingTotal} ativos` : 'Tudo pronto'}
-                    className={`h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
-                      pendingTotal > 0
-                        ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
-                        : 'bg-emerald-500 text-white hover:bg-emerald-400'
-                    }`}
-                  >
-                    <Lock className="w-3.5 h-3.5" />
-                    Confirmar fechamento
-                  </button>
-                </div>
-
-                {/* Progress */}
-                <div className="mb-4">
-                  <div className="flex items-center justify-between text-[11px] mb-1.5">
-                    <span className="text-gray-500">
-                      {resolvedAssets} de {totalAssetsCount} resolvidos
-                    </span>
-                    <span className="text-gray-500 tnum">
-                      {totalAssetsCount > 0
-                        ? Math.round((resolvedAssets / totalAssetsCount) * 100)
-                        : 0}%
-                    </span>
-                  </div>
-                  <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
-                    <div
-                      className="h-full bg-emerald-500 transition-all"
-                      style={{
-                        width: totalAssetsCount > 0
-                          ? `${(resolvedAssets / totalAssetsCount) * 100}%`
-                          : '0%',
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Per-asset pending list, grouped by financial institution
-                    so the user can walk through one statement at a time. */}
-                <div className="space-y-4">
-                  {groupPendenciesByFI(pendencies.filter(p => !p.resolved_at)).map(g => (
-                    <div key={g.name} data-testid={`pendency-group-${g.name}`}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
-                          {g.name}
-                        </div>
-                        <div className="text-[10px] text-gray-500 tnum">
-                          {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        {g.items.map(p => (
-                          <PendencyRow
-                            key={p.id}
-                            pendency={p}
-                            asset={assetById.get(p.asset_id)}
-                            onResolved={refreshPendencies}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-gray-500">
-                  <strong className="text-gray-700 dark:text-gray-300">
-                    Como o sistema processa:
-                  </strong>{' '}
-                  upload de PDF/screenshot/CSV/XLSX vai disparar LLM agent
-                  (spec 38) pra extrair cotação, posição ou rendimento. Por
-                  ora o upload registra uma nota textual.
-                </div>
-              </Card>
+              <PendencyPanel
+                pendencies={pendencies}
+                assetById={assetById}
+                pendingTotal={pendingTotal}
+                totalAssetsCount={totalAssetsCount}
+                resolvedAssets={resolvedAssets}
+                periodEndDate={snap.period_end_date}
+                onResolved={refreshPendencies}
+                onConfirm={handleConfirm}
+              />
             )}
 
             {/* ── 3. KPI grid (prototype line 7167) ──────────────────── */}
@@ -984,135 +876,3 @@ function SourceCard({
   )
 }
 
-function PendencyRow({
-  pendency, asset, onResolved,
-}: {
-  pendency: SnapshotPendencyOut
-  asset: AssetOut | undefined
-  onResolved: () => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const isManual = pendency.reason === 'MANUAL_SOURCE' || pendency.reason === 'UPLOAD_REQUIRED'
-  const prevPriceNum =
-    pendency.previous_unit_price != null
-      ? Number(pendency.previous_unit_price)
-      : null
-  const hasPrevious =
-    prevPriceNum != null
-    && Number.isFinite(prevPriceNum)
-    && pendency.previous_period_end != null
-
-  async function handleRetry() {
-    setBusy(true); setErr(null)
-    try { await api.retrySnapshotPendencyApi(pendency.id); onResolved() }
-    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
-    finally { setBusy(false) }
-  }
-  async function handleRepeatPrevious() {
-    if (!hasPrevious) return
-    setBusy(true); setErr(null)
-    try {
-      await api.resolveSnapshotPendency(pendency.id, {
-        new_price: pendency.previous_unit_price!,
-        note: `copied from ${pendency.previous_period_end}`,
-      })
-      onResolved()
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
-    finally { setBusy(false) }
-  }
-  async function handleEdit() {
-    const raw = window.prompt(
-      `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
-      hasPrevious ? prevPriceNum!.toFixed(2).replace('.', ',') : '',
-    )
-    if (!raw) return
-    const n = Number(raw.replace(/\./g, '').replace(',', '.').trim())
-    if (!Number.isFinite(n) || n < 0) { setErr('Informe um número >= 0'); return }
-    setBusy(true); setErr(null)
-    try { await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) }); onResolved() }
-    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
-    finally { setBusy(false) }
-  }
-  async function handleUploadStub() {
-    const note = window.prompt(
-      `Upload de extrato pra ${pendency.asset_ticker ?? pendency.asset_name} chega no spec 38. Marcar resolvido com uma nota?`,
-      'Extrato conferido manualmente',
-    )
-    if (note === null) return
-    setBusy(true); setErr(null)
-    try { await api.resolveSnapshotPendency(pendency.id, { note }); onResolved() }
-    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
-    finally { setBusy(false) }
-  }
-
-  return (
-    <div
-      className="flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
-      data-testid={`pendency-row-${pendency.id}`}
-    >
-      <span className={`w-1 h-8 rounded-full ${isManual ? 'bg-amber-500' : 'bg-red-500'}`} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Link
-            to={`/assets/${pendency.asset_id}`}
-            className="font-mono font-medium text-[13px] text-gray-900 dark:text-gray-100 hover:text-indigo-500"
-          >
-            {pendency.asset_ticker ?? pendency.asset_name}
-          </Link>
-          {asset && (
-            <ClassBadge klass={collapsedOf(asset.asset_class)} size="xs" withDot={false} />
-          )}
-        </div>
-        <div className="text-[11px] text-gray-500 truncate">
-          {pendency.detail ?? pendency.asset_name}
-          {hasPrevious && (
-            <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
-              · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}
-              {fmtBRL(prevPriceNum!)}
-            </span>
-          )}
-        </div>
-        {err && <div className="text-[10px] text-red-500 mt-0.5">{err}</div>}
-      </div>
-      <div className="flex items-center gap-1.5">
-        {pendency.action_type === 'RETRY_API' && (
-          <button
-            onClick={handleRetry}
-            disabled={busy}
-            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
-          </button>
-        )}
-        {pendency.action_type === 'UPLOAD_FILE' && (
-          <button
-            onClick={handleUploadStub}
-            disabled={busy}
-            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 disabled:opacity-50"
-          >
-            <Upload className="w-3 h-3" /> Upload extrato
-          </button>
-        )}
-        {hasPrevious && (
-          <button
-            onClick={handleRepeatPrevious}
-            disabled={busy}
-            title={`Usar preço de ${ymLabelShort(pendency.previous_period_end!.slice(0, 7))}: ${fmtBRL(prevPriceNum!)}`}
-            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50"
-            data-testid={`pendency-repeat-${pendency.id}`}
-          >
-            <RotateCcw className="w-3 h-3" /> Repetir
-          </button>
-        )}
-        <button
-          onClick={handleEdit}
-          disabled={busy}
-          className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
-        >
-          <Edit2 className="w-3 h-3" /> Editar
-        </button>
-      </div>
-    </div>
-  )
-}

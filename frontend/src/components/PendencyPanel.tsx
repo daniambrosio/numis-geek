@@ -1,54 +1,62 @@
-/* Spec 35 — full pendency review panel.
+/* Spec 35 + 47 — Pendency review panel (canonical).
  *
- * Shown on /snapshots/{id} when status === IN_REVIEW. Pendencies are
+ * Shown on /snapshots/{ym} when status === IN_REVIEW. Pendencies are
  * grouped by financial institution (sem instituição last) — that's how
- * the user normally goes through the closing (one statement per FI). */
+ * the user normally goes through the closing (one statement per FI).
+ *
+ * Spec 47 made this the single source of truth — SnapshotDetail imports
+ * it instead of duplicating the render. */
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Edit2, RefreshCw, RotateCcw, Upload } from 'lucide-react'
+import {
+  AlertTriangle, Edit2, Lock, RefreshCw, RotateCcw, Upload,
+} from 'lucide-react'
 
-import { api, type PendencyReason, type SnapshotPendencyOut } from '../lib/api'
+import {
+  api,
+  type AssetOut,
+  type SnapshotPendencyOut,
+} from '../lib/api'
+import { Card, ClassBadge } from './ui'
+import { collapsedOf } from '../lib/tokens'
 import ExtractionUploadModal from './ExtractionUploadModal'
 
-const REASON_META: Record<PendencyReason, { label: string; color: string }> = {
-  API_FAILED:      { label: 'API falhou',     color: '#ef4444' },
-  STALE_PRICE:     { label: 'Preço antigo',   color: '#f59e0b' },
-  MANUAL_SOURCE:   { label: 'Manual',         color: '#3b82f6' },
-  UPLOAD_REQUIRED: { label: 'Upload',         color: '#a855f7' },
-}
-
-const MONTH_NAMES = [
+const MONTH_NAMES_SHORT = [
   'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
 ]
 
-function ymShortLabel(periodEnd: string): string {
-  // "2026-04-30" → "Abr/26"
-  const [y, m] = periodEnd.split('-')
-  return `${MONTH_NAMES[parseInt(m, 10) - 1]}/${y.slice(2)}`
+function ymLabelShort(ym: string): string {
+  // "2026-04" → "Abr/26"
+  const [y, m] = ym.split('-')
+  return `${MONTH_NAMES_SHORT[parseInt(m, 10) - 1]}/${y.slice(2)}`
 }
 
 function fmtBRL(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-const UNGROUPED_LABEL = 'Sem instituição'
+function fmtDateBR(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split('-')
+  return `${d}/${m}/${y}`
+}
 
-function groupByInstitution(
+const UNGROUPED_FI_LABEL = 'Sem instituição'
+
+function groupPendenciesByFI(
   pendencies: SnapshotPendencyOut[],
 ): Array<{ name: string; items: SnapshotPendencyOut[] }> {
   const map = new Map<string, SnapshotPendencyOut[]>()
   for (const p of pendencies) {
-    const k = p.asset_institution_short_name ?? UNGROUPED_LABEL
+    const k = p.asset_institution_short_name ?? UNGROUPED_FI_LABEL
     if (!map.has(k)) map.set(k, [])
     map.get(k)!.push(p)
   }
   const groups = Array.from(map.entries())
     .map(([name, items]) => ({ name, items }))
     .sort((a, b) => {
-      // ungrouped goes last; others alphabetical
-      if (a.name === UNGROUPED_LABEL) return 1
-      if (b.name === UNGROUPED_LABEL) return -1
+      if (a.name === UNGROUPED_FI_LABEL) return 1
+      if (b.name === UNGROUPED_FI_LABEL) return -1
       return a.name.localeCompare(b.name)
     })
   for (const g of groups) {
@@ -61,87 +69,128 @@ function groupByInstitution(
 
 interface Props {
   pendencies: SnapshotPendencyOut[]
+  assetById: Map<string, AssetOut>
+  pendingTotal: number
+  totalAssetsCount: number
+  resolvedAssets: number
+  periodEndDate: string
   onResolved: () => void
   onConfirm?: () => void
 }
 
-export default function PendencyPanel({ pendencies, onResolved, onConfirm }: Props) {
-  const open = pendencies.filter(p => !p.resolved_at)
-  const closed = pendencies.length - open.length
-  const allResolved = open.length === 0 && pendencies.length > 0
-  const groups = useMemo(() => groupByInstitution(pendencies), [pendencies])
+export default function PendencyPanel({
+  pendencies, assetById,
+  pendingTotal, totalAssetsCount, resolvedAssets,
+  periodEndDate,
+  onResolved, onConfirm,
+}: Props) {
+  const groups = useMemo(
+    () => groupPendenciesByFI(pendencies.filter(p => !p.resolved_at)),
+    [pendencies],
+  )
+  const pct = totalAssetsCount > 0
+    ? Math.round((resolvedAssets / totalAssetsCount) * 100)
+    : 0
 
   return (
-    <div className="rounded-xl bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900 p-4 space-y-3">
-      <div className="flex items-center justify-between">
+    <Card padding="p-5" className="border-amber-500/30 bg-amber-500/[0.04]">
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <div>
-          <div className="text-[12px] font-semibold text-gray-900 dark:text-gray-100">
-            Pendências
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+            <h3 className="text-sm font-semibold">
+              Resolver pendências antes de fechar
+            </h3>
           </div>
-          <div className="text-[11px] text-gray-500 dark:text-gray-400">
-            {closed} resolvidas · {open.length} abertas
+          <div className="text-[11px] text-gray-500 mt-0.5">
+            {pendingTotal} de {totalAssetsCount} ativos sem preço atualizado para{' '}
+            {fmtDateBR(periodEndDate)}. Resolva todos e clique em{' '}
+            <strong className="text-amber-700 dark:text-amber-300">
+              Confirmar fechamento
+            </strong>.
           </div>
         </div>
         {onConfirm && (
           <button
             onClick={onConfirm}
-            disabled={!allResolved}
-            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
-            title={allResolved ? 'Fechar snapshot' : 'Resolva todas pendências antes de fechar'}
+            disabled={pendingTotal > 0}
+            title={pendingTotal > 0 ? `Faltam ${pendingTotal} ativos` : 'Tudo pronto'}
+            className={`h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+              pendingTotal > 0
+                ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
+                : 'bg-emerald-500 text-white hover:bg-emerald-400'
+            }`}
           >
+            <Lock className="w-3.5 h-3.5" />
             Confirmar fechamento
           </button>
         )}
       </div>
 
       {/* Progress */}
-      <div className="h-1.5 w-full rounded-sm bg-gray-200 dark:bg-gray-800 overflow-hidden">
-        <div
-          className="h-full bg-emerald-500 transition-all"
-          style={{ width: pendencies.length ? `${(closed / pendencies.length) * 100}%` : '0%' }}
-        />
+      <div className="mb-4">
+        <div className="flex items-center justify-between text-[11px] mb-1.5">
+          <span className="text-gray-500">
+            {resolvedAssets} de {totalAssetsCount} resolvidos
+          </span>
+          <span className="text-gray-500 tnum">{pct}%</span>
+        </div>
+        <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+          <div
+            className="h-full bg-emerald-500 transition-all"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
       </div>
 
-      {pendencies.length === 0 ? (
-        <div className="text-[11px] text-gray-500 dark:text-gray-400 py-2">
-          Sem pendências — pode confirmar.
-        </div>
-      ) : (
-        <div className="space-y-4 pt-2">
-          {groups.map(g => {
-            const groupOpen = g.items.filter(p => !p.resolved_at).length
-            return (
-              <div key={g.name} data-testid={`pendency-group-${g.name}`}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
-                    {g.name}
-                  </div>
-                  <div className="text-[10px] text-gray-500 dark:text-gray-400">
-                    {groupOpen} de {g.items.length} abertas
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {g.items.map(p => (
-                    <PendencyRow key={p.id} pendency={p} onResolved={onResolved} />
-                  ))}
-                </div>
+      {/* Per-asset pending list, grouped by FI */}
+      <div className="space-y-4">
+        {groups.map(g => (
+          <div key={g.name} data-testid={`pendency-group-${g.name}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                {g.name}
               </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
+              <div className="text-[10px] text-gray-500 tnum">
+                {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="space-y-2">
+              {g.items.map(p => (
+                <PendencyRow
+                  key={p.id}
+                  pendency={p}
+                  asset={assetById.get(p.asset_id)}
+                  onResolved={onResolved}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-gray-500">
+        <strong className="text-gray-700 dark:text-gray-300">
+          Como o sistema processa:
+        </strong>{' '}
+        upload de PDF/screenshot/CSV/XLSX dispara LLM agent (spec 38)
+        pra extrair cotação, posição ou rendimento.
+      </div>
+    </Card>
   )
 }
 
 function PendencyRow({
-  pendency, onResolved,
-}: { pendency: SnapshotPendencyOut; onResolved: () => void }) {
+  pendency, asset, onResolved,
+}: {
+  pendency: SnapshotPendencyOut
+  asset: AssetOut | undefined
+  onResolved: () => void
+}) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
-  const resolved = pendency.resolved_at != null
-  const meta = REASON_META[pendency.reason]
+  const isManual = pendency.reason === 'MANUAL_SOURCE' || pendency.reason === 'UPLOAD_REQUIRED'
   const prevPriceNum =
     pendency.previous_unit_price != null
       ? Number(pendency.previous_unit_price)
@@ -153,16 +202,10 @@ function PendencyRow({
 
   async function handleRetry() {
     setBusy(true); setErr(null)
-    try {
-      await api.retrySnapshotPendencyApi(pendency.id)
-      onResolved()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro')
-    } finally {
-      setBusy(false)
-    }
+    try { await api.retrySnapshotPendencyApi(pendency.id); onResolved() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
   }
-
   async function handleRepeatPrevious() {
     if (!hasPrevious) return
     setBusy(true); setErr(null)
@@ -172,132 +215,91 @@ function PendencyRow({
         note: `copied from ${pendency.previous_period_end}`,
       })
       onResolved()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro')
-    } finally {
-      setBusy(false)
-    }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
   }
-
   async function handleEdit() {
-    // Minimal inline prompt — the full ManualPriceModal is spec-28 territory
-    // and we don't have a clean way to inject it here without lifting state.
     const raw = window.prompt(
       `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
       hasPrevious ? prevPriceNum!.toFixed(2).replace('.', ',') : '',
     )
     if (!raw) return
-    const normalized = raw.replace(/\./g, '').replace(',', '.').trim()
-    const n = Number(normalized)
-    if (!Number.isFinite(n) || n < 0) {
-      setErr('Informe um número >= 0')
-      return
-    }
+    const n = Number(raw.replace(/\./g, '').replace(',', '.').trim())
+    if (!Number.isFinite(n) || n < 0) { setErr('Informe um número >= 0'); return }
     setBusy(true); setErr(null)
-    try {
-      await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) })
-      onResolved()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro')
-    } finally {
-      setBusy(false)
-    }
+    try { await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) }); onResolved() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
   }
-
-  // Spec 38 — Upload button opens the LLM extraction modal. The legacy
-  // "mark as resolved with a note" path stays available behind an explicit
-  // user gesture (skip button inside the modal).
 
   return (
     <div
-      className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
-        resolved
-          ? 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900'
-          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-800'
-      }`}
+      className="flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
       data-testid={`pendency-row-${pendency.id}`}
     >
-      <span
-        className="w-1 h-8 rounded-full shrink-0"
-        style={{ background: meta.color }}
-      />
+      <span className={`w-1 h-8 rounded-full ${isManual ? 'bg-amber-500' : 'bg-red-500'}`} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <Link
             to={`/assets/${pendency.asset_id}`}
-            className="text-[12px] font-mono font-medium text-gray-900 dark:text-gray-100 hover:text-indigo-500 dark:hover:text-indigo-300"
+            className="font-mono font-medium text-[13px] text-gray-900 dark:text-gray-100 hover:text-indigo-500"
           >
             {pendency.asset_ticker ?? pendency.asset_name}
           </Link>
-          <span
-            className="inline-flex items-center px-1.5 py-px rounded text-[9px] font-semibold uppercase tracking-wider"
-            style={{ background: meta.color + '26', color: meta.color }}
-          >
-            {meta.label}
-          </span>
-          {resolved && (
-            <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
-              ✓ resolvido
-            </span>
+          {asset && (
+            <ClassBadge klass={collapsedOf(asset.asset_class)} size="xs" withDot={false} />
           )}
         </div>
-        <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+        <div className="text-[11px] text-gray-500 truncate">
           {pendency.detail ?? pendency.asset_name}
           {hasPrevious && (
             <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
-              · {ymShortLabel(pendency.previous_period_end!)}:{' '}
+              · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}
               {fmtBRL(prevPriceNum!)}
             </span>
           )}
         </div>
-        {err && (
-          <div className="text-[10px] text-red-500 dark:text-red-400 mt-0.5">{err}</div>
-        )}
+        {err && <div className="text-[10px] text-red-500 mt-0.5">{err}</div>}
       </div>
-
-      {!resolved && (
-        <div className="flex items-center gap-1 shrink-0">
-          {pendency.action_type === 'RETRY_API' && (
-            <button
-              onClick={handleRetry}
-              disabled={busy}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white"
-            >
-              <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
-            </button>
-          )}
-          {pendency.action_type === 'EDIT_PRICE' && hasPrevious && (
-            <button
-              onClick={handleRepeatPrevious}
-              disabled={busy}
-              title={`Usar preço de ${ymShortLabel(pendency.previous_period_end!)}: ${fmtBRL(prevPriceNum!)}`}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white"
-              data-testid={`pendency-repeat-${pendency.id}`}
-            >
-              <RotateCcw className="w-3 h-3" /> Repetir
-            </button>
-          )}
-          {pendency.action_type === 'EDIT_PRICE' && (
-            <button
-              onClick={handleEdit}
-              disabled={busy}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
-            >
-              <Edit2 className="w-3 h-3" /> Editar
-            </button>
-          )}
-          {pendency.action_type === 'UPLOAD_FILE' && (
-            <button
-              onClick={() => setUploadOpen(true)}
-              disabled={busy}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
-              data-testid={`pendency-upload-${pendency.id}`}
-            >
-              <Upload className="w-3 h-3" /> Upload
-            </button>
-          )}
-        </div>
-      )}
+      <div className="flex items-center gap-1.5">
+        {pendency.action_type === 'RETRY_API' && (
+          <button
+            onClick={handleRetry}
+            disabled={busy}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
+          </button>
+        )}
+        {pendency.action_type === 'UPLOAD_FILE' && (
+          <button
+            onClick={() => setUploadOpen(true)}
+            disabled={busy}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 disabled:opacity-50"
+            data-testid={`pendency-upload-${pendency.id}`}
+          >
+            <Upload className="w-3 h-3" /> Upload extrato
+          </button>
+        )}
+        {hasPrevious && (
+          <button
+            onClick={handleRepeatPrevious}
+            disabled={busy}
+            title={`Usar preço de ${ymLabelShort(pendency.previous_period_end!.slice(0, 7))}: ${fmtBRL(prevPriceNum!)}`}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50"
+            data-testid={`pendency-repeat-${pendency.id}`}
+          >
+            <RotateCcw className="w-3 h-3" /> Repetir
+          </button>
+        )}
+        <button
+          onClick={handleEdit}
+          disabled={busy}
+          className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          <Edit2 className="w-3 h-3" /> Editar
+        </button>
+      </div>
 
       {uploadOpen && (
         <ExtractionUploadModal

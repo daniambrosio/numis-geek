@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import PendencyPanel from './PendencyPanel'
-import type { SnapshotPendencyOut } from '../lib/api'
+import type { AssetOut, SnapshotPendencyOut } from '../lib/api'
 
 function makePendency(overrides: Partial<SnapshotPendencyOut> = {}): SnapshotPendencyOut {
   return {
@@ -34,107 +34,131 @@ function wrap(children: React.ReactNode) {
   return <MemoryRouter>{children}</MemoryRouter>
 }
 
+interface PanelOverrides {
+  pendencies: SnapshotPendencyOut[]
+  onConfirm?: () => void
+  assetById?: Map<string, AssetOut>
+  pendingTotal?: number
+  totalAssetsCount?: number
+  resolvedAssets?: number
+  periodEndDate?: string
+}
+
+function renderPanel(opts: PanelOverrides) {
+  const open = opts.pendencies.filter(p => !p.resolved_at).length
+  const pendingTotal = opts.pendingTotal ?? open
+  const totalAssetsCount =
+    opts.totalAssetsCount ?? Math.max(opts.pendencies.length, 1)
+  const resolvedAssets =
+    opts.resolvedAssets ?? (totalAssetsCount - open)
+  return render(wrap(<PendencyPanel
+    pendencies={opts.pendencies}
+    assetById={opts.assetById ?? new Map()}
+    pendingTotal={pendingTotal}
+    totalAssetsCount={totalAssetsCount}
+    resolvedAssets={resolvedAssets}
+    periodEndDate={opts.periodEndDate ?? '2026-05-31'}
+    onResolved={() => {}}
+    onConfirm={opts.onConfirm}
+  />))
+}
+
 describe('PendencyPanel', () => {
-  it('renders empty state when no pendencies', () => {
-    render(wrap(<PendencyPanel pendencies={[]} onResolved={() => {}} />))
-    expect(screen.getByText(/Sem pendências/)).toBeInTheDocument()
+  it('renders header with pending/total counts', () => {
+    renderPanel({
+      pendencies: [makePendency()],
+      pendingTotal: 3, totalAssetsCount: 10, resolvedAssets: 7,
+    })
+    expect(screen.getByText(/Resolver pendências antes de fechar/)).toBeInTheDocument()
+    expect(screen.getByText(/3 de 10 ativos/)).toBeInTheDocument()
+    expect(screen.getByText(/7 de 10 resolvidos/)).toBeInTheDocument()
   })
 
-  it('lists each pendency with the asset ticker', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[
+  it('lists each open pendency with the asset ticker', () => {
+    renderPanel({
+      pendencies: [
         makePendency({ id: '1', asset_ticker: 'PETR4' }),
         makePendency({ id: '2', asset_ticker: 'AAPL' }),
-      ]}
-      onResolved={() => {}}
-    />))
+      ],
+    })
     expect(screen.getByText('PETR4')).toBeInTheDocument()
     expect(screen.getByText('AAPL')).toBeInTheDocument()
   })
 
   it('disables Confirm button while any pendency is open', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency()]}
-      onResolved={() => {}}
-      onConfirm={() => {}}
-    />))
+    renderPanel({
+      pendencies: [makePendency()],
+      onConfirm: () => {},
+      pendingTotal: 1, totalAssetsCount: 1, resolvedAssets: 0,
+    })
     const btn = screen.getByRole('button', { name: /Confirmar/ })
     expect(btn).toBeDisabled()
   })
 
-  it('enables Confirm button when all pendencies are resolved', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({ resolved_at: '2026-05-25T12:00:00Z' })]}
-      onResolved={() => {}}
-      onConfirm={() => {}}
-    />))
+  it('enables Confirm button when no pendencies remain', () => {
+    renderPanel({
+      pendencies: [makePendency({ resolved_at: '2026-05-25T12:00:00Z' })],
+      onConfirm: () => {},
+      pendingTotal: 0, totalAssetsCount: 1, resolvedAssets: 1,
+    })
     const btn = screen.getByRole('button', { name: /Confirmar/ })
     expect(btn).not.toBeDisabled()
   })
 
   it('shows Retry button for RETRY_API action', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({ action_type: 'RETRY_API' })]}
-      onResolved={() => {}}
-    />))
+    renderPanel({ pendencies: [makePendency({ action_type: 'RETRY_API' })] })
     expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
   })
 
   it('shows Editar button for EDIT_PRICE action', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({ action_type: 'EDIT_PRICE', reason: 'MANUAL_SOURCE' })]}
-      onResolved={() => {}}
-    />))
+    renderPanel({
+      pendencies: [makePendency({ action_type: 'EDIT_PRICE', reason: 'MANUAL_SOURCE' })],
+    })
     expect(screen.getByRole('button', { name: /Editar/ })).toBeInTheDocument()
   })
 
   it('shows Upload button for UPLOAD_FILE action', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({ action_type: 'UPLOAD_FILE', reason: 'UPLOAD_REQUIRED' })]}
-      onResolved={() => {}}
-    />))
+    renderPanel({
+      pendencies: [makePendency({ action_type: 'UPLOAD_FILE', reason: 'UPLOAD_REQUIRED' })],
+    })
     expect(screen.getByRole('button', { name: /Upload/ })).toBeInTheDocument()
   })
 
   it('groups pendencies by financial institution with ungrouped last', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[
+    renderPanel({
+      pendencies: [
         makePendency({ id: '1', asset_ticker: 'PETR4', asset_institution_short_name: 'XP' }),
         makePendency({ id: '2', asset_ticker: 'CASA', asset_institution_short_name: null }),
         makePendency({ id: '3', asset_ticker: 'AAPL', asset_institution_short_name: 'Avenue' }),
-      ]}
-      onResolved={() => {}}
-    />))
+      ],
+    })
     expect(screen.getByTestId('pendency-group-Avenue')).toBeInTheDocument()
     expect(screen.getByTestId('pendency-group-XP')).toBeInTheDocument()
     expect(screen.getByTestId('pendency-group-Sem instituição')).toBeInTheDocument()
   })
 
   it('shows Repetir button when previous_unit_price is present', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({
+    renderPanel({
+      pendencies: [makePendency({
         action_type: 'EDIT_PRICE',
         reason: 'MANUAL_SOURCE',
         previous_unit_price: '250000.00',
         previous_period_end: '2026-04-30',
-      })]}
-      onResolved={() => {}}
-    />))
+      })],
+    })
     expect(screen.getByRole('button', { name: /Repetir/ })).toBeInTheDocument()
-    // Previous-month price label is rendered inline.
     expect(screen.getByText(/Abr\/26/)).toBeInTheDocument()
   })
 
   it('hides Repetir button when previous_unit_price is null', () => {
-    render(wrap(<PendencyPanel
-      pendencies={[makePendency({
+    renderPanel({
+      pendencies: [makePendency({
         action_type: 'EDIT_PRICE',
         reason: 'MANUAL_SOURCE',
         previous_unit_price: null,
         previous_period_end: null,
-      })]}
-      onResolved={() => {}}
-    />))
+      })],
+    })
     expect(screen.queryByRole('button', { name: /Repetir/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Editar/ })).toBeInTheDocument()
   })
