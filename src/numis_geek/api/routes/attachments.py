@@ -68,7 +68,13 @@ _SOURCE_MODEL = {
     AttachmentSourceType.ASSET: Asset,
     AttachmentSourceType.MOVEMENT: AssetMovement,
     AttachmentSourceType.DISTRIBUTION: Distribution,
+    # Spec 48 — bulk extract upload anexa o arquivo no snapshot inteiro.
+    # Importação lazy via type hint a seguir (PortfolioSnapshot vive em
+    # outro módulo) — coloco aqui em vez de import top-level só pra
+    # evitar import circular acidental.
 }
+from numis_geek.models.portfolio_snapshot import PortfolioSnapshot as _SnapModel  # noqa: E402
+_SOURCE_MODEL[AttachmentSourceType.SNAPSHOT] = _SnapModel
 
 
 def _parse_source_type(value: str) -> AttachmentSourceType:

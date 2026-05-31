@@ -41,6 +41,7 @@ class CreateExtractionBody(BaseModel):
 
 class ConfirmExtractionBody(BaseModel):
     edited_payload: dict | None = None
+    institution_short_name: str | None = None
 
 
 class RejectExtractionBody(BaseModel):
@@ -97,10 +98,18 @@ class ExtractionJobOut(BaseModel):
         )
 
 
+class BulkApplyDetailOut(BaseModel):
+    applied: list[dict]
+    matched_no_pendency: list[dict]
+    orphan: list[dict]
+    pendency_not_in_extract: list[dict]
+
+
 class ApplyResultOut(BaseModel):
     applied_count: int
     skipped_count: int
     errors: list[str]
+    bulk_detail: BulkApplyDetailOut | None = None
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -197,13 +206,23 @@ def confirm_extraction(
             user_id=current_user.user_id,
             user_email=user_email,
             edited_payload=body.edited_payload,
+            institution_short_name=body.institution_short_name,
         )
     except extraction_service.ExtractionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    detail_out = None
+    if result.bulk_detail is not None:
+        detail_out = BulkApplyDetailOut(
+            applied=result.bulk_detail.applied,
+            matched_no_pendency=result.bulk_detail.matched_no_pendency,
+            orphan=result.bulk_detail.orphan,
+            pendency_not_in_extract=result.bulk_detail.pendency_not_in_extract,
+        )
     return ApplyResultOut(
         applied_count=result.applied_count,
         skipped_count=result.skipped_count,
         errors=result.errors,
+        bulk_detail=detail_out,
     )
 
 

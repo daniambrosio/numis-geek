@@ -15,10 +15,13 @@ import {
 import {
   api,
   type AssetOut,
+  type BulkExtractJobOut,
   type SnapshotPendencyOut,
 } from '../lib/api'
 import { Card, ClassBadge } from './ui'
 import { collapsedOf } from '../lib/tokens'
+import BulkExtractReviewModal from './BulkExtractReviewModal'
+import BulkUploadZone from './BulkUploadZone'
 import ExtractionUploadModal from './ExtractionUploadModal'
 
 const MONTH_NAMES_SHORT = [
@@ -68,6 +71,7 @@ function groupPendenciesByFI(
 }
 
 interface Props {
+  snapshotId: string
   pendencies: SnapshotPendencyOut[]
   assetById: Map<string, AssetOut>
   pendingTotal: number
@@ -79,11 +83,13 @@ interface Props {
 }
 
 export default function PendencyPanel({
+  snapshotId,
   pendencies, assetById,
   pendingTotal, totalAssetsCount, resolvedAssets,
   periodEndDate,
   onResolved, onConfirm,
 }: Props) {
+  const [bulkJob, setBulkJob] = useState<BulkExtractJobOut | null>(null)
   const groups = useMemo(
     () => groupPendenciesByFI(pendencies.filter(p => !p.resolved_at)),
     [pendencies],
@@ -142,6 +148,21 @@ export default function PendencyPanel({
           />
         </div>
       </div>
+
+      {/* Spec 48 — bulk extract upload zone (drop / click / cmd+V) */}
+      <BulkUploadZone snapshotId={snapshotId} onJobReady={setBulkJob} />
+
+      {bulkJob && (
+        <BulkExtractReviewModal
+          job={bulkJob}
+          pendencies={pendencies}
+          onApplied={(_count) => {
+            setBulkJob(null)
+            onResolved()
+          }}
+          onClose={() => setBulkJob(null)}
+        />
+      )}
 
       {/* Per-asset pending list, grouped by FI */}
       <div className="space-y-4">

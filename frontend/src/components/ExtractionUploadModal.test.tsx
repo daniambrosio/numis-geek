@@ -46,7 +46,7 @@ describe('ExtractionUploadModal (Spec 38)', () => {
       created_at: '', started_at: '', completed_at: '', confirmed_at: null,
     })
     vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
-      applied_count: 1, skipped_count: 0, errors: [],
+      applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
     })
     const onResolved = vi.fn()
     const onClose = vi.fn()

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset
+from numis_geek.models.extraction_job import ExtractionSourceHint
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
@@ -28,6 +29,7 @@ from numis_geek.models.portfolio_snapshot import (
     SnapshotStatus,
 )
 from numis_geek.models.user import User, UserRole
+from numis_geek.services import extraction as extraction_service
 from numis_geek.services.auth import UserContext
 from numis_geek.services.snapshot import (
     PendencyOpenError,
@@ -118,6 +120,11 @@ class SnapshotCreateRequest(BaseModel):
 
 class SnapshotReopenRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
+
+
+class BulkExtractRequest(BaseModel):
+    """Spec 48 — create a bulk-extract job for a snapshot."""
+    attachment_id: str
 
 
 class PendencyResolveRequest(BaseModel):
@@ -457,3 +464,49 @@ def retry_api(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return _hydrate_pendency(db, pen)
+
+
+# ── Spec 48 — bulk extract upload ───────────────────────────────────────────
+
+
+@router.post("/{snapshot_id}/bulk-extract", status_code=status.HTTP_201_CREATED)
+def bulk_extract(
+    snapshot_id: str,
+    body: BulkExtractRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 48 — create + run an ExtractionJob scoped to the snapshot.
+
+    Forces source_hint=BROKER_POSITION. No pendency_id (the bulk applier
+    resolves N pendencies in one go at confirm time).
+    """
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    if snap.status != SnapshotStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk extract only allowed on IN_REVIEW snapshots",
+        )
+    try:
+        job = extraction_service.create_and_run(
+            db,
+            workspace_id=ws_id,
+            attachment_id=body.attachment_id,
+            source_hint=ExtractionSourceHint.BROKER_POSITION,
+            snapshot_id=snapshot_id,
+            pendency_id=None,
+            asset_id=None,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except extraction_service.ExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": job.id,
+        "status": job.status.value,
+        "extracted_json": job.extracted_json,
+        "error_message": job.error_message,
+    }

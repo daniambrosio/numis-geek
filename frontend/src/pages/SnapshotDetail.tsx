@@ -411,6 +411,7 @@ export default function SnapshotDetail() {
             {/* ── 2. Pendency panel (Spec 47 — single source of truth) ── */}
             {isPending && (
               <PendencyPanel
+                snapshotId={snap.id}
                 pendencies={pendencies}
                 assetById={assetById}
                 pendingTotal={pendingTotal}

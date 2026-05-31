@@ -52,6 +52,7 @@ function renderPanel(opts: PanelOverrides) {
   const resolvedAssets =
     opts.resolvedAssets ?? (totalAssetsCount - open)
   return render(wrap(<PendencyPanel
+    snapshotId="snap-1"
     pendencies={opts.pendencies}
     assetById={opts.assetById ?? new Map()}
     pendingTotal={pendingTotal}

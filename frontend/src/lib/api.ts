@@ -936,13 +936,28 @@ export const api = {
     }),
   getExtraction: (id: string) =>
     request<ExtractionJobOut>(`/extractions/${id}`),
-  confirmExtraction: (id: string, edited_payload?: Record<string, unknown> | null) =>
+  confirmExtraction: (
+    id: string,
+    opts: {
+      edited_payload?: Record<string, unknown> | null
+      institution_short_name?: string | null
+    } = {},
+  ) =>
     request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
-      method: 'POST', body: JSON.stringify({ edited_payload: edited_payload ?? null }),
+      method: 'POST',
+      body: JSON.stringify({
+        edited_payload: opts.edited_payload ?? null,
+        institution_short_name: opts.institution_short_name ?? null,
+      }),
     }),
   rejectExtraction: (id: string, reason?: string) =>
     request<ExtractionJobOut>(`/extractions/${id}/reject`, {
       method: 'POST', body: JSON.stringify({ reason: reason ?? null }),
+    }),
+  // Spec 48 — bulk extract for a snapshot.
+  createBulkExtract: (snapshot_id: string, attachment_id: string) =>
+    request<BulkExtractJobOut>(`/snapshots/${snapshot_id}/bulk-extract`, {
+      method: 'POST', body: JSON.stringify({ attachment_id }),
     }),
 }
 
@@ -990,14 +1005,49 @@ export interface ExtractionJobOut {
   confirmed_at: string | null
 }
 
+export interface BulkApplyDetailOut {
+  applied: Array<{
+    pendency_id: string
+    asset_id: string
+    ticker: string | null
+    asset_name: string
+    institution_short_name: string | null
+    new_price: string
+    previous_price: string | null
+  }>
+  matched_no_pendency: Array<{
+    asset_id: string
+    ticker: string | null
+    asset_name: string
+    institution_short_name: string | null
+    unit_price: string | null
+  }>
+  orphan: Array<{ ticker: string; unit_price: string | null }>
+  pendency_not_in_extract: Array<{
+    pendency_id: string
+    asset_id: string
+    ticker: string | null
+    asset_name: string
+    institution_short_name: string | null
+  }>
+}
+
 export interface ExtractionApplyResultOut {
   applied_count: number
   skipped_count: number
   errors: string[]
+  bulk_detail: BulkApplyDetailOut | null
+}
+
+export interface BulkExtractJobOut {
+  id: string
+  status: ExtractionStatus
+  extracted_json: Record<string, unknown> | null
+  error_message: string | null
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────
-export type AttachmentSourceType = 'asset' | 'movement' | 'distribution'
+export type AttachmentSourceType = 'asset' | 'movement' | 'distribution' | 'snapshot'
 export type AttachmentKind = 'image' | 'pdf' | 'csv' | 'other'
 
 export interface AttachmentOut {
