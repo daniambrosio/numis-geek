@@ -9,10 +9,12 @@ function makePendency(): SnapshotPendencyOut {
   return {
     id: 'pen-1', snapshot_id: 'snap-1',
     asset_id: 'a-petr', asset_ticker: 'PETR4', asset_name: 'Petrobras',
+    asset_institution_short_name: null,
     reason: 'UPLOAD_REQUIRED', action_type: 'UPLOAD_FILE',
     detail: 'precisa de extrato',
     resolved_at: null, resolved_by: null, resolution_note: null,
     created_at: '2026-05-01T00:00:00Z',
+    previous_unit_price: null, previous_period_end: null,
   }
 }
 

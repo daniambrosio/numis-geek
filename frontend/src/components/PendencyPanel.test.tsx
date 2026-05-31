@@ -12,6 +12,7 @@ function makePendency(overrides: Partial<SnapshotPendencyOut> = {}): SnapshotPen
     asset_id: 'a-1',
     asset_ticker: 'PETR4',
     asset_name: 'Petrobras',
+    asset_institution_short_name: null,
     reason: 'API_FAILED',
     action_type: 'RETRY_API',
     detail: 'brapi timeout',
@@ -19,6 +20,8 @@ function makePendency(overrides: Partial<SnapshotPendencyOut> = {}): SnapshotPen
     resolved_by: null,
     resolution_note: null,
     created_at: '2026-05-25T00:00:00Z',
+    previous_unit_price: null,
+    previous_period_end: null,
     ...overrides,
   }
 }
@@ -91,5 +94,48 @@ describe('PendencyPanel', () => {
       onResolved={() => {}}
     />))
     expect(screen.getByRole('button', { name: /Upload/ })).toBeInTheDocument()
+  })
+
+  it('groups pendencies by financial institution with ungrouped last', () => {
+    render(wrap(<PendencyPanel
+      pendencies={[
+        makePendency({ id: '1', asset_ticker: 'PETR4', asset_institution_short_name: 'XP' }),
+        makePendency({ id: '2', asset_ticker: 'CASA', asset_institution_short_name: null }),
+        makePendency({ id: '3', asset_ticker: 'AAPL', asset_institution_short_name: 'Avenue' }),
+      ]}
+      onResolved={() => {}}
+    />))
+    expect(screen.getByTestId('pendency-group-Avenue')).toBeInTheDocument()
+    expect(screen.getByTestId('pendency-group-XP')).toBeInTheDocument()
+    expect(screen.getByTestId('pendency-group-Sem instituição')).toBeInTheDocument()
+  })
+
+  it('shows Repetir button when previous_unit_price is present', () => {
+    render(wrap(<PendencyPanel
+      pendencies={[makePendency({
+        action_type: 'EDIT_PRICE',
+        reason: 'MANUAL_SOURCE',
+        previous_unit_price: '250000.00',
+        previous_period_end: '2026-04-30',
+      })]}
+      onResolved={() => {}}
+    />))
+    expect(screen.getByRole('button', { name: /Repetir/ })).toBeInTheDocument()
+    // Previous-month price label is rendered inline.
+    expect(screen.getByText(/Abr\/26/)).toBeInTheDocument()
+  })
+
+  it('hides Repetir button when previous_unit_price is null', () => {
+    render(wrap(<PendencyPanel
+      pendencies={[makePendency({
+        action_type: 'EDIT_PRICE',
+        reason: 'MANUAL_SOURCE',
+        previous_unit_price: null,
+        previous_period_end: null,
+      })]}
+      onResolved={() => {}}
+    />))
+    expect(screen.queryByRole('button', { name: /Repetir/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Editar/ })).toBeInTheDocument()
   })
 })

@@ -17,7 +17,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset
+from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
     PortfolioSnapshotItem,
@@ -130,6 +132,7 @@ class SnapshotPendencyOut(BaseModel):
     asset_id: str
     asset_ticker: str | None
     asset_name: str
+    asset_institution_short_name: str | None
     reason: str
     action_type: str
     detail: str | None
@@ -137,15 +140,26 @@ class SnapshotPendencyOut(BaseModel):
     resolved_by: str | None
     resolution_note: str | None
     created_at: str
+    # Spec 35 hotfix #2 — previous CLOSED snapshot's price for this asset,
+    # used by the "Repetir" button on the pendency row.
+    previous_unit_price: str | None
+    previous_period_end: str | None
 
     @classmethod
-    def from_orm(cls, p: SnapshotPendency, asset: Asset | None) -> "SnapshotPendencyOut":
+    def from_orm(
+        cls, p: SnapshotPendency, asset: Asset | None,
+        *,
+        institution_short_name: str | None = None,
+        previous_unit_price: Decimal | None = None,
+        previous_period_end: date_t | None = None,
+    ) -> "SnapshotPendencyOut":
         return cls(
             id=p.id,
             snapshot_id=p.snapshot_id,
             asset_id=p.asset_id,
             asset_ticker=asset.ticker if asset else None,
             asset_name=asset.name if asset else p.asset_id[:8],
+            asset_institution_short_name=institution_short_name,
             reason=p.reason.value,
             action_type=p.action_type.value,
             detail=p.detail,
@@ -153,6 +167,12 @@ class SnapshotPendencyOut(BaseModel):
             resolved_by=p.resolved_by,
             resolution_note=p.resolution_note,
             created_at=p.created_at.isoformat() if p.created_at else "",
+            previous_unit_price=(
+                str(previous_unit_price) if previous_unit_price is not None else None
+            ),
+            previous_period_end=(
+                previous_period_end.isoformat() if previous_period_end else None
+            ),
         )
 
 
@@ -190,6 +210,71 @@ def _hydrate_snapshot(db: Session, snap: PortfolioSnapshot) -> SnapshotOut:
     ).count()
     p_total, p_open = _pendency_counts(db, snap.id)
     return SnapshotOut.from_orm(snap, count, p_total, p_open)
+
+
+def _previous_closed_snapshot(
+    db: Session, snap: PortfolioSnapshot,
+) -> PortfolioSnapshot | None:
+    return (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.workspace_id == snap.workspace_id,
+            PortfolioSnapshot.period_end_date < snap.period_end_date,
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+        )
+        .order_by(PortfolioSnapshot.period_end_date.desc())
+        .first()
+    )
+
+
+def _institution_short_name(db: Session, asset: Asset | None) -> str | None:
+    if asset is None:
+        return None
+    acc = db.get(Account, asset.account_id) if asset.account_id else None
+    if acc is None or not acc.financial_institution_id:
+        return None
+    fi = db.get(FinancialInstitution, acc.financial_institution_id)
+    return fi.short_name if fi else None
+
+
+def _previous_unit_price(
+    db: Session, prev_snap: PortfolioSnapshot | None, asset_id: str,
+) -> Decimal | None:
+    if prev_snap is None:
+        return None
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == prev_snap.id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    return item.unit_price if item and item.unit_price is not None else None
+
+
+def _hydrate_pendency(
+    db: Session, pen: SnapshotPendency,
+    *,
+    snap: PortfolioSnapshot | None = None,
+    prev_snap: PortfolioSnapshot | None = None,
+) -> SnapshotPendencyOut:
+    """Build SnapshotPendencyOut with FI short_name + previous price hydrated.
+
+    Pass `prev_snap` to avoid re-querying when hydrating many pendencies in a
+    loop. When omitted, looks up via `snap` (or via the pendency's snapshot
+    when both are None).
+    """
+    asset = db.get(Asset, pen.asset_id)
+    if prev_snap is None:
+        cur = snap or db.get(PortfolioSnapshot, pen.snapshot_id)
+        prev_snap = _previous_closed_snapshot(db, cur) if cur else None
+    return SnapshotPendencyOut.from_orm(
+        pen, asset,
+        institution_short_name=_institution_short_name(db, asset),
+        previous_unit_price=_previous_unit_price(db, prev_snap, pen.asset_id),
+        previous_period_end=prev_snap.period_end_date if prev_snap else None,
+    )
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -280,11 +365,8 @@ def list_snapshot_pendencies(
     if not snap or snap.workspace_id != ws_id:
         raise HTTPException(status_code=404, detail="Not found")
     rows = list_pendencies(db, snapshot_id)
-    out: list[SnapshotPendencyOut] = []
-    for p in rows:
-        asset = db.get(Asset, p.asset_id)
-        out.append(SnapshotPendencyOut.from_orm(p, asset))
-    return out
+    prev_snap = _previous_closed_snapshot(db, snap)
+    return [_hydrate_pendency(db, p, snap=snap, prev_snap=prev_snap) for p in rows]
 
 
 @router.post("/{snapshot_id}/confirm", response_model=SnapshotOut)
@@ -355,8 +437,7 @@ def resolve(
         file_id=body.file_id,
         note=body.note,
     )
-    asset = db.get(Asset, pen.asset_id)
-    return SnapshotPendencyOut.from_orm(pen, asset)
+    return _hydrate_pendency(db, pen)
 
 
 @router.post("/pendencies/{pendency_id}/retry-api", response_model=SnapshotPendencyOut)
@@ -375,5 +456,4 @@ def retry_api(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    asset = db.get(Asset, pen.asset_id)
-    return SnapshotPendencyOut.from_orm(pen, asset)
+    return _hydrate_pendency(db, pen)

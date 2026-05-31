@@ -1111,6 +1111,7 @@ export interface SnapshotPendencyOut {
   asset_id: string
   asset_ticker: string | null
   asset_name: string
+  asset_institution_short_name: string | null
   reason: PendencyReason
   action_type: PendencyAction
   detail: string | null
@@ -1118,6 +1119,8 @@ export interface SnapshotPendencyOut {
   resolved_by: string | null
   resolution_note: string | null
   created_at: string
+  previous_unit_price: string | null
+  previous_period_end: string | null
 }
 
 export interface SnapshotItemOut {
