@@ -156,6 +156,7 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
             user_text=_user_message(template, payload),
             image_bytes=payload.image_bytes,
             image_mime=payload.image_mime,
+            image_parts=payload.image_parts,
             model=DEFAULT_MODEL,
         )
         parsed_obj = parse_json_block(call.text)
@@ -188,46 +189,66 @@ class _Payload:
     text: str | None
     image_bytes: bytes | None
     image_mime: str | None
+    image_parts: list[tuple[bytes, str | None]] | None = None
 
 
-_ANTHROPIC_IMAGE_MAX_DIM = 1568  # Anthropic recommended cap (cost + speed).
+_ANTHROPIC_IMAGE_MAX_DIM = 8000  # Anthropic's hard limit on either side.
 
 
-def _maybe_downscale_image(blob: bytes, mime_type: str | None) -> tuple[bytes, str | None]:
-    """If the image exceeds Anthropic's bounds, downscale to fit.
+def _split_image_for_anthropic(
+    blob: bytes, mime_type: str | None,
+) -> list[tuple[bytes, str | None]]:
+    """Return a list of (bytes, mime) tiles that all fit Anthropic's bounds.
 
-    Anthropic rejects > 8000px on either side and recommends <= 1568px for
-    cost/perf. We aim for 1568 max-dim to keep tokens low; this also avoids
-    surprises when the user uploads stitched/screenshot tall captures.
+    For images within the 8000×8000 limit, returns `[(blob, mime)]` unchanged.
+    For taller / wider stitched screenshots we slice into tiles (vertical
+    strips first, then horizontal if needed). Resolution is preserved — no
+    downscale — so small text remains legible to Claude. Tiles are emitted
+    as JPEG quality 92 to keep payload under Anthropic's 5MB/image cap.
+
+    Falls back to `[(blob, mime)]` when Pillow isn't installed; the API
+    will reject oversize blobs in that case, surfaced as a clear error.
     """
     try:
         from io import BytesIO
         from PIL import Image
     except ImportError:
-        return blob, mime_type  # Pillow missing — let Anthropic decide.
+        return [(blob, mime_type)]
     try:
         img = Image.open(BytesIO(blob))
         w, h = img.size
-        max_dim = max(w, h)
-        if max_dim <= _ANTHROPIC_IMAGE_MAX_DIM:
-            return blob, mime_type
-        scale = _ANTHROPIC_IMAGE_MAX_DIM / max_dim
-        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-        img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
-        buf = BytesIO()
-        img.resize(new_size, Image.LANCZOS).save(buf, format="JPEG", quality=85)
-        return buf.getvalue(), "image/jpeg"
+        if w <= _ANTHROPIC_IMAGE_MAX_DIM and h <= _ANTHROPIC_IMAGE_MAX_DIM:
+            return [(blob, mime_type)]
+        img = img.convert("RGB") if img.mode in ("RGBA", "P", "LA") else img
+        cols = (w + _ANTHROPIC_IMAGE_MAX_DIM - 1) // _ANTHROPIC_IMAGE_MAX_DIM
+        rows = (h + _ANTHROPIC_IMAGE_MAX_DIM - 1) // _ANTHROPIC_IMAGE_MAX_DIM
+        tiles: list[tuple[bytes, str | None]] = []
+        for row in range(rows):
+            for col in range(cols):
+                left = col * _ANTHROPIC_IMAGE_MAX_DIM
+                upper = row * _ANTHROPIC_IMAGE_MAX_DIM
+                right = min(left + _ANTHROPIC_IMAGE_MAX_DIM, w)
+                lower = min(upper + _ANTHROPIC_IMAGE_MAX_DIM, h)
+                buf = BytesIO()
+                img.crop((left, upper, right, lower)).save(buf, format="JPEG", quality=92)
+                tiles.append((buf.getvalue(), "image/jpeg"))
+        return tiles
     except Exception:
-        return blob, mime_type  # Any decode/resize error → ship the original.
+        return [(blob, mime_type)]
 
 
 def _read_attachment_payload(attachment: Attachment) -> _Payload:
-    """Convert the on-disk attachment into LLM input (image bytes OR text)."""
+    """Convert the on-disk attachment into LLM input (image tiles OR text)."""
     path = attachment_storage.absolute_path_for(attachment)
     blob = Path(path).read_bytes()
     if attachment.kind == AttachmentKind.IMAGE:
-        resized, mime = _maybe_downscale_image(blob, attachment.mime_type)
-        return _Payload(text=None, image_bytes=resized, image_mime=mime)
+        parts = _split_image_for_anthropic(blob, attachment.mime_type)
+        return _Payload(
+            text=None,
+            image_bytes=parts[0][0] if parts else None,
+            image_mime=parts[0][1] if parts else None,
+            image_parts=parts,
+        )
     if attachment.kind == AttachmentKind.CSV:
         return _Payload(text=blob.decode("utf-8", errors="replace"), image_bytes=None, image_mime=None)
     # PDF and others — try utf-8 first, else send as base64 image-fallback.
@@ -242,6 +263,13 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
 
 def _user_message(template: Template, payload: _Payload) -> str:
     parts = [template.user_prefix]
+    if payload.image_parts and len(payload.image_parts) > 1:
+        parts.append(
+            f"\n\nNOTA: a imagem original excedia o limite de 8000px, então "
+            f"está dividida em {len(payload.image_parts)} fatias sequenciais "
+            f"(top-to-bottom, left-to-right). Leia todas como uma única "
+            f"captura contínua antes de extrair os dados.",
+        )
     if payload.text:
         parts.append("\n\n----\n")
         parts.append(payload.text[:50_000])  # safety cap

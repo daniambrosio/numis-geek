@@ -266,7 +266,7 @@ The bulk extract upload (Spec 48) needs an active Anthropic credential and the S
 
 ### Bulk extract upload (Spec 48)
 
-On `/snapshots/{ym}` while the snapshot is `IN_REVIEW`, drop a screenshot, drag a PDF, or `cmd+V` paste a clipboard image into the upload zone above the pendency list. The LLM (Claude) extracts a position list and resolves matching pendencies in one click. Images larger than 1568 px are auto-downscaled before sending.
+On `/snapshots/{ym}` while the snapshot is `IN_REVIEW`, drop a screenshot, drag a PDF, or `cmd+V` paste a clipboard image into the upload zone above the pendency list. The LLM (Claude) extracts a position list and resolves matching pendencies in one click. Stitched screenshots taller than 8000 px are auto-tiled into multiple sub-images and sent as a single message — resolution is preserved, no downscale.
 
 **Requirements:** `pip install -e ".[llm]"` + a configured ANTHROPIC credential.
 

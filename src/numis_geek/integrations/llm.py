@@ -60,6 +60,7 @@ class LLMClient(Protocol):
         user_text: str,
         image_bytes: bytes | None = None,
         image_mime: str | None = None,
+        image_parts: list[tuple[bytes, str | None]] | None = None,
         model: str = DEFAULT_MODEL,
         max_tokens: int = 4096,
     ) -> LLMCall: ...
@@ -88,17 +89,28 @@ class AnthropicClient:
         user_text: str,
         image_bytes: bytes | None = None,
         image_mime: str | None = None,
+        image_parts: list[tuple[bytes, str | None]] | None = None,
         model: str = DEFAULT_MODEL,
         max_tokens: int = 4096,
     ) -> LLMCall:
+        # `image_parts` is the tile list (Spec 48 — tall screenshots get
+        # split into multiple sub-8000px tiles). Falls back to the legacy
+        # single-image kwargs for callers that haven't migrated yet.
+        parts: list[tuple[bytes, str | None]] = (
+            image_parts
+            if image_parts is not None
+            else ([(image_bytes, image_mime)] if image_bytes else [])
+        )
         content: list[dict[str, Any]] = []
-        if image_bytes:
+        for blob, mime in parts:
+            if not blob:
+                continue
             content.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": image_mime or "image/png",
-                    "data": base64.b64encode(image_bytes).decode("ascii"),
+                    "media_type": mime or "image/png",
+                    "data": base64.b64encode(blob).decode("ascii"),
                 },
             })
         content.append({"type": "text", "text": user_text})

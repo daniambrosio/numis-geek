@@ -179,7 +179,7 @@ class FakeLLM:
         self.calls: list[dict[str, Any]] = []
 
     def call(self, *, system, user_text, image_bytes=None, image_mime=None,
-             model="claude-sonnet-4-5", max_tokens=4096):
+             image_parts=None, model="claude-sonnet-4-5", max_tokens=4096):
         self.calls.append({
             "system": system, "user_text": user_text,
             "image_mime": image_mime, "model": model,
@@ -362,3 +362,33 @@ def test_parse_json_block_handles_fenced_json():
     # The LLM often wraps JSON in ```json fences with a prose preamble.
     raw = 'Sure, here is the JSON:\n```json\n{"a": 1, "nested": {"b": 2}}\n```'
     assert parse_json_block(raw) == {"a": 1, "nested": {"b": 2}}
+
+
+def test_split_image_returns_original_when_within_bounds():
+    from io import BytesIO
+    from PIL import Image
+    from numis_geek.services.extraction import _split_image_for_anthropic
+    buf = BytesIO()
+    Image.new("RGB", (1200, 1500), color="white").save(buf, format="PNG")
+    parts = _split_image_for_anthropic(buf.getvalue(), "image/png")
+    assert len(parts) == 1
+    # In-bounds → pass through unchanged (same bytes object).
+    assert parts[0][0] == buf.getvalue()
+    assert parts[0][1] == "image/png"
+
+
+def test_split_image_tiles_when_taller_than_8000px():
+    from io import BytesIO
+    from PIL import Image
+    from numis_geek.services.extraction import _split_image_for_anthropic
+    # 1290×10000 mimics a stitched broker screenshot.
+    buf = BytesIO()
+    Image.new("RGB", (1290, 10000), color="white").save(buf, format="PNG")
+    parts = _split_image_for_anthropic(buf.getvalue(), "image/png")
+    # Needs 2 vertical tiles (8000 + 2000).
+    assert len(parts) == 2
+    # Each tile decodes back within the 8000 hard limit.
+    for blob, mime in parts:
+        assert mime == "image/jpeg"
+        img = Image.open(BytesIO(blob))
+        assert max(img.size) <= 8000

@@ -131,7 +131,7 @@ class _Fake:
         self._payload = payload
 
     def call(self, *, system, user_text, image_bytes=None, image_mime=None,
-             model="claude-sonnet-4-5", max_tokens=4096):
+             image_parts=None, model="claude-sonnet-4-5", max_tokens=4096):
         text = self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
         return LLMCall(text=text, input_tokens=10, output_tokens=10, model=model)
 
