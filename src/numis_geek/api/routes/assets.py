@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -23,6 +23,10 @@ from numis_geek.models.asset_movement import (
     ASSET_MOVEMENT_TYPE_LABELS,
     AssetMovement,
     AssetMovementType,
+)
+from numis_geek.models.portfolio_snapshot import (
+    PortfolioSnapshot,
+    PortfolioSnapshotItem,
 )
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
@@ -841,6 +845,77 @@ def get_asset_position(
         current_value_brl=_f("current_value_brl"),
         variation=_f("variation"),
         rentabilidade=_f("rentabilidade"),
+    )
+
+
+# ── Spec 46 — Asset price history (derived from snapshots V1) ───────────────
+
+
+class AssetPriceHistoryPoint(BaseModel):
+    date: str            # YYYY-MM-DD
+    unit_price: str      # Decimal as str (consistent with SnapshotItemOut)
+
+
+class AssetPriceHistoryOut(BaseModel):
+    asset_id: str
+    currency: str        # 'BRL' | 'USD'
+    period: str          # echo da query
+    points: list[AssetPriceHistoryPoint]
+
+
+_PERIOD_DAYS: dict[str, int | None] = {
+    "6m":  180,
+    "12m": 365,
+    "24m": 730,
+    "all": None,
+}
+
+
+@router.get("/{asset_id}/price-history", response_model=AssetPriceHistoryOut)
+def asset_price_history(
+    asset_id: str,
+    period: Literal["6m", "12m", "24m", "all"] = "24m",
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 46 V1 — historical unit prices derived from PortfolioSnapshotItem.
+
+    Each `PortfolioSnapshotItem.unit_price` is a real fechamento price for
+    a given `PortfolioSnapshot.period_end_date`. We join + filter +
+    sort to assemble the series in native currency. Returns up to
+    ~30 points (one per snapshot in window). When the asset has fewer
+    than 2 points (newly bought, no snapshot yet), returns an empty
+    `points` list and the frontend hides the chart.
+    """
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+
+    days = _PERIOD_DAYS[period]
+    q = (
+        db.query(PortfolioSnapshot.period_end_date, PortfolioSnapshotItem.unit_price)
+        .join(
+            PortfolioSnapshotItem,
+            PortfolioSnapshotItem.snapshot_id == PortfolioSnapshot.id,
+        )
+        .filter(
+            PortfolioSnapshot.workspace_id == asset.workspace_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+            PortfolioSnapshotItem.unit_price.isnot(None),
+        )
+    )
+    if days is not None:
+        cutoff = date.today() - timedelta(days=days)
+        q = q.filter(PortfolioSnapshot.period_end_date >= cutoff)
+    rows = q.order_by(PortfolioSnapshot.period_end_date.asc()).all()
+
+    return AssetPriceHistoryOut(
+        asset_id=asset_id,
+        currency=asset.currency.value,
+        period=period,
+        points=[
+            AssetPriceHistoryPoint(date=d.isoformat(), unit_price=str(p))
+            for (d, p) in rows
+        ],
     )
 
 

@@ -403,6 +403,21 @@ export interface DistributionRequest {
   workspace_id?: string | null
 }
 
+// Spec 46 — Asset price history (V1 derived from snapshots).
+export type AssetPriceHistoryPeriod = '6m' | '12m' | '24m' | 'all'
+
+export interface AssetPriceHistoryPoint {
+  date: string         // YYYY-MM-DD
+  unit_price: string   // Decimal as string
+}
+
+export interface AssetPriceHistoryOut {
+  asset_id: string
+  currency: 'BRL' | 'USD'
+  period: AssetPriceHistoryPeriod
+  points: AssetPriceHistoryPoint[]
+}
+
 export interface PositionOut {
   asset_id: string
   quantity_held: number
@@ -620,6 +635,10 @@ export const api = {
 
   getAssetPosition: (id: string) =>
     request<PositionOut>(`/assets/${id}/position`),
+
+  // Spec 46 — historical unit prices derived from snapshots.
+  getAssetPriceHistory: (id: string, period: AssetPriceHistoryPeriod = '24m') =>
+    request<AssetPriceHistoryOut>(`/assets/${id}/price-history?period=${period}`),
 
   listAssetMovementsForAsset: (id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
     const qs = new URLSearchParams()

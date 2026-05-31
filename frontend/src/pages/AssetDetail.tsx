@@ -8,6 +8,8 @@ import {
   type AccountOut,
   type AssetMovementOut,
   type AssetOut,
+  type AssetPriceHistoryOut,
+  type AssetPriceHistoryPeriod,
   type DistributionOut,
   type FinancialInstitutionOut,
   type PositionOut,
@@ -28,7 +30,7 @@ import OptionContextCard from '../components/OptionContextCard'
 import OptionModal from '../components/OptionModal'
 import Sparkline from '../components/Sparkline'
 import {
-  Card, CcyPill, ClassBadge, FILogo, SectionTitle,
+  Card, CcyPill, ClassBadge, FILogo, GroupingToggle, SectionTitle,
 } from '../components/ui'
 import { KLASS, collapsedOf } from '../lib/tokens'
 
@@ -86,6 +88,40 @@ function CountryFlag({ country }: { country: string }) {
   return <span className="text-[11px] leading-none">{flag}</span>
 }
 
+// ── Spec 46 — price chart axis helper ───────────────────────────────────────
+
+const PERIOD_LABEL: Record<AssetPriceHistoryPeriod, string> = {
+  '6m':  '6 meses',
+  '12m': '12 meses',
+  '24m': '24 meses',
+  'all': 'tudo',
+}
+
+const MONTH_SHORT_PT = [
+  'jan', 'fev', 'mar', 'abr', 'mai', 'jun',
+  'jul', 'ago', 'set', 'out', 'nov', 'dez',
+]
+
+function fmtMonthYY(iso: string): string {
+  // iso = YYYY-MM-DD
+  const [y, m] = iso.split('-')
+  return `${MONTH_SHORT_PT[parseInt(m, 10) - 1]}/${y.slice(2)}`
+}
+
+function PriceChartAxis({ points }: { points: { date: string }[] }) {
+  // Pick 4 evenly spaced anchors out of the series + "hoje" at the end.
+  const n = points.length
+  if (n < 2) return null
+  const idxs = [0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4)]
+  const anchors = idxs.map(i => fmtMonthYY(points[i].date))
+  return (
+    <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500">
+      {anchors.map((a, i) => <span key={i}>{a}</span>)}
+      <span className="text-indigo-500 dark:text-indigo-400">hoje</span>
+    </div>
+  )
+}
+
 const PTAX = 5.12 // fallback if no fx_rate available
 
 // ── Type label mappings (prototype-faithful) ─────────────────────────────────
@@ -132,6 +168,9 @@ export default function AssetDetail() {
   const [refreshingPrice, setRefreshingPrice] = useState(false)
   const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [manualPriceOpen, setManualPriceOpen] = useState(false)
+  // Spec 46 — real price history derived from snapshots.
+  const [pricePeriod, setPricePeriod] = useState<AssetPriceHistoryPeriod>('24m')
+  const [priceHistory, setPriceHistory] = useState<AssetPriceHistoryOut | null>(null)
 
   async function handleRefreshPrice() {
     if (!asset || refreshingPrice) return
@@ -212,19 +251,20 @@ export default function AssetDetail() {
     [distributions],
   )
 
-  // Pseudo price evolution — 24 months, interpolated avg → current. Same
-  // formula as the prototype (line 3294–3298).
-  const priceSeries = useMemo(() => {
-    const avg = position?.average_cost ?? 0
-    const price = position?.current_price ?? asset?.current_price ?? 0
-    const cur = Number(price)
-    const a = Number(avg)
-    if (!a || !cur) return []
-    return Array.from({ length: 24 }, (_, i) => {
-      const t = i / 23
-      return a + (cur - a) * (0.3 + 0.7 * t) + Math.sin(i * 0.7) * (cur - a) * 0.08
-    })
-  }, [position, asset])
+  // Spec 46 — real price history fetched per (asset, period).
+  useEffect(() => {
+    if (!me || !id) return
+    let cancelled = false
+    api.getAssetPriceHistory(id, pricePeriod)
+      .then(h => { if (!cancelled) setPriceHistory(h) })
+      .catch(() => { if (!cancelled) setPriceHistory(null) })
+    return () => { cancelled = true }
+  }, [me, id, pricePeriod])
+
+  const priceSeries = useMemo(
+    () => priceHistory?.points.map(p => Number(p.unit_price)) ?? [],
+    [priceHistory],
+  )
 
   if (!me) return null
 
@@ -440,24 +480,32 @@ export default function AssetDetail() {
           />
         )}
 
-        {/* Price chart */}
-        {priceSeries.length > 0 && (
+        {/* Price chart (Spec 46) — real history from snapshots */}
+        {priceSeries.length >= 2 && priceHistory && (
           <Card>
             <SectionTitle action={
-              <span className="text-[11px] text-gray-500">simulado · prototype</span>
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] text-gray-500">
+                  {priceHistory.points.length} fechamentos · {priceHistory.currency}
+                </span>
+                <GroupingToggle
+                  value={pricePeriod}
+                  onChange={(v) => setPricePeriod(v as AssetPriceHistoryPeriod)}
+                  options={[
+                    { id: '6m',  label: '6M'   },
+                    { id: '12m', label: '12M'  },
+                    { id: '24m', label: '24M'  },
+                    { id: 'all', label: 'Tudo' },
+                  ]}
+                />
+              </div>
             }>
-              Preço · 24 meses
+              Preço · {PERIOD_LABEL[pricePeriod]}
             </SectionTitle>
             <div className="overflow-hidden -mx-2">
               <Sparkline data={priceSeries} w={1200} h={180} color={klassColor} />
             </div>
-            <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500">
-              <span>mai/24</span>
-              <span>nov/24</span>
-              <span>mai/25</span>
-              <span>nov/25</span>
-              <span className="text-indigo-500 dark:text-indigo-400">hoje</span>
-            </div>
+            <PriceChartAxis points={priceHistory.points} />
           </Card>
         )}
 

@@ -594,6 +594,137 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
     assert r_ok.status_code == 200
 
 
+# ── Spec 46 — /assets/{id}/price-history ───────────────────────────────────
+
+
+def _create_test_asset(client, seed, ticker: str = "PETR4") -> str:
+    """Helper: create a stock asset in ws_a so we can attach snapshot items.
+    Caller passes a unique ticker per test to dodge the
+    (ticker, fi, workspace) unique constraint when tests run together."""
+    r = client.post("/assets", json={
+        "asset_class": "STOCK", "country": "BR",
+        "account_id": seed["acc_xp_a"],
+        "name": f"{ticker} stock", "ticker": ticker,
+        "currency": "BRL",
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+def _seed_snapshot_with_item(ws_id: str, asset_id: str, period: str, price: str):
+    """Insert one PortfolioSnapshot + one PortfolioSnapshotItem with `unit_price`.
+    period is a YYYY-MM-DD string for period_end_date."""
+    from datetime import date, datetime, timezone
+    from decimal import Decimal
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotSource, SnapshotStatus,
+    )
+    db = TestSession()
+    try:
+        snap = PortfolioSnapshot(
+            id=str(uuid.uuid4()),
+            workspace_id=ws_id,
+            period_end_date=date.fromisoformat(period),
+            source=SnapshotSource.MANUAL,
+            status=SnapshotStatus.CLOSED,
+            total_value_brl=Decimal("0"),
+            total_value_usd=Decimal("0"),
+            total_invested_brl=Decimal("0"),
+            total_received_brl=Decimal("0"),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(snap)
+        db.flush()
+        db.add(PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snap.id,
+            asset_id=asset_id,
+            quantity=Decimal("100"),
+            unit_price=Decimal(price),
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_price_history_returns_chronological_points(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PH1")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-01-31", "30.10")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-03-31", "32.40")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-04-30", "31.80")
+
+    r = client.get(
+        f"/assets/{asset_id}/price-history?period=all",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["asset_id"] == asset_id
+    assert body["currency"] == "BRL"
+    assert body["period"] == "all"
+    dates = [p["date"] for p in body["points"]]
+    assert dates == sorted(dates), "points must be ASC by date"
+    assert dates == ["2026-01-31", "2026-03-31", "2026-04-30"]
+    # unit_price round-trips as a Decimal string.
+    assert body["points"][0]["unit_price"].startswith("30.10")
+
+
+def test_price_history_cross_workspace_returns_404(client, seed):
+    # ws_a asset, but request comes from admin_token_b (different workspace).
+    asset_id = _create_test_asset(client, seed, ticker="PH2")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-02-28", "31.80")
+
+    r = client.get(
+        f"/assets/{asset_id}/price-history",
+        headers=auth(seed["admin_token_b"]),
+    )
+    assert r.status_code == 404
+
+
+def test_price_history_period_6m_filters_old_snapshots(client, seed):
+    """A snapshot from 3 years ago must be excluded when period=6m."""
+    from datetime import date, timedelta
+    asset_id = _create_test_asset(client, seed, ticker="PH3")
+
+    today = date.today()
+    far_past = (today - timedelta(days=3 * 365)).isoformat()
+    recent = (today - timedelta(days=60)).isoformat()
+
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, far_past, "20.00")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, recent, "31.80")
+
+    r6 = client.get(
+        f"/assets/{asset_id}/price-history?period=6m",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r6.status_code == 200
+    dates_6m = [p["date"] for p in r6.json()["points"]]
+    assert recent in dates_6m
+    assert far_past not in dates_6m
+
+    # period=all keeps both
+    r_all = client.get(
+        f"/assets/{asset_id}/price-history?period=all",
+        headers=auth(seed["admin_token_a"]),
+    )
+    dates_all = [p["date"] for p in r_all.json()["points"]]
+    assert far_past in dates_all
+    assert recent in dates_all
+
+
+def test_price_history_no_snapshots_returns_empty(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PH4")
+    r = client.get(
+        f"/assets/{asset_id}/price-history",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200
+    assert r.json()["points"] == []
+
+
 def test_get_asset_returns_details(client, seed):
     r_create = client.post("/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
