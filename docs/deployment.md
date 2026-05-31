@@ -145,7 +145,7 @@ server {
   ssl_certificate     /etc/letsencrypt/live/numis.example.com/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/numis.example.com/privkey.pem;
 
-  client_max_body_size 25M;        # attachments can be a few MB
+  client_max_body_size 60M;        # backend caps attachments at 50MB; +slack
 
   # Frontend SPA
   root /var/numis/repo/frontend/dist;

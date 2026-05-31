@@ -14,7 +14,11 @@ from pathlib import Path
 from numis_geek.models.attachment import Attachment, AttachmentKind
 
 ROOT = Path("./data/attachments")
-MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+# 50 MB cap — broker statements as stitched PNG/PDF easily reach 10–30 MB.
+# The Anthropic API caps per-image at 5 MB, but the extraction service tiles
+# large images into JPEG q92 chunks before sending, so the storage-side
+# cap can be more generous than the LLM-side cap.
+MAX_BYTES = 50 * 1024 * 1024
 
 # MIME → (kind, file extension). The whitelist is intentionally short — adding
 # new types means evaluating their security profile.
@@ -61,7 +65,11 @@ def save_bytes(workspace_id: str, payload: bytes, mime_type: str) -> SavedFile:
 
     size = len(payload)
     if size > MAX_BYTES:
-        raise AttachmentTooLargeError(f"{size} bytes > {MAX_BYTES} limit")
+        size_mb = size / (1024 * 1024)
+        limit_mb = MAX_BYTES // (1024 * 1024)
+        raise AttachmentTooLargeError(
+            f"Arquivo de {size_mb:.1f} MB excede o limite de {limit_mb} MB.",
+        )
 
     kind, ext = _ALLOWED_MIME[mime_type]
     target_dir = ROOT / workspace_id
