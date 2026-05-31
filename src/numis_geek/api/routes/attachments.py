@@ -233,12 +233,12 @@ def delete_attachment(
 ):
     """Hard delete: remove the file from disk **and** the DB row.
 
-    Spec 43 — replaces the previous soft-delete behaviour. Rejected (409)
-    when an ExtractionJob still references the attachment; otherwise the
-    file is unlinked and the row is dropped. Audit log preserves the
-    record of the deletion.
+    Spec 43 + 49 — rejected (409) only when an ExtractionJob attached to
+    the file is still RUNNING (LLM call in flight) or has been CONFIRMED
+    (applied to the snapshot — removing the file would orphan audit trail).
+    Otherwise cascade-deletes the jobs along with the attachment.
     """
-    from numis_geek.models.extraction_job import ExtractionJob  # local import to keep route loose
+    from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus  # local import to keep route loose
 
     att = db.get(Attachment, attachment_id)
     if not att:
@@ -246,25 +246,48 @@ def delete_attachment(
     if current_user.role != UserRole.sysadmin and att.workspace_id != current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
 
-    # Guard against breaking an extraction job that still references this file.
-    in_use = (
+    # Inspect linked jobs. Only CONFIRMED (data applied) or RUNNING (LLM in
+    # flight) block deletion; EXTRACTED/PENDING/FAILED/REJECTED cascade.
+    linked_jobs = (
         db.query(ExtractionJob)
         .filter(ExtractionJob.attachment_id == att.id)
-        .first()
+        .all()
     )
-    if in_use is not None:
+    confirmed = next(
+        (j for j in linked_jobs if j.status == ExtractionStatus.CONFIRMED), None,
+    )
+    if confirmed is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Anexo referenciado pelo job de extração {in_use.id}; remova o job antes."
+                "Esse anexo já foi aplicado em pendências (job "
+                f"{confirmed.id}). Reabra o fechamento antes de remover."
             ),
         )
+    running = next(
+        (j for j in linked_jobs if j.status == ExtractionStatus.RUNNING), None,
+    )
+    if running is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Extração em curso (job {running.id}). Aguarde terminar antes de remover."
+            ),
+        )
+    # Safe to cascade — drop the throwaway jobs first to honor the FK.
+    cascaded_job_ids: list[str] = []
+    for j in linked_jobs:
+        cascaded_job_ids.append(j.id)
+        db.delete(j)
+    if cascaded_job_ids:
+        db.flush()
 
     snapshot = {
         "filename": att.filename,
         "storage_key": att.storage_key,
         "size_bytes": att.size_bytes,
         "workspace_id": att.workspace_id,
+        "cascaded_extraction_jobs": cascaded_job_ids,
     }
 
     # Best-effort unlink: if the file is missing on disk we still drop the

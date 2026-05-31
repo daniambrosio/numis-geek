@@ -286,6 +286,71 @@ def test_bulk_apply_scopes_by_institution(db):
     assert w["pen_aapl"] not in pendency_ids
 
 
+def test_delete_attachment_cascades_extracted_job(db):
+    """Spec 49 — anexo com job EXTRACTED (não confirmado) pode ser deletado;
+    o job é cascateado."""
+    from fastapi.testclient import TestClient
+    from numis_geek.api.app import app
+    from numis_geek.api.deps import get_db
+    from numis_geek.models.attachment import Attachment
+    from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus
+    from numis_geek.services.auth import AuthService
+
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4", "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+        ]
+    })
+    job = db.get(ExtractionJob, job_id)
+    att_id = job.attachment_id
+    db.commit()
+    user_email = db.get(__import__("numis_geek.models.user", fromlist=["User"]).User, w["user_id"]).email
+    token = AuthService(db).login(user_email, "x")
+    app.dependency_overrides[get_db] = lambda: (yield db)
+    try:
+        with TestClient(app) as c:
+            r = c.delete(f"/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 204, r.text
+    finally:
+        app.dependency_overrides.clear()
+    # Both the attachment and the EXTRACTED job are gone.
+    assert db.get(Attachment, att_id) is None
+    assert db.get(ExtractionJob, job_id) is None
+
+
+def test_delete_attachment_blocked_when_job_confirmed(db):
+    """Spec 49 — anexo com job CONFIRMED bloqueia delete com 409 claro."""
+    from fastapi.testclient import TestClient
+    from numis_geek.api.app import app
+    from numis_geek.api.deps import get_db
+    from numis_geek.models.extraction_job import ExtractionJob
+    from numis_geek.services.auth import AuthService
+
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4", "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+        ]
+    })
+    extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    job = db.get(ExtractionJob, job_id)
+    att_id = job.attachment_id
+    db.commit()
+    user_email = db.get(__import__("numis_geek.models.user", fromlist=["User"]).User, w["user_id"]).email
+    token = AuthService(db).login(user_email, "x")
+    app.dependency_overrides[get_db] = lambda: (yield db)
+    try:
+        with TestClient(app) as c:
+            r = c.delete(f"/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 409
+            assert "Reabra o fechamento" in r.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_bulk_apply_stores_attachment_in_audit(db):
     w = _world(db)
     job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
