@@ -203,6 +203,14 @@ export default function AssetDetail() {
     () => distributions.reduce((s, d) => s + d.net_amount * (d.fx_rate || 1), 0),
     [distributions],
   )
+  // Spec 42/45 hotfix — proventos total na moeda nativa do ativo
+  // (USD pra ABT, BRL pra PETR4 etc.). `distSumBRL` continua sendo
+  // útil pra cálculos de yield (YoC, DY) que precisam de unidade
+  // comum, mas no header da tabela queremos a moeda real.
+  const distSumNative = useMemo(
+    () => distributions.reduce((s, d) => s + d.net_amount, 0),
+    [distributions],
+  )
 
   // Pseudo price evolution — 24 months, interpolated avg → current. Same
   // formula as the prototype (line 3294–3298).
@@ -500,7 +508,6 @@ export default function AssetDetail() {
                           <div className={`tnum money font-medium ${m.net_amount < 0 ? 'text-red-500 dark:text-red-400' : m.net_amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
                             {fmtMoney(m.net_amount, m.currency, { sign: true })}
                           </div>
-                          <CcyPill ccy={m.currency} />
                         </td>
                         <td className="px-2 text-gray-500"><MoreHorizontal className="w-4 h-4" /></td>
                       </tr>
@@ -516,7 +523,7 @@ export default function AssetDetail() {
         <Card>
           <SectionTitle action={
             <span className="text-[11px] tnum text-gray-500">
-              Total <span className="money text-emerald-500 dark:text-emerald-400 font-medium">{fmtBRL(distSumBRL, { compact: true })}</span>
+              Total <span className="money text-emerald-500 dark:text-emerald-400 font-medium">{fmtMoney(distSumNative, ccy, { compact: true })}</span>
             </span>
           }>
             Proventos · {distributions.length}
@@ -551,7 +558,6 @@ export default function AssetDetail() {
                         <td className="px-2 text-right tnum money text-amber-500 dark:text-amber-400">{d.tax && d.tax > 0 ? '−' + fmtMoney(d.tax, d.currency) : '—'}</td>
                         <td className="px-2 text-right">
                           <div className="tnum money font-medium text-emerald-500 dark:text-emerald-400">{fmtMoney(d.net_amount, d.currency, { sign: true })}</div>
-                          <CcyPill ccy={d.currency} />
                         </td>
                         <td className="px-2 text-gray-500"><MoreHorizontal className="w-4 h-4" /></td>
                       </tr>
