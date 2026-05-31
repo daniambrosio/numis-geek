@@ -190,12 +190,44 @@ class _Payload:
     image_mime: str | None
 
 
+_ANTHROPIC_IMAGE_MAX_DIM = 1568  # Anthropic recommended cap (cost + speed).
+
+
+def _maybe_downscale_image(blob: bytes, mime_type: str | None) -> tuple[bytes, str | None]:
+    """If the image exceeds Anthropic's bounds, downscale to fit.
+
+    Anthropic rejects > 8000px on either side and recommends <= 1568px for
+    cost/perf. We aim for 1568 max-dim to keep tokens low; this also avoids
+    surprises when the user uploads stitched/screenshot tall captures.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+    except ImportError:
+        return blob, mime_type  # Pillow missing — let Anthropic decide.
+    try:
+        img = Image.open(BytesIO(blob))
+        w, h = img.size
+        max_dim = max(w, h)
+        if max_dim <= _ANTHROPIC_IMAGE_MAX_DIM:
+            return blob, mime_type
+        scale = _ANTHROPIC_IMAGE_MAX_DIM / max_dim
+        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+        buf = BytesIO()
+        img.resize(new_size, Image.LANCZOS).save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return blob, mime_type  # Any decode/resize error → ship the original.
+
+
 def _read_attachment_payload(attachment: Attachment) -> _Payload:
     """Convert the on-disk attachment into LLM input (image bytes OR text)."""
     path = attachment_storage.absolute_path_for(attachment)
     blob = Path(path).read_bytes()
     if attachment.kind == AttachmentKind.IMAGE:
-        return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
+        resized, mime = _maybe_downscale_image(blob, attachment.mime_type)
+        return _Payload(text=None, image_bytes=resized, image_mime=mime)
     if attachment.kind == AttachmentKind.CSV:
         return _Payload(text=blob.decode("utf-8", errors="replace"), image_bytes=None, image_mime=None)
     # PDF and others — try utf-8 first, else send as base64 image-fallback.

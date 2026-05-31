@@ -14,7 +14,9 @@ Built for personal use, runs locally first, designed to migrate to a VPS without
 - **Backend:** Python 3.12+, FastAPI, SQLAlchemy 2, Alembic, bcrypt, PyJWT
 - **DB:** SQLite locally → PostgreSQL on VPS (database-agnostic models)
 - **Frontend:** React 19, Vite, TypeScript, Tailwind CSS v4
-- **Tests:** pytest (in-memory SQLite)
+- **Scheduler:** APScheduler in-process (PTAX sync, price refresh, monthly snapshot, daily backup)
+- **External integrations:** BCB SGS (PTAX), brapi (BR prices), Finnhub (US prices), Anthropic (LLM extraction), Notion (data import). Credentials live in `integration_credential` table — configure at `/sysadmin/integrations`.
+- **Tests:** pytest (in-memory SQLite) + vitest (jsdom)
 
 ---
 
@@ -31,6 +33,9 @@ Built for personal use, runs locally first, designed to migrate to a VPS without
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+# Optional: LLM extras for bulk extract upload (Spec 48). Adds anthropic
+# SDK + Pillow (used to downscale large images before sending to Claude).
+.venv/bin/pip install -e ".[dev,llm]"
 ```
 
 ### 2 — Configure environment
@@ -216,20 +221,21 @@ Every role check that allows `admin` must also allow `sysadmin` — pattern `rol
 
 ## Roadmap (high level)
 
-| Status | Spec | Topic |
-|---|---|---|
-| ✅ | 00 | Foundation |
-| ✅ | 01–04 | User / Workspace / Audit / Financial Institutions |
-| ✅ | 05 | Accounts (Contas) |
-| ✅ | 06 | Assets (Ativos) with custodian |
-| ✅ | 07a | Notion Asset Import (one-shot) |
-| ✅ | 07b | Lançamentos + Account Assets view |
-| 📝 | 07c | Notion Lançamentos Import (planned) |
-| 📝 | 08 | PTAX exchange rate table |
-| 📝 | 09 | Patrimony dashboard |
-| 📝 | 10+ | Categories, transactions, budgets, file imports, IRPF helpers, B3 integration |
+Shipped (✅) and ongoing tracks — see `specs/` for the authoritative numbered list (00–48+).
 
-See `specs/` for the authoritative roadmap.
+| Track | Highlights |
+|---|---|
+| **Foundation** | ✅ 00–04 (Users, Workspace, Audit, Financial Institutions) · ✅ 05 (Accounts) · ✅ 06 (Assets with custodian) |
+| **Notion migration** | ✅ 07a (Assets) · ✅ 07c (Lançamentos) · ✅ 16 (Notion Sync) |
+| **Investment domain** | ✅ 07b (Lançamentos + Account Assets) · ✅ 08 (AssetMovement + Distribution) · ✅ 13 (Corporate Actions) · ✅ 17 (Opções B3) |
+| **Pricing / FX** | ✅ 11 (PTAX + IntegrationCredential) · ✅ 12 (Asset price update) · ✅ 22–28 (price sources, freshness, manual edit, refresh API + background job, topbar) · ✅ 44 (PriceRefresh redesign) |
+| **Snapshot / fechamento** | ✅ 14 (PortfolioSnapshot V1) · ✅ 35 (monthly workflow, lifecycle, pendencies) · ✅ 45 (snapshot detail completeness) · ✅ 46 (asset price history V1) |
+| **Dashboards / charts** | ✅ 15 (Dashboard V2) · ✅ 17a–d (reskin) · ✅ 18 (Frontend Shell Cleanup) · ✅ 29–34 (proventos aggregation, chart, redesign) · ✅ 41–42 (dual-currency hero) |
+| **Attachments + LLM** | ✅ 19 (Attachments + FI country) · ✅ 38 (LLM extraction per pendency) · ✅ 40 (preview/abertura de anexos) · ✅ 43 (storage robustness) · ✅ **48 (Bulk extract upload)** |
+| **UX nits** | ✅ 25 (Topbar PriceRefresh) · ✅ 47 (Pendency render unification) |
+| **Ops** | ✅ 24 (APScheduler) · ✅ 37 (DB backup) · ✅ 39 (backup automation) |
+| **Pending pre-VPS** | 📝 IntegrationCredential encryption · 📝 multi-worker scheduler safety. See [docs/deployment.md](docs/deployment.md). |
+| **Future** | 📝 Expense tracking (Numis side) · 📝 IRPF helpers · 📝 B3 integration · 📝 Object storage backend for attachments |
 
 ---
 
@@ -246,3 +252,53 @@ Run `sudo xcodebuild -license`, press space to scroll, type `agree`, hit Enter. 
 ### Tests fail after pulling
 
 You probably need to apply pending migrations to your local DB: `.venv/bin/alembic upgrade head`.
+
+### "No active ANTHROPIC IntegrationCredential" / "anthropic SDK not installed"
+
+The bulk extract upload (Spec 48) needs an active Anthropic credential and the SDK.
+
+1. Install the optional extras: `.venv/bin/pip install -e ".[dev,llm]"` (adds `anthropic` + `Pillow`).
+2. Log in as **sysadmin**, go to `/sysadmin/integrations`, add a credential of type **Anthropic Claude (LLM extraction)** with your API key, and click "Test".
+
+---
+
+## Optional features
+
+### Bulk extract upload (Spec 48)
+
+On `/snapshots/{ym}` while the snapshot is `IN_REVIEW`, drop a screenshot, drag a PDF, or `cmd+V` paste a clipboard image into the upload zone above the pendency list. The LLM (Claude) extracts a position list and resolves matching pendencies in one click. Images larger than 1568 px are auto-downscaled before sending.
+
+**Requirements:** `pip install -e ".[llm]"` + a configured ANTHROPIC credential.
+
+### Bringing data over from Notion
+
+If you have a Notion export at `data/notion_export.json`, populate it via:
+
+```bash
+.venv/bin/python scripts/import_notion_assets.py --dry-run     # preview
+.venv/bin/python scripts/import_notion_assets.py --apply       # write to DB
+```
+
+---
+
+## Secret storage
+
+API keys (Anthropic, brapi, Finnhub, Notion) and the user session secret all live in places that **must not be shared**:
+
+- `IntegrationCredential.secret_value` — stored **plaintext** in the SQLite DB. The whole `numis_geek.db` file gives away every key. `.gitignore` already excludes `*.db` and `*.db.bak-*` — keep it that way. A future spec will encrypt these (see `docs/deployment.md` § blockers).
+- `SECRET_KEY` (JWT signing) — read from `.env`, never committed.
+- `data/attachments/` — uploaded screenshots may contain personal financial info. Gitignored, but if you copy backups around, mind the privacy.
+
+---
+
+## VPS deployment
+
+When you're ready to host this on a VPS (nginx + uvicorn + systemd + SQLite-then-Postgres), follow **[docs/deployment.md](docs/deployment.md)**. It covers:
+
+- Provisioning (Ubuntu, firewall, dependencies)
+- File layout (`/var/numis/data/{db,attachments,backups}`)
+- systemd unit + nginx TLS + SPA proxy
+- Daily backups (Makefile + restic to B2)
+- Anthropic credential setup
+- Known blockers to clear **before** going live (plaintext secrets, scheduler in multi-worker)
+- Migration path from SQLite to Postgres
