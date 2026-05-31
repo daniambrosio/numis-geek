@@ -959,6 +959,16 @@ export const api = {
     request<BulkExtractJobOut>(`/snapshots/${snapshot_id}/bulk-extract`, {
       method: 'POST', body: JSON.stringify({ attachment_id }),
     }),
+  // Spec 49 — persistent attachments + per-attachment extraction status.
+  listSnapshotAttachments: (snapshot_id: string) => {
+    const qs = new URLSearchParams({
+      source_type: 'snapshot',
+      source_id: snapshot_id,
+    })
+    return request<AttachmentOut[]>(`/attachments?${qs}`)
+  },
+  listSnapshotExtractions: (snapshot_id: string) =>
+    request<BulkExtractionJobSummary[]>(`/snapshots/${snapshot_id}/extractions`),
 }
 
 // ── Extractions (Spec 38) ────────────────────────────────────────────────────
@@ -1044,6 +1054,17 @@ export interface BulkExtractJobOut {
   status: ExtractionStatus
   extracted_json: Record<string, unknown> | null
   error_message: string | null
+}
+
+export interface BulkExtractionJobSummary {
+  id: string
+  attachment_id: string
+  status: ExtractionStatus
+  positions_count: number
+  error_message: string | null
+  created_at: string
+  completed_at: string | null
+  confirmed_at: string | null
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────

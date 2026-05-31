@@ -1,0 +1,394 @@
+/* Spec 49 — Persistent attachment manager for snapshot bulk extraction.
+ *
+ * Replaces the Spec 48 BulkUploadZone. Architecture:
+ *   - Dropzone (drag/click/paste) uploads attachment only — no LLM trigger.
+ *   - Below it, a list of uploaded attachments persisted in the DB
+ *     (source_type=snapshot). Each row carries the matching ExtractionJob's
+ *     state and exposes Preview / Extract / Re-extract / Remove actions.
+ *   - Sequential queue: while one extraction runs, other Extract buttons
+ *     disable and show "Aguardando". */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Eye, FileText, Image as ImageIcon, Loader2, Sparkles, Trash2,
+  Upload as UploadIcon, X,
+} from 'lucide-react'
+
+import {
+  api,
+  type AttachmentKind,
+  type AttachmentOut,
+  type BulkExtractJobOut,
+  type BulkExtractionJobSummary,
+  type SnapshotPendencyOut,
+} from '../lib/api'
+import BulkExtractReviewModal from './BulkExtractReviewModal'
+
+const API_BASE = (import.meta.env?.VITE_API_BASE as string | undefined) ?? ''
+
+interface Props {
+  snapshotId: string
+  pendencies: SnapshotPendencyOut[]
+  onResolved: () => void
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function KindIcon({ kind }: { kind: AttachmentKind }) {
+  if (kind === 'image') return <ImageIcon className="w-3.5 h-3.5" />
+  return <FileText className="w-3.5 h-3.5" />
+}
+
+export default function BulkAttachmentManager({
+  snapshotId, pendencies, onResolved,
+}: Props) {
+  const [attachments, setAttachments] = useState<AttachmentOut[]>([])
+  const [jobs, setJobs] = useState<BulkExtractionJobSummary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [extractingId, setExtractingId] = useState<string | null>(null)
+  const [reviewJob, setReviewJob] = useState<BulkExtractJobOut | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const [as_, js] = await Promise.all([
+        api.listSnapshotAttachments(snapshotId),
+        api.listSnapshotExtractions(snapshotId),
+      ])
+      setAttachments(as_)
+      setJobs(js)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro carregando anexos')
+    } finally {
+      setLoading(false)
+    }
+  }, [snapshotId])
+
+  useEffect(() => { void refresh() }, [refresh])
+
+  // Pick the latest job per attachment (newest by created_at).
+  const jobByAttachmentId = useMemo(() => {
+    const m = new Map<string, BulkExtractionJobSummary>()
+    for (const j of jobs) {
+      const prev = m.get(j.attachment_id)
+      if (!prev || j.created_at > prev.created_at) m.set(j.attachment_id, j)
+    }
+    return m
+  }, [jobs])
+
+  const handleFile = useCallback(async (file: File) => {
+    setError(null)
+    setUploading(true)
+    try {
+      await api.uploadAttachment('snapshot', snapshotId, file)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro no upload')
+    } finally {
+      setUploading(false)
+    }
+  }, [snapshotId, refresh])
+
+  // cmd+V paste handler.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (uploading || extractingId) return
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.kind !== 'file') continue
+        const file = item.getAsFile()
+        if (!file) continue
+        e.preventDefault()
+        const named = file.name && file.name !== 'image.png'
+          ? file
+          : new File([file], `extrato-${Date.now()}.png`, { type: file.type || 'image/png' })
+        void handleFile(named)
+        return
+      }
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [handleFile, uploading, extractingId])
+
+  async function handleExtract(attachmentId: string) {
+    setError(null)
+    setExtractingId(attachmentId)
+    try {
+      const job = await api.createBulkExtract(snapshotId, attachmentId)
+      await refresh()
+      if (job.status === 'EXTRACTED') {
+        setReviewJob(job)
+      } else if (job.status === 'FAILED') {
+        setError(job.error_message ?? 'Extração falhou.')
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro')
+    } finally {
+      setExtractingId(null)
+    }
+  }
+
+  async function handleRevisar(jobId: string) {
+    // Re-fetch the full extracted_json (the list endpoint only carries summary).
+    setError(null)
+    try {
+      const full = await api.getExtraction(jobId)
+      setReviewJob({
+        id: full.id,
+        status: full.status,
+        extracted_json: full.extracted_json,
+        error_message: full.error_message,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro')
+    }
+  }
+
+  async function handleRemove(attachmentId: string) {
+    setError(null)
+    try {
+      await api.deleteAttachment(attachmentId)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro')
+    }
+  }
+
+  function handlePreview(att: AttachmentOut) {
+    window.open(`${API_BASE}/attachments/${att.id}/download`, '_blank')
+  }
+
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    setDragOver(false)
+    if (uploading) return
+    const f = e.dataTransfer.files?.[0]
+    if (f) void handleFile(f)
+  }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (f) void handleFile(f)
+    e.target.value = ''
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.02] p-3 space-y-2.5" data-testid="bulk-manager">
+      <div className="flex items-center gap-2">
+        <UploadIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+        <h4 className="text-[12px] font-semibold text-gray-900 dark:text-gray-100">
+          Anexos do fechamento
+        </h4>
+        <span className="text-[10px] text-indigo-600 dark:text-indigo-400 inline-flex items-center gap-1 ml-1">
+          <Sparkles className="w-3 h-3" /> extração via LLM
+        </span>
+      </div>
+
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`rounded-md border-2 border-dashed px-3 py-2.5 transition-colors ${
+          dragOver
+            ? 'border-indigo-500 bg-indigo-500/[0.06]'
+            : 'border-amber-500/40 bg-white/40 dark:bg-gray-900/30 hover:border-amber-500/60'
+        }`}
+        data-testid="bulk-upload-dropzone"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex-1 text-[11px] text-gray-500">
+            Arraste, clique, ou cole (cmd+V) prints ou PDFs.
+            Cada anexo fica salvo; clique <strong>Extrair</strong> quando quiser processar.
+          </div>
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="shrink-0 h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md text-[11px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white"
+            data-testid="bulk-upload-pick"
+          >
+            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <UploadIcon className="w-3 h-3" />}
+            {uploading ? 'Carregando…' : 'Escolher'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,application/pdf,.csv,.xlsx"
+            className="hidden"
+            onChange={onPick}
+          />
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 text-[11px] text-red-600 dark:text-red-400" data-testid="bulk-manager-error">
+          <X className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Attachment list */}
+      {!loading && attachments.length === 0 ? (
+        <div className="text-[11px] text-gray-500 italic py-1">
+          Nenhum anexo subido ainda.
+        </div>
+      ) : (
+        <ul className="space-y-1.5">
+          {attachments.map(att => {
+            const job = jobByAttachmentId.get(att.id) ?? null
+            return (
+              <AttachmentRow
+                key={att.id}
+                att={att}
+                job={job}
+                otherRunning={extractingId !== null && extractingId !== att.id}
+                meRunning={extractingId === att.id}
+                onPreview={() => handlePreview(att)}
+                onExtract={() => handleExtract(att.id)}
+                onReview={(jobId) => handleRevisar(jobId)}
+                onRemove={() => handleRemove(att.id)}
+              />
+            )
+          })}
+        </ul>
+      )}
+
+      {reviewJob && (
+        <BulkExtractReviewModal
+          job={reviewJob}
+          pendencies={pendencies}
+          onApplied={() => {
+            setReviewJob(null)
+            void refresh()
+            onResolved()
+          }}
+          onClose={() => setReviewJob(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function statusBadge(
+  job: BulkExtractionJobSummary | null,
+  meRunning: boolean,
+): { label: string; color: string } | null {
+  if (meRunning || (job && (job.status === 'PENDING' || job.status === 'RUNNING'))) {
+    return { label: 'Extraindo…', color: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300' }
+  }
+  if (!job) return null
+  if (job.status === 'EXTRACTED') {
+    return {
+      label: `✨ ${job.positions_count} posiç${job.positions_count === 1 ? 'ão' : 'ões'}`,
+      color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+    }
+  }
+  if (job.status === 'CONFIRMED') {
+    return { label: '✓ Aplicado', color: 'bg-emerald-600 text-white' }
+  }
+  if (job.status === 'FAILED') {
+    return { label: '⚠ Falhou', color: 'bg-red-500/15 text-red-600 dark:text-red-400' }
+  }
+  if (job.status === 'REJECTED') {
+    return { label: '⊘ Descartado', color: 'bg-gray-500/15 text-gray-500' }
+  }
+  return null
+}
+
+function AttachmentRow({
+  att, job, otherRunning, meRunning,
+  onPreview, onExtract, onReview, onRemove,
+}: {
+  att: AttachmentOut
+  job: BulkExtractionJobSummary | null
+  otherRunning: boolean
+  meRunning: boolean
+  onPreview: () => void
+  onExtract: () => void
+  onReview: (jobId: string) => void
+  onRemove: () => void
+}) {
+  const badge = statusBadge(job, meRunning)
+  const isExtracting = meRunning || (job?.status === 'RUNNING' || job?.status === 'PENDING')
+  const canRemove = !isExtracting && job?.status !== 'CONFIRMED'
+
+  return (
+    <li
+      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+      data-testid={`attachment-row-${att.id}`}
+    >
+      <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 bg-indigo-500/15 text-indigo-600 dark:text-indigo-300">
+        <KindIcon kind={att.kind} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[12px] font-medium truncate text-gray-900 dark:text-gray-100">{att.filename}</div>
+        <div className="text-[10px] text-gray-500 tnum">
+          {fmtSize(att.size_bytes)}
+          {badge && (
+            <span className={`ml-2 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider ${badge.color}`}>
+              {badge.label}
+            </span>
+          )}
+          {job?.error_message && (
+            <span className="ml-2 text-[10px] text-red-500" title={job.error_message}>
+              {job.error_message.slice(0, 60)}…
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          onClick={onPreview}
+          className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+          title="Abrir em nova aba"
+        >
+          <Eye className="w-3 h-3" />
+        </button>
+        {job?.status === 'EXTRACTED' ? (
+          <button
+            onClick={() => onReview(job.id)}
+            disabled={otherRunning}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white"
+            data-testid={`attachment-review-${att.id}`}
+          >
+            Revisar
+          </button>
+        ) : null}
+        {(!job || job.status === 'FAILED' || job.status === 'REJECTED' || job.status === 'EXTRACTED' || job.status === 'CONFIRMED') && (
+          <button
+            onClick={onExtract}
+            disabled={otherRunning || meRunning}
+            className={`h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] ${
+              job?.status === 'EXTRACTED' || job?.status === 'CONFIRMED'
+                ? 'border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                : 'bg-indigo-500 hover:bg-indigo-400 text-white'
+            } disabled:opacity-50`}
+            data-testid={`attachment-extract-${att.id}`}
+          >
+            {meRunning && <Loader2 className="w-3 h-3 animate-spin" />}
+            {otherRunning && !meRunning
+              ? 'Aguardando'
+              : (job?.status === 'EXTRACTED' || job?.status === 'CONFIRMED'
+                  ? 'Re-extrair'
+                  : meRunning ? 'Extraindo' : 'Extrair')}
+          </button>
+        )}
+        <button
+          onClick={onRemove}
+          disabled={!canRemove}
+          title={canRemove ? 'Remover anexo' : 'Não dá pra remover (extração aplicada ou em curso)'}
+          className="h-7 w-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed"
+          data-testid={`attachment-remove-${att.id}`}
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
+    </li>
+  )
+}

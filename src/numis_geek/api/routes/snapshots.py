@@ -19,7 +19,11 @@ from sqlalchemy.orm import Session
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset
-from numis_geek.models.extraction_job import ExtractionSourceHint
+from numis_geek.models.extraction_job import (
+    ExtractionJob,
+    ExtractionSourceHint,
+    ExtractionStatus,
+)
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
@@ -125,6 +129,35 @@ class SnapshotReopenRequest(BaseModel):
 class BulkExtractRequest(BaseModel):
     """Spec 48 — create a bulk-extract job for a snapshot."""
     attachment_id: str
+
+
+class BulkExtractionJobOut(BaseModel):
+    """Spec 49 — lightweight job summary for the attachment-row badge."""
+    id: str
+    attachment_id: str
+    status: str
+    positions_count: int
+    error_message: str | None
+    created_at: str
+    completed_at: str | None
+    confirmed_at: str | None
+
+    @classmethod
+    def from_orm(cls, j: ExtractionJob) -> "BulkExtractionJobOut":
+        positions = 0
+        if j.extracted_json:
+            payload_positions = j.extracted_json.get("positions") or []
+            positions = len(payload_positions)
+        return cls(
+            id=j.id,
+            attachment_id=j.attachment_id,
+            status=j.status.value,
+            positions_count=positions,
+            error_message=j.error_message,
+            created_at=j.created_at.isoformat() if j.created_at else "",
+            completed_at=j.completed_at.isoformat() if j.completed_at else None,
+            confirmed_at=j.confirmed_at.isoformat() if j.confirmed_at else None,
+        )
 
 
 class PendencyResolveRequest(BaseModel):
@@ -510,3 +543,30 @@ def bulk_extract(
         "extracted_json": job.extracted_json,
         "error_message": job.error_message,
     }
+
+
+@router.get("/{snapshot_id}/extractions", response_model=list[BulkExtractionJobOut])
+def list_bulk_extractions(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 49 — list bulk ExtractionJobs scoped to this snapshot.
+
+    Filters out per-pendency jobs (`pendency_id IS NOT NULL`) since those
+    belong to the single-asset Spec 38 flow, not the bulk UX.
+    """
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    rows = (
+        db.query(ExtractionJob)
+        .filter(
+            ExtractionJob.snapshot_id == snapshot_id,
+            ExtractionJob.pendency_id.is_(None),
+        )
+        .order_by(ExtractionJob.created_at.desc())
+        .all()
+    )
+    return [BulkExtractionJobOut.from_orm(j) for j in rows]
