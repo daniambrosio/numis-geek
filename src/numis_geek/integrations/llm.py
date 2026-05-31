@@ -62,7 +62,7 @@ class LLMClient(Protocol):
         image_mime: str | None = None,
         image_parts: list[tuple[bytes, str | None]] | None = None,
         model: str = DEFAULT_MODEL,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
     ) -> LLMCall: ...
 
 
@@ -91,7 +91,7 @@ class AnthropicClient:
         image_mime: str | None = None,
         image_parts: list[tuple[bytes, str | None]] | None = None,
         model: str = DEFAULT_MODEL,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
     ) -> LLMCall:
         # `image_parts` is the tile list (Spec 48 — tall screenshots get
         # split into multiple sub-8000px tiles). Falls back to the legacy
@@ -174,8 +174,12 @@ def parse_json_block(text: str) -> dict:
     """Extract the first JSON object from the LLM reply.
 
     Claude tends to wrap JSON in ```json fences. This helper handles fenced
-    blocks, raw JSON, or "here's the JSON:" prefixed responses.
+    blocks, raw JSON, or "here's the JSON:" prefixed responses. On parse
+    failure tries a small set of fixups (trailing commas) before bubbling
+    a contextual error.
     """
+    import re
+
     text = text.strip()
 
     # Strip ```json ... ``` fence if present.
@@ -208,4 +212,21 @@ def parse_json_block(text: str) -> dict:
             raise ValueError("LLM reply has unterminated JSON object")
         text = text[start : end + 1]
 
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first_err:
+        # Common LLM mistakes: trailing commas before } or ]. Strip and retry.
+        repaired = re.sub(r",(\s*[}\]])", r"\1", text)
+        if repaired != text:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass  # fall through to contextual error
+        # Surface a short snippet around the offending position so failures
+        # are debuggable without dumping 10k chars to the user.
+        pos = first_err.pos
+        window = 80
+        snippet = text[max(0, pos - window) : pos + window]
+        raise ValueError(
+            f"{first_err.msg} at char {pos}: …{snippet!r}…",
+        ) from first_err
