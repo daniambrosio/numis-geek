@@ -81,6 +81,11 @@ function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
     maximumFractionDigits: 0,
   })
 }
+function fmtMoney(n: number, currency: 'BRL' | 'USD') {
+  return n.toLocaleString(currency === 'USD' ? 'en-US' : 'pt-BR', {
+    style: 'currency', currency,
+  })
+}
 
 // ── reason → bucket counts for the Origem card ──────────────────────────────
 function bucketCounts(
@@ -592,6 +597,76 @@ export default function SnapshotDetail() {
               </Card>
             </div>
 
+            {/* ── 4b. Eventos do mês (Spec 45) ────────────────────────── */}
+            {distributions.length > 0 && (
+              <Card padding="p-3">
+                <div className="px-2 pt-2 pb-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Eventos do mês · {distributions.length} provento{distributions.length === 1 ? '' : 's'}
+                  </h3>
+                </div>
+                <div className="overflow-x-auto -mx-1">
+                  <table className="w-full text-[12px]" data-testid="distributions-table">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                        <th className="text-left font-medium px-3 py-2">Data</th>
+                        <th className="text-left font-medium px-3 py-2">Ativo</th>
+                        <th className="text-left font-medium px-3 py-2">Tipo</th>
+                        <th className="text-right font-medium px-3 py-2">Bruto</th>
+                        <th className="text-right font-medium px-3 py-2">IRRF</th>
+                        <th className="text-right font-medium px-3 py-2">Líquido</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...distributions]
+                        .sort((a, b) => a.event_date.localeCompare(b.event_date))
+                        .map(d => {
+                          const meta = TYPE_META[d.type] ?? { label: d.type_label, color: '#94a3b8' }
+                          return (
+                            <tr
+                              key={d.id}
+                              className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
+                            >
+                              <td className="px-3 py-2 tnum text-gray-500">
+                                {fmtDateBR(d.event_date).slice(0, 5)}
+                              </td>
+                              <td className="px-3">
+                                <div className="font-mono font-medium text-[12px]">
+                                  {d.asset_ticker ?? d.asset_name ?? '—'}
+                                </div>
+                                {d.asset_name && d.asset_ticker && (
+                                  <div className="text-[10px] text-gray-500 truncate max-w-[200px]">
+                                    {d.asset_name}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-3">
+                                <div className="inline-flex items-center gap-1.5 text-[11px]">
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full"
+                                    style={{ background: meta.color }}
+                                  />
+                                  <span className="text-gray-700 dark:text-gray-300">{meta.label}</span>
+                                </div>
+                              </td>
+                              <td className="px-3 text-right tnum text-gray-500">
+                                {fmtMoney(d.gross_amount, d.currency)}
+                              </td>
+                              <td className="px-3 text-right tnum text-gray-500">
+                                {d.tax != null && d.tax > 0 ? fmtMoney(d.tax, d.currency) : '—'}
+                              </td>
+                              <td className="px-3 text-right tnum font-medium text-emerald-700 dark:text-emerald-300">
+                                {fmtMoney(d.net_amount, d.currency)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+
             {/* ── 5. Top movers (prototype 7250) ───────────────────────── */}
             <div className="grid grid-cols-12 gap-4">
               <Card className="col-span-12 md:col-span-6">
@@ -711,8 +786,13 @@ export default function SnapshotDetail() {
                   <Download className="w-3 h-3" /> CSV
                 </button>
               </div>
-              <div className="overflow-x-auto -mx-1">
-                <table className="w-full text-[12px]">
+              <div
+                className={`overflow-x-auto -mx-1${
+                  sortedPositions.length > 20 ? ' max-h-[600px] overflow-y-auto' : ''
+                }`}
+                data-testid="positions-wrapper"
+              >
+                <table className="w-full text-[12px]" data-testid="positions-table">
                   <thead>
                     <tr className="text-[10px] uppercase tracking-wider text-gray-500">
                       <th className="text-left font-medium px-3 py-2">Ativo</th>
@@ -725,7 +805,7 @@ export default function SnapshotDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedPositions.slice(0, 20).map(it => {
+                    {sortedPositions.map(it => {
                       const a = assetById.get(it.asset_id)
                       if (!a) return null
                       const klass = collapsedOf(a.asset_class)
@@ -779,11 +859,6 @@ export default function SnapshotDetail() {
                     })}
                   </tbody>
                 </table>
-                {sortedPositions.length > 20 && (
-                  <div className="px-3 py-2 text-[11px] text-gray-500 text-center">
-                    + {sortedPositions.length - 20} ativos
-                  </div>
-                )}
               </div>
             </Card>
           </>
