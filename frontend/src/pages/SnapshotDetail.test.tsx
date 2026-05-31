@@ -9,7 +9,7 @@
  * without backend wiring.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import SnapshotDetail from './SnapshotDetail'
@@ -157,6 +157,80 @@ describe('SnapshotDetail (Spec 45)', () => {
     // First event (10/04) and second (20/04) both visible.
     expect(screen.getByText('10/04')).toBeInTheDocument()
     expect(screen.getByText('20/04')).toBeInTheDocument()
+  })
+
+  it('movers use UNIT PRICE change (aporte does not count as rendimento)', async () => {
+    // Spec 45 fix 2026-05-30. Two snapshots:
+    //   - APORTE: qty doubled, preço idêntico → 0% (NÃO entra no top)
+    //   - RENDU:  qty igual, preço subiu 10%  → +10% (entra no top)
+    //   - SALDO:  CASH com balance que dobra  → filtrado (CASH skip)
+    // Different total → MoM KPI shows a non-zero %, so the +0.00%
+    // assertion below targets ONLY the movers card.
+    const prevSnap: SnapshotOut = {
+      ...snap, id: 's-prev', period_end_date: '2026-03-31',
+      total_value_brl: '900000', total_value_usd: '180000',
+    }
+
+    const assets: AssetOut[] = [
+      { ...asset('aporte', 'APORTE'), asset_class: 'STOCK' },
+      { ...asset('rendu', 'RENDU'),   asset_class: 'STOCK' },
+      { ...asset('saldo', 'SALDO'),   asset_class: 'CASH' },
+    ]
+
+    const prevItems: SnapshotItemOut[] = [
+      { asset_id: 'aporte', quantity: '100', unit_price: '50.00',
+        market_value_native: '5000', market_value_brl: '5000',
+        market_value_usd: '1000', average_cost_brl: '4000', total_invested_brl: '4000' },
+      { asset_id: 'rendu', quantity: '100', unit_price: '50.00',
+        market_value_native: '5000', market_value_brl: '5000',
+        market_value_usd: '1000', average_cost_brl: '4000', total_invested_brl: '4000' },
+      { asset_id: 'saldo', quantity: '1', unit_price: '1000.00',
+        market_value_native: '1000', market_value_brl: '1000',
+        market_value_usd: '200', average_cost_brl: '1000', total_invested_brl: '1000' },
+    ]
+    const items: SnapshotItemOut[] = [
+      // APORTE: qty 100 → 200, preço estável → mkt 5k → 10k (+100% mkt, 0% preço)
+      { asset_id: 'aporte', quantity: '200', unit_price: '50.00',
+        market_value_native: '10000', market_value_brl: '10000',
+        market_value_usd: '2000', average_cost_brl: '8000', total_invested_brl: '8000' },
+      // RENDU: qty igual, preço 50 → 55 (+10%)
+      { asset_id: 'rendu', quantity: '100', unit_price: '55.00',
+        market_value_native: '5500', market_value_brl: '5500',
+        market_value_usd: '1100', average_cost_brl: '4000', total_invested_brl: '4000' },
+      // SALDO: balance dobrou — deve ser filtrado por ser CASH
+      { asset_id: 'saldo', quantity: '1', unit_price: '2000.00',
+        market_value_native: '2000', market_value_brl: '2000',
+        market_value_usd: '400', average_cost_brl: '2000', total_invested_brl: '2000' },
+    ]
+
+    vi.spyOn(api, 'me').mockResolvedValue(me)
+    vi.spyOn(api, 'listSnapshots').mockResolvedValue([prevSnap, snap])
+    vi.spyOn(api, 'listAssets').mockResolvedValue(assets)
+    vi.spyOn(api, 'listSnapshotPendencies').mockResolvedValue([])
+    vi.spyOn(api, 'listDistributions').mockResolvedValue({
+      items: [], total: 0, page: 1, page_size: 200,
+    })
+    vi.spyOn(api, 'listSnapshotItems').mockImplementation(async (sid: string) =>
+      sid === 's-prev' ? prevItems : items,
+    )
+
+    renderPage()
+
+    // Wait for the page to render (positions table proxies "loaded").
+    expect(await screen.findByTestId('positions-table')).toBeInTheDocument()
+    // Top movers needs prevItems to load — async. Wait for the
+    // +10% string to appear (RENDU in topUp).
+    expect(await screen.findByText('+10.00%')).toBeInTheDocument()
+
+    // Scope all movers assertions to the movers row so we don't
+    // collide with KPI tiles / positions table.
+    const movers = within(screen.getByTestId('movers-row'))
+    // APORTE (pct=0) filtered by threshold → never rendered in movers.
+    expect(movers.queryByText('APORTE')).toBeNull()
+    // CASH always filtered.
+    expect(movers.queryByText('SALDO')).toBeNull()
+    // RENDU is the only real mover → appears here.
+    expect(movers.queryAllByText('RENDU').length).toBeGreaterThan(0)
   })
 
   it('hides the "Eventos do mês" table when there are no distributions', async () => {

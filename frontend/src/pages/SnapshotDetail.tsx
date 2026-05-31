@@ -276,20 +276,34 @@ export default function SnapshotDetail() {
     return acc
   }, [distributions])
 
+  // Top movers (Spec 45 fix 2026-05-30) — use UNIT PRICE change, not
+  // market-value change. Market value mistura 3 efeitos: variação de
+  // preço (rendimento real), aporte/resgate (qty muda), e câmbio
+  // (pra USD). Pra "Maiores altas / quedas · MoM" só interessa o
+  // primeiro. Native unit_price também elimina o efeito cambial.
+  // CASH/FGTS ficam fora — unit_price é o próprio saldo, não tem
+  // sentido falar em "rendimento" deles aqui.
   const movers = useMemo(() => {
     if (prevItems.length === 0) return [] as { asset: AssetOut; valueBRL: number; pct: number }[]
-    const prevByAsset = new Map<string, number>()
+    const prevPrice = new Map<string, number>()
     for (const it of prevItems) {
-      if (it.market_value_brl != null) prevByAsset.set(it.asset_id, Number(it.market_value_brl))
+      if (it.unit_price != null) prevPrice.set(it.asset_id, Number(it.unit_price))
     }
     const rows: { asset: AssetOut; valueBRL: number; pct: number }[] = []
     for (const it of items) {
       const a = assetById.get(it.asset_id)
       if (!a) continue
-      const v = Number(it.market_value_brl ?? 0)
-      const prev = prevByAsset.get(it.asset_id) ?? 0
-      if (prev <= 0 || v <= 0) continue
-      rows.push({ asset: a, valueBRL: v, pct: (v - prev) / prev })
+      if (a.asset_class === 'CASH' || a.asset_class === 'FGTS') continue
+      const nowPrice = it.unit_price != null ? Number(it.unit_price) : null
+      const prev = prevPrice.get(it.asset_id) ?? null
+      if (!nowPrice || !prev || nowPrice <= 0 || prev <= 0) continue
+      const pct = (nowPrice - prev) / prev
+      // Threshold: only show real movers (|pct| ≥ 0.1%). Filters out
+      // noise from rounding + stable-price assets that would otherwise
+      // dilute the top-5.
+      if (Math.abs(pct) < 0.001) continue
+      const valueBRL = Number(it.market_value_brl ?? 0)
+      rows.push({ asset: a, valueBRL, pct })
     }
     return rows.sort((a, b) => b.pct - a.pct)
   }, [items, prevItems, assetById])
@@ -669,7 +683,7 @@ export default function SnapshotDetail() {
             )}
 
             {/* ── 5. Top movers (prototype 7250) ───────────────────────── */}
-            <div className="grid grid-cols-12 gap-4">
+            <div className="grid grid-cols-12 gap-4" data-testid="movers-row">
               <Card className="col-span-12 md:col-span-6">
                 <SectionTitle>Maiores altas · MoM</SectionTitle>
                 {topUp.length === 0 ? (
