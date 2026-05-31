@@ -41,6 +41,21 @@ function nextFirstOfMonthBRT(now: Date = new Date()): Date {
   return next
 }
 
+function apuracaoTarget(today: Date = new Date()): { ym: string; label: string } {
+  // period_end is the LAST CALENDAR DAY of the month (weekend/holiday OK —
+  // PTAX walks back). Target = current month iff today >= last day of it.
+  const lastCalDay = new Date(today.getFullYear(), today.getMonth() + 1, 0)
+  const useCurrent = today.getTime() >= lastCalDay.getTime()
+  const year = useCurrent
+    ? today.getFullYear()
+    : today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear()
+  const monthIdx = useCurrent
+    ? today.getMonth()
+    : today.getMonth() === 0 ? 11 : today.getMonth() - 1
+  const ym = `${year}-${String(monthIdx + 1).padStart(2, '0')}`
+  return { ym, label: `${MONTH_NAMES[monthIdx]}/${String(year).slice(2)}` }
+}
+
 export default function Snapshots() {
   const navigate = useNavigate()
   const [me, setMe] = useState<UserOut | null>(null)
@@ -73,14 +88,12 @@ export default function Snapshots() {
     [snaps],
   )
 
-  async function handleCreateForCurrentMonth() {
-    // Take the last business day of the previous month locally so the user
-    // can manually run apuração without waiting for the cron.
-    const now = new Date()
-    const target = new Date(now.getFullYear(), now.getMonth(), 0)  // last day of prev month
+  const target = useMemo(() => apuracaoTarget(), [])
+
+  async function handleApurar() {
     setCreating(true)
     try {
-      const s = await api.createSnapshot(target.toISOString().slice(0, 10))
+      const s = await api.createSnapshot({ target_ym: target.ym, auto: true })
       navigate(`/snapshots/${periodYm(s.period_end_date)}`)
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Erro')
@@ -102,11 +115,11 @@ export default function Snapshots() {
           countLabel="apurações no histórico"
           action={
             <button
-              onClick={handleCreateForCurrentMonth}
+              onClick={handleApurar}
               disabled={creating}
               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white transition-colors"
             >
-              <Plus className="w-3.5 h-3.5" /> Apurar mês anterior
+              <Plus className="w-3.5 h-3.5" /> Apurar {target.label}
             </button>
           }
         />

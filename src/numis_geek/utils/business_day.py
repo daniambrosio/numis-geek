@@ -40,7 +40,13 @@ def first_business_day(d: date) -> date:
     return cur
 
 
-def _last_day_of_month(ym: str) -> date:
+def last_day_of_month(ym: str) -> date:
+    """Last calendar day of the month (e.g. '2026-05' -> 2026-05-31).
+
+    This is the canonical period_end for portfolio snapshots — anchored to
+    the calendar month, not the trading calendar. fx_rate_on() walks back to
+    the most recent PTAX when the date falls on a weekend/holiday.
+    """
     year, month = int(ym[:4]), int(ym[5:7])
     if month == 12:
         return date(year + 1, 1, 1) - timedelta(days=1)
@@ -49,7 +55,7 @@ def _last_day_of_month(ym: str) -> date:
 
 def last_business_day_of_month(ym: str) -> date:
     """Last business day of the calendar month (e.g. '2026-05' -> 2026-05-29)."""
-    return last_business_day(_last_day_of_month(ym))
+    return last_business_day(last_day_of_month(ym))
 
 
 def first_business_day_of_month(ym: str) -> date:

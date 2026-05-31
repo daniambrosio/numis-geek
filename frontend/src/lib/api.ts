@@ -820,10 +820,14 @@ export const api = {
 
   // ── Snapshots (spec 14 + 35) ─────────────────────────────────────────────
   listSnapshots: () => request<SnapshotOut[]>('/snapshots'),
-  createSnapshot: (period_end_date: string) =>
+  createSnapshot: (
+    body:
+      | { period_end_date: string; auto?: boolean }
+      | { target_ym: string; auto?: boolean },
+  ) =>
     request<SnapshotOut>('/snapshots', {
       method: 'POST',
-      body: JSON.stringify({ period_end_date }),
+      body: JSON.stringify(body),
     }),
   listSnapshotItems: (snapshot_id: string) =>
     request<SnapshotItemOut[]>(`/snapshots/${snapshot_id}/items`),

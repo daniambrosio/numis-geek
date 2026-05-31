@@ -2,7 +2,8 @@
 
 Runs on the 1st of each month at 06:30 America/Sao_Paulo. For each
 active workspace:
-  1. period_end = last_business_day_of_month(previous_month)
+  1. period_end = last_day_of_month(previous_month)  (calendar day,
+     even if weekend/holiday — fx_rate_on walks back to PTAX)
   2. Skip if a CLOSED snapshot already exists (idempotent)
   3. Refresh all automated-source assets (spec 23 service)
   4. create_snapshot(source=AUTOMATED, initial_status=CLOSED) —
@@ -28,7 +29,7 @@ from numis_geek.services.audit import AuditService
 from numis_geek.services.price_update import refresh_all_automated
 from numis_geek.services.snapshot import SnapshotResult, create_snapshot
 from numis_geek.utils.business_day import (
-    last_business_day_of_month,
+    last_day_of_month,
     previous_month_ym,
 )
 
@@ -66,7 +67,7 @@ def _has_closed_snapshot(db: Session, workspace_id: str, period_end: date) -> bo
 def _run_one_workspace(
     db: Session, workspace_id: str, *, target_ym: str,
 ) -> WorkspaceJobResult:
-    period_end = last_business_day_of_month(target_ym)
+    period_end = last_day_of_month(target_ym)
     now = datetime.now(timezone.utc)
 
     if _has_closed_snapshot(db, workspace_id, period_end):

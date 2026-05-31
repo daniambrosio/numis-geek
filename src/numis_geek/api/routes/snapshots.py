@@ -23,6 +23,7 @@ from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshotItem,
     SnapshotPendency,
     SnapshotSource,
+    SnapshotStatus,
 )
 from numis_geek.models.user import User, UserRole
 from numis_geek.services.auth import UserContext
@@ -36,6 +37,7 @@ from numis_geek.services.snapshot import (
     resolve_pendency,
     retry_pendency_api,
 )
+from numis_geek.utils.business_day import last_day_of_month
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
@@ -103,7 +105,13 @@ class SnapshotOut(BaseModel):
 
 
 class SnapshotCreateRequest(BaseModel):
-    period_end_date: date_t
+    period_end_date: date_t | None = None
+    target_ym: str | None = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}$",
+        description="YYYY-MM. Backend resolves period_end via last_day_of_month (calendar).",
+    )
+    auto: bool = False
 
 
 class SnapshotReopenRequest(BaseModel):
@@ -204,13 +212,28 @@ def create_workspace_snapshot(
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
-    result = create_snapshot(
-        db,
-        workspace_id=ws_id,
-        period_end=body.period_end_date,
-        user_id=current_user.user_id,
-        source=SnapshotSource.MANUAL,
+    if (body.period_end_date is None) == (body.target_ym is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of period_end_date or target_ym.",
+        )
+    period_end = (
+        body.period_end_date
+        if body.period_end_date is not None
+        else last_day_of_month(body.target_ym)
     )
+    src = SnapshotSource.AUTOMATED if body.auto else SnapshotSource.MANUAL
+    try:
+        result = create_snapshot(
+            db,
+            workspace_id=ws_id,
+            period_end=period_end,
+            user_id=current_user.user_id,
+            source=src,
+            initial_status=SnapshotStatus.CLOSED,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     snap = db.get(PortfolioSnapshot, result.snapshot_id)
     return _hydrate_snapshot(db, snap)
 
