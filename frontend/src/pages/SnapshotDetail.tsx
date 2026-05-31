@@ -304,6 +304,7 @@ export default function SnapshotDetail() {
   )
 
   const isPending = snap?.status === 'IN_REVIEW'
+  const [showAllPositions, setShowAllPositions] = useState(false)
   const sources = useMemo(
     () => bucketCounts(items, pendencies, assetById),
     [items, pendencies, assetById],
@@ -788,7 +789,9 @@ export default function SnapshotDetail() {
               </div>
               <div
                 className={`overflow-x-auto -mx-1${
-                  sortedPositions.length > 20 ? ' max-h-[600px] overflow-y-auto' : ''
+                  showAllPositions && sortedPositions.length > 20
+                    ? ' max-h-[600px] overflow-y-auto'
+                    : ''
                 }`}
                 data-testid="positions-wrapper"
               >
@@ -805,7 +808,9 @@ export default function SnapshotDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedPositions.map(it => {
+                    {sortedPositions
+                      .slice(0, showAllPositions ? sortedPositions.length : 20)
+                      .map(it => {
                       const a = assetById.get(it.asset_id)
                       if (!a) return null
                       const klass = collapsedOf(a.asset_class)
@@ -859,6 +864,18 @@ export default function SnapshotDetail() {
                     })}
                   </tbody>
                 </table>
+                {sortedPositions.length > 20 && !showAllPositions && (
+                  <div className="px-3 py-2 text-[11px] text-gray-500 text-center">
+                    + {sortedPositions.length - 20} ativos ·{' '}
+                    <button
+                      onClick={() => setShowAllPositions(true)}
+                      className="text-indigo-500 dark:text-indigo-400 hover:underline"
+                      data-testid="show-all-positions"
+                    >
+                      ver todos
+                    </button>
+                  </div>
+                )}
               </div>
             </Card>
           </>

@@ -9,7 +9,7 @@
  * without backend wiring.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import SnapshotDetail from './SnapshotDetail'
@@ -101,8 +101,8 @@ function renderPage() {
 describe('SnapshotDetail (Spec 45)', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
-  it('renders all snapshot items (no 20-row slice)', async () => {
-    // 25 items — would have been truncated to 20 by the old code.
+  it('shows 20 positions by default with "ver todos" link, expands on click', async () => {
+    // 25 items — proto-style: default shows 20 + "ver todos" link.
     const N = 25
     const assets = Array.from({ length: N }, (_, i) =>
       asset(`a${i}`, `TICK${String(i).padStart(2, '0')}`),
@@ -120,11 +120,20 @@ describe('SnapshotDetail (Spec 45)', () => {
 
     renderPage()
 
-    // Wait for one of the late tickers to appear — that's the proof
-    // the slice(0, 20) was removed.
-    expect(await screen.findByText('TICK24')).toBeInTheDocument()
-    // Spot-check: header still shows the right count.
+    // Default: first ticker visible, late ticker (index 24) still
+    // hidden behind the slice.
+    expect(await screen.findByText('TICK00')).toBeInTheDocument()
+    expect(screen.queryByText('TICK24')).toBeNull()
     expect(screen.getByText(/25 ativos/)).toBeInTheDocument()
+    expect(screen.getByText(/\+ 5 ativos/)).toBeInTheDocument()
+
+    // Click "ver todos" → late ticker appears.
+    fireEvent.click(screen.getByTestId('show-all-positions'))
+    await waitFor(() => {
+      expect(screen.getByText('TICK24')).toBeInTheDocument()
+    })
+    // The "+ N ativos" hint disappears once expanded.
+    expect(screen.queryByText(/\+ 5 ativos/)).toBeNull()
   })
 
   it('renders the "Eventos do mês" table when distributions exist', async () => {
