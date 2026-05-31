@@ -153,7 +153,7 @@ def get_llm_client(db: Session) -> LLMClient:
     if cred is None:
         raise RuntimeError(
             "No active ANTHROPIC IntegrationCredential. Configure one via "
-            "/admin/integrations or inject a mock via `set_llm_client(...)`.",
+            "/sysadmin/integrations or inject a mock via `set_llm_client(...)`.",
         )
     return AnthropicClient(cred.secret_value)
 

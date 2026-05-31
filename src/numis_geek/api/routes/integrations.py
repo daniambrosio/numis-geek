@@ -134,6 +134,29 @@ def _test_provider(provider: IntegrationProvider, secret_value: str) -> tuple[Cr
             return CredentialTestResult.FAILED, f"HTTP {r.status_code}: {r.text[:200]}"
         except Exception as e:
             return CredentialTestResult.FAILED, f"{type(e).__name__}: {e}"
+    if provider == IntegrationProvider.ANTHROPIC:
+        # Spec 38/48 — ping the Messages endpoint with a cheap 1-token call.
+        try:
+            import httpx
+            r = httpx.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": secret_value,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                timeout=15.0,
+            )
+            if r.status_code == 200:
+                return CredentialTestResult.SUCCESS, "OK"
+            return CredentialTestResult.FAILED, f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            return CredentialTestResult.FAILED, f"{type(e).__name__}: {e}"
 
     return CredentialTestResult.FAILED, f"Unknown provider {provider}"
 
