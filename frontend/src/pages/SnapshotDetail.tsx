@@ -114,6 +114,32 @@ function bucketCounts(
 }
 
 // ── HBar matching prototype ────────────────────────────────────────────────
+const UNGROUPED_FI_LABEL = 'Sem instituição'
+
+function groupPendenciesByFI(
+  pendencies: SnapshotPendencyOut[],
+): Array<{ name: string; items: SnapshotPendencyOut[] }> {
+  const map = new Map<string, SnapshotPendencyOut[]>()
+  for (const p of pendencies) {
+    const k = p.asset_institution_short_name ?? UNGROUPED_FI_LABEL
+    if (!map.has(k)) map.set(k, [])
+    map.get(k)!.push(p)
+  }
+  const groups = Array.from(map.entries())
+    .map(([name, items]) => ({ name, items }))
+    .sort((a, b) => {
+      if (a.name === UNGROUPED_FI_LABEL) return 1
+      if (b.name === UNGROUPED_FI_LABEL) return -1
+      return a.name.localeCompare(b.name)
+    })
+  for (const g of groups) {
+    g.items.sort((a, b) =>
+      (a.asset_ticker ?? a.asset_name).localeCompare(b.asset_ticker ?? b.asset_name),
+    )
+  }
+  return groups
+}
+
 function HBar({ value, max, color, height = 6 }: { value: number; max: number; color: string; height?: number }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
   return (
@@ -466,15 +492,30 @@ export default function SnapshotDetail() {
                   </div>
                 </div>
 
-                {/* Per-asset pending list */}
-                <div className="space-y-2">
-                  {pendencies.filter(p => !p.resolved_at).map(p => (
-                    <PendencyRow
-                      key={p.id}
-                      pendency={p}
-                      asset={assetById.get(p.asset_id)}
-                      onResolved={refreshPendencies}
-                    />
+                {/* Per-asset pending list, grouped by financial institution
+                    so the user can walk through one statement at a time. */}
+                <div className="space-y-4">
+                  {groupPendenciesByFI(pendencies.filter(p => !p.resolved_at)).map(g => (
+                    <div key={g.name} data-testid={`pendency-group-${g.name}`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                          {g.name}
+                        </div>
+                        <div className="text-[10px] text-gray-500 tnum">
+                          {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {g.items.map(p => (
+                          <PendencyRow
+                            key={p.id}
+                            pendency={p}
+                            asset={assetById.get(p.asset_id)}
+                            onResolved={refreshPendencies}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
 
@@ -953,6 +994,14 @@ function PendencyRow({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const isManual = pendency.reason === 'MANUAL_SOURCE' || pendency.reason === 'UPLOAD_REQUIRED'
+  const prevPriceNum =
+    pendency.previous_unit_price != null
+      ? Number(pendency.previous_unit_price)
+      : null
+  const hasPrevious =
+    prevPriceNum != null
+    && Number.isFinite(prevPriceNum)
+    && pendency.previous_period_end != null
 
   async function handleRetry() {
     setBusy(true); setErr(null)
@@ -960,9 +1009,22 @@ function PendencyRow({
     catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
     finally { setBusy(false) }
   }
+  async function handleRepeatPrevious() {
+    if (!hasPrevious) return
+    setBusy(true); setErr(null)
+    try {
+      await api.resolveSnapshotPendency(pendency.id, {
+        new_price: pendency.previous_unit_price!,
+        note: `copied from ${pendency.previous_period_end}`,
+      })
+      onResolved()
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
+    finally { setBusy(false) }
+  }
   async function handleEdit() {
     const raw = window.prompt(
       `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
+      hasPrevious ? prevPriceNum!.toFixed(2).replace('.', ',') : '',
     )
     if (!raw) return
     const n = Number(raw.replace(/\./g, '').replace(',', '.').trim())
@@ -1004,6 +1066,12 @@ function PendencyRow({
         </div>
         <div className="text-[11px] text-gray-500 truncate">
           {pendency.detail ?? pendency.asset_name}
+          {hasPrevious && (
+            <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
+              · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}
+              {fmtBRL(prevPriceNum!)}
+            </span>
+          )}
         </div>
         {err && <div className="text-[10px] text-red-500 mt-0.5">{err}</div>}
       </div>
@@ -1024,6 +1092,17 @@ function PendencyRow({
             className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 disabled:opacity-50"
           >
             <Upload className="w-3 h-3" /> Upload extrato
+          </button>
+        )}
+        {hasPrevious && (
+          <button
+            onClick={handleRepeatPrevious}
+            disabled={busy}
+            title={`Usar preço de ${ymLabelShort(pendency.previous_period_end!.slice(0, 7))}: ${fmtBRL(prevPriceNum!)}`}
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50"
+            data-testid={`pendency-repeat-${pendency.id}`}
+          >
+            <RotateCcw className="w-3 h-3" /> Repetir
           </button>
         )}
         <button
