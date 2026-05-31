@@ -33,13 +33,18 @@ class ScreenshotPriceOutput(BaseModel):
 
 
 class BrokerPosition(BaseModel):
+    # ticker_raw is the only field we truly require — the rest may come back
+    # null when the LLM is uncertain about a row (Spec 48 follow-up). The
+    # apply step filters rows missing quantity OR unit_price before touching
+    # the DB, so accepting null here just prevents pydantic from failing the
+    # whole extract over a few empty hallucinations.
     ticker_raw: str
     ticker_normalized: str | None = None
-    quantity: float
-    unit_price: float
+    quantity: float | None = None
+    unit_price: float | None = None
     currency: str = "BRL"
     market_value: float | None = None
-    confidence: float
+    confidence: float = 0.0
     notes: str | None = None
 
 
