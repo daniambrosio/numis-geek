@@ -205,38 +205,79 @@ export default function BulkExtractReviewModal({
               <div className="text-[11px] text-gray-500 italic">Nenhum ticker do extrato bateu com pendência aberta.</div>
             ) : (
               <ul className="space-y-1.5">
-                {preview.matched.map(({ ticker, pendency, price, manual }) => (
-                  <li
-                    key={pendency.id}
-                    className="flex items-center justify-between text-[12px]"
-                    data-testid={`bulk-matched-${ticker}`}
-                  >
-                    <div className="font-mono">
-                      {ticker} <span className="text-gray-500">— {pendency.asset_name}</span>
-                      {pendency.asset_institution_short_name && (
-                        <span className="ml-1 text-[10px] uppercase text-gray-400">
-                          [{pendency.asset_institution_short_name}]
-                        </span>
+                {preview.matched.map(({ ticker, pendency, price, manual }) => {
+                  const tickerKey = positions.find(p => tickerOf(p) === ticker)?.ticker_raw ?? ticker
+                  const hasExtractPrice = Number.isFinite(price) && price > 0
+                  const manualPrice = manualPrices[tickerKey]
+                  const needsPrice = !hasExtractPrice && !manualPrice
+                  return (
+                    <li
+                      key={pendency.id}
+                      className={`flex items-center gap-2 text-[12px] ${needsPrice ? 'bg-red-500/[0.04] border border-red-500/30 rounded p-1.5' : ''}`}
+                      data-testid={`bulk-matched-${ticker}`}
+                    >
+                      <div className="flex-1 min-w-0 font-mono">
+                        {ticker} <span className="text-gray-500">— {pendency.asset_name}</span>
+                        {pendency.asset_institution_short_name && (
+                          <span className="ml-1 text-[10px] uppercase text-gray-400">
+                            [{pendency.asset_institution_short_name}]
+                          </span>
+                        )}
+                        {manual && (
+                          <span
+                            className="ml-1.5 text-[9px] uppercase tracking-wider font-semibold text-indigo-500"
+                            title="Mapeamento manual"
+                          >
+                            🔗 manual
+                          </span>
+                        )}
+                        {needsPrice && (
+                          <span className="ml-1.5 text-[9px] uppercase tracking-wider font-semibold text-red-500">
+                            sem preço
+                          </span>
+                        )}
+                      </div>
+                      {hasExtractPrice && !manualPrice && (
+                        <div className="tnum text-gray-700 dark:text-gray-300 shrink-0">
+                          {fmtBRL(price)}
+                          {pendency.previous_unit_price && (
+                            <span className="ml-2 text-[10px] text-gray-400">
+                              (anterior {fmtBRL(Number(pendency.previous_unit_price))})
+                            </span>
+                          )}
+                        </div>
                       )}
-                      {manual && (
-                        <span
-                          className="ml-1.5 text-[9px] uppercase tracking-wider font-semibold text-indigo-500"
-                          title="Mapeamento manual"
-                        >
-                          🔗 manual
-                        </span>
+                      {(needsPrice || manualPrice) && (
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder={
+                            pendency.previous_unit_price
+                              ? `Anterior: ${fmtBRL(Number(pendency.previous_unit_price))}`
+                              : 'Preço (ex 1.234,56)'
+                          }
+                          value={manualPrice ?? ''}
+                          onChange={e => {
+                            const v = e.target.value
+                            setManualPrices(prev => {
+                              const next = { ...prev }
+                              if (v.trim()) next[tickerKey] = v
+                              else delete next[tickerKey]
+                              return next
+                            })
+                          }}
+                          autoFocus={needsPrice && preview.matched.length === 1}
+                          className={`h-7 w-36 px-2 text-[11px] rounded-md border text-right tnum focus:outline-none ${
+                            needsPrice
+                              ? 'border-red-400 dark:border-red-700 bg-white dark:bg-gray-800 focus:border-red-500'
+                              : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 focus:border-amber-500'
+                          }`}
+                          data-testid={`bulk-matched-price-${ticker}`}
+                        />
                       )}
-                    </div>
-                    <div className="tnum text-gray-700 dark:text-gray-300">
-                      {fmtBRL(price)}
-                      {pendency.previous_unit_price && (
-                        <span className="ml-2 text-[10px] text-gray-400">
-                          (anterior {fmtBRL(Number(pendency.previous_unit_price))})
-                        </span>
-                      )}
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </Section>
@@ -395,16 +436,37 @@ export default function BulkExtractReviewModal({
           >
             Cancelar
           </button>
-          <button
-            onClick={handleApply}
-            disabled={applying || preview.matched.length === 0}
-            className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
-            data-testid="bulk-review-apply"
-          >
-            {applying
-              ? 'Aplicando…'
-              : `Aplicar ${preview.matched.length} resoluç${preview.matched.length === 1 ? 'ão' : 'ões'}`}
-          </button>
+          {(() => {
+            // Conta apenas casadas que VÃO efetivamente aplicar: tem preço
+            // extraído > 0, ou override manual válido. Botão reflete isso.
+            const applicable = preview.matched.filter(({ ticker, price }) => {
+              if (Number.isFinite(price) && price > 0) return true
+              const tickerKey = positions.find(p => tickerOf(p) === ticker)?.ticker_raw ?? ticker
+              const raw = (manualPrices[tickerKey] ?? '').trim()
+              if (!raw) return false
+              const n = Number(raw.replace(/\./g, '').replace(',', '.'))
+              return Number.isFinite(n) && n > 0
+            }).length
+            const blocked = applying || applicable === 0
+            const missing = preview.matched.length - applicable
+            return (
+              <button
+                onClick={handleApply}
+                disabled={blocked}
+                title={
+                  missing > 0
+                    ? `${missing} linha${missing === 1 ? '' : 's'} sem preço — preencha pra liberar Aplicar`
+                    : undefined
+                }
+                className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+                data-testid="bulk-review-apply"
+              >
+                {applying
+                  ? 'Aplicando…'
+                  : `Aplicar ${applicable} resoluç${applicable === 1 ? 'ão' : 'ões'}${missing > 0 ? ` · ${missing} sem preço` : ''}`}
+              </button>
+            )
+          })()}
         </div>
       </div>
     </div>

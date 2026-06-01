@@ -697,6 +697,36 @@ def test_bulk_apply_total_mode_for_fund_divides_by_quantity(db):
         f"expected ~81912 but got {item.market_value_brl}"
 
 
+def test_confirm_stays_extracted_when_zero_applied(db):
+    """Spec 49 hotfix #6 — quando nada foi aplicado (ex: matched sem
+    preço), job mantém status EXTRACTED pra user poder retry sem
+    re-rodar o LLM. O CONFIRMED com applied=0 antes travava o modal."""
+    from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus
+
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": None, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 0
+    job = db.get(ExtractionJob, job_id)
+    assert job.status == ExtractionStatus.EXTRACTED  # NÃO confirmado!
+
+    # Agora retry com manual_prices preenchendo → sucesso → CONFIRMED.
+    result2 = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+        manual_prices={"PETR4": 42.0},
+    )
+    assert result2.applied_count == 1
+    job = db.get(ExtractionJob, job_id)
+    assert job.status == ExtractionStatus.CONFIRMED
+
+
 def test_resolve_pendency_creates_item_when_missing(db):
     """Spec 49 hotfix #5 — resolve_pendency precisa CRIAR o snapshot item
     quando ele não existe (caso típico: ativo sem movimentos como

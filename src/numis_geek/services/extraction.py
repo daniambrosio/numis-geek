@@ -382,9 +382,13 @@ def confirm_extraction(
     )
 
     job.user_edits = edited_payload if edited_payload is not None else None
-    job.status = ExtractionStatus.CONFIRMED
-    job.confirmed_at = datetime.now(timezone.utc)
-    job.confirmed_by = user_id
+    # Spec 49 hotfix #6 — only flip to CONFIRMED when at least 1 pendency
+    # was actually resolved. Otherwise leave as EXTRACTED so the user can
+    # fix manual_prices / mappings and retry without re-running the LLM.
+    if result.applied_count > 0:
+        job.status = ExtractionStatus.CONFIRMED
+        job.confirmed_at = datetime.now(timezone.utc)
+        job.confirmed_by = user_id
     db.flush()
 
     # Resolve the linked pendency (lazy import to avoid circular module).
