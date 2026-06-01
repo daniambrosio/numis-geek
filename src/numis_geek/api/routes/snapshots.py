@@ -141,6 +141,11 @@ class BulkExtractionJobOut(BaseModel):
     created_at: str
     completed_at: str | None
     confirmed_at: str | None
+    # Spec 49 hotfix — LLM usage so cost is visible in the UI.
+    model: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    cost_usd: str | None
 
     @classmethod
     def from_orm(cls, j: ExtractionJob) -> "BulkExtractionJobOut":
@@ -157,6 +162,10 @@ class BulkExtractionJobOut(BaseModel):
             created_at=j.created_at.isoformat() if j.created_at else "",
             completed_at=j.completed_at.isoformat() if j.completed_at else None,
             confirmed_at=j.confirmed_at.isoformat() if j.confirmed_at else None,
+            model=j.model,
+            input_tokens=j.input_tokens,
+            output_tokens=j.output_tokens,
+            cost_usd=str(j.cost_usd) if j.cost_usd is not None else None,
         )
 
 

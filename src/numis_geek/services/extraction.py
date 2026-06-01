@@ -305,6 +305,7 @@ def confirm_extraction(
     user_email: str | None = None,
     edited_payload: dict | None = None,
     institution_short_name: str | None = None,
+    manual_mappings: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     """Apply the (possibly edited) extracted JSON to the domain model.
 
@@ -312,6 +313,10 @@ def confirm_extraction(
     bulk-scoped (snapshot_id set, pendency_id None), dispatches to the bulk
     applier which resolves N pendencies. `institution_short_name`, when set,
     restricts the bulk matching to assets of that FI (Spec 48 §1.3).
+    `manual_mappings` overrides auto-matching for orphan lines: keys are
+    `ticker_raw` strings from the extract, values are pendency IDs the user
+    chose to apply the line against (Spec 49 hotfix — review screen lets
+    user manually map orphans to open pendencies).
     """
     job = db.get(ExtractionJob, job_id)
     if job is None:
@@ -329,6 +334,7 @@ def confirm_extraction(
         db, job, payload,
         user_id=user_id, user_email=user_email,
         institution_short_name=institution_short_name,
+        manual_mappings=manual_mappings,
     )
 
     job.user_edits = edited_payload if edited_payload is not None else None
@@ -365,6 +371,14 @@ def confirm_extraction(
             "errors": result.errors,
             "pendency_id": job.pendency_id,
             "institution_short_name": institution_short_name,
+            "manual_mappings_count": len(manual_mappings) if manual_mappings else 0,
+            # Spec 49 hotfix — surface LLM usage in audit so cost can be
+            # tracked by aggregating audit rows in addition to inspecting
+            # individual extraction_job rows.
+            "model": job.model,
+            "input_tokens": job.input_tokens,
+            "output_tokens": job.output_tokens,
+            "cost_usd": str(job.cost_usd) if job.cost_usd is not None else None,
         },
     )
     return result
@@ -408,6 +422,7 @@ def _apply_payload(
     user_id: str | None,
     user_email: str | None,
     institution_short_name: str | None = None,
+    manual_mappings: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     hint = job.source_hint
     # Spec 48 — bulk path: BROKER_POSITION + snapshot scope + no specific
@@ -421,6 +436,7 @@ def _apply_payload(
             db, job, payload,
             user_id=user_id, user_email=user_email,
             institution_short_name=institution_short_name,
+            manual_mappings=manual_mappings,
         )
     if hint == ExtractionSourceHint.SCREENSHOT_PRICE:
         return _apply_screenshot_price(db, job, payload, user_id=user_id)
@@ -593,6 +609,7 @@ def _apply_bulk_to_snapshot(
     user_id: str | None,
     user_email: str | None,
     institution_short_name: str | None = None,
+    manual_mappings: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     """Bulk path (Spec 48): match positions[] by ticker to open pendencies
     in the snapshot. Each match calls resolve_pendency (which updates
@@ -634,13 +651,24 @@ def _apply_bulk_to_snapshot(
     # touch extraction in tests.
     from numis_geek.services import snapshot as snapshot_service
 
+    # Spec 49 hotfix — index manual mappings by ticker_raw for direct
+    # override during the matching pass.
+    overrides = dict(manual_mappings or {})
+
     for pos in positions:
         ticker = pos.get("ticker_normalized") or pos.get("ticker_raw")
         unit_price_raw = pos.get("unit_price")
         if not ticker:
             errors.append("position with no ticker")
             continue
-        asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
+        manual_pendency_id = overrides.get(pos.get("ticker_raw") or "") or overrides.get(ticker)
+        asset: Asset | None = None
+        if manual_pendency_id:
+            forced_pen = db.get(SnapshotPendency, manual_pendency_id)
+            if forced_pen and forced_pen.snapshot_id == snap.id:
+                asset = db.get(Asset, forced_pen.asset_id)
+        if asset is None:
+            asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
         if asset is None:
             orphan.append({
                 "ticker": ticker,

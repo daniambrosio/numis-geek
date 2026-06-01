@@ -48,6 +48,8 @@ export default function BulkExtractReviewModal({
   const [fiShortName, setFiShortName] = useState<string>('')
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Spec 49 hotfix — manual orphan→pendency mapping. key = ticker_raw, value = pendency_id.
+  const [manualMappings, setManualMappings] = useState<Record<string, string>>({})
 
   useEffect(() => {
     api.listFinancialInstitutions().then(setFis).catch(() => { /* silent */ })
@@ -74,19 +76,27 @@ export default function BulkExtractReviewModal({
   }, [openPendencies])
 
   const preview = useMemo(() => {
-    const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number }> = []
+    const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number; manual: boolean }> = []
     const orphan: Array<{ ticker: string; price: number | null }> = []
     const matchedAssetIds = new Set<string>()
+    const pendencyById = new Map(openPendencies.map(p => [p.id, p]))
     for (const pos of positions) {
       const t = tickerOf(pos)
       if (!t) continue
-      const p = pendencyByTicker.get(t)
       const price = typeof pos.unit_price === 'number' ? pos.unit_price : null
-      if (p && fiShortName === '') {
-        matched.push({ ticker: t, pendency: p, price: price ?? NaN })
-        matchedAssetIds.add(p.asset_id)
-      } else if (p && p.asset_institution_short_name === fiShortName) {
-        matched.push({ ticker: t, pendency: p, price: price ?? NaN })
+      // Manual override always wins (Spec 49 hotfix).
+      const manualPenId = manualMappings[pos.ticker_raw || ''] ?? manualMappings[t]
+      if (manualPenId) {
+        const forced = pendencyById.get(manualPenId)
+        if (forced) {
+          matched.push({ ticker: t, pendency: forced, price: price ?? NaN, manual: true })
+          matchedAssetIds.add(forced.asset_id)
+          continue
+        }
+      }
+      const p = pendencyByTicker.get(t)
+      if (p && (fiShortName === '' || p.asset_institution_short_name === fiShortName)) {
+        matched.push({ ticker: t, pendency: p, price: price ?? NaN, manual: false })
         matchedAssetIds.add(p.asset_id)
       } else if (p) {
         // Pendency exists but is from another FI — skip (backend will too).
@@ -100,13 +110,14 @@ export default function BulkExtractReviewModal({
       return true
     })
     return { matched, orphan, notCovered }
-  }, [positions, pendencyByTicker, openPendencies, fiShortName])
+  }, [positions, pendencyByTicker, openPendencies, fiShortName, manualMappings])
 
   async function handleApply() {
     setApplying(true); setError(null)
     try {
       const result = await api.confirmExtraction(job.id, {
         institution_short_name: fiShortName || null,
+        manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
       })
       onApplied(result.applied_count)
     } catch (e) {
@@ -173,7 +184,7 @@ export default function BulkExtractReviewModal({
               <div className="text-[11px] text-gray-500 italic">Nenhum ticker do extrato bateu com pendência aberta.</div>
             ) : (
               <ul className="space-y-1.5">
-                {preview.matched.map(({ ticker, pendency, price }) => (
+                {preview.matched.map(({ ticker, pendency, price, manual }) => (
                   <li
                     key={pendency.id}
                     className="flex items-center justify-between text-[12px]"
@@ -184,6 +195,14 @@ export default function BulkExtractReviewModal({
                       {pendency.asset_institution_short_name && (
                         <span className="ml-1 text-[10px] uppercase text-gray-400">
                           [{pendency.asset_institution_short_name}]
+                        </span>
+                      )}
+                      {manual && (
+                        <span
+                          className="ml-1.5 text-[9px] uppercase tracking-wider font-semibold text-indigo-500"
+                          title="Mapeamento manual"
+                        >
+                          🔗 manual
                         </span>
                       )}
                     </div>
@@ -226,16 +245,56 @@ export default function BulkExtractReviewModal({
             testid="bulk-section-orphan"
           >
             {preview.orphan.length === 0 ? (
-              <div className="text-[11px] text-gray-500 italic">Todas as linhas do extrato bateram com algum ativo.</div>
+              <div className="text-[11px] text-gray-500 italic">Todas as linhas do extrato bateram com algum ativo (ou foram mapeadas manualmente).</div>
             ) : (
-              <ul className="text-[11px] text-gray-500 space-y-0.5">
-                {preview.orphan.map(o => (
-                  <li key={o.ticker}>
-                    <span className="font-mono">{o.ticker}</span>
-                    {o.price != null && <span className="ml-1">— {fmtBRL(o.price)}</span>}
-                    <span className="ml-2 text-[10px]">não existe no workspace</span>
-                  </li>
-                ))}
+              <ul className="space-y-1.5">
+                {preview.orphan.map(o => {
+                  // tickerOf returns ticker_normalized OR ticker_raw; we need the raw
+                  // key to persist mapping under whatever LLM put in ticker_raw.
+                  const tickerKey = positions.find(p => tickerOf(p) === o.ticker)?.ticker_raw ?? o.ticker
+                  // Filter pendency list by FI when set.
+                  const candidatePens = openPendencies.filter(p => {
+                    if (fiShortName && p.asset_institution_short_name !== fiShortName) return false
+                    if (preview.matched.some(m => m.pendency.asset_id === p.asset_id)) return false
+                    return true
+                  })
+                  return (
+                    <li
+                      key={o.ticker}
+                      className="flex items-center gap-2 text-[11px]"
+                      data-testid={`bulk-orphan-${o.ticker}`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-gray-700 dark:text-gray-300">{o.ticker}</span>
+                        {o.price != null && (
+                          <span className="ml-1 text-gray-500 tnum">— {fmtBRL(o.price)}</span>
+                        )}
+                      </div>
+                      <select
+                        value={manualMappings[tickerKey] ?? ''}
+                        onChange={e => {
+                          const v = e.target.value
+                          setManualMappings(prev => {
+                            const next = { ...prev }
+                            if (v) next[tickerKey] = v
+                            else delete next[tickerKey]
+                            return next
+                          })
+                        }}
+                        className="h-7 px-2 text-[11px] rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 max-w-[16rem]"
+                        data-testid={`bulk-orphan-map-${o.ticker}`}
+                      >
+                        <option value="">— Ignorar (órfã) —</option>
+                        {candidatePens.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {(p.asset_ticker ?? p.asset_name)}
+                            {p.asset_institution_short_name ? ` · ${p.asset_institution_short_name}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </Section>

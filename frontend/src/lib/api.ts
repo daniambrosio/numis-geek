@@ -941,6 +941,7 @@ export const api = {
     opts: {
       edited_payload?: Record<string, unknown> | null
       institution_short_name?: string | null
+      manual_mappings?: Record<string, string> | null
     } = {},
   ) =>
     request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
@@ -948,6 +949,7 @@ export const api = {
       body: JSON.stringify({
         edited_payload: opts.edited_payload ?? null,
         institution_short_name: opts.institution_short_name ?? null,
+        manual_mappings: opts.manual_mappings ?? null,
       }),
     }),
   rejectExtraction: (id: string, reason?: string) =>
@@ -1065,6 +1067,10 @@ export interface BulkExtractionJobSummary {
   created_at: string
   completed_at: string | null
   confirmed_at: string | null
+  model: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_usd: string | null
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────

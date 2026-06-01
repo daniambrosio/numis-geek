@@ -485,6 +485,44 @@ def test_delete_attachment_blocked_when_job_confirmed(db):
         app.dependency_overrides.clear()
 
 
+def test_manual_mapping_resolves_orphan(db):
+    """Spec 49 hotfix — usuário mapeia órfã ('Fundos de Investimento') pra
+    pendência aberta via manual_mappings; o applier honra o override."""
+    w = _world(db)
+    # PETR4 está cadastrado normalmente; o extrato traz um label genérico
+    # ("XYZ Generic Fund") que NÃO bate com nenhum asset.
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "XYZ Generic Fund", "quantity": 1, "unit_price": 81912.21, "confidence": 0.9},
+        ]
+    })
+    # Sem mapping → orphan, sem applied.
+    result_no_map = extraction_service.confirm_extraction(
+        db, job_id=_make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+            "positions": [
+                {"ticker_raw": "XYZ Generic Fund", "quantity": 1, "unit_price": 81912.21, "confidence": 0.9},
+            ]
+        }),
+        user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result_no_map.applied_count == 0
+    assert len(result_no_map.bulk_detail.orphan) == 1
+
+    # Com mapping → órfã vira applied resolvendo a pendência alvo (PETR4).
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id,
+        user_id=w["user_id"], user_email="bulk@test.com",
+        manual_mappings={"XYZ Generic Fund": w["pen_petr"]},
+    )
+    assert result.applied_count == 1
+    applied_pendency_ids = {a["pendency_id"] for a in result.bulk_detail.applied}
+    assert w["pen_petr"] in applied_pendency_ids
+    # Pendency está resolvida com o preço extraído.
+    from numis_geek.models.portfolio_snapshot import SnapshotPendency
+    pen = db.get(SnapshotPendency, w["pen_petr"])
+    assert pen.resolved_at is not None
+
+
 def test_bulk_apply_stores_attachment_in_audit(db):
     w = _world(db)
     job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {

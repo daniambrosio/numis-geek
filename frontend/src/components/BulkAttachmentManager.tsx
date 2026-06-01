@@ -350,6 +350,17 @@ function AttachmentRow({
               {badge.label}
             </span>
           )}
+          {job && job.cost_usd && parseFloat(job.cost_usd) > 0 && (
+            <span
+              className="ml-2 text-[10px] text-gray-500 tnum"
+              title={`Modelo: ${job.model ?? '—'} · ${job.input_tokens ?? 0} in · ${job.output_tokens ?? 0} out`}
+            >
+              ${parseFloat(job.cost_usd).toFixed(4)}
+              {(job.input_tokens != null || job.output_tokens != null) && (
+                <> · {(job.input_tokens ?? 0) + (job.output_tokens ?? 0)} toks</>
+              )}
+            </span>
+          )}
           {job?.error_message && (
             <span className="ml-2 text-[10px] text-red-500" title={job.error_message}>
               {job.error_message.slice(0, 60)}…
