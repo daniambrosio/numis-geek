@@ -49,6 +49,10 @@ class ConfirmExtractionBody(BaseModel):
     # no unit_price (e.g. previdência statements show contributions, not
     # current price).
     manual_prices: dict[str, float] | None = None
+    # Spec 49 hotfix #4 — { ticker_raw: "unit" | "total" } override for the
+    # auto-detected price semantic. By default the backend infers from
+    # asset_class (STOCK/REIT/ETF → unit; FUND/FIXED_INCOME/etc → total).
+    manual_modes: dict[str, str] | None = None
 
 
 class RejectExtractionBody(BaseModel):
@@ -216,6 +220,7 @@ def confirm_extraction(
             institution_short_name=body.institution_short_name,
             manual_mappings=body.manual_mappings,
             manual_prices=body.manual_prices,
+            manual_modes=body.manual_modes,
         )
     except extraction_service.ExtractionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

@@ -33,7 +33,7 @@ from numis_geek.models.extraction_job import (
 )
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
-    PortfolioSnapshot, SnapshotPendency, SnapshotStatus,
+    PortfolioSnapshot, PortfolioSnapshotItem, SnapshotPendency, SnapshotStatus,
 )
 from numis_geek.models.user import User
 from numis_geek.services import attachment_storage
@@ -347,6 +347,7 @@ def confirm_extraction(
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
     manual_prices: dict[str, float] | None = None,
+    manual_modes: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     """Apply the (possibly edited) extracted JSON to the domain model.
 
@@ -377,6 +378,7 @@ def confirm_extraction(
         institution_short_name=institution_short_name,
         manual_mappings=manual_mappings,
         manual_prices=manual_prices,
+        manual_modes=manual_modes,
     )
 
     job.user_edits = edited_payload if edited_payload is not None else None
@@ -466,6 +468,7 @@ def _apply_payload(
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
     manual_prices: dict[str, float] | None = None,
+    manual_modes: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     hint = job.source_hint
     # Spec 48 — bulk path: BROKER_POSITION + snapshot scope + no specific
@@ -481,6 +484,7 @@ def _apply_payload(
             institution_short_name=institution_short_name,
             manual_mappings=manual_mappings,
             manual_prices=manual_prices,
+            manual_modes=manual_modes,
         )
     if hint == ExtractionSourceHint.SCREENSHOT_PRICE:
         return _apply_screenshot_price(db, job, payload, user_id=user_id)
@@ -655,6 +659,7 @@ def _apply_bulk_to_snapshot(
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
     manual_prices: dict[str, float] | None = None,
+    manual_modes: dict[str, str] | None = None,
 ) -> ExtractionApplyResult:
     """Bulk path (Spec 48): match positions[] by ticker to open pendencies
     in the snapshot. Each match calls resolve_pendency (which updates
@@ -696,19 +701,30 @@ def _apply_bulk_to_snapshot(
     # touch extraction in tests.
     from numis_geek.services import snapshot as snapshot_service
 
-    # Spec 49 hotfix — index manual mappings by ticker_raw for direct
-    # override during the matching pass.
+    # Spec 49 hotfix — index manual mappings/prices/modes by ticker_raw.
     overrides = dict(manual_mappings or {})
     price_overrides = dict(manual_prices or {})
+    mode_overrides = dict(manual_modes or {})
 
     for pos in positions:
         ticker = pos.get("ticker_normalized") or pos.get("ticker_raw")
         ticker_raw_key = pos.get("ticker_raw") or ""
-        # Effective unit_price: manual override → extracted unit_price →
-        # market_value (LLM sometimes only fills the consolidated value).
-        unit_price_raw = (
+        manual_price = (
             price_overrides.get(ticker_raw_key)
             or price_overrides.get(ticker)
+        )
+        manual_mode = (
+            mode_overrides.get(ticker_raw_key)
+            or mode_overrides.get(ticker)
+            or "unit"
+        )
+        # Effective unit_price: manual override → extracted unit_price →
+        # market_value (LLM sometimes only fills the consolidated value).
+        # Total-mode manual override is converted to unit_price below using
+        # the asset's existing position quantity (Spec 49 hotfix #4 — fixes
+        # the Fundo Verde BTG 3.9 BI market_value blowup).
+        unit_price_raw = (
+            manual_price
             or pos.get("unit_price")
             or pos.get("market_value")
         )
@@ -762,9 +778,52 @@ def _apply_bulk_to_snapshot(
 
         previous_price = asset.current_price
         new_price = Decimal(str(unit_price_raw))
+        # Spec 49 hotfix #4 — auto-detect "TOTAL" vs "UNIT" semantics.
+        # Brokerage statements for funds / fixed income / previdência show
+        # consolidated VALUES (R$ 81.912,21 = market_value), not per-cota
+        # prices. The LLM frequently passes that total as `unit_price`. If we
+        # blindly multiply by the position's quantity, market_value explodes
+        # (see Fundo Verde BTG: 81912 × 47670 cotas → R$ 3.9 BI).
+        #
+        # Default mode per asset_class:
+        #   - STOCK, REIT, ETF, OPTION, CRYPTO: unit_price semantic (LLM
+        #     extracts per-share / per-cota / per-unit reliably).
+        #   - FIXED_INCOME, FUND, REAL_ESTATE, VEHICLE, CASH, anything else:
+        #     total semantic (value the user sees in the statement).
+        # `manual_modes[ticker]` overrides this default when the user toggles.
+        from numis_geek.models.asset import AssetClass
+        UNIT_PRICE_CLASSES = {
+            AssetClass.STOCK, AssetClass.REIT, AssetClass.ETF,
+            AssetClass.OPTION, AssetClass.CRYPTO,
+        }
+        default_mode = "unit" if asset.asset_class in UNIT_PRICE_CLASSES else "total"
+        effective_mode = (
+            mode_overrides.get(ticker_raw_key)
+            or mode_overrides.get(ticker)
+            or default_mode
+        )
+        if effective_mode == "total":
+            from numis_geek.services.positions import compute_position
+            position_qty: Decimal = Decimal("0")
+            existing_item = (
+                db.query(PortfolioSnapshotItem)
+                .filter(
+                    PortfolioSnapshotItem.snapshot_id == snap.id,
+                    PortfolioSnapshotItem.asset_id == asset.id,
+                )
+                .first()
+            )
+            if existing_item is not None and existing_item.quantity is not None:
+                position_qty = existing_item.quantity
+            else:
+                pos_data = compute_position(db, asset.id, as_of=snap.period_end_date)
+                position_qty = pos_data.get("quantity_held") or Decimal("0")
+            if position_qty and position_qty > 0:
+                new_price = new_price / position_qty
         note = (
             f"bulk extract (job {job.id})"
             + (f" · FI={institution_short_name}" if institution_short_name else "")
+            + (f" · mode={effective_mode}")
         )
         try:
             snapshot_service.resolve_pendency(

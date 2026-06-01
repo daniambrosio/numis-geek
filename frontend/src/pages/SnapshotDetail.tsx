@@ -310,14 +310,26 @@ export default function SnapshotDetail() {
   const topUp = movers.slice(0, 5)
   const topDown = movers.slice(-5).reverse()
 
+  const isPending = snap?.status === 'IN_REVIEW'
   const sortedPositions = useMemo(
-    () => [...items].sort(
-      (a, b) => Number(b.market_value_brl ?? 0) - Number(a.market_value_brl ?? 0),
-    ),
-    [items],
+    () => {
+      // While the snapshot is being reviewed, sort by most recently updated
+      // price so the user can spot the asset they just resolved (and verify
+      // the import is sane). Once CLOSED, sort by market_value desc.
+      if (isPending) {
+        return [...items].sort((a, b) => {
+          const ta = assetById.get(a.asset_id)?.price_updated_at ?? ''
+          const tb = assetById.get(b.asset_id)?.price_updated_at ?? ''
+          return tb.localeCompare(ta)
+        })
+      }
+      return [...items].sort(
+        (a, b) => Number(b.market_value_brl ?? 0) - Number(a.market_value_brl ?? 0),
+      )
+    },
+    [items, isPending, assetById],
   )
 
-  const isPending = snap?.status === 'IN_REVIEW'
   const [showAllPositions, setShowAllPositions] = useState(false)
   const sources = useMemo(
     () => bucketCounts(items, pendencies, assetById),

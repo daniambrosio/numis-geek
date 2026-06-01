@@ -23,8 +23,8 @@ from numis_geek.models.audit_log import AuditLog
 from numis_geek.models.extraction_job import ExtractionSourceHint, ExtractionStatus
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
-    PendencyAction, PendencyReason, PortfolioSnapshot, SnapshotPendency,
-    SnapshotSource, SnapshotStatus,
+    PendencyAction, PendencyReason, PortfolioSnapshot, PortfolioSnapshotItem,
+    SnapshotPendency, SnapshotSource, SnapshotStatus,
 )
 from numis_geek.models.user import User, UserRole
 from numis_geek.services import attachment_storage
@@ -595,6 +595,123 @@ def test_manual_mapping_bypasses_fi_filter(db):
     assert result.applied_count == 1
     from numis_geek.models.portfolio_snapshot import SnapshotPendency
     assert db.get(SnapshotPendency, w["pen_aapl"]).resolved_at is not None
+
+
+def test_bulk_apply_total_mode_for_fund_divides_by_quantity(db):
+    """Spec 49 hotfix #4 — quando asset_class é FUND, LLM frequentemente
+    retorna o valor total como unit_price. Backend deve detectar e dividir
+    pela quantidade existente em vez de multiplicar e explodir o mv."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.financial_institution import FinancialInstitution
+    from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+    from numis_geek.models.user import User, UserRole
+    import bcrypt
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create("FundTotal-WS")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email="fund@test.com", name="Fund",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="BTG", short_name="BTG", country="BR",
+        is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="BTG Inv", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    fund = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.FUND, country="BR",
+        name="Fundo Verde BTG",
+        ticker="Fundo Verde BTG",
+        currency=Currency.BRL, current_price=Decimal("1.50"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add_all([user, fi, acc, fund, snap])
+    db.flush()
+    # Movement gives quantity 47670 cotas at average cost 1 — typical fund.
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws.id, asset_id=fund.id,
+        type=AssetMovementType.BUY,
+        event_date=date(2024, 1, 10),
+        quantity=Decimal("47670.305643"), unit_price=Decimal("1.00"),
+        gross_amount=Decimal("47670.31"), net_amount=Decimal("47670.31"),
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=fund.id,
+        reason=PendencyReason.MANUAL_SOURCE,
+        action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+
+    # LLM returned 81912.21 as unit_price (but it's really the total!).
+    job_id = _make_bulk_job(db, ws.id, snap.id, user.id, {
+        "positions": [
+            {"ticker_raw": "Fundo Verde BTG", "quantity": 47670.305643,
+             "unit_price": 81912.21, "confidence": 0.9},
+        ]
+    })
+    # Seed an existing snapshot item (production path goes through
+    # create_snapshot which always creates one).
+    db.add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()),
+        snapshot_id=snap.id, asset_id=fund.id,
+        quantity=Decimal("47670.305643"),
+        unit_price=Decimal("1.00"),
+        market_value_native=Decimal("47670.31"),
+        market_value_brl=Decimal("47670.31"),
+    ))
+    db.flush()
+
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=user.id, user_email="fund@test.com",
+    )
+    assert result.applied_count == 1
+    # market_value brl must be ~81912, NOT 3.9 billion.
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter_by(snapshot_id=snap.id, asset_id=fund.id)
+        .first()
+    )
+    assert item is not None
+    assert Decimal("81000") < item.market_value_brl < Decimal("82000"), \
+        f"expected ~81912 but got {item.market_value_brl}"
+
+
+def test_bulk_apply_unit_mode_for_stock_uses_price_as_is(db):
+    """STOCK asset_class keeps the unit_price semantic (default)."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    petr = db.get(Asset, w["petr_id"])
+    assert petr.current_price == Decimal("38.50")  # NOT divided by 100
 
 
 def test_bulk_apply_stores_attachment_in_audit(db):
