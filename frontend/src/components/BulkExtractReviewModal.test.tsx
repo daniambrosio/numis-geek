@@ -84,6 +84,7 @@ describe('BulkExtractReviewModal', () => {
     await waitFor(() => expect(api.confirmExtraction).toHaveBeenCalledWith('job-1', {
       institution_short_name: 'XP',
       manual_mappings: null,
+      manual_prices: null,
     }))
     expect(onApplied).toHaveBeenCalledWith(1)
   })

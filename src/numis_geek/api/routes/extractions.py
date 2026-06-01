@@ -45,6 +45,10 @@ class ConfirmExtractionBody(BaseModel):
     # Spec 49 hotfix — { ticker_raw: pendency_id } overrides for manual
     # mapping of orphan rows.
     manual_mappings: dict[str, str] | None = None
+    # Spec 49 hotfix — { ticker_raw: price } overrides when the extract has
+    # no unit_price (e.g. previdência statements show contributions, not
+    # current price).
+    manual_prices: dict[str, float] | None = None
 
 
 class RejectExtractionBody(BaseModel):
@@ -211,6 +215,7 @@ def confirm_extraction(
             edited_payload=body.edited_payload,
             institution_short_name=body.institution_short_name,
             manual_mappings=body.manual_mappings,
+            manual_prices=body.manual_prices,
         )
     except extraction_service.ExtractionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

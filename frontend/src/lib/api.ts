@@ -942,6 +942,7 @@ export const api = {
       edited_payload?: Record<string, unknown> | null
       institution_short_name?: string | null
       manual_mappings?: Record<string, string> | null
+      manual_prices?: Record<string, number> | null
     } = {},
   ) =>
     request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
@@ -950,6 +951,7 @@ export const api = {
         edited_payload: opts.edited_payload ?? null,
         institution_short_name: opts.institution_short_name ?? null,
         manual_mappings: opts.manual_mappings ?? null,
+        manual_prices: opts.manual_prices ?? null,
       }),
     }),
   rejectExtraction: (id: string, reason?: string) =>

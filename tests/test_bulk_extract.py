@@ -523,6 +523,80 @@ def test_manual_mapping_resolves_orphan(db):
     assert pen.resolved_at is not None
 
 
+def test_manual_mapping_with_price_override_when_extract_lacks_price(db):
+    """Spec 49 hotfix #2 — extratos de previdência têm posição mas sem preço
+    unitário. Usuário mapeia + informa o preço manualmente. Aplica."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "FOLHAPREV", "quantity": 1.0, "unit_price": None, "confidence": 0.95},
+        ]
+    })
+    # Sem manual_prices → permanece órfã (preço null + sem fallback).
+    result_no_price = extraction_service.confirm_extraction(
+        db, job_id=_make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+            "positions": [
+                {"ticker_raw": "FOLHAPREV", "quantity": 1.0, "unit_price": None, "confidence": 0.95},
+            ]
+        }),
+        user_id=w["user_id"], user_email="bulk@test.com",
+        manual_mappings={"FOLHAPREV": w["pen_petr"]},
+    )
+    # Mapeou mas sem preço — pula com erro descritivo.
+    assert result_no_price.applied_count == 0
+    assert any("sem preço" in e.lower() for e in result_no_price.errors)
+
+    # Com manual_prices → resolve.
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id,
+        user_id=w["user_id"], user_email="bulk@test.com",
+        manual_mappings={"FOLHAPREV": w["pen_petr"]},
+        manual_prices={"FOLHAPREV": 81912.21},
+    )
+    assert result.applied_count == 1
+    from numis_geek.models.portfolio_snapshot import SnapshotPendency
+    pen = db.get(SnapshotPendency, w["pen_petr"])
+    assert pen.resolved_at is not None
+
+
+def test_bulk_apply_falls_back_to_market_value_when_unit_price_null(db):
+    """When the LLM extracts market_value but not unit_price (common in
+    consolidated statements), the applier uses market_value."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": None, "market_value": 3850.0,
+             "confidence": 0.9},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+
+
+def test_manual_mapping_bypasses_fi_filter(db):
+    """User maps an orphan to a pendency at FI X even though FI scope
+    is set to Y (e.g. forced override). Manual mapping wins."""
+    w = _world(db)
+    # AAPL belongs to Avenue. User scopes to XP, but maps the orphan
+    # explicitly to the AAPL pendency.
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "MYSTERY APPLE", "quantity": 5, "unit_price": 220.0, "confidence": 0.85},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+        institution_short_name="XP",
+        manual_mappings={"MYSTERY APPLE": w["pen_aapl"]},
+    )
+    assert result.applied_count == 1
+    from numis_geek.models.portfolio_snapshot import SnapshotPendency
+    assert db.get(SnapshotPendency, w["pen_aapl"]).resolved_at is not None
+
+
 def test_bulk_apply_stores_attachment_in_audit(db):
     w = _world(db)
     job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {

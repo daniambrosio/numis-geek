@@ -346,6 +346,7 @@ def confirm_extraction(
     edited_payload: dict | None = None,
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
+    manual_prices: dict[str, float] | None = None,
 ) -> ExtractionApplyResult:
     """Apply the (possibly edited) extracted JSON to the domain model.
 
@@ -375,6 +376,7 @@ def confirm_extraction(
         user_id=user_id, user_email=user_email,
         institution_short_name=institution_short_name,
         manual_mappings=manual_mappings,
+        manual_prices=manual_prices,
     )
 
     job.user_edits = edited_payload if edited_payload is not None else None
@@ -463,6 +465,7 @@ def _apply_payload(
     user_email: str | None,
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
+    manual_prices: dict[str, float] | None = None,
 ) -> ExtractionApplyResult:
     hint = job.source_hint
     # Spec 48 — bulk path: BROKER_POSITION + snapshot scope + no specific
@@ -477,6 +480,7 @@ def _apply_payload(
             user_id=user_id, user_email=user_email,
             institution_short_name=institution_short_name,
             manual_mappings=manual_mappings,
+            manual_prices=manual_prices,
         )
     if hint == ExtractionSourceHint.SCREENSHOT_PRICE:
         return _apply_screenshot_price(db, job, payload, user_id=user_id)
@@ -650,6 +654,7 @@ def _apply_bulk_to_snapshot(
     user_email: str | None,
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
+    manual_prices: dict[str, float] | None = None,
 ) -> ExtractionApplyResult:
     """Bulk path (Spec 48): match positions[] by ticker to open pendencies
     in the snapshot. Each match calls resolve_pendency (which updates
@@ -694,14 +699,23 @@ def _apply_bulk_to_snapshot(
     # Spec 49 hotfix — index manual mappings by ticker_raw for direct
     # override during the matching pass.
     overrides = dict(manual_mappings or {})
+    price_overrides = dict(manual_prices or {})
 
     for pos in positions:
         ticker = pos.get("ticker_normalized") or pos.get("ticker_raw")
-        unit_price_raw = pos.get("unit_price")
+        ticker_raw_key = pos.get("ticker_raw") or ""
+        # Effective unit_price: manual override → extracted unit_price →
+        # market_value (LLM sometimes only fills the consolidated value).
+        unit_price_raw = (
+            price_overrides.get(ticker_raw_key)
+            or price_overrides.get(ticker)
+            or pos.get("unit_price")
+            or pos.get("market_value")
+        )
         if not ticker:
             errors.append("position with no ticker")
             continue
-        manual_pendency_id = overrides.get(pos.get("ticker_raw") or "") or overrides.get(ticker)
+        manual_pendency_id = overrides.get(ticker_raw_key) or overrides.get(ticker)
         asset: Asset | None = None
         if manual_pendency_id:
             forced_pen = db.get(SnapshotPendency, manual_pendency_id)
@@ -717,10 +731,15 @@ def _apply_bulk_to_snapshot(
             continue
 
         asset_fi = _institution_short_name_for_asset(db, asset)
-        if institution_short_name and asset_fi != institution_short_name:
+        if (
+            institution_short_name
+            and asset_fi != institution_short_name
+            and not manual_pendency_id
+        ):
             # Asset belongs to a different FI than the user scoped to.
             # Skip silently — neither matched_no_pendency nor orphan; the
-            # extract just doesn't apply here.
+            # extract just doesn't apply here. Manual mappings override this
+            # filter (Spec 49 hotfix — user explicitly chose the pendency).
             continue
 
         matched_asset_ids.add(asset.id)
@@ -735,7 +754,10 @@ def _apply_bulk_to_snapshot(
             })
             continue
         if unit_price_raw is None:
-            errors.append(f"ticker {ticker!r} has no unit_price in extract")
+            errors.append(
+                f"{ticker!r}: sem preço unitário no extrato "
+                "(use o input ao lado do dropdown pra informar manualmente)."
+            )
             continue
 
         previous_price = asset.current_price

@@ -50,6 +50,9 @@ export default function BulkExtractReviewModal({
   const [error, setError] = useState<string | null>(null)
   // Spec 49 hotfix — manual orphan→pendency mapping. key = ticker_raw, value = pendency_id.
   const [manualMappings, setManualMappings] = useState<Record<string, string>>({})
+  // Spec 49 hotfix — manual price override per ticker_raw (for extracts where
+  // unit_price was null — previdência statements, custom funds, etc).
+  const [manualPrices, setManualPrices] = useState<Record<string, string>>({})
 
   useEffect(() => {
     api.listFinancialInstitutions().then(setFis).catch(() => { /* silent */ })
@@ -115,9 +118,17 @@ export default function BulkExtractReviewModal({
   async function handleApply() {
     setApplying(true); setError(null)
     try {
+      // Parse manual price overrides ("1.234,56" → 1234.56).
+      const priceMap: Record<string, number> = {}
+      for (const [k, v] of Object.entries(manualPrices)) {
+        const normalized = v.replace(/\./g, '').replace(',', '.').trim()
+        const n = Number(normalized)
+        if (Number.isFinite(n) && n > 0) priceMap[k] = n
+      }
       const result = await api.confirmExtraction(job.id, {
         institution_short_name: fiShortName || null,
         manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
+        manual_prices: Object.keys(priceMap).length ? priceMap : null,
       })
       onApplied(result.applied_count)
     } catch (e) {
@@ -292,6 +303,26 @@ export default function BulkExtractReviewModal({
                           </option>
                         ))}
                       </select>
+                      {manualMappings[tickerKey] && o.price == null && (
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="Preço"
+                          value={manualPrices[tickerKey] ?? ''}
+                          onChange={e => {
+                            const v = e.target.value
+                            setManualPrices(prev => {
+                              const next = { ...prev }
+                              if (v.trim()) next[tickerKey] = v
+                              else delete next[tickerKey]
+                              return next
+                            })
+                          }}
+                          className="h-7 w-24 px-2 text-[11px] rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-right tnum focus:outline-none focus:border-amber-500"
+                          data-testid={`bulk-orphan-price-${o.ticker}`}
+                          title="Sem preço no extrato — informe manualmente (ex: 1.234,56)"
+                        />
+                      )}
                     </li>
                   )
                 })}
