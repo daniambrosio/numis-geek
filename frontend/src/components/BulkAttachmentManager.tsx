@@ -386,25 +386,31 @@ function AttachmentRow({
             Revisar
           </button>
         ) : null}
-        {(!job || job.status === 'FAILED' || job.status === 'REJECTED' || job.status === 'EXTRACTED' || job.status === 'CONFIRMED') && (
-          <button
-            onClick={onExtract}
-            disabled={otherRunning || meRunning}
-            className={`h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] ${
-              job?.status === 'EXTRACTED' || job?.status === 'CONFIRMED'
-                ? 'border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                : 'bg-indigo-500 hover:bg-indigo-400 text-white'
-            } disabled:opacity-50`}
-            data-testid={`attachment-extract-${att.id}`}
-          >
-            {meRunning && <Loader2 className="w-3 h-3 animate-spin" />}
-            {otherRunning && !meRunning
-              ? 'Aguardando'
-              : (job?.status === 'EXTRACTED' || job?.status === 'CONFIRMED'
-                  ? 'Re-extrair'
-                  : meRunning ? 'Extraindo' : 'Extrair')}
-          </button>
-        )}
+        {(!job || job.status === 'FAILED' || job.status === 'REJECTED' || job.status === 'EXTRACTED' || job.status === 'CONFIRMED') && (() => {
+          const isReExtract = job?.status === 'EXTRACTED' || job?.status === 'CONFIRMED'
+          const baseLabel = isReExtract ? 'Re-extrair' : 'Extrair'
+          const label = meRunning ? 'Extraindo…' : baseLabel
+          return (
+            <button
+              onClick={onExtract}
+              disabled={otherRunning || meRunning}
+              title={
+                otherRunning && !meRunning
+                  ? 'Outra extração em andamento — aguarde'
+                  : (isReExtract ? 'Re-extrair (sobrescreve a extração anterior)' : 'Extrair')
+              }
+              className={`h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] ${
+                isReExtract
+                  ? 'border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                  : 'bg-indigo-500 hover:bg-indigo-400 text-white'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              data-testid={`attachment-extract-${att.id}`}
+            >
+              {meRunning && <Loader2 className="w-3 h-3 animate-spin" />}
+              {label}
+            </button>
+          )
+        })()}
         <button
           onClick={onRemove}
           disabled={!canRemove}
