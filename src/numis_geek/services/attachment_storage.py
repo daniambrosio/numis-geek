@@ -21,13 +21,20 @@ ROOT = Path("./data/attachments")
 MAX_BYTES = 50 * 1024 * 1024
 
 # MIME → (kind, file extension). The whitelist is intentionally short — adding
-# new types means evaluating their security profile.
+# new types means evaluating their security profile. CSV/XLS/XLSX collapse
+# under AttachmentKind.CSV: the kind drives icon + extraction routing, not
+# the on-disk format, and tabular data is processed via openpyxl when needed.
 _ALLOWED_MIME: dict[str, tuple[AttachmentKind, str]] = {
     "image/png":       (AttachmentKind.IMAGE, "png"),
     "image/jpeg":      (AttachmentKind.IMAGE, "jpg"),
     "image/webp":      (AttachmentKind.IMAGE, "webp"),
     "application/pdf": (AttachmentKind.PDF,   "pdf"),
     "text/csv":        (AttachmentKind.CSV,   "csv"),
+    # Excel — Excel 2007+ (.xlsx) and legacy (.xls).
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
+        AttachmentKind.CSV, "xlsx",
+    ),
+    "application/vnd.ms-excel": (AttachmentKind.CSV, "xls"),
 }
 
 

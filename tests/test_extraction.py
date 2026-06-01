@@ -377,6 +377,29 @@ def test_split_image_returns_original_when_within_bounds():
     assert parts[0][1] == "image/png"
 
 
+def test_xlsx_payload_is_converted_to_csv_text():
+    """Spec 19 hotfix — XLSX uploads precisam virar texto CSV-like antes
+    de ir pro LLM (Claude não decoda zip XLSX nativamente)."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from numis_geek.services.extraction import _xlsx_to_csv_text
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Posicao"
+    ws.append(["Ticker", "Qtde", "Preço"])
+    ws.append(["PETR4", 100, 38.50])
+    ws.append(["ITUB4", 200, 32.10])
+    buf = BytesIO()
+    wb.save(buf)
+
+    text = _xlsx_to_csv_text(buf.getvalue())
+    assert text is not None
+    assert "Sheet: Posicao" in text
+    assert "PETR4,100,38.5" in text
+    assert "ITUB4,200,32.1" in text
+
+
 def test_split_image_tiles_when_taller_than_8000px():
     from io import BytesIO
     from PIL import Image

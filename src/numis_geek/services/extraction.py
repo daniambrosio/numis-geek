@@ -237,6 +237,40 @@ def _split_image_for_anthropic(
         return [(blob, mime_type)]
 
 
+_XLSX_MIMES = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+)
+
+
+def _xlsx_to_csv_text(blob: bytes) -> str | None:
+    """Convert an Excel workbook to a CSV-like textual representation that
+    Claude can read. Returns None when openpyxl isn't installed or the
+    workbook can't be parsed — caller falls back to raw bytes."""
+    try:
+        from io import BytesIO
+        import csv as _csv
+        from openpyxl import load_workbook
+    except ImportError:
+        return None
+    try:
+        wb = load_workbook(BytesIO(blob), read_only=True, data_only=True)
+    except Exception:
+        return None
+    parts: list[str] = []
+    for ws in wb.worksheets:
+        parts.append(f"# Sheet: {ws.title}")
+        from io import StringIO
+        out = StringIO()
+        writer = _csv.writer(out)
+        for row in ws.iter_rows(values_only=True):
+            if all(v is None for v in row):
+                continue
+            writer.writerow([("" if v is None else str(v)) for v in row])
+        parts.append(out.getvalue().rstrip())
+    return "\n\n".join(parts)
+
+
 def _read_attachment_payload(attachment: Attachment) -> _Payload:
     """Convert the on-disk attachment into LLM input (image tiles OR text)."""
     path = attachment_storage.absolute_path_for(attachment)
@@ -249,6 +283,12 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
             image_mime=parts[0][1] if parts else None,
             image_parts=parts,
         )
+    if attachment.mime_type in _XLSX_MIMES:
+        text = _xlsx_to_csv_text(blob)
+        if text is not None:
+            return _Payload(text=text, image_bytes=None, image_mime=None)
+        # Fallback: bytes (Anthropic will likely fail, but at least we tried).
+        return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
     if attachment.kind == AttachmentKind.CSV:
         return _Payload(text=blob.decode("utf-8", errors="replace"), image_bytes=None, image_mime=None)
     # PDF and others — try utf-8 first, else send as base64 image-fallback.

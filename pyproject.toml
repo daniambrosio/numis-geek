@@ -28,10 +28,12 @@ dev = [
 ]
 # Spec 38 + 48 — Anthropic Claude for snapshot extraction. Optional because
 # the extraction service falls back to a stub when the SDK is missing.
-# Pillow handles image downscaling before sending to the API (max 1568px).
+# Pillow tiles large images before sending to the API (Anthropic's 8000px cap).
+# openpyxl converts XLSX uploads to CSV-like text before sending.
 llm = [
     "anthropic>=0.40",
     "Pillow>=10.0",
+    "openpyxl>=3.1",
 ]
 
 [tool.setuptools.packages.find]
