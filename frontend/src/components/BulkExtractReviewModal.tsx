@@ -130,6 +130,16 @@ export default function BulkExtractReviewModal({
         manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
         manual_prices: Object.keys(priceMap).length ? priceMap : null,
       })
+      // Spec 49 hotfix — when matches were expected but none applied
+      // (e.g. unit_price null + no manual price), surface result.errors
+      // in the modal so the user knows what to fix instead of the modal
+      // closing silently with zero effect.
+      if (result.applied_count === 0 && preview.matched.length > 0) {
+        const detail = (result.errors ?? []).join(' · ') || 'Nenhuma pendência foi resolvida.'
+        setError(detail)
+        setApplying(false)
+        return
+      }
       onApplied(result.applied_count)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro')
@@ -291,6 +301,31 @@ export default function BulkExtractReviewModal({
                             else delete next[tickerKey]
                             return next
                           })
+                          // Auto-fill price with the best available suggestion:
+                          // extracted price → pendency's previous_unit_price.
+                          // User can edit or clear afterwards.
+                          if (v && !manualPrices[tickerKey]) {
+                            const target = openPendencies.find(p => p.id === v)
+                            const fromExtract =
+                              o.price != null && o.price > 0
+                                ? o.price.toFixed(2).replace('.', ',')
+                                : null
+                            const fromPrev =
+                              target?.previous_unit_price
+                                ? Number(target.previous_unit_price).toFixed(2).replace('.', ',')
+                                : null
+                            const suggested = fromExtract ?? fromPrev
+                            if (suggested) {
+                              setManualPrices(prev => ({ ...prev, [tickerKey]: suggested }))
+                            }
+                          }
+                          if (!v) {
+                            setManualPrices(prev => {
+                              const next = { ...prev }
+                              delete next[tickerKey]
+                              return next
+                            })
+                          }
                         }}
                         className="h-7 px-2 text-[11px] rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 max-w-[16rem]"
                         data-testid={`bulk-orphan-map-${o.ticker}`}
@@ -303,26 +338,50 @@ export default function BulkExtractReviewModal({
                           </option>
                         ))}
                       </select>
-                      {manualMappings[tickerKey] && o.price == null && (
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="Preço"
-                          value={manualPrices[tickerKey] ?? ''}
-                          onChange={e => {
-                            const v = e.target.value
-                            setManualPrices(prev => {
-                              const next = { ...prev }
-                              if (v.trim()) next[tickerKey] = v
-                              else delete next[tickerKey]
-                              return next
-                            })
-                          }}
-                          className="h-7 w-24 px-2 text-[11px] rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-right tnum focus:outline-none focus:border-amber-500"
-                          data-testid={`bulk-orphan-price-${o.ticker}`}
-                          title="Sem preço no extrato — informe manualmente (ex: 1.234,56)"
-                        />
-                      )}
+                      {/* Spec 49 hotfix — input de preço SEMPRE aparece
+                          quando mapeado. Pré-preenche com preço extraído
+                          (se houver) ou com preço anterior da pendência
+                          mapeada como sugestão. */}
+                      {manualMappings[tickerKey] && (() => {
+                        const targetPen = openPendencies.find(p => p.id === manualMappings[tickerKey])
+                        const suggested =
+                          (o.price != null && o.price > 0
+                            ? o.price.toFixed(2).replace('.', ',')
+                            : null)
+                          ?? (targetPen?.previous_unit_price
+                              ? Number(targetPen.previous_unit_price).toFixed(2).replace('.', ',')
+                              : null)
+                        const current = manualPrices[tickerKey] ?? ''
+                        const showsSuggestion = !current && !!suggested
+                        return (
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            placeholder={suggested ?? 'Preço'}
+                            value={current}
+                            onChange={e => {
+                              const v = e.target.value
+                              setManualPrices(prev => {
+                                const next = { ...prev }
+                                if (v.trim()) next[tickerKey] = v
+                                else delete next[tickerKey]
+                                return next
+                              })
+                            }}
+                            className={`h-7 w-28 px-2 text-[11px] rounded-md border text-right tnum focus:outline-none ${
+                              o.price == null
+                                ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 focus:border-amber-500'
+                                : 'border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 focus:border-indigo-500'
+                            }`}
+                            data-testid={`bulk-orphan-price-${o.ticker}`}
+                            title={
+                              o.price == null
+                                ? `Sem preço no extrato — informe manualmente${showsSuggestion ? ` (sugestão: ${suggested})` : ''}`
+                                : `Sobrescrever preço extraído (${fmtBRL(o.price)})`
+                            }
+                          />
+                        )
+                      })()}
                     </li>
                   )
                 })}
