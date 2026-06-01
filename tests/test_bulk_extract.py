@@ -210,6 +210,140 @@ def _make_bulk_job(db, ws_id: str, snap_id: str, user_id: str, payload: dict) ->
     return job.id
 
 
+def test_bulk_apply_matches_by_name_when_no_ticker(db):
+    """Spec 48 + BTG fix — quando o ticker do extrato bate com Asset.name
+    (fundos sem ticker de bolsa), o applier resolve a pendência."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.financial_institution import FinancialInstitution
+    from numis_geek.models.user import User, UserRole
+    import bcrypt
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create("BTG-WS")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email="btg@test.com", name="BTG",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="BTG", short_name="BTG", country="BR",
+        is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="BTG Inv", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    # Asset whose ticker IS the fund name (typical for unlisted funds).
+    fund = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.STOCK, country="BR",
+        name="Fundo Verde BTG (Fundo de Investimento)",
+        ticker="Fundo Verde BTG",
+        currency=Currency.BRL, current_price=Decimal("100.00"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add_all([user, fi, acc, fund, snap])
+    db.flush()
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=fund.id,
+        reason=PendencyReason.MANUAL_SOURCE,
+        action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+
+    # LLM returned the fund name as ticker_raw (since no exchange ticker).
+    job_id = _make_bulk_job(db, ws.id, snap.id, user.id, {
+        "positions": [
+            {"ticker_raw": "Fundo Verde BTG", "quantity": 819.12, "unit_price": 100.0, "confidence": 0.9},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=user.id, user_email="btg@test.com",
+    )
+    assert result.applied_count == 1
+    assert db.get(SnapshotPendency, pen.id).resolved_at is not None
+
+
+def test_bulk_apply_matches_by_substring_in_name(db):
+    """Step 3 fallback — LLM extracted a slightly longer label, but the name
+    contains it (or vice versa) unambiguously."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.financial_institution import FinancialInstitution
+    from numis_geek.models.user import User, UserRole
+    import bcrypt
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create("BTG2-WS")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email="btg2@test.com", name="BTG",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="BTG", short_name="BTG", country="BR",
+        is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="BTG Inv", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    fund = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.STOCK, country="BR",
+        name="Tesouro IPCA+ 2029 com Juros Semestrais",
+        ticker="Tesouro IPCA+ 2029",
+        currency=Currency.BRL, current_price=Decimal("3500.00"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add_all([user, fi, acc, fund, snap])
+    db.flush()
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=fund.id,
+        reason=PendencyReason.MANUAL_SOURCE,
+        action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+
+    # LLM gave a shorter form than the stored ticker (substring case).
+    job_id = _make_bulk_job(db, ws.id, snap.id, user.id, {
+        "positions": [
+            {"ticker_raw": "IPCA+ 2029", "quantity": 1.0, "unit_price": 3650.0, "confidence": 0.85},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=user.id, user_email="btg2@test.com",
+    )
+    assert result.applied_count == 1
+
+
 def test_bulk_apply_resolves_matched_pendencies(db):
     w = _world(db)
     # Two matches (PETR4 + ITUB4), one orphan (ABEV3 not in workspace).

@@ -89,13 +89,22 @@ SCREENSHOT_PRICE = Template(
 
 
 BROKER_POSITION = Template(
-    version="v1",
+    version="v2",
     system=(
         "Você é um extrator de extratos de posição de corretora (PDF/imagem/CSV). "
-        "Extraia cada posição como uma linha JSON. Use ticker B3 canônico "
-        "(PETR4, ITUB4, BBSE3, FIIs com sufixo 11) e para ativos US use ticker "
-        "NASDAQ/NYSE puro (AAPL, MSFT). Se não conseguir identificar o ticker, "
-        "deixe `ticker_normalized` como null e ponha confidence baixa.\n\n"
+        "Extraia CADA linha visível como uma posição JSON — inclusive fundos, "
+        "renda fixa, tesouro, ETFs, cripto, etc. NUNCA pule uma linha só "
+        "porque não tem ticker de bolsa.\n\n"
+        "Regras pra `ticker_raw` (campo obrigatório):\n"
+        "- Ações/FIIs/ETFs com ticker visível (PETR4, BTLG11, IVVB11): "
+        "  use o ticker exato\n"
+        "- US (NASDAQ/NYSE): ticker puro (AAPL, MSFT, VOO)\n"
+        "- Fundos sem ticker (ex.: 'Fundo Verde BTG'): use o NOME visível "
+        "  como ticker_raw\n"
+        "- Tesouro Direto: use a denominação visível (ex.: 'Tesouro IPCA+ 2029')\n"
+        "- CDB/LCI/LCA: use o emissor + vencimento (ex.: 'CDB Itaú 2027')\n"
+        "Use `ticker_normalized` SOMENTE quando houver uma forma canônica "
+        "de bolsa; deixe null pra fundos e renda fixa.\n\n"
         "Responda SOMENTE com um objeto JSON validando o schema:\n"
         '{ "as_of_date": str|null (YYYY-MM-DD), "broker_name": str|null, '
         '"positions": [{ "ticker_raw": str, "ticker_normalized": str|null, '
@@ -105,9 +114,9 @@ BROKER_POSITION = Template(
         '"summary_total_brl": float|null, "summary_total_usd": float|null }'
     ),
     user_prefix=(
-        "Extraia todas as posições deste extrato. Não invente valores; se "
-        "uma coluna estiver ilegível, deixe a célula como null e diminua a "
-        "confidence da linha."
+        "Extraia TODAS as posições visíveis neste extrato (até as que não "
+        "têm ticker de bolsa — use o nome). Não invente; se uma coluna "
+        "estiver ilegível deixe null e diminua a confidence."
     ),
     output_model=BrokerPositionOutput,
 )

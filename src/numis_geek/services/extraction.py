@@ -522,6 +522,61 @@ def _apply_broker_position(
 # ── Spec 48 — bulk apply to a snapshot ──────────────────────────────────────
 
 
+def _resolve_asset_by_ticker_or_name(
+    db: Session, workspace_id: str, candidate: str,
+) -> Asset | None:
+    """Match an extracted line to a workspace Asset.
+
+    1. Exact ticker match (case-sensitive — tickers are normalized in DB)
+    2. Case-insensitive name match — handles funds, fixed income, and other
+       assets registered without a canonical exchange ticker (e.g. the
+       `Fundo Verde BTG` case where Asset.ticker carries the fund name)
+    3. Substring match against `Asset.name` — last-resort fuzz for when
+       the LLM returns a slightly truncated/expanded label
+    """
+    if not candidate:
+        return None
+    # Step 1 — exact ticker.
+    hit = (
+        db.query(Asset)
+        .filter(
+            Asset.workspace_id == workspace_id,
+            Asset.ticker == candidate,
+        )
+        .first()
+    )
+    if hit is not None:
+        return hit
+    needle = candidate.lower().strip()
+    # Step 2 — exact name (case-insensitive).
+    hit = next(
+        (
+            a for a in db.query(Asset)
+            .filter(Asset.workspace_id == workspace_id, Asset.is_active == True)  # noqa: E712
+            .all()
+            if a.name and a.name.lower() == needle
+        ),
+        None,
+    )
+    if hit is not None:
+        return hit
+    # Step 3 — name substring (either direction). Avoids matching against
+    # 1-2 char strings that would over-match.
+    if len(needle) < 4:
+        return None
+    candidates = (
+        db.query(Asset)
+        .filter(Asset.workspace_id == workspace_id, Asset.is_active == True)  # noqa: E712
+        .all()
+    )
+    matches = [
+        a for a in candidates
+        if a.name and (needle in a.name.lower() or a.name.lower() in needle)
+    ]
+    # Only return when unambiguous — multi-match is too risky to auto-resolve.
+    return matches[0] if len(matches) == 1 else None
+
+
 def _institution_short_name_for_asset(db: Session, asset: Asset) -> str | None:
     if not asset.account_id:
         return None
@@ -585,14 +640,7 @@ def _apply_bulk_to_snapshot(
         if not ticker:
             errors.append("position with no ticker")
             continue
-        asset = (
-            db.query(Asset)
-            .filter(
-                Asset.workspace_id == job.workspace_id,
-                Asset.ticker == ticker,
-            )
-            .first()
-        )
+        asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
         if asset is None:
             orphan.append({
                 "ticker": ticker,

@@ -15,6 +15,7 @@ import {
 
 import {
   api,
+  getToken,
   type AttachmentKind,
   type AttachmentOut,
   type BulkExtractJobOut,
@@ -22,8 +23,6 @@ import {
   type SnapshotPendencyOut,
 } from '../lib/api'
 import BulkExtractReviewModal from './BulkExtractReviewModal'
-
-const API_BASE = (import.meta.env?.VITE_API_BASE as string | undefined) ?? ''
 
 interface Props {
   snapshotId: string
@@ -161,8 +160,24 @@ export default function BulkAttachmentManager({
     }
   }
 
-  function handlePreview(att: AttachmentOut) {
-    window.open(`${API_BASE}/attachments/${att.id}/download`, '_blank')
+  async function handlePreview(att: AttachmentOut) {
+    // /download requires Bearer auth — fetch as blob and open the
+    // resulting object URL so the browser previews PNG/PDF inline.
+    setError(null)
+    try {
+      const token = getToken()
+      const r = await fetch(`/api/attachments/${att.id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      // Revoke after a delay so the new tab has time to load.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro abrindo preview')
+    }
   }
 
   function onDrop(e: React.DragEvent<HTMLDivElement>) {
