@@ -301,21 +301,14 @@ export default function BulkExtractReviewModal({
                             else delete next[tickerKey]
                             return next
                           })
-                          // Auto-fill price with the best available suggestion:
-                          // extracted price → pendency's previous_unit_price.
-                          // User can edit or clear afterwards.
+                          // Auto-fill price with the best available suggestion,
+                          // but ONLY when the LLM actually extracted a usable
+                          // value. previous_unit_price=1 is a Notion-backfill
+                          // sentinel for previdência/fundos and is not a price
+                          // — never suggest it. User types real value.
                           if (v && !manualPrices[tickerKey]) {
-                            const target = openPendencies.find(p => p.id === v)
-                            const fromExtract =
-                              o.price != null && o.price > 0
-                                ? o.price.toFixed(2).replace('.', ',')
-                                : null
-                            const fromPrev =
-                              target?.previous_unit_price
-                                ? Number(target.previous_unit_price).toFixed(2).replace('.', ',')
-                                : null
-                            const suggested = fromExtract ?? fromPrev
-                            if (suggested) {
+                            if (o.price != null && o.price > 1) {
+                              const suggested = o.price.toFixed(2).replace('.', ',')
                               setManualPrices(prev => ({ ...prev, [tickerKey]: suggested }))
                             }
                           }

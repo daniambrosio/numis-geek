@@ -697,6 +697,43 @@ def test_bulk_apply_total_mode_for_fund_divides_by_quantity(db):
         f"expected ~81912 but got {item.market_value_brl}"
 
 
+def test_resolve_pendency_creates_item_when_missing(db):
+    """Spec 49 hotfix #5 — resolve_pendency precisa CRIAR o snapshot item
+    quando ele não existe (caso típico: ativo sem movimentos como
+    previdência, ou item deletado por revert manual)."""
+    w = _world(db)
+    # Forçar caso: deletar o item da pendency do PETR4 (simula ativo sem item).
+    db.query(PortfolioSnapshotItem).filter_by(
+        snapshot_id=w["snap_id"], asset_id=w["petr_id"],
+    ).delete()
+    db.flush()
+    assert db.query(PortfolioSnapshotItem).filter_by(
+        snapshot_id=w["snap_id"], asset_id=w["petr_id"]
+    ).first() is None
+
+    # Apply via bulk com price = 42.00
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 42.00, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    # Item foi CRIADO com market_value = 100 × 42 = 4200.
+    item = db.query(PortfolioSnapshotItem).filter_by(
+        snapshot_id=w["snap_id"], asset_id=w["petr_id"],
+    ).first()
+    assert item is not None
+    # _world não cria AssetMovements, então compute_position devolve 0 e
+    # o fallback do hotfix força qty=1 (caso típico de previdência).
+    assert item.quantity == Decimal("1")
+    assert item.unit_price == Decimal("42.00")
+    assert item.market_value_brl == Decimal("42.00")
+
+
 def test_bulk_apply_unit_mode_for_stock_uses_price_as_is(db):
     """STOCK asset_class keeps the unit_price semantic (default)."""
     w = _world(db)

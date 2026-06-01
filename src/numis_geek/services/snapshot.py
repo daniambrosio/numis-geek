@@ -462,7 +462,6 @@ def resolve_pendency(
     if new_price is not None and asset is not None:
         asset.current_price = new_price
         asset.price_updated_at = now
-        # Update the snapshot item if it exists for this asset/snapshot.
         item = (
             db.query(PortfolioSnapshotItem)
             .filter(
@@ -471,22 +470,39 @@ def resolve_pendency(
             )
             .first()
         )
-        if item is not None:
-            item.unit_price = new_price
-            if item.quantity is not None:
-                mv_native = item.quantity * new_price
-                item.market_value_native = mv_native
-                # Recompute BRL/USD using snapshot fx_rate.
-                ccy = asset.currency.value if asset else "BRL"
-                fx = snap.fx_rate_usd_brl if snap else None
-                if ccy == "BRL":
-                    item.market_value_brl = mv_native
-                    if fx and fx > 0:
-                        item.market_value_usd = mv_native / fx
-                elif ccy == "USD":
-                    item.market_value_usd = mv_native
-                    if fx and fx > 0:
-                        item.market_value_brl = mv_native * fx
+        if item is None:
+            # Spec 49 hotfix #5 — create the missing item so the asset shows
+            # up in the snapshot's frozen positions table. compute_position
+            # gives us the cumulative quantity at period_end; fallback to 1
+            # when zero (typical previdência / no-movement asset).
+            position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
+            qty = position.get("quantity_held") or Decimal("0")
+            if qty == 0:
+                qty = Decimal("1")
+            item = PortfolioSnapshotItem(
+                id=str(uuid.uuid4()),
+                snapshot_id=pen.snapshot_id,
+                asset_id=pen.asset_id,
+                quantity=qty,
+                average_cost_brl=position.get("average_cost_brl"),
+                total_invested_brl=position.get("total_invested_brl"),
+            )
+            db.add(item)
+        item.unit_price = new_price
+        if item.quantity is not None:
+            mv_native = item.quantity * new_price
+            item.market_value_native = mv_native
+            # Recompute BRL/USD using snapshot fx_rate.
+            ccy = asset.currency.value if asset else "BRL"
+            fx = snap.fx_rate_usd_brl if snap else None
+            if ccy == "BRL":
+                item.market_value_brl = mv_native
+                if fx and fx > 0:
+                    item.market_value_usd = mv_native / fx
+            elif ccy == "USD":
+                item.market_value_usd = mv_native
+                if fx and fx > 0:
+                    item.market_value_brl = mv_native * fx
 
     pen.resolved_at = now
     pen.resolved_by = user_id
