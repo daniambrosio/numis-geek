@@ -724,23 +724,20 @@ def update_asset_price_manual(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Spec 28 — manual price edit for assets with MANUAL source.
+    """Spec 28 — manual price edit. Always allowed (Spec 49 follow-up):
 
-    422 if asset.price_source is not MANUAL — automated sources must use
-    POST /assets/{id}/refresh-price (or the bulk /prices/refresh).
+    Previously rejected with 422 when asset.price_source was automated.
+    That blocked legitimate manual overrides — e.g. user fixing a wrong
+    LLM-imported value before refreshing. Now any asset accepts a manual
+    PATCH; the next automated refresh (cron or button) overwrites it,
+    same as before. Audit log captures the prior `price_source` so a
+    reviewer can spot when manual overrides happened on automated assets.
     """
-    from numis_geek.models.asset import PriceSource
-
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
 
-    if asset.price_source != PriceSource.MANUAL:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Asset has an automated price source. Use the refresh endpoint instead.",
-        )
-
     old_price = asset.current_price
+    old_source = asset.price_source.value if asset.price_source else None
     asset.current_price = body.price
     asset.price_updated_at = datetime.now(timezone.utc)
     db.flush()
@@ -752,7 +749,7 @@ def update_asset_price_manual(
         "name": asset.name,
         "old_price": str(old_price) if old_price is not None else None,
         "new_price": str(body.price),
-        "source": "MANUAL",
+        "price_source": old_source,
     }
     if body.note:
         details["note"] = body.note

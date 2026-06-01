@@ -269,14 +269,17 @@ def test_manual_price_patch_updates_manual_asset(client, seed):
     assert "price_updated_at" in body
 
 
-def test_manual_price_patch_422_on_automated_asset(client, seed):
+def test_manual_price_patch_allowed_on_automated_asset(client, seed):
+    """Spec 49 follow-up — manual PATCH is allowed on any price_source
+    (the next automated refresh overwrites it). Removes the 422 guard
+    that was blocking legitimate user overrides."""
     r = client.patch(
         f"/assets/{seed['asset_br_id']}/price",
         headers=auth(seed["tok"]),
         json={"price": "100.00"},
     )
-    assert r.status_code == 422
-    assert "automated" in r.json()["detail"].lower()
+    assert r.status_code == 200
+    assert r.json()["price"] == 100.0
 
 
 def test_manual_price_patch_rejects_negative(client, seed):
@@ -313,7 +316,7 @@ def test_manual_price_patch_emits_audit_with_note(client, seed):
         assert entry is not None
         details = json.loads(entry.details or "{}")
         assert details["note"] == "Avaliação anual feita por corretor"
-        assert details["source"] == "MANUAL"
+        assert details["price_source"] == "MANUAL"
         assert details["new_price"] == "920000.00"
     finally:
         db.close()

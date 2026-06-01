@@ -1,7 +1,7 @@
 /* Full asset detail page — mirrors prototypes/index.html `AtivoDetailPage`
  * (line 3274). Same structure, classes, spacing and helpers. */
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Coins, Edit2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import {
   api,
@@ -153,6 +153,11 @@ const TYPE_DISTRIBUTION_PALETTE: Record<string, string> = {
 export default function AssetDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation() as { state?: { from?: string; fromLabel?: string } }
+  const backHref = location.state?.from ?? '/assets'
+  const backLabel = location.state?.fromLabel
+    ? `Voltar pra ${location.state.fromLabel}`
+    : 'Voltar pra Ativos'
   const [me, setMe] = useState<UserOut | null>(null)
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [fi, setFi] = useState<FinancialInstitutionOut | null>(null)
@@ -310,10 +315,10 @@ export default function AssetDetail() {
     <AppLayout user={me}>
       <div className="space-y-6">
         <button
-          onClick={() => navigate('/assets')}
+          onClick={() => navigate(backHref)}
           className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
         >
-          <ArrowLeft className="w-3.5 h-3.5" /> Voltar pra Ativos
+          <ArrowLeft className="w-3.5 h-3.5" /> {backLabel}
         </button>
 
         {/* Header */}

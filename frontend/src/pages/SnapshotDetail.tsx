@@ -780,7 +780,18 @@ export default function SnapshotDetail() {
                       return (
                         <tr
                           key={it.asset_id}
-                          onClick={() => navigate(`/assets/${a.id}`)}
+                          onClick={() => {
+                            const safeYm = ym ?? snap?.period_end_date.slice(0, 7) ?? ''
+                            const mm = safeYm.split('-')[1]
+                            const yyyy = safeYm.split('-')[0]
+                            const label = mm && yyyy
+                              ? `${MONTH_NAMES_LONG[parseInt(mm, 10) - 1]} ${yyyy}`
+                              : 'Fechamento'
+                            navigate(
+                              `/assets/${a.id}`,
+                              { state: { from: `/snapshots/${safeYm}`, fromLabel: label } },
+                            )
+                          }}
                           className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer"
                         >
                           <td className="px-3 py-2">
