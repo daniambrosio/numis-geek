@@ -782,52 +782,17 @@ def _apply_bulk_to_snapshot(
 
         previous_price = asset.current_price
         new_price = Decimal(str(unit_price_raw))
-        # Spec 49 hotfix #4 — auto-detect "TOTAL" vs "UNIT" semantics.
-        # Brokerage statements for funds / fixed income / previdência show
-        # consolidated VALUES (R$ 81.912,21 = market_value), not per-cota
-        # prices. The LLM frequently passes that total as `unit_price`. If we
-        # blindly multiply by the position's quantity, market_value explodes
-        # (see Fundo Verde BTG: 81912 × 47670 cotas → R$ 3.9 BI).
-        #
-        # Default mode per asset_class:
-        #   - STOCK, REIT, ETF, OPTION, CRYPTO: unit_price semantic (LLM
-        #     extracts per-share / per-cota / per-unit reliably).
-        #   - FIXED_INCOME, FUND, REAL_ESTATE, VEHICLE, CASH, anything else:
-        #     total semantic (value the user sees in the statement).
-        # `manual_modes[ticker]` overrides this default when the user toggles.
-        from numis_geek.models.asset import AssetClass
-        UNIT_PRICE_CLASSES = {
-            AssetClass.STOCK, AssetClass.REIT, AssetClass.ETF,
-            AssetClass.OPTION, AssetClass.CRYPTO,
-        }
-        default_mode = "unit" if asset.asset_class in UNIT_PRICE_CLASSES else "total"
+        # Spec 49 hotfix #9 — defer to resolve_pendency for the unit/total
+        # conversion. Bulk only forwards the explicit user override; default
+        # is None (auto-detect by asset_class inside resolve_pendency).
         effective_mode = (
             mode_overrides.get(ticker_raw_key)
             or mode_overrides.get(ticker)
-            or default_mode
         )
-        if effective_mode == "total":
-            from numis_geek.services.positions import compute_position
-            position_qty: Decimal = Decimal("0")
-            existing_item = (
-                db.query(PortfolioSnapshotItem)
-                .filter(
-                    PortfolioSnapshotItem.snapshot_id == snap.id,
-                    PortfolioSnapshotItem.asset_id == asset.id,
-                )
-                .first()
-            )
-            if existing_item is not None and existing_item.quantity is not None:
-                position_qty = existing_item.quantity
-            else:
-                pos_data = compute_position(db, asset.id, as_of=snap.period_end_date)
-                position_qty = pos_data.get("quantity_held") or Decimal("0")
-            if position_qty and position_qty > 0:
-                new_price = new_price / position_qty
         note = (
             f"bulk extract (job {job.id})"
             + (f" · FI={institution_short_name}" if institution_short_name else "")
-            + (f" · mode={effective_mode}")
+            + (f" · mode={effective_mode}" if effective_mode else "")
         )
         try:
             snapshot_service.resolve_pendency(
@@ -836,6 +801,7 @@ def _apply_bulk_to_snapshot(
                 user_id=user_id,
                 user_email=user_email,
                 new_price=new_price,
+                value_mode=effective_mode,
                 file_id=job.attachment_id,
                 note=note,
             )

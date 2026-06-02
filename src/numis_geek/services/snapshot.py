@@ -435,6 +435,27 @@ def reopen_snapshot(
 # ── Pendency resolution ─────────────────────────────────────────────────────
 
 
+_UNIT_PRICE_CLASSES = {
+    "STOCK", "REIT", "ETF", "OPTION", "CRYPTO",
+}
+
+
+def _default_value_mode_for(asset: Asset | None) -> str:
+    """Per-asset_class heuristic for what the user typed.
+
+    - STOCK/REIT/ETF/OPTION/CRYPTO: tradeable on an exchange. User naturally
+      types the per-share price (e.g. PETR4 R$ 38.50).
+    - Everything else (FIXED_INCOME, FUND, REAL_ESTATE, VEHICLE,
+      PRIVATE_PENSION, CASH, OTHER): user reads a TOTAL value off a
+      statement (e.g. Tesouro SELIC 2029 R$ 124.215,29 over 6,51 cotas).
+      The applier converts to unit_price = total / quantity so the snapshot
+      item's market_value = total when re-multiplied.
+    """
+    if asset is None or asset.asset_class is None:
+        return "unit"
+    return "unit" if asset.asset_class.value in _UNIT_PRICE_CLASSES else "total"
+
+
 def resolve_pendency(
     db: Session,
     *,
@@ -442,6 +463,7 @@ def resolve_pendency(
     user_id: str | None,
     user_email: str | None = None,
     new_price: Decimal | None = None,
+    value_mode: str | None = None,
     file_id: str | None = None,
     note: str | None = None,
 ) -> SnapshotPendency:
@@ -450,6 +472,16 @@ def resolve_pendency(
     If `new_price`: update Asset.current_price + the corresponding
     PortfolioSnapshotItem for this snapshot. If `file_id`: attach to the
     pendency note (LLM extraction is a future spec).
+
+    `value_mode`:
+    - "unit"   — `new_price` is the per-unit price (stocks, ETFs, etc.)
+    - "total"  — `new_price` is the consolidated market value; divide by
+                 the position's quantity to derive unit_price
+    - None     — auto-detect from asset_class (Spec 49 hotfix #9). Without
+                 this, callers like the per-pendency `POST /resolve`
+                 endpoint pass `value_mode=None` and the system multiplies
+                 a total-shaped input by quantity, blowing market_value up
+                 (e.g. SELIC 2029: 124k × 6.51 = R$ 808k).
     """
     pen = db.get(SnapshotPendency, pendency_id)
     if pen is None:
@@ -460,6 +492,27 @@ def resolve_pendency(
     now = datetime.now(timezone.utc)
 
     if new_price is not None and asset is not None:
+        # Spec 49 hotfix #9 — auto-detect or honor explicit mode. When
+        # mode is "total", divide by the position's quantity so that
+        # market_value = qty × unit_price = total (correct invariant).
+        effective_mode = value_mode or _default_value_mode_for(asset)
+        if effective_mode == "total":
+            position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
+            qty = position.get("quantity_held") or Decimal("0")
+            if qty == 0:
+                # Fall back to existing item.quantity (or 1 if neither).
+                existing = (
+                    db.query(PortfolioSnapshotItem)
+                    .filter(
+                        PortfolioSnapshotItem.snapshot_id == pen.snapshot_id,
+                        PortfolioSnapshotItem.asset_id == pen.asset_id,
+                    )
+                    .first()
+                )
+                if existing and existing.quantity:
+                    qty = existing.quantity
+            if qty and qty > 0:
+                new_price = new_price / qty
         asset.current_price = new_price
         asset.price_updated_at = now
         item = (

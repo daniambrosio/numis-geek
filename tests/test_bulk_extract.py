@@ -773,6 +773,114 @@ def test_confirm_stays_extracted_when_zero_applied(db):
     assert job.status == ExtractionStatus.CONFIRMED
 
 
+def test_resolve_pendency_auto_total_mode_for_fixed_income(db):
+    """Spec 49 hotfix #9 — quando user usa o botão Editar (path direto
+    resolve_pendency, fora do bulk extract), assets FIXED_INCOME tratam
+    o input como TOTAL e dividem por qty antes de armazenar. Caso real:
+    SELIC 2029 R$ 124.215,29 / 6.51 cotas = unit ~19080, NOT 124k × 6.51."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.financial_institution import FinancialInstitution
+    from numis_geek.models.user import User, UserRole
+    from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+    from numis_geek.services.snapshot import resolve_pendency
+    import bcrypt
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create("SELIC-WS")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email="selic@test.com", name="S",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="XP", short_name="XP", country="BR",
+        is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="XP", account_type=AccountType.investment, currency=Currency.BRL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    selic = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.FIXED_INCOME, country="BR",
+        name="Tesouro Selic 2029 (LFT)", ticker="LFT mar/2029 (SELIC)",
+        currency=Currency.BRL, current_price=None,
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add_all([user, fi, acc, selic])
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws.id, asset_id=selic.id,
+        type=AssetMovementType.BUY,
+        event_date=date(2024, 1, 10),
+        quantity=Decimal("6.51"), unit_price=Decimal("10000"),
+        gross_amount=Decimal("65100"), net_amount=Decimal("65100"),
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add(snap)
+    db.flush()
+    db.add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()),
+        snapshot_id=snap.id, asset_id=selic.id,
+        quantity=Decimal("6.51"),
+        unit_price=Decimal("10000"),
+        market_value_native=Decimal("65100"),
+        market_value_brl=Decimal("65100"),
+    ))
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=selic.id,
+        reason=PendencyReason.MANUAL_SOURCE,
+        action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+
+    # User types the TOTAL value he sees on his statement.
+    resolve_pendency(
+        db, pendency_id=pen.id, user_id=user.id,
+        new_price=Decimal("124215.29"),
+    )
+
+    # Item should have market_value = 124k, NOT 808k.
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter_by(snapshot_id=snap.id, asset_id=selic.id)
+        .first()
+    )
+    assert item is not None
+    assert Decimal("124000") < item.market_value_brl < Decimal("125000")
+    # unit_price stored is 124215.29 / 6.51 ~= 19080
+    assert Decimal("19000") < item.unit_price < Decimal("19200")
+
+
+def test_resolve_pendency_explicit_unit_mode_keeps_price(db):
+    """When the user explicitly chooses 'unit' mode (e.g. via FE toggle),
+    resolve_pendency stores it as-is even for FIXED_INCOME."""
+    from numis_geek.services.snapshot import resolve_pendency
+
+    w = _world(db)
+    # PETR4 (STOCK) — default mode is "unit" but we pass it explicitly too.
+    resolve_pendency(
+        db, pendency_id=w["pen_petr"], user_id=w["user_id"],
+        new_price=Decimal("42.00"), value_mode="unit",
+    )
+    petr = db.get(Asset, w["petr_id"])
+    assert petr.current_price == Decimal("42.00")
+
+
 def test_resolve_pendency_creates_item_when_missing(db):
     """Spec 49 hotfix #5 — resolve_pendency precisa CRIAR o snapshot item
     quando ele não existe (caso típico: ativo sem movimentos como
