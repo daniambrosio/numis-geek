@@ -203,12 +203,19 @@ export default function SnapshotDetail() {
 
   async function refreshPendencies() {
     if (!snap) return
-    const [pens, fresh] = await Promise.all([
+    // Spec 49 hotfix #7 — também refazer items + assets, senão a tabela
+    // "Posições Congeladas" fica com array velho após Apply (asset com
+    // valor recém-aplicado aparece como R$ 0 + fora da ordem por mais
+    // recente).
+    const [pens, fresh, its, as_] = await Promise.all([
       api.listSnapshotPendencies(snap.id),
       api.listSnapshots(),
+      api.listSnapshotItems(snap.id),
+      api.listAssets({ include_inactive: true }),
     ])
     setPendencies(pens); setAllSnaps(fresh)
     setSnap(fresh.find(s => s.id === snap.id) ?? snap)
+    setItems(its); setAssets(as_)
   }
 
   async function handleConfirm() {
