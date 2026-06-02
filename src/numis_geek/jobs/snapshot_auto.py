@@ -64,6 +64,26 @@ def _has_closed_snapshot(db: Session, workspace_id: str, period_end: date) -> bo
     return snap is not None
 
 
+def _has_in_review_snapshot(db: Session, workspace_id: str, period_end: date) -> bool:
+    """Spec 35 hotfix — protect the user's in-flight review.
+
+    Without this, the monthly cron blasts away (cascade-deletes) a
+    snapshot the user is actively reviewing, losing all the pendency
+    resolutions + snapshot items they applied. Audit history is kept
+    but the data is gone, and attachments are orphaned by their FK.
+    """
+    snap = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.workspace_id == workspace_id,
+            PortfolioSnapshot.period_end_date == period_end,
+            PortfolioSnapshot.status == SnapshotStatus.IN_REVIEW,
+        )
+        .first()
+    )
+    return snap is not None
+
+
 def _run_one_workspace(
     db: Session, workspace_id: str, *, target_ym: str,
 ) -> WorkspaceJobResult:
@@ -72,6 +92,17 @@ def _run_one_workspace(
 
     if _has_closed_snapshot(db, workspace_id, period_end):
         logger.info("snapshot already CLOSED for ws=%s %s — skipping", workspace_id, period_end)
+        return WorkspaceJobResult(
+            workspace_id=workspace_id, period_end=period_end, status="skipped",
+        )
+    if _has_in_review_snapshot(db, workspace_id, period_end):
+        # Spec 35 hotfix — NEVER touch a snapshot the user is reviewing.
+        # The previous behavior (force_reopen=True) cascade-deleted their
+        # work in progress. Now the cron yields and waits for the user.
+        logger.info(
+            "snapshot IN_REVIEW for ws=%s %s — skipping to protect user work",
+            workspace_id, period_end,
+        )
         return WorkspaceJobResult(
             workspace_id=workspace_id, period_end=period_end, status="skipped",
         )
@@ -96,12 +127,16 @@ def _run_one_workspace(
         )
 
     # 2. Create snapshot — auto-downgrades to IN_REVIEW on pendencies.
+    # NOTE: force_reopen=False because by this point we've already short-
+    # circuited on CLOSED and IN_REVIEW above. The only path that lands
+    # here is "no snapshot yet" or "SCHEDULED" (placeholder), so the
+    # destructive replace_if_exists/force_reopen flags are unnecessary.
     result: SnapshotResult = create_snapshot(
         db, workspace_id=workspace_id, period_end=period_end,
         user_id=None,
         source=SnapshotSource.AUTOMATED,
         initial_status=SnapshotStatus.CLOSED,
-        force_reopen=True,  # replaces a SCHEDULED/IN_REVIEW row if one exists
+        force_reopen=False,
     )
 
     # Stamp auto_run_at

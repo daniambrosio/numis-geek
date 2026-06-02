@@ -235,10 +235,13 @@ def delete_attachment(
 
     Spec 43 + 49 — rejected (409) only when an ExtractionJob attached to
     the file is still RUNNING (LLM call in flight) or has been CONFIRMED
-    (applied to the snapshot — removing the file would orphan audit trail).
-    Otherwise cascade-deletes the jobs along with the attachment.
+    against a STILL-EXISTING snapshot (applied — removing the file would
+    orphan audit trail). Jobs whose snapshot was already destroyed (cron
+    cascade, manual revert) are orphan and cascade-deletable along with
+    the attachment.
     """
     from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus  # local import to keep route loose
+    from numis_geek.models.portfolio_snapshot import PortfolioSnapshot
 
     att = db.get(Attachment, attachment_id)
     if not att:
@@ -246,22 +249,32 @@ def delete_attachment(
     if current_user.role != UserRole.sysadmin and att.workspace_id != current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
 
-    # Inspect linked jobs. Only CONFIRMED (data applied) or RUNNING (LLM in
-    # flight) block deletion; EXTRACTED/PENDING/FAILED/REJECTED cascade.
+    # Inspect linked jobs. A CONFIRMED job blocks delete ONLY if its
+    # snapshot still exists — orphan jobs (snapshot destroyed by cron or
+    # revert) are cascade-deletable since the audit trail they protected
+    # is already broken.
     linked_jobs = (
         db.query(ExtractionJob)
         .filter(ExtractionJob.attachment_id == att.id)
         .all()
     )
-    confirmed = next(
-        (j for j in linked_jobs if j.status == ExtractionStatus.CONFIRMED), None,
+
+    def _snapshot_alive(job: ExtractionJob) -> bool:
+        if not job.snapshot_id:
+            return False
+        return db.get(PortfolioSnapshot, job.snapshot_id) is not None
+
+    confirmed_live = next(
+        (j for j in linked_jobs
+         if j.status == ExtractionStatus.CONFIRMED and _snapshot_alive(j)),
+        None,
     )
-    if confirmed is not None:
+    if confirmed_live is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Esse anexo já foi aplicado em pendências (job "
-                f"{confirmed.id}). Reabra o fechamento antes de remover."
+                f"{confirmed_live.id}). Reabra o fechamento antes de remover."
             ),
         )
     running = next(
