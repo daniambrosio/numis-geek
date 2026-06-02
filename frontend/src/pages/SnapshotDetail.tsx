@@ -25,6 +25,7 @@ import {
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import PendencyPanel from '../components/PendencyPanel'
+import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
 import { Card, ClassBadge, SectionTitle } from '../components/ui'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
@@ -318,6 +319,7 @@ export default function SnapshotDetail() {
   const topDown = movers.slice(-5).reverse()
 
   const isPending = snap?.status === 'IN_REVIEW'
+  const [editingItem, setEditingItem] = useState<SnapshotItemOut | null>(null)
   const sortedPositions = useMemo(
     () => {
       // While the snapshot is being reviewed, sort by most recently updated
@@ -788,6 +790,14 @@ export default function SnapshotDetail() {
                         <tr
                           key={it.asset_id}
                           onClick={() => {
+                            // Spec 49 hotfix #10 — IN_REVIEW: open inline
+                            // editor (so user can fix wrong values without
+                            // leaving the fechamento). CLOSED: navigate to
+                            // asset detail (snapshot is frozen).
+                            if (isPending) {
+                              setEditingItem(it)
+                              return
+                            }
                             const safeYm = ym ?? snap?.period_end_date.slice(0, 7) ?? ''
                             const mm = safeYm.split('-')[1]
                             const yyyy = safeYm.split('-')[0]
@@ -859,6 +869,28 @@ export default function SnapshotDetail() {
           </>
         )}
       </div>
+      {editingItem && snap && (() => {
+        const a = assetById.get(editingItem.asset_id)
+        if (!a) return null
+        return (
+          <SnapshotItemEditModal
+            snapshotId={snap.id}
+            ym={ym ?? snap.period_end_date.slice(0, 7)}
+            item={editingItem}
+            asset={a}
+            onSaved={async (updated) => {
+              setEditingItem(null)
+              // Replace the matching item in state so the table reflects
+              // the new values without a full refetch round-trip.
+              setItems(prev => prev.map(it =>
+                it.asset_id === updated.asset_id ? updated : it,
+              ))
+              await refreshPendencies()
+            }}
+            onClose={() => setEditingItem(null)}
+          />
+        )
+      })()}
     </AppLayout>
   )
 }

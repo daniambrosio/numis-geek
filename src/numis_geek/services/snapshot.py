@@ -596,6 +596,134 @@ def resolve_pendency(
     return pen
 
 
+def update_snapshot_item_price(
+    db: Session,
+    *,
+    snapshot_id: str,
+    asset_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+    new_price: Decimal,
+    value_mode: str | None = None,
+    note: str | None = None,
+) -> PortfolioSnapshotItem:
+    """Spec 49 hotfix #10 — inline edit a snapshot item's price.
+
+    Used by the UI when the user clicks an asset row in Posições Congeladas
+    to fix a wrong value WITHOUT going through the pendency flow (the
+    pendency may already be resolved, or never existed for this asset).
+
+    Applies the same unit-vs-total conversion as `resolve_pendency` so all
+    paths stay aligned. Only allowed on IN_REVIEW snapshots — CLOSED ones
+    must be reopened first.
+    """
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    if snap.status == SnapshotStatus.CLOSED:
+        raise ValueError(
+            "Snapshot CLOSED — reopen it before editing items.",
+        )
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise ValueError(f"Asset {asset_id} not found")
+
+    effective_mode = value_mode or _default_value_mode_for(asset)
+    stored_price = Decimal(str(new_price))
+    if effective_mode == "total":
+        position = compute_position(db, asset_id, as_of=snap.period_end_date)
+        qty = position.get("quantity_held") or Decimal("0")
+        if qty == 0:
+            existing = (
+                db.query(PortfolioSnapshotItem)
+                .filter(
+                    PortfolioSnapshotItem.snapshot_id == snapshot_id,
+                    PortfolioSnapshotItem.asset_id == asset_id,
+                )
+                .first()
+            )
+            if existing and existing.quantity:
+                qty = existing.quantity
+        if qty and qty > 0:
+            stored_price = stored_price / qty
+
+    now = datetime.now(timezone.utc)
+    asset.current_price = stored_price
+    asset.price_updated_at = now
+
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    if item is None:
+        position = compute_position(db, asset_id, as_of=snap.period_end_date)
+        qty = position.get("quantity_held") or Decimal("1")
+        if qty == 0:
+            qty = Decimal("1")
+        item = PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snapshot_id, asset_id=asset_id,
+            quantity=qty,
+            average_cost_brl=position.get("average_cost_brl"),
+            total_invested_brl=position.get("total_invested_brl"),
+        )
+        db.add(item)
+    item.unit_price = stored_price
+    if item.quantity is not None:
+        mv_native = item.quantity * stored_price
+        item.market_value_native = mv_native
+        ccy = asset.currency.value
+        fx = snap.fx_rate_usd_brl
+        if ccy == "BRL":
+            item.market_value_brl = mv_native
+            if fx and fx > 0:
+                item.market_value_usd = mv_native / fx
+        elif ccy == "USD":
+            item.market_value_usd = mv_native
+            if fx and fx > 0:
+                item.market_value_brl = mv_native * fx
+    db.flush()
+
+    # Refresh snapshot totals.
+    items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+    snap.total_value_brl = sum(
+        (i.market_value_brl or Decimal("0") for i in items), Decimal("0"),
+    )
+    snap.total_value_usd = sum(
+        (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
+    )
+    db.flush()
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.item.edit",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot_item",
+        resource_id=item.id,
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "asset_name": asset.name,
+            "asset_class": asset.asset_class.value if asset.asset_class else None,
+            "input_price": str(new_price),
+            "effective_mode": effective_mode,
+            "stored_unit_price": str(stored_price),
+            "market_value_brl": str(item.market_value_brl) if item.market_value_brl else None,
+            "note": note,
+        },
+    )
+    return item
+
+
 def retry_pendency_api(
     db: Session,
     *,

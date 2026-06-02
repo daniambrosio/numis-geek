@@ -44,6 +44,7 @@ from numis_geek.services.snapshot import (
     reopen_snapshot,
     resolve_pendency,
     retry_pendency_api,
+    update_snapshot_item_price,
 )
 from numis_geek.utils.business_day import last_day_of_month
 
@@ -129,6 +130,21 @@ class SnapshotReopenRequest(BaseModel):
 class BulkExtractRequest(BaseModel):
     """Spec 48 — create a bulk-extract job for a snapshot."""
     attachment_id: str
+
+
+class SnapshotItemPatchRequest(BaseModel):
+    """Spec 49 hotfix #10 — inline edit a snapshot item.
+
+    `price` is the user-typed value. `value_mode` chooses interpretation:
+    - "unit"  : per-share / per-cota price
+    - "total" : consolidated market value (divide by quantity to derive
+                unit_price)
+    - None    : auto-detect from asset_class (matches the per-pendency
+                resolve path).
+    """
+    price: Decimal = Field(..., gt=0)
+    value_mode: str | None = Field(default=None, pattern=r"^(unit|total)$")
+    note: str | None = Field(default=None, max_length=500)
 
 
 class BulkExtractionJobOut(BaseModel):
@@ -398,6 +414,47 @@ def list_snapshot_items(
         )
         for i in items
     ]
+
+
+@router.patch(
+    "/{snapshot_id}/items/{asset_id}", response_model=SnapshotItemOut,
+)
+def patch_snapshot_item(
+    snapshot_id: str,
+    asset_id: str,
+    body: SnapshotItemPatchRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 49 hotfix #10 — inline edit of a snapshot item from the
+    Posições Congeladas table. Only IN_REVIEW snapshots are editable."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        item = update_snapshot_item_price(
+            db,
+            snapshot_id=snapshot_id,
+            asset_id=asset_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+            new_price=body.price,
+            value_mode=body.value_mode,
+            note=body.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return SnapshotItemOut(
+        asset_id=item.asset_id,
+        quantity=str(item.quantity),
+        unit_price=str(item.unit_price) if item.unit_price is not None else None,
+        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
+        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
+        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
+        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
+        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
+    )
 
 
 # ── Spec 35 endpoints ───────────────────────────────────────────────────────

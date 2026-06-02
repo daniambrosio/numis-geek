@@ -831,6 +831,14 @@ export const api = {
     }),
   listSnapshotItems: (snapshot_id: string) =>
     request<SnapshotItemOut[]>(`/snapshots/${snapshot_id}/items`),
+  patchSnapshotItem: (
+    snapshot_id: string,
+    asset_id: string,
+    body: { price: string; value_mode?: 'unit' | 'total' | null; note?: string | null },
+  ) =>
+    request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items/${asset_id}`, {
+      method: 'PATCH', body: JSON.stringify(body),
+    }),
   listSnapshotPendencies: (snapshot_id: string) =>
     request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/pendencies`),
   confirmSnapshot: (snapshot_id: string) =>
