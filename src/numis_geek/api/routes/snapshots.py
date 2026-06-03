@@ -39,6 +39,7 @@ from numis_geek.services.snapshot import (
     PendencyOpenError,
     confirm_snapshot,
     create_snapshot,
+    delete_snapshot_item,
     list_pendencies,
     list_snapshots,
     reopen_snapshot,
@@ -142,7 +143,7 @@ class SnapshotItemPatchRequest(BaseModel):
     - None    : auto-detect from asset_class (matches the per-pendency
                 resolve path).
     """
-    price: Decimal = Field(..., gt=0)
+    price: Decimal = Field(..., ge=0)
     value_mode: str | None = Field(default=None, pattern=r"^(unit|total)$")
     note: str | None = Field(default=None, max_length=500)
 
@@ -455,6 +456,36 @@ def patch_snapshot_item(
         average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
         total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
     )
+
+
+@router.delete(
+    "/{snapshot_id}/items/{asset_id}", status_code=204,
+)
+def delete_snapshot_item_route(
+    snapshot_id: str,
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 49 hotfix #11 — remove an asset entry from a frozen snapshot.
+
+    Used when a retroactive movement means the asset shouldn't appear
+    in the period at all. Only allowed on IN_REVIEW snapshots."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        delete_snapshot_item(
+            db,
+            snapshot_id=snapshot_id,
+            asset_id=asset_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return None
 
 
 # ── Spec 35 endpoints ───────────────────────────────────────────────────────

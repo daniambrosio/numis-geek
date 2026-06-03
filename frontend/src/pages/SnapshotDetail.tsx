@@ -887,6 +887,11 @@ export default function SnapshotDetail() {
               ))
               await refreshPendencies()
             }}
+            onDeleted={async (deletedAssetId) => {
+              setEditingItem(null)
+              setItems(prev => prev.filter(it => it.asset_id !== deletedAssetId))
+              await refreshPendencies()
+            }}
             onClose={() => setEditingItem(null)}
           />
         )

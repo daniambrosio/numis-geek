@@ -4,7 +4,7 @@
  * /snapshots/{ym}. Lets the user fix the price (typed as TOTAL or
  * per-UNIT) without leaving the snapshot context. */
 import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, X } from 'lucide-react'
+import { ExternalLink, Trash2, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import {
@@ -19,6 +19,7 @@ interface Props {
   item: SnapshotItemOut
   asset: AssetOut
   onSaved: (updated: SnapshotItemOut) => void
+  onDeleted: (asset_id: string) => void
   onClose: () => void
 }
 
@@ -35,7 +36,7 @@ function fmtNumber(n: number, decimals = 2): string {
 }
 
 export default function SnapshotItemEditModal({
-  snapshotId, ym, item, asset, onSaved, onClose,
+  snapshotId, ym, item, asset, onSaved, onDeleted, onClose,
 }: Props) {
   const defaultMode: 'unit' | 'total' =
     asset.asset_class && TOTAL_CLASSES.has(asset.asset_class) ? 'total' : 'unit'
@@ -56,6 +57,7 @@ export default function SnapshotItemEditModal({
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -80,7 +82,7 @@ export default function SnapshotItemEditModal({
     const normalized = s.replace(/\./g, '').replace(',', '.').trim()
     if (!normalized) return null
     const n = Number(normalized)
-    if (!Number.isFinite(n) || n <= 0) return null
+    if (!Number.isFinite(n) || n < 0) return null
     return n
   }
 
@@ -88,7 +90,7 @@ export default function SnapshotItemEditModal({
     if (busy) return
     const value = parsePrice(raw)
     if (value === null) {
-      setErr('Informe um número > 0.')
+      setErr('Informe um número ≥ 0.')
       return
     }
     setBusy(true); setErr(null)
@@ -102,6 +104,19 @@ export default function SnapshotItemEditModal({
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Erro')
       setBusy(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (busy) return
+    setBusy(true); setErr(null)
+    try {
+      await api.deleteSnapshotItem(snapshotId, asset.id)
+      onDeleted(asset.id)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Erro')
+      setBusy(false)
+      setConfirmDelete(false)
     }
   }
 
@@ -249,21 +264,57 @@ export default function SnapshotItemEditModal({
         </div>
 
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between">
-          <button
-            onClick={onClose}
-            disabled={busy}
-            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={() => void submit()}
-            disabled={busy || parsed == null}
-            className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
-            data-testid="snapshot-item-save"
-          >
-            {busy ? 'Salvando…' : 'Salvar'}
-          </button>
+          <div className="flex items-center gap-2">
+            {confirmDelete ? (
+              <>
+                <span className="text-[11px] text-red-600 dark:text-red-400">
+                  Remover do fechamento?
+                </span>
+                <button
+                  onClick={() => void handleDelete()}
+                  disabled={busy}
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-red-600 hover:bg-red-500 text-white disabled:opacity-50"
+                  data-testid="snapshot-item-delete-confirm"
+                >
+                  {busy ? 'Removendo…' : 'Sim, remover'}
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={busy}
+                  className="h-8 px-2 text-[12px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                disabled={busy}
+                title="Remover este ativo do fechamento"
+                className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-gray-500 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                data-testid="snapshot-item-delete"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              disabled={busy}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => void submit()}
+              disabled={busy || parsed == null || confirmDelete}
+              className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+              data-testid="snapshot-item-save"
+            >
+              {busy ? 'Salvando…' : 'Salvar'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -839,6 +839,8 @@ export const api = {
     request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items/${asset_id}`, {
       method: 'PATCH', body: JSON.stringify(body),
     }),
+  deleteSnapshotItem: (snapshot_id: string, asset_id: string) =>
+    request<void>(`/snapshots/${snapshot_id}/items/${asset_id}`, { method: 'DELETE' }),
   listSnapshotPendencies: (snapshot_id: string) =>
     request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/pendencies`),
   confirmSnapshot: (snapshot_id: string) =>

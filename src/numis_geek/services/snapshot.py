@@ -724,6 +724,85 @@ def update_snapshot_item_price(
     return item
 
 
+def delete_snapshot_item(
+    db: Session,
+    *,
+    snapshot_id: str,
+    asset_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+) -> None:
+    """Spec 49 hotfix #11 — remove an asset from a frozen snapshot.
+
+    Use when a retroactive movement (e.g. a FULL_REDEMPTION dated in
+    the snapshot period but registered after the snapshot was created)
+    means an asset shouldn't appear in the period at all. Drops the
+    item, drops any pendency for that asset, and refreshes snapshot
+    totals. Only allowed on IN_REVIEW snapshots.
+    """
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    if snap.status == SnapshotStatus.CLOSED:
+        raise ValueError(
+            "Snapshot CLOSED — reopen it before removing items.",
+        )
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    if item is None:
+        raise ValueError("Snapshot item not found")
+
+    asset = db.get(Asset, asset_id)
+    asset_name = asset.name if asset else asset_id
+    asset_class = asset.asset_class.value if asset and asset.asset_class else None
+    item_market_value_brl = (
+        str(item.market_value_brl) if item.market_value_brl is not None else None
+    )
+    db.delete(item)
+
+    db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == snapshot_id,
+        SnapshotPendency.asset_id == asset_id,
+    ).delete()
+
+    db.flush()
+
+    items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+    snap.total_value_brl = sum(
+        (i.market_value_brl or Decimal("0") for i in items), Decimal("0"),
+    )
+    snap.total_value_usd = sum(
+        (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
+    )
+    db.flush()
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.item.delete",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot_item",
+        resource_id=f"{snapshot_id}:{asset_id}",
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "asset_name": asset_name,
+            "asset_class": asset_class,
+            "deleted_market_value_brl": item_market_value_brl,
+        },
+    )
+
+
 def retry_pendency_api(
     db: Session,
     *,

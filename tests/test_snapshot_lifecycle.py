@@ -35,10 +35,12 @@ from numis_geek.services.snapshot import (
     PendencyOpenError,
     confirm_snapshot,
     create_snapshot,
+    delete_snapshot_item,
     detect_pendencies,
     reopen_snapshot,
     resolve_pendency,
     retry_pendency_api,
+    update_snapshot_item_price,
 )
 
 
@@ -451,3 +453,91 @@ def test_resolve_emits_audit(db):
     ).first()
     assert audit is not None
     assert "my note" in (audit.details or "")
+
+
+# ── Spec 49 hotfix #11 — zero-price + delete item ──────────────────────────
+
+
+def test_update_snapshot_item_accepts_zero_price(db):
+    """Spec 49 hotfix #11 — setting a snapshot item price to 0 must work.
+
+    Used when a retroactive movement zeroes out an asset already frozen
+    in the snapshot."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    assert item is not None
+    update_snapshot_item_price(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=item.asset_id,
+        user_id="alice",
+        new_price=Decimal("0"),
+        value_mode="total",
+    )
+    refreshed = db.get(PortfolioSnapshotItem, item.id)
+    assert refreshed.unit_price == Decimal("0")
+    assert refreshed.market_value_native == Decimal("0")
+    assert refreshed.market_value_brl == Decimal("0")
+
+
+def test_delete_snapshot_item_removes_item_and_pendency(db):
+    """Spec 49 hotfix #11 — deleting an item drops the row, drops any
+    pendency for that asset, and refreshes the snapshot's totals."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    asset_id = item.asset_id
+    before_total = snap.total_value_brl
+
+    delete_snapshot_item(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=asset_id,
+        user_id="alice",
+    )
+
+    assert db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == asset_id,
+    ).count() == 0
+    assert db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == asset_id,
+    ).count() == 0
+    db.refresh(snap)
+    assert snap.total_value_brl <= before_total
+
+    audit = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.item.delete",
+    ).first()
+    assert audit is not None
+
+
+def test_delete_snapshot_item_refuses_closed_snapshot(db):
+    """CLOSED snapshots must be reopened before items can be deleted."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Resolve everything and close
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(db, pendency_id=pen.id, user_id="alice",
+                         new_price=Decimal("100"))
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    with pytest.raises(ValueError, match="CLOSED"):
+        delete_snapshot_item(
+            db,
+            snapshot_id=r.snapshot_id,
+            asset_id=item.asset_id,
+            user_id="alice",
+        )
