@@ -26,7 +26,7 @@ from numis_geek.models.portfolio_snapshot import (
 )
 from numis_geek.services.audit import AuditService
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
-from numis_geek.services.positions import compute_position
+from numis_geek.services.positions import asset_has_position, compute_position
 from numis_geek.services.price_freshness import (
     AUTOMATED_SOURCES,
     PriceTier,
@@ -213,9 +213,9 @@ def create_snapshot(
 
     for asset in assets:
         pos = compute_position(db, asset.id, as_of=period_end)
-        qty = pos["quantity_held"]
-        if qty == 0:
+        if not asset_has_position(pos):
             continue
+        qty = pos["quantity_held"]
 
         mv_native = pos["current_value"]
         mv_brl = pos["current_value_brl"]
@@ -388,7 +388,58 @@ def reopen_snapshot(
         SnapshotPendency.snapshot_id == snap.id
     ).delete()
 
-    # Re-detect based on current asset state.
+    # Spec 49 hotfix #12 — add items for assets that should be in the
+    # snapshot but aren't (typically VALUE-mode assets that were excluded
+    # by the previous `if qty == 0` guard in create_snapshot). Existing
+    # items are left untouched — snapshot items remain frozen by design.
+    existing_asset_ids = {
+        it.asset_id for it in db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snap.id).all()
+    }
+    workspace_assets = (
+        db.query(Asset)
+        .filter(
+            Asset.workspace_id == snap.workspace_id,
+            Asset.is_active == True,  # noqa: E712
+        )
+        .all()
+    )
+    items_added = 0
+    for asset in workspace_assets:
+        if asset.id in existing_asset_ids:
+            continue
+        pos = compute_position(db, asset.id, as_of=snap.period_end_date)
+        if not asset_has_position(pos):
+            continue
+        currency = asset.currency.value
+        mv_native = pos["current_value"]
+        mv_brl = pos["current_value_brl"]
+        mv_usd: Decimal | None = None
+        if mv_brl is not None:
+            fx = snap.fx_rate_usd_brl
+            if currency == "USD":
+                mv_usd = mv_native
+            elif currency == "BRL" and fx and fx > 0:
+                mv_usd = mv_brl / fx
+        db.add(PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snap.id,
+            asset_id=asset.id,
+            quantity=pos["quantity_held"],
+            unit_price=pos["current_price"],
+            market_value_native=mv_native,
+            market_value_brl=mv_brl,
+            market_value_usd=mv_usd,
+            average_cost_brl=pos["average_cost_brl"],
+            total_invested_brl=pos["total_invested_brl"],
+            created_at=now,
+        ))
+        items_added += 1
+    if items_added:
+        db.flush()
+
+    # Re-detect based on current asset state (now including any items we
+    # just added above).
     items = (
         db.query(PortfolioSnapshotItem)
         .filter(PortfolioSnapshotItem.snapshot_id == snap.id)
@@ -427,6 +478,7 @@ def reopen_snapshot(
             "period_end_date": snap.period_end_date.isoformat(),
             "reason": reason,
             "pendencies_recreated": len(pendency_ids),
+            "items_added": items_added,
         },
     )
     return snap

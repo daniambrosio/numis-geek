@@ -69,6 +69,28 @@ _QTY_SUB_TYPES = {
 _TOLERANCE = Decimal("1e-6")
 
 
+def asset_has_position(pos: "Position") -> bool:
+    """True when an asset still has a tracked position at the given moment.
+
+    Centralizes the "is this asset present?" rule so every consumer
+    (snapshot creation, snapshot reopen, portfolio listings, dashboards)
+    treats VALUE-mode assets correctly. An asset has a position when:
+
+    - quantity_held != 0 (modo cotado: STOCK, ETF, REIT, CRYPTO, OPTION,
+      FIXED_INCOME papéis), OR
+    - total_invested_brl != 0 (modo valor: FUND, PRIVATE_PENSION, CASH,
+      FGTS, FIXED_INCOME tipo cofrinho — onde os movimentos têm gross
+      mas quantity=NULL, mantidos em non_cotado_basis_brl).
+
+    Spec 49 hotfix #12: a guarda `qty == 0` em `create_snapshot` excluía
+    silenciosamente todos os ativos VALUE-puros do fechamento. Esse
+    helper é a fonte única da regra.
+    """
+    qty = pos.get("quantity_held") or Decimal("0")
+    invested = pos.get("total_invested_brl") or Decimal("0")
+    return qty != 0 or invested != 0
+
+
 def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -> Position:
     """Compute current position for an asset.
 

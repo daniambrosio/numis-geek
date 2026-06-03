@@ -541,3 +541,106 @@ def test_delete_snapshot_item_refuses_closed_snapshot(db):
             asset_id=item.asset_id,
             user_id="alice",
         )
+
+
+# ── Spec 49 hotfix #12 — VALUE-mode assets in snapshot ────────────────────
+
+
+def _add_value_mode_asset(db, ws_id: str, account_id: str, *, name: str,
+                          invested_brl: Decimal) -> str:
+    """Create a VALUE-mode asset (PRIVATE_PENSION) with a single
+    quantity=NULL BUY recorded only by gross_amount. Mirrors how XP
+    previdência rows are entered in production."""
+    from numis_geek.models.asset_movement import (
+        AssetMovement, AssetMovementType,
+    )
+    now = datetime.now(timezone.utc)
+    asset = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws_id, account_id=account_id,
+        asset_class=AssetClass.PRIVATE_PENSION, country="BR", name=name,
+        ticker=None, currency=Currency.BRL, current_price=None,
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(asset)
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws_id, asset_id=asset.id,
+        type=AssetMovementType.BUY, event_date=date(2025, 8, 15),
+        quantity=None, unit_price=None,
+        gross_amount=invested_brl, net_amount=invested_brl,
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    db.flush()
+    return asset.id
+
+
+def test_create_snapshot_includes_value_mode_assets(db):
+    """Spec 49 hotfix #12 — a PRIVATE_PENSION asset with quantity=NULL
+    (modo valor puro) must appear in the snapshot."""
+    w = _seed(db)
+    prev_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="Trend Pós-Fixado Previdência",
+        invested_brl=Decimal("50000"),
+    )
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    items = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == prev_id,
+    ).all()
+    assert len(items) == 1, "VALUE-mode asset must appear in the snapshot"
+    assert items[0].total_invested_brl == Decimal("50000")
+    # qty is 0, market_value depends on current_price (NULL → mv NULL).
+    assert items[0].quantity == Decimal("0")
+
+
+def test_reopen_snapshot_adds_missing_value_mode_assets(db):
+    """Spec 49 hotfix #12 — reopen recovers VALUE-mode assets that
+    pre-existed but were excluded by the historical `qty == 0` guard."""
+    w = _seed(db)
+    # Snapshot first, before the value-mode asset exists.
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    pre_count = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).count()
+    # Now add a value-mode asset retroactively (movement event_date before
+    # period_end). reopen should pick it up.
+    prev_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="XP Corporate Light Previdência",
+        invested_brl=Decimal("80000"),
+    )
+    reopen_snapshot(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+        reason="recover value-mode asset",
+    )
+    post_items = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).all()
+    assert len(post_items) == pre_count + 1
+    added = [it for it in post_items if it.asset_id == prev_id]
+    assert len(added) == 1
+    assert added[0].total_invested_brl == Decimal("80000")
+
+
+def test_asset_has_position_centralized_rule(db):
+    """The helper handles both modes: qty>0 (cotado) and basis>0 (valor)."""
+    from numis_geek.services.positions import asset_has_position
+    # Cotado mode
+    w = _seed(db)
+    from numis_geek.services.positions import compute_position
+    pos = compute_position(db, w["petr_id"], as_of=PERIOD)
+    assert asset_has_position(pos) is True
+    # Valor mode
+    prev_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="VGBL teste", invested_brl=Decimal("10000"),
+    )
+    pos_val = compute_position(db, prev_id, as_of=PERIOD)
+    assert pos_val["quantity_held"] == Decimal("0")
+    assert pos_val["total_invested_brl"] == Decimal("10000")
+    assert asset_has_position(pos_val) is True
+    # Neither (empty position)
+    empty: dict = {"quantity_held": Decimal("0"), "total_invested_brl": Decimal("0")}
+    assert asset_has_position(empty) is False  # type: ignore[arg-type]
