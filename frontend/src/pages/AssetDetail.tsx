@@ -26,6 +26,7 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
   UNKNOWN: 'Nunca atualizado',
 }
 import AppLayout from '../components/AppLayout'
+import AssetDistributionsChart from '../components/AssetDistributionsChart'
 import AssetModal from '../components/AssetModal'
 import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
 import ManualPriceModal from '../components/ManualPriceModal'
@@ -267,7 +268,11 @@ export default function AssetDetail() {
   }, [me, id])
 
   const distSumBRL = useMemo(
-    () => distributions.reduce((s, d) => s + d.net_amount * (d.fx_rate || 1), 0),
+    () => distributions.reduce((s, d) => {
+      const fx = d.fx_rate || 1
+      const brl = d.currency === 'BRL' ? d.net_amount : d.net_amount * fx
+      return s + brl
+    }, 0),
     [distributions],
   )
   // Spec 42/45 hotfix — proventos total na moeda nativa do ativo
@@ -276,6 +281,17 @@ export default function AssetDetail() {
   // comum, mas no header da tabela queremos a moeda real.
   const distSumNative = useMemo(
     () => distributions.reduce((s, d) => s + d.net_amount, 0),
+    [distributions],
+  )
+  // Spec 50 parte 2 — total USD pro footer da tabela de Proventos.
+  const distSumUSD = useMemo(
+    () => distributions.reduce((s, d) => {
+      const fx = d.fx_rate || 0
+      const usd = d.currency === 'USD'
+        ? d.net_amount
+        : (fx > 0 ? d.net_amount / fx : 0)
+      return s + usd
+    }, 0),
     [distributions],
   )
 
@@ -561,6 +577,7 @@ export default function AssetDetail() {
           history={snapshotHistory}
           loading={snapshotHistoryLoading}
           assetId={asset.id}
+          movements={movements}
         />
 
         {/* Lançamentos full table */}
@@ -625,7 +642,14 @@ export default function AssetDetail() {
         <Card>
           <SectionTitle action={
             <span className="text-[11px] tnum text-gray-500">
-              Total <span className="money text-emerald-500 dark:text-emerald-400 font-medium">{fmtMoney(distSumNative, ccy, { compact: true })}</span>
+              Total{' '}
+              <span className="money text-emerald-500 dark:text-emerald-400 font-medium">
+                {fmtBRL(distSumBRL, { compact: true })}
+              </span>
+              <span className="mx-1 text-gray-400">·</span>
+              <span className="money text-emerald-500 dark:text-emerald-400 font-medium">
+                {fmtUSD(distSumUSD, { compact: true })}
+              </span>
             </span>
           }>
             Proventos · {distributions.length}
@@ -642,12 +666,17 @@ export default function AssetDetail() {
                     <th className="text-right font-medium px-2 py-2">Bruto</th>
                     <th className="text-right font-medium px-2 py-2">IR</th>
                     <th className="text-right font-medium px-2 py-2">Líquido</th>
+                    <th className="text-right font-medium px-2 py-2">USD</th>
                     <th className="px-2"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {distributions.map(d => {
                     const typeCls = TYPE_DISTRIBUTION_PALETTE[d.type] || 'bg-gray-500/15 text-gray-500'
+                    const fx = d.fx_rate || 0
+                    const usdNet = d.currency === 'USD'
+                      ? d.net_amount
+                      : (fx > 0 ? d.net_amount / fx : null)
                     return (
                       <tr key={d.id} className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
                         <td className="px-2 py-2 tnum text-gray-400">{fmtDate(d.event_date)}</td>
@@ -661,6 +690,9 @@ export default function AssetDetail() {
                         <td className="px-2 text-right">
                           <div className="tnum money font-medium text-emerald-500 dark:text-emerald-400">{fmtMoney(d.net_amount, d.currency, { sign: true })}</div>
                         </td>
+                        <td className="px-2 text-right tnum money text-gray-500 dark:text-gray-400" title={fx > 0 ? `PTAX ${fx.toFixed(4)}` : 'sem fx_rate'}>
+                          {usdNet == null ? '—' : fmtUSD(usdNet)}
+                        </td>
                         <td className="px-2 text-gray-500"><MoreHorizontal className="w-4 h-4" /></td>
                       </tr>
                     )
@@ -670,6 +702,11 @@ export default function AssetDetail() {
             </div>
           )}
         </Card>
+
+        {/* Spec 50 parte 2 — gráfico de proventos mensais */}
+        {distributions.length >= 2 && (
+          <AssetDistributionsChart distributions={distributions} />
+        )}
 
         {/* Open options card */}
         {asset.asset_class !== 'OPTION' && (
