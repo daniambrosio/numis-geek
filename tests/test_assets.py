@@ -725,6 +725,128 @@ def test_price_history_no_snapshots_returns_empty(client, seed):
     assert r.json()["points"] == []
 
 
+# ── Spec 50 — asset snapshot history (closings table + chart) ──────────────
+
+
+def _seed_snapshot_with_full_item(
+    ws_id: str, asset_id: str, period: str, *,
+    quantity: str = "100", unit_price: str = "30.00",
+    market_value_native: str = "3000.00",
+    market_value_brl: str = "3000.00",
+    market_value_usd: str = "500.00",
+    fx_rate: str = "5.00",
+    status: str = "CLOSED",
+) -> None:
+    from datetime import date, datetime, timezone
+    from decimal import Decimal
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotSource, SnapshotStatus,
+    )
+    db = TestSession()
+    try:
+        snap = PortfolioSnapshot(
+            id=str(uuid.uuid4()),
+            workspace_id=ws_id,
+            period_end_date=date.fromisoformat(period),
+            source=SnapshotSource.MANUAL,
+            status=SnapshotStatus[status],
+            fx_rate_usd_brl=Decimal(fx_rate),
+            total_value_brl=Decimal(market_value_brl),
+            total_value_usd=Decimal(market_value_usd),
+            total_invested_brl=Decimal("2500"),
+            total_received_brl=Decimal("0"),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(snap)
+        db.flush()
+        db.add(PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snap.id,
+            asset_id=asset_id,
+            quantity=Decimal(quantity),
+            unit_price=Decimal(unit_price),
+            market_value_native=Decimal(market_value_native),
+            market_value_brl=Decimal(market_value_brl),
+            market_value_usd=Decimal(market_value_usd),
+            total_invested_brl=Decimal("2500"),
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_snapshot_history_returns_desc_with_market_values(client, seed):
+    """Unique periods in 2024 to avoid colliding with other tests' inserts
+    on the shared (workspace, period_end) unique constraint."""
+    asset_id = _create_test_asset(client, seed, ticker="SH1")
+    _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2024-09-30")
+    _seed_snapshot_with_full_item(
+        seed["ws_a"], asset_id, "2024-10-31",
+        market_value_brl="3300.00", market_value_usd="650.00",
+    )
+    _seed_snapshot_with_full_item(
+        seed["ws_a"], asset_id, "2024-11-30",
+        market_value_brl="3450.00", market_value_usd="700.00",
+    )
+
+    r = client.get(
+        f"/assets/{asset_id}/snapshot-history",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["asset_id"] == asset_id
+    assert body["currency"] == "BRL"
+    dates = [it["period_end_date"] for it in body["items"]]
+    assert dates == sorted(dates, reverse=True), "items must be DESC by date"
+    assert dates == ["2024-11-30", "2024-10-31", "2024-09-30"]
+    # market_value_brl arrives as Decimal string.
+    assert body["items"][0]["market_value_brl"].startswith("3450.00")
+    assert body["items"][0]["market_value_usd"].startswith("700.00")
+    # fx_rate cravado no snapshot.
+    assert body["items"][0]["fx_rate_usd_brl"].startswith("5.00")
+
+
+def test_snapshot_history_excludes_in_review(client, seed):
+    """Each test uses a unique period to dodge the (workspace, period_end)
+    unique constraint across the shared test DB."""
+    asset_id = _create_test_asset(client, seed, ticker="SH2")
+    _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2025-11-30")  # CLOSED
+    _seed_snapshot_with_full_item(
+        seed["ws_a"], asset_id, "2025-12-31", status="IN_REVIEW",
+    )
+    r = client.get(
+        f"/assets/{asset_id}/snapshot-history",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200
+    dates = [it["period_end_date"] for it in r.json()["items"]]
+    assert dates == ["2025-11-30"], "IN_REVIEW snapshot must be excluded"
+
+
+def test_snapshot_history_no_snapshots_returns_empty(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="SH3")
+    r = client.get(
+        f"/assets/{asset_id}/snapshot-history",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+def test_snapshot_history_cross_workspace_returns_404(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="SH4")
+    _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2025-10-31")
+    r = client.get(
+        f"/assets/{asset_id}/snapshot-history",
+        headers=auth(seed["admin_token_b"]),
+    )
+    assert r.status_code == 404
+
+
 def test_get_asset_returns_details(client, seed):
     r_create = client.post("/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",

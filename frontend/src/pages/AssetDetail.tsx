@@ -11,6 +11,7 @@ import {
   type AssetPriceHistoryOut,
   type AssetPriceHistoryPeriod,
   type AssetRequest,
+  type AssetSnapshotHistoryOut,
   type DistributionOut,
   type FinancialInstitutionOut,
   type PositionOut,
@@ -26,6 +27,7 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
 }
 import AppLayout from '../components/AppLayout'
 import AssetModal from '../components/AssetModal'
+import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
 import ManualPriceModal from '../components/ManualPriceModal'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionContextCard from '../components/OptionContextCard'
@@ -180,6 +182,9 @@ export default function AssetDetail() {
   // Spec 46 — real price history derived from snapshots.
   const [pricePeriod, setPricePeriod] = useState<AssetPriceHistoryPeriod>('24m')
   const [priceHistory, setPriceHistory] = useState<AssetPriceHistoryOut | null>(null)
+  // Spec 50 — snapshot history table + chart.
+  const [snapshotHistory, setSnapshotHistory] = useState<AssetSnapshotHistoryOut | null>(null)
+  const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(false)
 
   async function handleRefreshPrice() {
     if (!asset || refreshingPrice) return
@@ -283,6 +288,18 @@ export default function AssetDetail() {
       .catch(() => { if (!cancelled) setPriceHistory(null) })
     return () => { cancelled = true }
   }, [me, id, pricePeriod])
+
+  // Spec 50 — snapshot history (tabela de fechamentos + sparkline).
+  useEffect(() => {
+    if (!me || !id) return
+    let cancelled = false
+    setSnapshotHistoryLoading(true)
+    api.getAssetSnapshotHistory(id)
+      .then(h => { if (!cancelled) setSnapshotHistory(h) })
+      .catch(() => { if (!cancelled) setSnapshotHistory(null) })
+      .finally(() => { if (!cancelled) setSnapshotHistoryLoading(false) })
+    return () => { cancelled = true }
+  }, [me, id])
 
   const priceSeries = useMemo(
     () => priceHistory?.points.map(p => Number(p.unit_price)) ?? [],
@@ -538,6 +555,13 @@ export default function AssetDetail() {
             <PriceChartAxis points={priceHistory.points} />
           </Card>
         )}
+
+        {/* Spec 50 — Fechamentos por ativo */}
+        <AssetSnapshotsCard
+          history={snapshotHistory}
+          loading={snapshotHistoryLoading}
+          assetId={asset.id}
+        />
 
         {/* Lançamentos full table */}
         <Card>

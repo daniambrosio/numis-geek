@@ -418,6 +418,24 @@ export interface AssetPriceHistoryOut {
   points: AssetPriceHistoryPoint[]
 }
 
+// Spec 50 — Asset snapshot history (closings table + chart).
+export interface AssetSnapshotHistoryItem {
+  period_end_date: string         // YYYY-MM-DD
+  quantity: string
+  unit_price: string | null
+  market_value_native: string | null
+  market_value_brl: string | null
+  market_value_usd: string | null
+  total_invested_brl: string | null
+  fx_rate_usd_brl: string | null
+}
+
+export interface AssetSnapshotHistoryOut {
+  asset_id: string
+  currency: 'BRL' | 'USD'
+  items: AssetSnapshotHistoryItem[]   // cronológica desc
+}
+
 export interface PositionOut {
   asset_id: string
   quantity_held: number
@@ -639,6 +657,8 @@ export const api = {
   // Spec 46 — historical unit prices derived from snapshots.
   getAssetPriceHistory: (id: string, period: AssetPriceHistoryPeriod = '24m') =>
     request<AssetPriceHistoryOut>(`/assets/${id}/price-history?period=${period}`),
+  getAssetSnapshotHistory: (id: string) =>
+    request<AssetSnapshotHistoryOut>(`/assets/${id}/snapshot-history`),
 
   listAssetMovementsForAsset: (id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
     const qs = new URLSearchParams()

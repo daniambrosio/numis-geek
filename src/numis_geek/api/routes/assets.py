@@ -27,6 +27,7 @@ from numis_geek.models.asset_movement import (
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
     PortfolioSnapshotItem,
+    SnapshotStatus,
 )
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
@@ -912,6 +913,88 @@ def asset_price_history(
         points=[
             AssetPriceHistoryPoint(date=d.isoformat(), unit_price=str(p))
             for (d, p) in rows
+        ],
+    )
+
+
+# ── Spec 50 — Asset snapshot history (closings table + chart) ──────────────
+
+
+class AssetSnapshotHistoryItem(BaseModel):
+    period_end_date: str          # YYYY-MM-DD
+    quantity: str
+    unit_price: str | None
+    market_value_native: str | None
+    market_value_brl: str | None
+    market_value_usd: str | None
+    total_invested_brl: str | None
+    fx_rate_usd_brl: str | None   # PTAX cravado no snapshot
+
+
+class AssetSnapshotHistoryOut(BaseModel):
+    asset_id: str
+    currency: str
+    items: list[AssetSnapshotHistoryItem]   # cronológica desc
+
+
+@router.get(
+    "/{asset_id}/snapshot-history", response_model=AssetSnapshotHistoryOut,
+)
+def asset_snapshot_history(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 50 — historical closings for this asset.
+
+    Returns a row per CLOSED snapshot in the workspace where this asset
+    has an item. IN_REVIEW snapshots are excluded — they contain
+    unvalidated data and shouldn't pollute the asset's history."""
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+
+    rows = (
+        db.query(
+            PortfolioSnapshot.period_end_date,
+            PortfolioSnapshot.fx_rate_usd_brl,
+            PortfolioSnapshotItem.quantity,
+            PortfolioSnapshotItem.unit_price,
+            PortfolioSnapshotItem.market_value_native,
+            PortfolioSnapshotItem.market_value_brl,
+            PortfolioSnapshotItem.market_value_usd,
+            PortfolioSnapshotItem.total_invested_brl,
+        )
+        .join(
+            PortfolioSnapshotItem,
+            PortfolioSnapshotItem.snapshot_id == PortfolioSnapshot.id,
+        )
+        .filter(
+            PortfolioSnapshot.workspace_id == asset.workspace_id,
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .order_by(PortfolioSnapshot.period_end_date.desc())
+        .all()
+    )
+
+    def _opt(x: object) -> str | None:
+        return None if x is None else str(x)
+
+    return AssetSnapshotHistoryOut(
+        asset_id=asset_id,
+        currency=asset.currency.value,
+        items=[
+            AssetSnapshotHistoryItem(
+                period_end_date=ped.isoformat(),
+                quantity=str(qty),
+                unit_price=_opt(up),
+                market_value_native=_opt(mvn),
+                market_value_brl=_opt(mvb),
+                market_value_usd=_opt(mvu),
+                total_invested_brl=_opt(tib),
+                fx_rate_usd_brl=_opt(fx),
+            )
+            for (ped, fx, qty, up, mvn, mvb, mvu, tib) in rows
         ],
     )
 
