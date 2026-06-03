@@ -951,6 +951,37 @@ def test_apply_recompute_logs_audit_with_delta(db):
     assert "after" in details
 
 
+def test_skip_recompute_then_drift_query_via_audit(db):
+    """Bloco 3 — após skip, query do audit log pelo
+    resource_id='{snap}:{asset}' devolve a entrada (fonte do drift panel)."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty="50", price="40",
+    )
+    apply_skip_recompute(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=w["petr_id"],
+        trigger_event_type="asset_movement.create",
+        trigger_event_id=mov_id,
+        reason="ajusto manualmente depois",
+        user_id="alice",
+    )
+    expected_rid = f"{r.snapshot_id}:{w['petr_id']}"
+    rows = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.recompute.skipped",
+        AuditLog.resource_id == expected_rid,
+    ).all()
+    assert len(rows) == 1
+    import json as _json
+    details = _json.loads(rows[0].details)
+    assert details["reason"] == "ajusto manualmente depois"
+    assert details["trigger_event_id"] == mov_id
+    assert details["asset_id"] == w["petr_id"]
+
+
 def test_apply_skip_recompute_logs_only(db):
     """Skip não muda nenhum dado — só registra audit log."""
     w = _seed(db)

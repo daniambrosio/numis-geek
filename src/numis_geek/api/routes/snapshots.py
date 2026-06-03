@@ -8,6 +8,7 @@ Spec 35 adds:
 - POST /snapshots/pendencies/{pid}/resolve
 - POST /snapshots/pendencies/{pid}/retry-api
 """
+import json
 from datetime import date as date_t
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset
+from numis_geek.models.audit_log import AuditLog
 from numis_geek.models.extraction_job import (
     ExtractionJob,
     ExtractionSourceHint,
@@ -536,6 +538,20 @@ class SkipRecomputeRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+class DriftEntryOut(BaseModel):
+    """Spec 51 Bloco 3 — entrada do painel 'Divergências aceitas' no
+    SnapshotDetail. Cada item vem do audit_log
+    (action='snapshot.recompute.skipped')."""
+    asset_id: str
+    asset_name: str | None
+    asset_ticker: str | None
+    trigger_event_type: str
+    trigger_event_id: str
+    reason: str
+    user_email: str
+    created_at: str
+
+
 @router.post(
     "/{snapshot_id}/sync-items", response_model=SyncItemsOut,
 )
@@ -724,6 +740,60 @@ def skip_recompute_route(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return None
+
+
+@router.get(
+    "/{snapshot_id}/drift", response_model=list[DriftEntryOut],
+)
+def list_snapshot_drift(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 Bloco 3 — lista entradas de 'drift consciente' do snapshot:
+    items onde o usuário viu o impacto de um evento retroativo e
+    escolheu 'Manter divergência'. Source: audit_log
+    (action='snapshot.recompute.skipped')."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    rows = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action == "snapshot.recompute.skipped",
+            AuditLog.workspace_id == snap.workspace_id,
+            AuditLog.resource_id.like(f"{snapshot_id}:%"),
+        )
+        .order_by(AuditLog.created_at.desc())
+        .all()
+    )
+
+    out: list[DriftEntryOut] = []
+    seen_assets: set[str] = set()
+    for r in rows:
+        try:
+            details = json.loads(r.details or "{}")
+        except Exception:
+            details = {}
+        asset_id = details.get("asset_id") or ""
+        # Só mostra a entrada MAIS RECENTE por ativo (audit é DESC).
+        if asset_id in seen_assets:
+            continue
+        seen_assets.add(asset_id)
+        asset = db.get(Asset, asset_id) if asset_id else None
+        out.append(DriftEntryOut(
+            asset_id=asset_id,
+            asset_name=asset.name if asset else None,
+            asset_ticker=asset.ticker if asset else None,
+            trigger_event_type=details.get("trigger_event_type") or "",
+            trigger_event_id=details.get("trigger_event_id") or "",
+            reason=details.get("reason") or "",
+            user_email=r.user_email,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        ))
+    return out
 
 
 # ── Spec 35 endpoints ───────────────────────────────────────────────────────

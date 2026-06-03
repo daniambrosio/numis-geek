@@ -16,8 +16,27 @@ from numis_geek.models.corporate_action import (
 )
 from numis_geek.models.user import UserRole
 from numis_geek.services.auth import UserContext
+from numis_geek.services.snapshot import find_affected_snapshots
 
 router = APIRouter(prefix="/corporate-actions", tags=["corporate-actions"])
+
+
+class AffectedSnapshotLite(BaseModel):
+    """Spec 51 Bloco 2 — mirror of routes/snapshots.AffectedSnapshotOut
+    kept tiny on purpose so corp action callers can fold the list
+    into their own response without circular import."""
+    snapshot_id: str
+    period_end_date: str
+    ym: str
+    status: str
+    has_item: bool
+    asset_id: str           # qual ativo foi alterado (relevante pra CONVERSION)
+    old_quantity: str
+    new_quantity: str
+    old_market_value_brl: str | None
+    new_market_value_brl: str | None
+    old_total_invested_brl: str | None
+    new_total_invested_brl: str | None
 
 
 class CorporateActionOut(BaseModel):
@@ -63,6 +82,50 @@ class CorporateActionRequest(BaseModel):
     notes: str | None = None
 
 
+class CorporateActionCreateOut(BaseModel):
+    """Spec 51 Bloco 2 — POST /corporate-actions devolve o CA criado +
+    lista de fechamentos afetados pra UI seguir o flow de reconciliação."""
+    corporate_action: CorporateActionOut
+    affected_snapshots: list[AffectedSnapshotLite]
+
+
+class CorporateActionPreviewRequest(BaseModel):
+    """Spec 51 Bloco 2 — preview do impacto antes do CA estar persistido.
+    Para CA do tipo SPLIT/GROUPING, basta asset_id + event_date. Para
+    ASSET_CONVERSION, target_asset_id também entra na varredura."""
+    asset_id: str
+    event_date: date_t
+    target_asset_id: str | None = None
+
+
+def _affected_lite_for(
+    db: Session, *, workspace_id: str, asset_id: str, event_date: date_t,
+) -> list[AffectedSnapshotLite]:
+    affected = find_affected_snapshots(
+        db, workspace_id=workspace_id, asset_id=asset_id,
+        earliest_event_date=event_date,
+    )
+    def _s(v):
+        return None if v is None else str(v)
+    return [
+        AffectedSnapshotLite(
+            snapshot_id=a.snapshot_id,
+            period_end_date=a.period_end_date.isoformat(),
+            ym=a.ym,
+            status=a.status.value,
+            has_item=a.has_item,
+            asset_id=asset_id,
+            old_quantity=str(a.old_quantity),
+            new_quantity=str(a.new_quantity),
+            old_market_value_brl=_s(a.old_market_value_brl),
+            new_market_value_brl=_s(a.new_market_value_brl),
+            old_total_invested_brl=_s(a.old_total_invested_brl),
+            new_total_invested_brl=_s(a.new_total_invested_brl),
+        )
+        for a in affected
+    ]
+
+
 def _check_workspace(asset: Asset, current_user: UserContext) -> None:
     if current_user.role == UserRole.sysadmin:
         return
@@ -85,7 +148,7 @@ def list_corporate_actions(
     return [CorporateActionOut.from_orm(c, db) for c in rows]
 
 
-@router.post("", response_model=CorporateActionOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=CorporateActionCreateOut, status_code=status.HTTP_201_CREATED)
 def create_corporate_action(
     body: CorporateActionRequest,
     db: Session = Depends(get_db),
@@ -96,6 +159,7 @@ def create_corporate_action(
         raise HTTPException(status_code=404, detail="Asset not found")
     _check_workspace(asset, current_user)
 
+    target: Asset | None = None
     if body.event_type == CorporateActionType.ASSET_CONVERSION:
         if not body.target_asset_id or body.target_ratio is None:
             raise HTTPException(
@@ -123,7 +187,53 @@ def create_corporate_action(
     )
     db.add(c)
     db.flush()
-    return CorporateActionOut.from_orm(c, db)
+
+    # Spec 51 Bloco 2 — varre snapshots afetados. Para CONVERSION inclui
+    # também o target_asset_id (ativo destino que ganha posição).
+    affected = _affected_lite_for(
+        db, workspace_id=asset.workspace_id,
+        asset_id=body.asset_id, event_date=body.event_date,
+    )
+    if target is not None:
+        affected.extend(_affected_lite_for(
+            db, workspace_id=target.workspace_id,
+            asset_id=target.id, event_date=body.event_date,
+        ))
+
+    return CorporateActionCreateOut(
+        corporate_action=CorporateActionOut.from_orm(c, db),
+        affected_snapshots=affected,
+    )
+
+
+@router.post(
+    "/preview-impact", response_model=list[AffectedSnapshotLite],
+)
+def preview_corporate_action_impact(
+    body: CorporateActionPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 Bloco 2 — sonda o impacto de um CA hipotético em
+    fechamentos do workspace, sem persistir."""
+    asset = db.get(Asset, body.asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    _check_workspace(asset, current_user)
+
+    out = _affected_lite_for(
+        db, workspace_id=asset.workspace_id,
+        asset_id=body.asset_id, event_date=body.event_date,
+    )
+    if body.target_asset_id:
+        target = db.get(Asset, body.target_asset_id)
+        if target is not None:
+            _check_workspace(target, current_user)
+            out.extend(_affected_lite_for(
+                db, workspace_id=target.workspace_id,
+                asset_id=target.id, event_date=body.event_date,
+            ))
+    return out
 
 
 @router.delete("/{ca_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -143,3 +253,33 @@ def delete_corporate_action(
     c.updated_by = current_user.user_id
     db.flush()
     return None
+
+
+@router.get("/{ca_id}/affected-snapshots", response_model=list[AffectedSnapshotLite])
+def list_affected_for_corp_action(
+    ca_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 Bloco 2 — segunda chance pra um CA já persistido:
+    devolve a lista de snapshots ainda divergentes deste CA."""
+    c = db.get(CorporateAction, ca_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Not found")
+    asset = db.get(Asset, c.asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    _check_workspace(asset, current_user)
+
+    out = _affected_lite_for(
+        db, workspace_id=asset.workspace_id,
+        asset_id=c.asset_id, event_date=c.event_date,
+    )
+    if c.target_asset_id:
+        target = db.get(Asset, c.target_asset_id)
+        if target is not None:
+            out.extend(_affected_lite_for(
+                db, workspace_id=target.workspace_id,
+                asset_id=target.id, event_date=c.event_date,
+            ))
+    return out

@@ -436,6 +436,18 @@ export interface AssetSnapshotHistoryOut {
   items: AssetSnapshotHistoryItem[]   // cronológica desc
 }
 
+// Spec 51 Bloco 3 — entrada do painel "Divergências aceitas".
+export interface DriftEntryOut {
+  asset_id: string
+  asset_name: string | null
+  asset_ticker: string | null
+  trigger_event_type: string
+  trigger_event_id: string
+  reason: string
+  user_email: string
+  created_at: string
+}
+
 // Spec 51 — Retroactive Event Reconciliation
 export interface AffectedSnapshotOut {
   snapshot_id: string
@@ -900,6 +912,8 @@ export const api = {
       `/snapshots/${snapshot_id}/items/${asset_id}/skip-recompute`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
+  listSnapshotDrift: (snapshot_id: string) =>
+    request<DriftEntryOut[]>(`/snapshots/${snapshot_id}/drift`),
   addSnapshotItem: (snapshot_id: string, asset_id: string) =>
     request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items`, {
       method: 'POST', body: JSON.stringify({ asset_id }),

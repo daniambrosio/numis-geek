@@ -18,6 +18,7 @@ import {
   api,
   type AssetOut,
   type DistributionOut,
+  type DriftEntryOut,
   type SnapshotItemOut,
   type SnapshotOut,
   type SnapshotPendencyOut,
@@ -26,6 +27,7 @@ import {
 import AppLayout from '../components/AppLayout'
 import AddSnapshotAssetModal from '../components/AddSnapshotAssetModal'
 import PendencyPanel from '../components/PendencyPanel'
+import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
 import { Card, ClassBadge, SectionTitle } from '../components/ui'
@@ -140,6 +142,8 @@ export default function SnapshotDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [addAssetOpen, setAddAssetOpen] = useState(false)
+  // Spec 51 Bloco 3 — entradas de "divergência aceita" do audit log.
+  const [drift, setDrift] = useState<DriftEntryOut[]>([])
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -157,7 +161,7 @@ export default function SnapshotDetail() {
         const match = list.find(s => s.period_end_date.startsWith(ym))
         if (!match) { setError(`Sem snapshot para ${ym}.`); setLoading(false); return }
         setSnap(match)
-        const [its, pens, as, distPage] = await Promise.all([
+        const [its, pens, as, distPage, drifts] = await Promise.all([
           api.listSnapshotItems(match.id),
           api.listSnapshotPendencies(match.id),
           api.listAssets({ include_inactive: true }),
@@ -166,12 +170,14 @@ export default function SnapshotDetail() {
             to: match.period_end_date,
             page_size: 200,
           }),
+          api.listSnapshotDrift(match.id).catch(() => []),
         ])
         if (cancelled) return
         setItems(its)
         setPendencies(pens)
         setAssets(as)
         setDistributions(distPage.items)
+        setDrift(drifts)
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Erro'))
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -916,6 +922,9 @@ export default function SnapshotDetail() {
                 )}
               </div>
             </Card>
+
+            {/* Spec 51 Bloco 3 — divergências aceitas (audit trail). */}
+            <SnapshotDriftPanel drift={drift} />
           </>
         )}
       </div>
