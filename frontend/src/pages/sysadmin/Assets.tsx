@@ -9,6 +9,7 @@ import AppLayout from '../../components/AppLayout'
 import AssetModal from '../../components/AssetModal'
 import AssetTable from '../../components/AssetTable'
 import AssetDetailPanel from '../../components/AssetDetailPanel'
+import { useEscapeKey } from '../../lib/useEscapeKey'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
   GroupingToggle,
@@ -46,6 +47,7 @@ export default function SysadminAssets() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AssetOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
   const [selected, setSelected] = useState<AssetOut | null>(null)
 
   // Filters

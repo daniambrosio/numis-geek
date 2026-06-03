@@ -5,6 +5,7 @@ import {
   api,
   type ExtractionJobOut, type ExtractionSourceHint, type SnapshotPendencyOut,
 } from '../lib/api'
+import { useEscapeKey } from '../lib/useEscapeKey'
 import ConfidencePill from './ConfidencePill'
 
 type Stage = 'pick' | 'uploading' | 'review' | 'applied'
@@ -27,6 +28,7 @@ const HINT_OPTIONS: { value: ExtractionSourceHint; label: string }[] = [
 const ACCEPTED_MIME = 'image/png,image/jpeg,image/webp,application/pdf,text/csv'
 
 export default function ExtractionUploadModal({ pendency, onResolved, onClose }: Props) {
+  useEscapeKey(onClose)
   const [stage, setStage] = useState<Stage>('pick')
   const [file, setFile] = useState<File | null>(null)
   const [hint, setHint] = useState<ExtractionSourceHint>('SCREENSHOT_PRICE')

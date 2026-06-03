@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 import { api, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 import { Card, PageHeader } from '../../components/ui'
+import { useEscapeKey } from '../../lib/useEscapeKey'
 
 const LOGO_COLORS: Record<string, string> = {
   itau:        'bg-orange-500',
@@ -140,6 +141,7 @@ export default function SysAdminFinancialInstitutions() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<FinancialInstitutionOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<FinancialInstitutionOut | null>(null)
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null); else if (modalOpen) { setModalOpen(false); setEditing(undefined) } })
 
   useEffect(() => {
     api.me()

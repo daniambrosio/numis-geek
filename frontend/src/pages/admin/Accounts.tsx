@@ -4,6 +4,7 @@ import { Plus, TrendingUp, Wallet } from 'lucide-react'
 import { api, type AccountOut, type AssetOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 import { Card, PageHeader, SectionTitle, FILogo, CcyPill, Field, INPUT_CLS } from '../../components/ui'
+import { useEscapeKey } from '../../lib/useEscapeKey'
 
 const TYPE_META = {
   investment: { label: 'Investimento', icon: TrendingUp, bg: 'bg-violet-500/15', text: 'text-violet-700 dark:text-violet-300' },
@@ -123,6 +124,7 @@ export default function AdminAccounts() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AccountOut | undefined>(undefined)
   const [confirmDeactivate, setConfirmDeactivate] = useState<AccountOut | null>(null)
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null); else if (modalOpen) { setModalOpen(false); setEditing(undefined) } })
 
   useEffect(() => {
     api.me()

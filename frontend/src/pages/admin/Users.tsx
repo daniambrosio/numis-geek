@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 import { api, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 import { Card, PageHeader } from '../../components/ui'
+import { useEscapeKey } from '../../lib/useEscapeKey'
 
 interface InviteForm { email: string; name: string; password: string; role: string }
 
@@ -13,6 +14,7 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<UserOut[]>([])
   const [loading, setLoading] = useState(true)
   const [showInvite, setShowInvite] = useState(false)
+  useEscapeKey(() => { if (showInvite) setShowInvite(false) })
   const [form, setForm] = useState<InviteForm>({ email: '', name: '', password: '', role: 'member' })
   const [inviteError, setInviteError] = useState('')
   const [inviteSaving, setInviteSaving] = useState(false)

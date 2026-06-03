@@ -10,6 +10,7 @@ import {
 } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 import { Card, PageHeader } from '../../components/ui'
+import { useEscapeKey } from '../../lib/useEscapeKey'
 
 const PROVIDER_COLOR: Record<IntegrationProvider, string> = {
   BCB: 'bg-emerald-500',
@@ -155,6 +156,7 @@ export default function SysAdminIntegrations() {
   const [editing, setEditing] = useState<IntegrationCredentialOut | undefined>()
   const [testing, setTesting] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<IntegrationCredentialOut | null>(null)
+  useEscapeKey(() => { if (confirmDelete) setConfirmDelete(null); else if (modalOpen) { setModalOpen(false); setEditing(undefined) } })
 
   useEffect(() => {
     api.me()

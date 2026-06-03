@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type AccountOut, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
+import { useEscapeKey } from '../lib/useEscapeKey'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
   STOCK: 'Ação',
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export default function AssetModal({ initial, institutions, forcedWorkspaceId, workspaceOptions, onSave, onClose }: Props) {
+  useEscapeKey(onClose)
   const initialDetails = initial?.details ?? null
   const initialFi = initialDetails as FixedIncomeDetails | null
   const initialPhysical = initialDetails as PhysicalDetails | null

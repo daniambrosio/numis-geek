@@ -17,6 +17,7 @@ import {
   type FinancialInstitutionOut,
   type SnapshotPendencyOut,
 } from '../lib/api'
+import { useEscapeKey } from '../lib/useEscapeKey'
 
 interface Props {
   job: BulkExtractJobOut
@@ -44,6 +45,7 @@ function tickerOf(pos: ExtractedPosition): string | null {
 export default function BulkExtractReviewModal({
   job, pendencies, onApplied, onClose,
 }: Props) {
+  useEscapeKey(onClose)
   const [fis, setFis] = useState<FinancialInstitutionOut[]>([])
   const [fiShortName, setFiShortName] = useState<string>('')
   const [applying, setApplying] = useState(false)

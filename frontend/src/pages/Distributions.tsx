@@ -18,6 +18,7 @@ import { type AttachmentDraft, type PersistedAttachment } from '../components/No
 import DistributionTotalsLine from '../components/DistributionTotalsLine'
 import ProventosByTypeCard from '../components/ProventosByTypeCard'
 import ProventosChart from '../components/ProventosChart'
+import { useEscapeKey } from '../lib/useEscapeKey'
 import {
   Card, FilterGroup, GroupingToggle, MultiChips, PageHeader, SearchInput,
 } from '../components/ui'
@@ -88,6 +89,9 @@ export default function Distributions() {
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [selected, setSelected] = useState<DistributionOut | null>(null)
   const [confirmDeactivate, setConfirmDeactivate] = useState<DistributionOut | null>(null)
+  // Composer/detail-panel already handle ESC internally; this hook covers
+  // the inline confirm dialog only.
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
 
   // Filters
   const [search, setSearch] = useState('')

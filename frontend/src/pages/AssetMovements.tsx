@@ -18,6 +18,7 @@ import MovementComposer from '../components/MovementComposer'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import OptionModal from '../components/OptionModal'
 import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
+import { useEscapeKey } from '../lib/useEscapeKey'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
   QuickAddBar, TypeBadge,
@@ -77,6 +78,9 @@ export default function AssetMovements() {
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
   const [selected, setSelected] = useState<AssetMovementOut | null>(null)
+  // Sub-modals (MovementComposer/OptionModal/LancamentoDetailPanel) already
+  // handle ESC internally; this hook covers only the inline confirm dialog.
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
 
   // Filters
   const [search, setSearch] = useState('')
