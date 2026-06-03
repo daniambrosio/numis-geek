@@ -154,15 +154,17 @@ export default function NotesAttachmentsField({
     validateAndAdd(files)
   }
 
-  // Catch ⌘V even when the textarea isn't focused — only consumes the
-  // paste when it carries files.
+  // Catch ⌘V even when the textarea isn't focused. Skip when the paste
+  // landed inside our own textarea (handlePaste already consumed it) or
+  // inside another editable element elsewhere on the page.
   useEffect(() => {
     function onWindowPaste(e: ClipboardEvent) {
       const target = e.target as Element | null
+      if (target && rootRef.current?.contains(target)) {
+        return
+      }
       if (
         target &&
-        rootRef.current &&
-        !rootRef.current.contains(target) &&
         (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target as HTMLElement).isContentEditable)
       ) {
         return
@@ -257,6 +259,7 @@ export default function NotesAttachmentsField({
               name={draft.name}
               sizeLabel={fmtSize(draft.size)}
               accentBg={draft.kind === 'image' ? 'bg-blue-500/15 text-blue-400' : 'bg-red-500/15 text-red-400'}
+              previewUrl={draft.preview_url}
               testid="notes-attachments-draft"
               badge="novo"
               onRemove={() => removeDraft(draft.id)}
@@ -312,12 +315,13 @@ export default function NotesAttachmentsField({
 
 
 function AttachmentRow({
-  kind, name, sizeLabel, accentBg, testid, badge, onRemove,
+  kind, name, sizeLabel, accentBg, previewUrl, testid, badge, onRemove,
 }: {
   kind: AttachmentKind
   name: string
   sizeLabel: string
   accentBg: string
+  previewUrl?: string
   testid?: string
   badge?: string
   onRemove?: () => void
@@ -327,9 +331,17 @@ function AttachmentRow({
       className="group flex items-center gap-3 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-800"
       data-testid={testid}
     >
-      <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${accentBg}`}>
-        <KindIcon kind={kind} />
-      </div>
+      {previewUrl ? (
+        <img
+          src={previewUrl}
+          alt={name}
+          className="w-10 h-10 rounded-md object-cover shrink-0 border border-gray-200 dark:border-gray-800"
+        />
+      ) : (
+        <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${accentBg}`}>
+          <KindIcon kind={kind} />
+        </div>
+      )}
       <div className="flex-1 min-w-0">
         <div className="text-[12px] font-medium truncate text-gray-900 dark:text-white">{name}</div>
         <div className="text-[10px] text-gray-500 tnum">{sizeLabel}</div>

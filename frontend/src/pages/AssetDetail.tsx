@@ -10,6 +10,7 @@ import {
   type AssetOut,
   type AssetPriceHistoryOut,
   type AssetPriceHistoryPeriod,
+  type AssetRequest,
   type DistributionOut,
   type FinancialInstitutionOut,
   type PositionOut,
@@ -24,6 +25,7 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
   UNKNOWN: 'Nunca atualizado',
 }
 import AppLayout from '../components/AppLayout'
+import AssetModal from '../components/AssetModal'
 import ManualPriceModal from '../components/ManualPriceModal'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionContextCard from '../components/OptionContextCard'
@@ -173,6 +175,8 @@ export default function AssetDetail() {
   const [refreshingPrice, setRefreshingPrice] = useState(false)
   const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [manualPriceOpen, setManualPriceOpen] = useState(false)
+  const [editAssetOpen, setEditAssetOpen] = useState(false)
+  const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   // Spec 46 — real price history derived from snapshots.
   const [pricePeriod, setPricePeriod] = useState<AssetPriceHistoryPeriod>('24m')
   const [priceHistory, setPriceHistory] = useState<AssetPriceHistoryOut | null>(null)
@@ -202,6 +206,19 @@ export default function AssetDetail() {
     setManualPriceOpen(true)
   }
 
+  async function handleSaveAsset(data: AssetRequest) {
+    if (!asset) return
+    const updated = await api.updateAsset(asset.id, data)
+    setAsset(updated)
+    if (updated.account_id !== asset.account_id) {
+      const acc = await api.getAccount(updated.account_id).catch(() => null)
+      if (acc) {
+        setAccount(acc)
+        setFi(institutions.find(f => f.id === acc.financial_institution_id) ?? null)
+      }
+    }
+  }
+
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
@@ -214,6 +231,7 @@ export default function AssetDetail() {
       .then(async a => {
         setAsset(a)
         const fis = await api.listFinancialInstitutions().catch(() => [])
+        setInstitutions(fis)
         const acc = await api.getAccount(a.account_id).catch(() => null)
         if (acc) {
           setAccount(acc)
@@ -378,6 +396,13 @@ export default function AssetDetail() {
                 className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
               >
                 <Edit2 className="w-3.5 h-3.5" /> Editar preço
+              </button>
+              <button
+                onClick={() => setEditAssetOpen(true)}
+                title="Editar dados do ativo (classe, nome, ticker, custodiante…)"
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5" /> Editar ativo
               </button>
               <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                 <Coins className="w-3.5 h-3.5" /> + Provento
@@ -671,6 +696,15 @@ export default function AssetDetail() {
           underlying={asset}
           onClose={() => setOptionModalOpen(false)}
           onSaved={() => setOptionsRefresh(n => n + 1)}
+        />
+      )}
+
+      {editAssetOpen && institutions.length > 0 && (
+        <AssetModal
+          initial={asset}
+          institutions={institutions}
+          onSave={handleSaveAsset}
+          onClose={() => setEditAssetOpen(false)}
         />
       )}
 

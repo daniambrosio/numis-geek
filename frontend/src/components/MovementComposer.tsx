@@ -40,7 +40,7 @@ const TYPE_CFG: Record<string, TypeCfg> = {
   BONUS:           { label: 'Bonificação',   hint: 'ações grátis · sem custo',      qty: true,  price: false, fee: false, tax: false },
   SUBSCRIPTION:    { label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
   COME_COTAS:      { label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
-  FULL_REDEMPTION: { label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: false, tax: false },
+  FULL_REDEMPTION: { label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
 }
 
 const TYPE_ORDER: AssetMovementType[] = ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION']
@@ -60,10 +60,12 @@ const OPTION_LIFECYCLE_ORDER: AssetMovementType[] = ['SELL_TO_CLOSE', 'BUY_TO_CL
 
 // Non-cotado classes — for BUY/SELL/SUBSCRIPTION/FULL_REDEMPTION, show a
 // single "Valor" (gross_amount) input instead of qty × unit_price.
-// FIXED_INCOME is intentionally NOT here: Tesouro Direto and debêntures
-// have qty + valor_título separately on the broker statement, and even
-// CDBs work with qty=1, unit_price=valor. Forcing value-only lost data.
-const NON_COTADO_CLASSES: AssetClass[] = ['FGTS', 'PRIVATE_PENSION', 'CASH']
+// User decision: track these classes by value (aporte/resgate em R$), with
+// quantity being informational at most. The monthly snapshot from the
+// statement is the source of truth for market value.
+const NON_COTADO_CLASSES: AssetClass[] = [
+  'FGTS', 'PRIVATE_PENSION', 'CASH', 'FUND', 'FIXED_INCOME',
+]
 const NOTA_NEGOCIACAO_TYPES: AssetMovementType[] = ['BUY', 'SELL', 'FULL_REDEMPTION', 'SUBSCRIPTION']
 
 interface Props {
@@ -136,11 +138,17 @@ export default function MovementComposer({
 
   // Sort by ticker (fallback to name) so native-select type-ahead lands
   // on the ticker the user types — e.g. typing "W" jumps to WEGE3, not
-  // to assets whose company name starts with W.
+  // to assets whose company name starts with W. Inactive assets are
+  // hidden so users don't accidentally book new movements against a
+  // deactivated asset (e.g. a car they sold). When editing, keep the
+  // referenced asset in the list even if it became inactive.
+  const keepInactiveId = initial?.asset_id ?? preselectedAsset?.id ?? null
   const sortedAssets = useMemo(() => {
     const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
-    return [...assets].sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
-  }, [assets])
+    return assets
+      .filter(a => a.is_active !== false || a.id === keepInactiveId)
+      .sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
+  }, [assets, keepInactiveId])
   const isOptionAsset = selectedAsset?.asset_class === 'OPTION'
   // OPTION assets get the lifecycle config; everything else uses TYPE_CFG.
   // When the asset switches to OPTION mid-edit (rare), force the type back
@@ -176,16 +184,18 @@ export default function MovementComposer({
   const qN = num(quantity), pN = num(unitPrice), feeN = num(fee), tN = num(tax), gN = num(grossAmount)
   let net = 0
   if (useValueOnly) {
-    // Non-cotado: gross + optional fee. Fee adds to cost on buy/sub,
-    // subtracts from proceeds on sell/redemption (matches backend
-    // net_amount calc in asset_movements.py).
-    net = type === 'BUY' || type === 'SUBSCRIPTION' ? -(gN + feeN) : (gN - feeN)
+    // Non-cotado: gross + optional fee/tax. Fee adds to cost on buy/sub,
+    // subtracts from proceeds on sell/redemption. Tax only applies on
+    // FULL_REDEMPTION (IR retido na fonte em resgate de fundo/RF).
+    if (type === 'BUY' || type === 'SUBSCRIPTION') net = -(gN + feeN)
+    else if (type === 'FULL_REDEMPTION')           net = gN - feeN - tN
+    else                                            net = gN - feeN
   } else if (type === 'BUY')             net = -(qN * pN + feeN)
   else if (type === 'SELL')              net = qN * pN - feeN
   else if (type === 'BONUS')             net = 0
   else if (type === 'SUBSCRIPTION')      net = -(qN * pN + feeN)
   else if (type === 'COME_COTAS')        net = -tN
-  else if (type === 'FULL_REDEMPTION')   net = qN * pN
+  else if (type === 'FULL_REDEMPTION')   net = qN * pN - tN
 
   // Position delta (illustrative — server is source of truth).
   const positionDelta = (type === 'BUY' || type === 'BONUS' || type === 'SUBSCRIPTION') ? qN
@@ -208,7 +218,7 @@ export default function MovementComposer({
   const isValid = !!selectedAsset
     && (cfg.qty && !useValueOnly ? qN > 0 : true)
     && (cfg.price && !useValueOnly ? pN > 0 : true)
-    && (cfg.tax ? tN > 0 : true)
+    && (type === 'COME_COTAS' ? tN > 0 : true)
     && (useValueOnly ? gN > 0 : true)
     && (!assetInactive || confirmInactive)
 
@@ -422,10 +432,13 @@ export default function MovementComposer({
               </Field>
             )}
             {showTax && (
-              <Field label={`Imposto retido · ${ccy}`}>
+              <Field
+                label={`Imposto retido · ${ccy}`}
+                hint={type === 'COME_COTAS' ? undefined : 'opcional'}
+              >
                 <input
                   type="number" step="0.01" value={tax}
-                  onChange={e => setTax(e.target.value)} required
+                  onChange={e => setTax(e.target.value)} required={type === 'COME_COTAS'}
                   placeholder="ex: 384,00"
                   className={inputCls}
                 />
@@ -477,6 +490,26 @@ export default function MovementComposer({
                       <span className="text-gray-400 dark:text-gray-500"> · taxa {fmtMoney(feeN, ccy)}</span>
                     )}
                   </span>
+                </div>
+              )}
+              {useValueOnly && gN > 0 && (feeN > 0 || tN > 0) && (
+                <div className="space-y-1 text-[12px] border-b border-indigo-500/10 pb-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-gray-400">Valor bruto</span>
+                    <span className="tnum text-gray-700 dark:text-gray-300">{fmtMoney(gN, ccy)}</span>
+                  </div>
+                  {feeN > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500 dark:text-gray-400">− Taxa</span>
+                      <span className="tnum text-gray-700 dark:text-gray-300">{fmtMoney(feeN, ccy)}</span>
+                    </div>
+                  )}
+                  {tN > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500 dark:text-gray-400">− Imposto retido</span>
+                      <span className="tnum text-gray-700 dark:text-gray-300">{fmtMoney(tN, ccy)}</span>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex items-center justify-between">
