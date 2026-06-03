@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, ArrowRight, ChevronRight, Download, RotateCcw,
+  ArrowLeft, ArrowRight, ChevronRight, Download, Plus, RotateCcw, X,
 } from 'lucide-react'
 
 import {
@@ -24,6 +24,7 @@ import {
   type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
+import AddSnapshotAssetModal from '../components/AddSnapshotAssetModal'
 import PendencyPanel from '../components/PendencyPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
@@ -138,6 +139,7 @@ export default function SnapshotDetail() {
   const [prevItems, setPrevItems] = useState<SnapshotItemOut[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [addAssetOpen, setAddAssetOpen] = useState(false)
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
@@ -238,6 +240,34 @@ export default function SnapshotDetail() {
       setSnap(updated)
       const pens = await api.listSnapshotPendencies(snap.id)
       setPendencies(pens)
+      const its = await api.listSnapshotItems(snap.id)
+      setItems(its)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Erro')
+    }
+  }
+
+  async function handleSyncItems() {
+    if (!snap) return
+    try {
+      const result = await api.syncSnapshotItems(snap.id)
+      if (result.items_added === 0) {
+        alert('Nenhum ativo faltando — snapshot já está completo.')
+        return
+      }
+      // Refresh items + pendencies after server side-effects.
+      const [its, pens] = await Promise.all([
+        api.listSnapshotItems(snap.id),
+        api.listSnapshotPendencies(snap.id),
+      ])
+      setItems(its)
+      setPendencies(pens)
+      alert(
+        `${result.items_added} ativo(s) adicionado(s).`
+        + (result.pendencies_added > 0
+          ? ` ${result.pendencies_added} pendência(s) criada(s) — preencha os saldos.`
+          : ''),
+      )
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Erro')
     }
@@ -409,6 +439,26 @@ export default function SnapshotDetail() {
             >
               <Download className="w-3.5 h-3.5" /> Exportar PDF
             </button>
+            {snap && isPending && (
+              <>
+                <button
+                  onClick={handleSyncItems}
+                  title="Adiciona ativos que deveriam estar no fechamento mas não estão (ex.: previdência/fundo lançado depois)"
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  data-testid="snapshot-sync-items"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Sincronizar ativos
+                </button>
+                <button
+                  onClick={() => setAddAssetOpen(true)}
+                  title="Adicionar manualmente um ativo ao fechamento"
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  data-testid="snapshot-add-item"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Adicionar ativo
+                </button>
+              </>
+            )}
             {snap && !isPending && (
               <button
                 onClick={handleReopen}
@@ -896,6 +946,19 @@ export default function SnapshotDetail() {
           />
         )
       })()}
+      {addAssetOpen && snap && (
+        <AddSnapshotAssetModal
+          snapshotId={snap.id}
+          existingAssetIds={new Set(items.map(it => it.asset_id))}
+          assets={assets}
+          onAdded={async (newItem) => {
+            setAddAssetOpen(false)
+            setItems(prev => [...prev, newItem])
+            await refreshPendencies()
+          }}
+          onClose={() => setAddAssetOpen(false)}
+        />
+      )}
     </AppLayout>
   )
 }

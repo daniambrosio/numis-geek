@@ -392,49 +392,7 @@ def reopen_snapshot(
     # snapshot but aren't (typically VALUE-mode assets that were excluded
     # by the previous `if qty == 0` guard in create_snapshot). Existing
     # items are left untouched — snapshot items remain frozen by design.
-    existing_asset_ids = {
-        it.asset_id for it in db.query(PortfolioSnapshotItem)
-        .filter(PortfolioSnapshotItem.snapshot_id == snap.id).all()
-    }
-    workspace_assets = (
-        db.query(Asset)
-        .filter(
-            Asset.workspace_id == snap.workspace_id,
-            Asset.is_active == True,  # noqa: E712
-        )
-        .all()
-    )
-    items_added = 0
-    for asset in workspace_assets:
-        if asset.id in existing_asset_ids:
-            continue
-        pos = compute_position(db, asset.id, as_of=snap.period_end_date)
-        if not asset_has_position(pos):
-            continue
-        currency = asset.currency.value
-        mv_native = pos["current_value"]
-        mv_brl = pos["current_value_brl"]
-        mv_usd: Decimal | None = None
-        if mv_brl is not None:
-            fx = snap.fx_rate_usd_brl
-            if currency == "USD":
-                mv_usd = mv_native
-            elif currency == "BRL" and fx and fx > 0:
-                mv_usd = mv_brl / fx
-        db.add(PortfolioSnapshotItem(
-            id=str(uuid.uuid4()),
-            snapshot_id=snap.id,
-            asset_id=asset.id,
-            quantity=pos["quantity_held"],
-            unit_price=pos["current_price"],
-            market_value_native=mv_native,
-            market_value_brl=mv_brl,
-            market_value_usd=mv_usd,
-            average_cost_brl=pos["average_cost_brl"],
-            total_invested_brl=pos["total_invested_brl"],
-            created_at=now,
-        ))
-        items_added += 1
+    items_added = _sync_missing_value_mode_items(db, snap, now)
     if items_added:
         db.flush()
 
@@ -774,6 +732,254 @@ def update_snapshot_item_price(
         },
     )
     return item
+
+
+def add_snapshot_item(
+    db: Session,
+    *,
+    snapshot_id: str,
+    asset_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+) -> PortfolioSnapshotItem:
+    """Spec 49 hotfix #12 — manually add a single asset to an IN_REVIEW
+    snapshot. Used when the user knows an asset belongs to a period but
+    the auto-pipeline didn't include it (no movements before period end
+    yet, or any other quirky scenario).
+
+    Validates: snapshot is IN_REVIEW, asset belongs to same workspace,
+    asset is active, asset isn't already in the snapshot. Initial item
+    reflects current `compute_position` state — user adjusts via the
+    edit modal afterwards.
+    """
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    if snap.status == SnapshotStatus.CLOSED:
+        raise ValueError(
+            "Snapshot CLOSED — reopen it before adding items.",
+        )
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise ValueError(f"Asset {asset_id} not found")
+    if asset.workspace_id != snap.workspace_id:
+        raise ValueError("Asset belongs to another workspace.")
+    if not asset.is_active:
+        raise ValueError("Asset is inactive — reactivate it first.")
+    existing = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    if existing is not None:
+        raise ValueError("Asset already in snapshot.")
+
+    now = datetime.now(timezone.utc)
+    pos = compute_position(db, asset_id, as_of=snap.period_end_date)
+    currency = asset.currency.value
+    mv_native = pos["current_value"]
+    mv_brl = pos["current_value_brl"]
+    mv_usd: Decimal | None = None
+    if mv_brl is not None:
+        fx = snap.fx_rate_usd_brl
+        if currency == "USD":
+            mv_usd = mv_native
+        elif currency == "BRL" and fx and fx > 0:
+            mv_usd = mv_brl / fx
+    item = PortfolioSnapshotItem(
+        id=str(uuid.uuid4()),
+        snapshot_id=snapshot_id,
+        asset_id=asset_id,
+        quantity=pos["quantity_held"] or Decimal("0"),
+        unit_price=pos["current_price"],
+        market_value_native=mv_native,
+        market_value_brl=mv_brl,
+        market_value_usd=mv_usd,
+        average_cost_brl=pos["average_cost_brl"],
+        total_invested_brl=pos["total_invested_brl"],
+        created_at=now,
+    )
+    db.add(item)
+    db.flush()
+
+    det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
+    if det is not None:
+        already_pending = (
+            db.query(SnapshotPendency)
+            .filter(
+                SnapshotPendency.snapshot_id == snapshot_id,
+                SnapshotPendency.asset_id == asset_id,
+            )
+            .first()
+        )
+        if already_pending is None:
+            r, a, d = det
+            db.add(SnapshotPendency(
+                id=str(uuid.uuid4()),
+                snapshot_id=snapshot_id, asset_id=asset_id,
+                reason=r, action_type=a, detail=d, created_at=now,
+            ))
+            db.flush()
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.item.add",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot_item",
+        resource_id=item.id,
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "asset_name": asset.name,
+            "asset_class": asset.asset_class.value if asset.asset_class else None,
+        },
+    )
+    return item
+
+
+def _sync_missing_value_mode_items(
+    db: Session,
+    snap: PortfolioSnapshot,
+    now: datetime,
+) -> int:
+    """Add `PortfolioSnapshotItem` rows for any active workspace asset
+    that has a position at `snap.period_end_date` but isn't yet in the
+    snapshot. Returns the number of items added.
+
+    Used by `reopen_snapshot` and by `sync_snapshot_items` (public
+    endpoint for IN_REVIEW snapshots that the user can't reopen)."""
+    existing_asset_ids = {
+        it.asset_id for it in db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snap.id).all()
+    }
+    workspace_assets = (
+        db.query(Asset)
+        .filter(
+            Asset.workspace_id == snap.workspace_id,
+            Asset.is_active == True,  # noqa: E712
+        )
+        .all()
+    )
+    items_added = 0
+    for asset in workspace_assets:
+        if asset.id in existing_asset_ids:
+            continue
+        pos = compute_position(db, asset.id, as_of=snap.period_end_date)
+        if not asset_has_position(pos):
+            continue
+        currency = asset.currency.value
+        mv_native = pos["current_value"]
+        mv_brl = pos["current_value_brl"]
+        mv_usd: Decimal | None = None
+        if mv_brl is not None:
+            fx = snap.fx_rate_usd_brl
+            if currency == "USD":
+                mv_usd = mv_native
+            elif currency == "BRL" and fx and fx > 0:
+                mv_usd = mv_brl / fx
+        db.add(PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snap.id,
+            asset_id=asset.id,
+            quantity=pos["quantity_held"],
+            unit_price=pos["current_price"],
+            market_value_native=mv_native,
+            market_value_brl=mv_brl,
+            market_value_usd=mv_usd,
+            average_cost_brl=pos["average_cost_brl"],
+            total_invested_brl=pos["total_invested_brl"],
+            created_at=now,
+        ))
+        items_added += 1
+    return items_added
+
+
+def sync_snapshot_items(
+    db: Session,
+    *,
+    snapshot_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+) -> dict:
+    """Spec 49 hotfix #12 — public sync endpoint for IN_REVIEW snapshots.
+
+    Adds missing items for assets that should be in the snapshot but
+    aren't (typically VALUE-mode assets from the historical bug). Then
+    re-detects pendencies for the NEW items only. Existing items and
+    their pendencies are untouched (frozen by design).
+
+    Refuses on CLOSED snapshots — user must reopen first."""
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    if snap.status == SnapshotStatus.CLOSED:
+        raise ValueError(
+            "Snapshot CLOSED — reopen it before syncing missing items.",
+        )
+
+    now = datetime.now(timezone.utc)
+    items_added = _sync_missing_value_mode_items(db, snap, now)
+
+    # Re-detect pendencies ONLY for newly-added items.
+    pendency_ids: list[str] = []
+    if items_added:
+        db.flush()
+        new_items = (
+            db.query(PortfolioSnapshotItem)
+            .filter(
+                PortfolioSnapshotItem.snapshot_id == snap.id,
+                PortfolioSnapshotItem.created_at == now,
+            )
+            .all()
+        )
+        for it in new_items:
+            asset = db.get(Asset, it.asset_id)
+            if asset is None:
+                continue
+            existing = (
+                db.query(SnapshotPendency)
+                .filter(
+                    SnapshotPendency.snapshot_id == snap.id,
+                    SnapshotPendency.asset_id == asset.id,
+                )
+                .first()
+            )
+            if existing is not None:
+                continue
+            det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
+            if det is None:
+                continue
+            r, a, d = det
+            pen = SnapshotPendency(
+                id=str(uuid.uuid4()),
+                snapshot_id=snap.id, asset_id=asset.id,
+                reason=r, action_type=a, detail=d, created_at=now,
+            )
+            db.add(pen)
+            pendency_ids.append(pen.id)
+        db.flush()
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.sync_items",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot",
+        resource_id=snap.id,
+        details={
+            "period_end_date": snap.period_end_date.isoformat(),
+            "items_added": items_added,
+            "pendencies_added": len(pendency_ids),
+        },
+    )
+    return {
+        "items_added": items_added,
+        "pendencies_added": len(pendency_ids),
+    }
 
 
 def delete_snapshot_item(

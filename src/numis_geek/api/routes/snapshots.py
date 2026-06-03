@@ -37,6 +37,7 @@ from numis_geek.services import extraction as extraction_service
 from numis_geek.services.auth import UserContext
 from numis_geek.services.snapshot import (
     PendencyOpenError,
+    add_snapshot_item,
     confirm_snapshot,
     create_snapshot,
     delete_snapshot_item,
@@ -45,6 +46,7 @@ from numis_geek.services.snapshot import (
     reopen_snapshot,
     resolve_pendency,
     retry_pendency_api,
+    sync_snapshot_items,
     update_snapshot_item_price,
 )
 from numis_geek.utils.business_day import last_day_of_month
@@ -486,6 +488,90 @@ def delete_snapshot_item_route(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return None
+
+
+class SyncItemsOut(BaseModel):
+    """Spec 49 hotfix #12 — summary returned by the sync-items endpoint."""
+    items_added: int
+    pendencies_added: int
+
+
+class AddSnapshotItemRequest(BaseModel):
+    """Spec 49 hotfix #12 — manual single-asset add to an IN_REVIEW snapshot."""
+    asset_id: str
+
+
+@router.post(
+    "/{snapshot_id}/sync-items", response_model=SyncItemsOut,
+)
+def sync_snapshot_items_route(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 49 hotfix #12 — add missing items to an IN_REVIEW snapshot.
+
+    Picks up assets that should be in the snapshot (have a position at
+    period_end) but aren't — typically VALUE-mode assets excluded by
+    the historical `qty == 0` guard. Existing items remain frozen."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        result = sync_snapshot_items(
+            db,
+            snapshot_id=snapshot_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return SyncItemsOut(
+        items_added=result["items_added"],
+        pendencies_added=result["pendencies_added"],
+    )
+
+
+@router.post(
+    "/{snapshot_id}/items", response_model=SnapshotItemOut, status_code=201,
+)
+def add_snapshot_item_route(
+    snapshot_id: str,
+    body: AddSnapshotItemRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 49 hotfix #12 — manually add a single asset to a snapshot.
+
+    Validates workspace/active/duplicate/IN_REVIEW. Initial market_value
+    reflects the asset's current_price (NULL → user edits later)."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        item = add_snapshot_item(
+            db,
+            snapshot_id=snapshot_id,
+            asset_id=body.asset_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "not found" in msg.lower() else 409
+        raise HTTPException(status_code=status, detail=msg)
+    return SnapshotItemOut(
+        asset_id=item.asset_id,
+        quantity=str(item.quantity),
+        unit_price=str(item.unit_price) if item.unit_price is not None else None,
+        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
+        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
+        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
+        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
+        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
+    )
 
 
 # ── Spec 35 endpoints ───────────────────────────────────────────────────────

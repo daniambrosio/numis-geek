@@ -33,6 +33,7 @@ from numis_geek.models.portfolio_snapshot import (
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.snapshot import (
     PendencyOpenError,
+    add_snapshot_item,
     confirm_snapshot,
     create_snapshot,
     delete_snapshot_item,
@@ -40,6 +41,7 @@ from numis_geek.services.snapshot import (
     reopen_snapshot,
     resolve_pendency,
     retry_pendency_api,
+    sync_snapshot_items,
     update_snapshot_item_price,
 )
 
@@ -644,3 +646,111 @@ def test_asset_has_position_centralized_rule(db):
     # Neither (empty position)
     empty: dict = {"quantity_held": Decimal("0"), "total_invested_brl": Decimal("0")}
     assert asset_has_position(empty) is False  # type: ignore[arg-type]
+
+
+def test_sync_snapshot_items_in_review_adds_missing(db):
+    """Spec 49 hotfix #12 — sync endpoint covers IN_REVIEW snapshots
+    that the user can't reopen."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    assert snap.status == SnapshotStatus.IN_REVIEW
+    pre_count = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).count()
+    prev_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="Trend Prev FIRF (retro)",
+        invested_brl=Decimal("70000"),
+    )
+    result = sync_snapshot_items(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+    )
+    assert result["items_added"] == 1
+    post_count = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).count()
+    assert post_count == pre_count + 1
+    added = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == prev_id,
+    ).one()
+    assert added.total_invested_brl == Decimal("70000")
+
+
+def test_sync_snapshot_items_refuses_closed(db):
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(db, pendency_id=pen.id, user_id="alice",
+                         new_price=Decimal("100"))
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+    with pytest.raises(ValueError, match="CLOSED"):
+        sync_snapshot_items(db, snapshot_id=r.snapshot_id, user_id="alice")
+
+
+def test_add_snapshot_item_manual_basic(db):
+    """Manual single-asset add works for IN_REVIEW snapshots."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    new_asset_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="VGBL XP Seg Prev", invested_brl=Decimal("25000"),
+    )
+    item = add_snapshot_item(
+        db, snapshot_id=r.snapshot_id, asset_id=new_asset_id, user_id="alice",
+    )
+    assert item is not None
+    assert item.snapshot_id == r.snapshot_id
+    assert item.asset_id == new_asset_id
+
+
+def test_add_snapshot_item_refuses_duplicate(db):
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # petr is already in the snapshot via _seed/create_snapshot
+    with pytest.raises(ValueError, match="already in snapshot"):
+        add_snapshot_item(
+            db, snapshot_id=r.snapshot_id, asset_id=w["petr_id"], user_id="alice",
+        )
+
+
+def test_add_snapshot_item_refuses_inactive_asset(db):
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Create an inactive asset
+    asset = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"],
+        account_id=db.get(Asset, w["petr_id"]).account_id,
+        asset_class=AssetClass.STOCK, country="BR", name="DEAD", ticker="XPTO",
+        currency=Currency.BRL, is_active=False,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.add(asset)
+    db.flush()
+    with pytest.raises(ValueError, match="inactive"):
+        add_snapshot_item(
+            db, snapshot_id=r.snapshot_id, asset_id=asset.id, user_id="alice",
+        )
+
+
+def test_add_snapshot_item_refuses_closed_snapshot(db):
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(db, pendency_id=pen.id, user_id="alice",
+                         new_price=Decimal("100"))
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+    new_asset_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="VGBL retro", invested_brl=Decimal("10000"),
+    )
+    with pytest.raises(ValueError, match="CLOSED"):
+        add_snapshot_item(
+            db, snapshot_id=r.snapshot_id, asset_id=new_asset_id, user_id="alice",
+        )

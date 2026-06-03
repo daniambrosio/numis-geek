@@ -841,6 +841,14 @@ export const api = {
     }),
   deleteSnapshotItem: (snapshot_id: string, asset_id: string) =>
     request<void>(`/snapshots/${snapshot_id}/items/${asset_id}`, { method: 'DELETE' }),
+  syncSnapshotItems: (snapshot_id: string) =>
+    request<{ items_added: number; pendencies_added: number }>(
+      `/snapshots/${snapshot_id}/sync-items`, { method: 'POST' },
+    ),
+  addSnapshotItem: (snapshot_id: string, asset_id: string) =>
+    request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items`, {
+      method: 'POST', body: JSON.stringify({ asset_id }),
+    }),
   listSnapshotPendencies: (snapshot_id: string) =>
     request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/pendencies`),
   confirmSnapshot: (snapshot_id: string) =>
