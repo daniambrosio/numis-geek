@@ -47,6 +47,24 @@ class SnapshotResult:
     pendency_ids: list[str] = field(default_factory=list)
 
 
+# Spec 51 — Retroactive Event Reconciliation. AffectedSnapshot describes
+# the per-snapshot impact of a (proposed or already-saved) retroactive
+# event for a given asset.
+@dataclass
+class AffectedSnapshot:
+    snapshot_id: str
+    period_end_date: date
+    ym: str                          # "YYYY-MM"
+    status: SnapshotStatus
+    has_item: bool                   # already has an item for this asset?
+    old_quantity: Decimal
+    new_quantity: Decimal
+    old_market_value_brl: Decimal | None
+    new_market_value_brl: Decimal | None
+    old_total_invested_brl: Decimal | None
+    new_total_invested_brl: Decimal | None
+
+
 # ── Pendency detection ──────────────────────────────────────────────────────
 
 
@@ -980,6 +998,300 @@ def sync_snapshot_items(
         "items_added": items_added,
         "pendencies_added": len(pendency_ids),
     }
+
+
+# ── Spec 51 — Retroactive Event Reconciliation ────────────────────────────
+
+
+def _abs_diff(a: Decimal | None, b: Decimal | None) -> Decimal:
+    """Absolute diff treating None as 0. Pequenas variações de
+    arredondamento (sub-cent) NÃO devem disparar prompts — usamos
+    tolerância de R$ 0,005 / 1e-8 cota."""
+    av = a if a is not None else Decimal("0")
+    bv = b if b is not None else Decimal("0")
+    return abs(av - bv)
+
+
+_QTY_TOLERANCE = Decimal("1e-8")
+_MONEY_TOLERANCE = Decimal("0.005")
+
+
+def find_affected_snapshots(
+    db: Session,
+    *,
+    workspace_id: str,
+    asset_id: str,
+    earliest_event_date: date,
+) -> list[AffectedSnapshot]:
+    """Spec 51 — lista snapshots cujos items do ativo seriam alterados
+    se o sistema recomputasse a posição agora, comparado ao que está
+    frozen no item atual.
+
+    Inclui só snapshots com `period_end_date >= earliest_event_date`
+    (eventos anteriores ao primeiro snapshot relevante não afetam
+    nada). Filtra mudanças sub-tolerância pra evitar prompts por ruído
+    de arredondamento."""
+    asset = db.get(Asset, asset_id)
+    if asset is None or asset.workspace_id != workspace_id:
+        return []
+
+    snaps = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.workspace_id == workspace_id,
+            PortfolioSnapshot.period_end_date >= earliest_event_date,
+        )
+        .order_by(PortfolioSnapshot.period_end_date.asc())
+        .all()
+    )
+
+    out: list[AffectedSnapshot] = []
+    for snap in snaps:
+        existing = (
+            db.query(PortfolioSnapshotItem)
+            .filter(
+                PortfolioSnapshotItem.snapshot_id == snap.id,
+                PortfolioSnapshotItem.asset_id == asset_id,
+            )
+            .first()
+        )
+        old_qty = existing.quantity if existing else Decimal("0")
+        old_mv_brl = existing.market_value_brl if existing else None
+        old_inv = existing.total_invested_brl if existing else None
+
+        pos = compute_position(db, asset_id, as_of=snap.period_end_date)
+        # Se a posição recalculada não justifica o ativo no snapshot e
+        # não há item, não tem nada pra reportar.
+        if not asset_has_position(pos) and existing is None:
+            continue
+
+        new_qty = pos["quantity_held"] or Decimal("0")
+        # market_value usa fx_rate FROZEN do snapshot, não o atual.
+        currency = asset.currency.value
+        current_price = pos["current_price"]
+        new_mv_native: Decimal | None = None
+        new_mv_brl: Decimal | None = None
+        if current_price is not None and new_qty != 0:
+            new_mv_native = new_qty * current_price
+            fx_snap = snap.fx_rate_usd_brl
+            if currency == "BRL":
+                new_mv_brl = new_mv_native
+            elif currency == "USD" and fx_snap and fx_snap > 0:
+                new_mv_brl = new_mv_native * fx_snap
+
+        new_inv = pos["total_invested_brl"]
+
+        qty_changed = _abs_diff(old_qty, new_qty) > _QTY_TOLERANCE
+        mv_changed = _abs_diff(old_mv_brl, new_mv_brl) > _MONEY_TOLERANCE
+        inv_changed = _abs_diff(old_inv, new_inv) > _MONEY_TOLERANCE
+
+        if not (qty_changed or mv_changed or inv_changed):
+            continue
+
+        out.append(AffectedSnapshot(
+            snapshot_id=snap.id,
+            period_end_date=snap.period_end_date,
+            ym=snap.period_end_date.strftime("%Y-%m"),
+            status=snap.status,
+            has_item=existing is not None,
+            old_quantity=old_qty,
+            new_quantity=new_qty,
+            old_market_value_brl=old_mv_brl,
+            new_market_value_brl=new_mv_brl,
+            old_total_invested_brl=old_inv,
+            new_total_invested_brl=new_inv,
+        ))
+
+    return out
+
+
+def apply_recompute_to_snapshot(
+    db: Session,
+    *,
+    snapshot_id: str,
+    asset_id: str,
+    trigger_event_type: str,
+    trigger_event_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+) -> PortfolioSnapshotItem:
+    """Spec 51 — recomputa um item de snapshot usando o estado atual de
+    movimentos + corp actions, **respeitando o fx_rate frozen do
+    snapshot**. Se o snapshot estiver CLOSED, faz auto-reopen com
+    reason rastreável.
+
+    Audit log inclui delta antes/depois e referência ao evento gerador."""
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise ValueError(f"Asset {asset_id} not found")
+    if asset.workspace_id != snap.workspace_id:
+        raise ValueError("Asset belongs to another workspace.")
+
+    auto_reopened = False
+    if snap.status == SnapshotStatus.CLOSED:
+        reopen_snapshot(
+            db,
+            snapshot_id=snapshot_id,
+            user_id=user_id,
+            user_email=user_email,
+            reason=f"recompute por {trigger_event_type} {trigger_event_id}",
+        )
+        auto_reopened = True
+        # Reload after reopen (status changed to IN_REVIEW).
+        snap = db.get(PortfolioSnapshot, snapshot_id)
+
+    existing = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    before = {
+        "quantity": str(existing.quantity) if existing else "0",
+        "unit_price": str(existing.unit_price) if existing and existing.unit_price is not None else None,
+        "market_value_brl": str(existing.market_value_brl) if existing and existing.market_value_brl is not None else None,
+        "market_value_usd": str(existing.market_value_usd) if existing and existing.market_value_usd is not None else None,
+        "total_invested_brl": str(existing.total_invested_brl) if existing and existing.total_invested_brl is not None else None,
+    }
+
+    now = datetime.now(timezone.utc)
+    pos = compute_position(db, asset_id, as_of=snap.period_end_date)
+    currency = asset.currency.value
+    new_qty = pos["quantity_held"] or Decimal("0")
+    new_unit = pos["current_price"]
+    new_mv_native: Decimal | None = None
+    new_mv_brl: Decimal | None = None
+    new_mv_usd: Decimal | None = None
+    if new_unit is not None and new_qty != 0:
+        new_mv_native = new_qty * new_unit
+        fx_snap = snap.fx_rate_usd_brl
+        if currency == "BRL":
+            new_mv_brl = new_mv_native
+            if fx_snap and fx_snap > 0:
+                new_mv_usd = new_mv_native / fx_snap
+        elif currency == "USD":
+            new_mv_usd = new_mv_native
+            if fx_snap and fx_snap > 0:
+                new_mv_brl = new_mv_native * fx_snap
+
+    if existing is None:
+        if not asset_has_position(pos):
+            # Nothing to do — recompute would still produce an empty item.
+            raise ValueError(
+                "Asset has no position at period_end — nothing to recompute.",
+            )
+        existing = PortfolioSnapshotItem(
+            id=str(uuid.uuid4()),
+            snapshot_id=snapshot_id,
+            asset_id=asset_id,
+            quantity=new_qty,
+            unit_price=new_unit,
+            market_value_native=new_mv_native,
+            market_value_brl=new_mv_brl,
+            market_value_usd=new_mv_usd,
+            average_cost_brl=pos["average_cost_brl"],
+            total_invested_brl=pos["total_invested_brl"],
+            created_at=now,
+        )
+        db.add(existing)
+    else:
+        existing.quantity = new_qty
+        existing.unit_price = new_unit
+        existing.market_value_native = new_mv_native
+        existing.market_value_brl = new_mv_brl
+        existing.market_value_usd = new_mv_usd
+        existing.average_cost_brl = pos["average_cost_brl"]
+        existing.total_invested_brl = pos["total_invested_brl"]
+
+    db.flush()
+
+    # Refresh snapshot totals.
+    items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+    snap.total_value_brl = sum(
+        (i.market_value_brl or Decimal("0") for i in items), Decimal("0"),
+    )
+    snap.total_value_usd = sum(
+        (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
+    )
+    db.flush()
+
+    after = {
+        "quantity": str(existing.quantity),
+        "unit_price": str(existing.unit_price) if existing.unit_price is not None else None,
+        "market_value_brl": str(existing.market_value_brl) if existing.market_value_brl is not None else None,
+        "market_value_usd": str(existing.market_value_usd) if existing.market_value_usd is not None else None,
+        "total_invested_brl": str(existing.total_invested_brl) if existing.total_invested_brl is not None else None,
+    }
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.item.recompute",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot_item",
+        resource_id=existing.id,
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "asset_name": asset.name,
+            "trigger_event_type": trigger_event_type,
+            "trigger_event_id": trigger_event_id,
+            "auto_reopened": auto_reopened,
+            "before": before,
+            "after": after,
+        },
+    )
+    return existing
+
+
+def apply_skip_recompute(
+    db: Session,
+    *,
+    snapshot_id: str,
+    asset_id: str,
+    trigger_event_type: str,
+    trigger_event_id: str,
+    reason: str,
+    user_id: str | None,
+    user_email: str | None = None,
+) -> None:
+    """Spec 51 — registra no audit_log que o usuário decidiu manter a
+    divergência detectada (drift consciente). Sem mutação de dados."""
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise ValueError(f"Asset {asset_id} not found")
+    if asset.workspace_id != snap.workspace_id:
+        raise ValueError("Asset belongs to another workspace.")
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.recompute.skipped",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="snapshot_item",
+        resource_id=f"{snapshot_id}:{asset_id}",
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "asset_name": asset.name,
+            "period_end_date": snap.period_end_date.isoformat(),
+            "trigger_event_type": trigger_event_type,
+            "trigger_event_id": trigger_event_id,
+            "reason": reason,
+        },
+    )
 
 
 def delete_snapshot_item(

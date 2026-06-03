@@ -14,11 +14,13 @@ import {
   ASSET_MOVEMENT_TYPE_LABELS,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
+import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import MovementComposer from '../components/MovementComposer'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import OptionModal from '../components/OptionModal'
 import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
 import { useEscapeKey } from '../lib/useEscapeKey'
+import type { AffectedSnapshotOut } from '../lib/api'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
   QuickAddBar, TypeBadge,
@@ -78,6 +80,14 @@ export default function AssetMovements() {
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
   const [selected, setSelected] = useState<AssetMovementOut | null>(null)
+  // Spec 51 — Retroactive Event Reconciliation
+  const [reconciliation, setReconciliation] = useState<{
+    affected: AffectedSnapshotOut[]
+    assetId: string
+    assetLabel: string
+    triggerEventId: string
+    triggerEventType: string
+  } | null>(null)
   // Sub-modals (MovementComposer/OptionModal/LancamentoDetailPanel) already
   // handle ESC internally; this hook covers only the inline confirm dialog.
   useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
@@ -212,15 +222,58 @@ export default function AssetMovements() {
   }, [sorted])
 
   async function handleSave(data: AssetMovementRequest) {
+    let saved: AssetMovementOut
+    const isUpdate = !!editing
     if (editing) {
-      const updated = await api.updateAssetMovement(editing.id, data)
-      setItems(prev => prev.map(l => l.id === updated.id ? updated : l))
-      if (selected?.id === updated.id) setSelected(updated)
-      return updated
+      saved = await api.updateAssetMovement(editing.id, data)
+      setItems(prev => prev.map(l => l.id === saved.id ? saved : l))
+      if (selected?.id === saved.id) setSelected(saved)
     } else {
-      const created = await api.createAssetMovement(data)
-      setItems(prev => [created, ...prev])
-      return created
+      saved = await api.createAssetMovement(data)
+      setItems(prev => [saved, ...prev])
+    }
+    // Spec 51 — depois do save, sonda fechamentos afetados; se houver,
+    // abre o AffectedSnapshotsModal. Não bloqueia o save.
+    try {
+      const affected = await api.previewAffectedSnapshots(
+        saved.asset_id, saved.event_date,
+      )
+      if (affected.length > 0) {
+        setReconciliation({
+          affected,
+          assetId: saved.asset_id,
+          assetLabel: saved.asset_ticker || saved.asset_name,
+          triggerEventId: saved.id,
+          triggerEventType: isUpdate
+            ? 'asset_movement.update'
+            : 'asset_movement.create',
+        })
+      }
+    } catch (e) {
+      // Preview é best-effort. Falha silenciosa pra não atrapalhar o save.
+      console.error('Failed to preview affected snapshots', e)
+    }
+    return saved
+  }
+
+  async function handleCheckImpact(mov: AssetMovementOut) {
+    try {
+      const affected = await api.previewAffectedSnapshots(
+        mov.asset_id, mov.event_date,
+      )
+      if (affected.length === 0) {
+        alert('Nenhum fechamento desincronizado — tudo certo.')
+        return
+      }
+      setReconciliation({
+        affected,
+        assetId: mov.asset_id,
+        assetLabel: mov.asset_ticker || mov.asset_name,
+        triggerEventId: mov.id,
+        triggerEventType: 'asset_movement.create',
+      })
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Erro ao consultar impacto')
     }
   }
 
@@ -472,6 +525,20 @@ export default function AssetMovements() {
           onEdit={() => { void openEdit(selected) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
           onSyncUpdated={handleSyncUpdated}
+          onCheckImpact={() => void handleCheckImpact(selected)}
+        />
+      )}
+
+      {reconciliation && (
+        <AffectedSnapshotsModal
+          assetId={reconciliation.assetId}
+          assetLabel={reconciliation.assetLabel}
+          affected={reconciliation.affected}
+          triggerEventType={reconciliation.triggerEventType}
+          triggerEventId={reconciliation.triggerEventId}
+          onClose={() => setReconciliation(null)}
+          onApplied={() => setReconciliation(null)}
+          onSkipped={() => setReconciliation(null)}
         />
       )}
 

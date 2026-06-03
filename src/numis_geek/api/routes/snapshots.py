@@ -38,9 +38,12 @@ from numis_geek.services.auth import UserContext
 from numis_geek.services.snapshot import (
     PendencyOpenError,
     add_snapshot_item,
+    apply_recompute_to_snapshot,
+    apply_skip_recompute,
     confirm_snapshot,
     create_snapshot,
     delete_snapshot_item,
+    find_affected_snapshots,
     list_pendencies,
     list_snapshots,
     reopen_snapshot,
@@ -501,6 +504,38 @@ class AddSnapshotItemRequest(BaseModel):
     asset_id: str
 
 
+class AffectedSnapshotPreviewRequest(BaseModel):
+    """Spec 51 — preview the impact a (proposed or saved) retroactive
+    event would have on existing snapshots."""
+    asset_id: str
+    event_date: date_t
+
+
+class AffectedSnapshotOut(BaseModel):
+    snapshot_id: str
+    period_end_date: str           # YYYY-MM-DD
+    ym: str                        # YYYY-MM
+    status: str
+    has_item: bool
+    old_quantity: str
+    new_quantity: str
+    old_market_value_brl: str | None
+    new_market_value_brl: str | None
+    old_total_invested_brl: str | None
+    new_total_invested_brl: str | None
+
+
+class RecomputeRequest(BaseModel):
+    trigger_event_type: str = Field(..., max_length=64)
+    trigger_event_id: str = Field(..., max_length=64)
+
+
+class SkipRecomputeRequest(BaseModel):
+    trigger_event_type: str = Field(..., max_length=64)
+    trigger_event_id: str = Field(..., max_length=64)
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
 @router.post(
     "/{snapshot_id}/sync-items", response_model=SyncItemsOut,
 )
@@ -572,6 +607,123 @@ def add_snapshot_item_route(
         average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
         total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
     )
+
+
+# ── Spec 51 — Retroactive Event Reconciliation ─────────────────────────────
+
+
+def _aff_out(a) -> AffectedSnapshotOut:
+    def s(v):
+        return None if v is None else str(v)
+    return AffectedSnapshotOut(
+        snapshot_id=a.snapshot_id,
+        period_end_date=a.period_end_date.isoformat(),
+        ym=a.ym,
+        status=a.status.value,
+        has_item=a.has_item,
+        old_quantity=str(a.old_quantity),
+        new_quantity=str(a.new_quantity),
+        old_market_value_brl=s(a.old_market_value_brl),
+        new_market_value_brl=s(a.new_market_value_brl),
+        old_total_invested_brl=s(a.old_total_invested_brl),
+        new_total_invested_brl=s(a.new_total_invested_brl),
+    )
+
+
+@router.post(
+    "/affected-snapshots", response_model=list[AffectedSnapshotOut],
+)
+def preview_affected_snapshots(
+    body: AffectedSnapshotPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 — preview do impacto que um evento (já salvo ou hipotético)
+    teria em fechamentos existentes do ativo."""
+    ws_id = _workspace_id(current_user)
+    if ws_id is None:
+        raise HTTPException(status_code=400, detail="workspace required")
+    affected = find_affected_snapshots(
+        db,
+        workspace_id=ws_id,
+        asset_id=body.asset_id,
+        earliest_event_date=body.event_date,
+    )
+    return [_aff_out(a) for a in affected]
+
+
+@router.post(
+    "/{snapshot_id}/items/{asset_id}/recompute",
+    response_model=SnapshotItemOut,
+)
+def recompute_snapshot_item_route(
+    snapshot_id: str,
+    asset_id: str,
+    body: RecomputeRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 — recomputa o item, com auto-reopen se CLOSED."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        item = apply_recompute_to_snapshot(
+            db,
+            snapshot_id=snapshot_id,
+            asset_id=asset_id,
+            trigger_event_type=body.trigger_event_type,
+            trigger_event_id=body.trigger_event_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except ValueError as e:
+        msg = str(e)
+        status_code = 404 if "not found" in msg.lower() else 409
+        raise HTTPException(status_code=status_code, detail=msg)
+    return SnapshotItemOut(
+        asset_id=item.asset_id,
+        quantity=str(item.quantity),
+        unit_price=str(item.unit_price) if item.unit_price is not None else None,
+        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
+        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
+        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
+        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
+        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
+    )
+
+
+@router.post(
+    "/{snapshot_id}/items/{asset_id}/skip-recompute",
+    status_code=204,
+)
+def skip_recompute_route(
+    snapshot_id: str,
+    asset_id: str,
+    body: SkipRecomputeRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 51 — grava no audit que o usuário decidiu NÃO recomputar."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        apply_skip_recompute(
+            db,
+            snapshot_id=snapshot_id,
+            asset_id=asset_id,
+            trigger_event_type=body.trigger_event_type,
+            trigger_event_id=body.trigger_event_id,
+            reason=body.reason,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return None
 
 
 # ── Spec 35 endpoints ───────────────────────────────────────────────────────

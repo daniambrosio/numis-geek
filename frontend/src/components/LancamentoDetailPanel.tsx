@@ -18,6 +18,9 @@ interface Props {
   onEdit: () => void
   onDeactivate: () => void
   onSyncUpdated?: (out: SyncOut) => void
+  /** Spec 51 — segunda chance: roda o preview de impacto em fechamentos
+   *  pra este lançamento e abre o AffectedSnapshotsModal se houver. */
+  onCheckImpact?: () => void
   /** Optional: caller can supply an "Updated" hook so the parent list
    *  shows fresh notes / attachments after edits made inside the panel. */
   onUpdated?: (m: AssetMovementOut) => void
@@ -36,7 +39,7 @@ function fmtNum(n: number | null | undefined, digits = 8) {
 }
 
 export default function LancamentoDetailPanel({
-  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onSyncUpdated, onUpdated,
+  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onSyncUpdated, onCheckImpact, onUpdated,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentOut[]>([])
   const [notes, setNotes] = useState<string>(l.notes ?? '')
@@ -183,21 +186,33 @@ export default function LancamentoDetailPanel({
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-end gap-2">
-          {l.is_active && (
+        <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between gap-2">
+          {onCheckImpact ? (
             <button
-              onClick={onDeactivate}
-              className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+              onClick={onCheckImpact}
+              title="Spec 51 — verifica fechamentos passados que estariam desincronizados com esse lançamento"
+              className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+              data-testid="lancamento-check-impact"
             >
-              Desativar
+              Verificar impacto em fechamentos
             </button>
-          )}
-          <button
-            onClick={onEdit}
-            className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white font-medium transition-colors"
-          >
-            Editar
-          </button>
+          ) : <span />}
+          <div className="flex items-center gap-2">
+            {l.is_active && (
+              <button
+                onClick={onDeactivate}
+                className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+              >
+                Desativar
+              </button>
+            )}
+            <button
+              onClick={onEdit}
+              className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white font-medium transition-colors"
+            >
+              Editar
+            </button>
+          </div>
         </div>
       </aside>
     </div>

@@ -34,10 +34,13 @@ from numis_geek.models.workspace import Workspace
 from numis_geek.services.snapshot import (
     PendencyOpenError,
     add_snapshot_item,
+    apply_recompute_to_snapshot,
+    apply_skip_recompute,
     confirm_snapshot,
     create_snapshot,
     delete_snapshot_item,
     detect_pendencies,
+    find_affected_snapshots,
     reopen_snapshot,
     resolve_pendency,
     retry_pendency_api,
@@ -754,3 +757,229 @@ def test_add_snapshot_item_refuses_closed_snapshot(db):
         add_snapshot_item(
             db, snapshot_id=r.snapshot_id, asset_id=new_asset_id, user_id="alice",
         )
+
+
+# ── Spec 51 — Retroactive Event Reconciliation ────────────────────────────
+
+
+def _add_buy_movement(db, ws_id: str, asset_id: str, event_date: date,
+                      qty: str, price: str) -> str:
+    """Helper: cria um BUY simples ativo."""
+    from numis_geek.models.asset_movement import (
+        AssetMovement, AssetMovementType,
+    )
+    now = datetime.now(timezone.utc)
+    qty_d = Decimal(qty)
+    price_d = Decimal(price)
+    mov = AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws_id, asset_id=asset_id,
+        type=AssetMovementType.BUY, event_date=event_date,
+        quantity=qty_d, unit_price=price_d,
+        gross_amount=qty_d * price_d, net_amount=qty_d * price_d,
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(mov)
+    db.flush()
+    return mov.id
+
+
+def test_find_affected_snapshots_detects_qty_change(db):
+    """Spec 51 — adicionar BUY retroativo deve aparecer como afetado
+    em todo snapshot >= event_date."""
+    w = _seed(db)
+    # Cria snapshot inicial.
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Lança BUY retroativo na semana anterior ao period_end.
+    new_qty_d = Decimal("50")
+    _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=5),
+        qty=str(new_qty_d), price="40",
+    )
+    affected = find_affected_snapshots(
+        db, workspace_id=w["ws_id"], asset_id=w["petr_id"],
+        earliest_event_date=PERIOD - timedelta(days=5),
+    )
+    assert len(affected) == 1
+    a = affected[0]
+    assert a.snapshot_id == r.snapshot_id
+    # Seed BUY=100, novo BUY=50 → 150.
+    assert a.old_quantity == Decimal("100")
+    assert a.new_quantity == Decimal("150")
+
+
+def test_find_affected_snapshots_skips_unchanged(db):
+    """Snapshot sem nenhum movimento retroativo não deve aparecer."""
+    w = _seed(db)
+    create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    affected = find_affected_snapshots(
+        db, workspace_id=w["ws_id"], asset_id=w["petr_id"],
+        earliest_event_date=PERIOD - timedelta(days=10),
+    )
+    assert affected == []
+
+
+def test_find_affected_snapshots_handles_value_mode(db):
+    """Ativo VALUE-puro com BUY retroativo deve ser detectado pelo
+    delta de total_invested_brl, mesmo com qty=0."""
+    w = _seed(db)
+    prev_id = _add_value_mode_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="VGBL impacto retro", invested_brl=Decimal("10000"),
+    )
+    create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Agora simula aporte adicional retroativo no fundo:
+    from numis_geek.models.asset_movement import (
+        AssetMovement, AssetMovementType,
+    )
+    now = datetime.now(timezone.utc)
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], asset_id=prev_id,
+        type=AssetMovementType.BUY,
+        event_date=PERIOD - timedelta(days=2),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("5000"), net_amount=Decimal("5000"),
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    db.flush()
+    affected = find_affected_snapshots(
+        db, workspace_id=w["ws_id"], asset_id=prev_id,
+        earliest_event_date=PERIOD - timedelta(days=2),
+    )
+    assert len(affected) == 1
+    a = affected[0]
+    assert a.old_total_invested_brl == Decimal("10000")
+    assert a.new_total_invested_brl == Decimal("15000")
+    assert a.old_quantity == Decimal("0")
+    assert a.new_quantity == Decimal("0")
+
+
+def test_apply_recompute_auto_reopens_closed(db):
+    """Snapshot CLOSED deve ser reaberto automaticamente com reason
+    rastreável ao trigger event."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Resolve tudo + close.
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(db, pendency_id=pen.id, user_id="alice",
+                         new_price=Decimal("100"))
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    assert snap.status == SnapshotStatus.CLOSED
+
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty="50", price="40",
+    )
+    apply_recompute_to_snapshot(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=w["petr_id"],
+        trigger_event_type="asset_movement.create",
+        trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    assert snap.status == SnapshotStatus.IN_REVIEW
+
+    # Audit log do reopen menciona o trigger event.
+    reopen_audit = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.reopen",
+        AuditLog.resource_id == r.snapshot_id,
+    ).first()
+    assert reopen_audit is not None
+    assert mov_id in (reopen_audit.details or "")
+
+
+def test_apply_recompute_uses_snapshot_fx_rate(db):
+    """fx_rate do snapshot é frozen — recompute NÃO deve buscar PTAX
+    do dia atual pra recalcular USD."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    fx_at_snapshot = snap.fx_rate_usd_brl
+    assert fx_at_snapshot is not None
+
+    # Movimento retroativo no AAPL (USD).
+    aapl = db.get(Asset, w["aapl_id"])
+    aapl.current_price = Decimal("200")  # ajusta pra que o item tenha mv > 0
+    db.flush()
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["aapl_id"], PERIOD - timedelta(days=3),
+        qty="5", price="180",
+    )
+    # Garante que o ativo tem fx_rate pro snapshot via current_price
+    item = apply_recompute_to_snapshot(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=w["aapl_id"],
+        trigger_event_type="asset_movement.create",
+        trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    if item.market_value_brl is not None and item.market_value_usd is not None:
+        # market_value_brl / market_value_usd deve bater com o fx do snapshot.
+        ratio = item.market_value_brl / item.market_value_usd
+        assert abs(ratio - fx_at_snapshot) < Decimal("0.0001")
+
+
+def test_apply_recompute_logs_audit_with_delta(db):
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty="50", price="40",
+    )
+    apply_recompute_to_snapshot(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=w["petr_id"],
+        trigger_event_type="asset_movement.create",
+        trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    audit = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.item.recompute",
+    ).first()
+    assert audit is not None
+    details = audit.details or ""
+    assert mov_id in details
+    assert "before" in details
+    assert "after" in details
+
+
+def test_apply_skip_recompute_logs_only(db):
+    """Skip não muda nenhum dado — só registra audit log."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty="50", price="40",
+    )
+    item_before = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["petr_id"],
+    ).one()
+    qty_before = item_before.quantity
+    apply_skip_recompute(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=w["petr_id"],
+        trigger_event_type="asset_movement.create",
+        trigger_event_id=mov_id,
+        reason="prefiro manter o histórico como estava",
+        user_id="alice",
+    )
+    item_after = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["petr_id"],
+    ).one()
+    assert item_after.quantity == qty_before
+    audit = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.recompute.skipped",
+    ).first()
+    assert audit is not None
+    assert "prefiro manter" in (audit.details or "")

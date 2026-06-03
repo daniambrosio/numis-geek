@@ -436,6 +436,21 @@ export interface AssetSnapshotHistoryOut {
   items: AssetSnapshotHistoryItem[]   // cronológica desc
 }
 
+// Spec 51 — Retroactive Event Reconciliation
+export interface AffectedSnapshotOut {
+  snapshot_id: string
+  period_end_date: string         // YYYY-MM-DD
+  ym: string                      // YYYY-MM
+  status: 'IN_REVIEW' | 'CLOSED'
+  has_item: boolean
+  old_quantity: string
+  new_quantity: string
+  old_market_value_brl: string | null
+  new_market_value_brl: string | null
+  old_total_invested_brl: string | null
+  new_total_invested_brl: string | null
+}
+
 export interface PositionOut {
   asset_id: string
   quantity_held: number
@@ -864,6 +879,26 @@ export const api = {
   syncSnapshotItems: (snapshot_id: string) =>
     request<{ items_added: number; pendencies_added: number }>(
       `/snapshots/${snapshot_id}/sync-items`, { method: 'POST' },
+    ),
+  previewAffectedSnapshots: (asset_id: string, event_date: string) =>
+    request<AffectedSnapshotOut[]>(`/snapshots/affected-snapshots`, {
+      method: 'POST', body: JSON.stringify({ asset_id, event_date }),
+    }),
+  recomputeSnapshotItem: (
+    snapshot_id: string, asset_id: string,
+    body: { trigger_event_type: string; trigger_event_id: string },
+  ) =>
+    request<SnapshotItemOut>(
+      `/snapshots/${snapshot_id}/items/${asset_id}/recompute`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  skipRecomputeSnapshotItem: (
+    snapshot_id: string, asset_id: string,
+    body: { trigger_event_type: string; trigger_event_id: string; reason: string },
+  ) =>
+    request<void>(
+      `/snapshots/${snapshot_id}/items/${asset_id}/skip-recompute`,
+      { method: 'POST', body: JSON.stringify(body) },
     ),
   addSnapshotItem: (snapshot_id: string, asset_id: string) =>
     request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items`, {
