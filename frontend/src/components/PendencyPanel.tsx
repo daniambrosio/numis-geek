@@ -201,7 +201,10 @@ function PendencyRow({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
-  const isManual = pendency.reason === 'MANUAL_SOURCE' || pendency.reason === 'UPLOAD_REQUIRED'
+  const isManual =
+    pendency.reason === 'MANUAL_SOURCE'
+    || pendency.reason === 'UPLOAD_REQUIRED'
+    || pendency.reason === 'HISTORICAL_PRICE_REQUIRED'
   const prevPriceNum =
     pendency.previous_unit_price != null
       ? Number(pendency.previous_unit_price)

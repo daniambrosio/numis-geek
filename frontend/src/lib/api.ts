@@ -1244,6 +1244,7 @@ export type PendencyReason =
   | 'MANUAL_SOURCE'
   | 'UPLOAD_REQUIRED'
   | 'STALE_PRICE'
+  | 'HISTORICAL_PRICE_REQUIRED'
 
 export type PendencyAction =
   | 'RETRY_API'

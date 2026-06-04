@@ -53,6 +53,10 @@ class PendencyReason(str, enum.Enum):
     MANUAL_SOURCE = "MANUAL_SOURCE"
     UPLOAD_REQUIRED = "UPLOAD_REQUIRED"
     STALE_PRICE = "STALE_PRICE"
+    # Spec 52 — asset adicionado retroativamente a snapshot cujo
+    # period_end != hoje. Não temos preço histórico (Spec 53 vai
+    # buscar via providers); user preenche manualmente até lá.
+    HISTORICAL_PRICE_REQUIRED = "HISTORICAL_PRICE_REQUIRED"
 
 
 class PendencyAction(str, enum.Enum):

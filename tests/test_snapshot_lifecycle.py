@@ -380,8 +380,20 @@ def test_resolve_pendency_updates_asset_price(db):
 
 
 def test_retry_api_resolves_when_refresh_succeeds(db):
+    # Spec 52 — retry só funciona em snapshot de hoje (refresh_one
+    # retorna preço LIVE; em snapshot antigo seria corrupção). Esse
+    # teste valida o happy path: snapshot do dia + API mock OK.
     w = _seed(db)
-    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    today = date.today()
+    # PTAX pra today (seed só cria pro PERIOD; precisa pra fx_rate).
+    from numis_geek.models.ptax_rate import PTAXRate
+    if db.query(PTAXRate).filter(PTAXRate.date == today).first() is None:
+        db.add(PTAXRate(
+            id=str(uuid.uuid4()), date=today, rate=Decimal("5.10"),
+            source="BCB_SGS", fetched_at=datetime.now(timezone.utc),
+        ))
+        db.flush()
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=today)
     pen = (
         db.query(SnapshotPendency)
         .filter(
@@ -1014,3 +1026,261 @@ def test_apply_skip_recompute_logs_only(db):
     ).first()
     assert audit is not None
     assert "prefiro manter" in (audit.details or "")
+
+
+# ── Spec 52 — Snapshot Price Immutability ──────────────────────────────────
+
+
+def _new_asset(db, ws_id: str, account_id: str, *, name: str, ticker: str,
+               source: PriceSource = PriceSource.MANUAL,
+               current_price: Decimal = Decimal("50")) -> str:
+    """Cria ativo SEM movimento — pra simular asset que nem existia
+    quando o snapshot foi criado."""
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws_id, account_id=account_id,
+        asset_class=AssetClass.STOCK, country="BR", name=name, ticker=ticker,
+        currency=Currency.BRL, current_price=current_price,
+        price_updated_at=NOW, price_source=source,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(a)
+    db.flush()
+    return a.id
+
+
+def test_apply_recompute_preserves_frozen_unit_price(db):
+    """Spec 52 — recompute de item existente NÃO sobrescreve unit_price
+    com asset.current_price. Pre-condição clássica do bug: snapshot
+    criado num preço, bulk refresh mudou current_price depois, mov
+    retroativa dispara recompute, e o item DEVE ficar com o preço
+    frozen do period_end (não o LIVE)."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item_before = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["petr_id"],
+    ).one()
+    frozen_price = item_before.unit_price
+    assert frozen_price is not None
+
+    # Simula bulk refresh: preço LIVE mudou DEPOIS da criação do snapshot.
+    petr = db.get(Asset, w["petr_id"])
+    petr.current_price = frozen_price + Decimal("100")
+    db.flush()
+
+    # Movimento retroativo: muda quantidade no period_end.
+    new_qty_d = Decimal("25")
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty=str(new_qty_d), price="40",
+    )
+
+    apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=w["petr_id"],
+        trigger_event_type="asset_movement.create", trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    item_after = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["petr_id"],
+    ).one()
+    # ❶ unit_price frozen — não LIVE.
+    assert item_after.unit_price == frozen_price
+    # ❷ quantidade nova (100 + 25 = 125).
+    assert item_after.quantity == Decimal("125")
+    # ❸ market_value = qty × frozen (NÃO qty × LIVE).
+    assert item_after.market_value_native == Decimal("125") * frozen_price
+
+
+def test_apply_recompute_new_item_in_old_snapshot_creates_pendency(db):
+    """Spec 52 — item NOVO em snapshot antigo (period_end no passado):
+    não escreve LIVE price, escreve unit_price=None + cria pendency
+    HISTORICAL_PRICE_REQUIRED + EDIT_PRICE."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Asset novo (criado APÓS o snapshot) — não está no snapshot ainda.
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="Novo BBSE3", ticker="BBSE3",
+        current_price=Decimal("999"),  # LIVE — não pode vazar
+    )
+    # Movimento retroativo cria posição no period_end.
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="10", price="30",
+    )
+
+    item = apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=new_id,
+        trigger_event_type="asset_movement.create", trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    assert item.unit_price is None  # NÃO vazou current_price=999
+    assert item.market_value_native is None
+    assert item.market_value_brl is None
+
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+    ).one()
+    assert pen.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED
+    assert pen.action_type == PendencyAction.EDIT_PRICE
+
+
+def test_apply_recompute_new_item_today_uses_current_price(db):
+    """Spec 52 — quando period_end == today, é a 'primeira captura';
+    pode usar pos['current_price'] sem virar pendency."""
+    w = _seed(db)
+    today = date.today()
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=today)
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="Hoje SA", ticker="HOJE3",
+        current_price=Decimal("77"),
+    )
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], new_id, today - timedelta(days=1),
+        qty="10", price="50",
+    )
+    item = apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=new_id,
+        trigger_event_type="asset_movement.create", trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    assert item.unit_price == Decimal("77")  # current_price OK pra hoje
+    # Sem pendency HISTORICAL_PRICE_REQUIRED.
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).first()
+    assert pen is None
+
+
+def test_add_snapshot_item_old_snapshot_creates_pendency(db):
+    """Spec 52 — add_snapshot_item em snapshot antigo: pendency, não LIVE."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Reabre se necessário (PERIOD pode ter sido fechado pelo seed?).
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    if snap.status == SnapshotStatus.CLOSED:
+        reopen_snapshot(
+            db, snapshot_id=snap.id, user_id="alice", reason="test",
+        )
+
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="ADD SA", ticker="ADDD3",
+        current_price=Decimal("321"),
+    )
+    _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="5", price="100",
+    )
+    item = add_snapshot_item(
+        db, snapshot_id=r.snapshot_id, asset_id=new_id,
+        user_id="alice",
+    )
+    assert item.unit_price is None  # NÃO vazou current_price=321
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).one()
+    assert pen.action_type == PendencyAction.EDIT_PRICE
+
+
+def test_sync_snapshot_items_old_snapshot_creates_pendency(db):
+    """Spec 52 — sync_snapshot_items em snapshot antigo:
+    items adicionados ficam sem unit_price + pendency."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    if snap.status == SnapshotStatus.CLOSED:
+        reopen_snapshot(
+            db, snapshot_id=snap.id, user_id="alice", reason="test",
+        )
+
+    # Cria asset + mov RETROATIVA que dá posição no period_end. Não
+    # mexe no snapshot existente (sync vai detectar e adicionar).
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="SYNC SA", ticker="SYNC3",
+        current_price=Decimal("888"),
+    )
+    _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="3", price="200",
+    )
+
+    result = sync_snapshot_items(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+    )
+    assert result["items_added"] >= 1
+
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == new_id,
+    ).one()
+    assert item.unit_price is None  # NÃO vazou current_price=888
+
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).one()
+    assert pen.action_type == PendencyAction.EDIT_PRICE
+
+
+def test_retry_pendency_api_rejects_old_snapshot(db):
+    """Spec 52 — refresh_one chama API LIVE. Em snapshot antigo isso
+    corrompe o histórico, então a operação deve falhar."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    # Pendency RETRY_API existe pro AAPL (FINNHUB never refreshed).
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.action_type == PendencyAction.RETRY_API,
+    ).first()
+    assert pen is not None  # seed garante essa pendency
+
+    with pytest.raises(ValueError, match="Snapshot antigo"):
+        retry_pendency_api(
+            db, pendency_id=pen.id, user_id="alice",
+        )
+
+
+def test_find_affected_snapshots_preview_uses_frozen_price(db):
+    """Spec 52 — preview da modal AffectedSnapshotsModal NÃO deve usar
+    LIVE price pra calcular new_market_value_brl. Item existente →
+    preview usa existing.unit_price (frozen)."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["petr_id"],
+    ).one()
+    frozen_price = item.unit_price
+
+    # Simula bulk refresh DEPOIS do snapshot.
+    petr = db.get(Asset, w["petr_id"])
+    live_price = frozen_price + Decimal("50")
+    petr.current_price = live_price
+    db.flush()
+
+    # Adiciona movimento retroativo.
+    _add_buy_movement(
+        db, w["ws_id"], w["petr_id"], PERIOD - timedelta(days=3),
+        qty="10", price="40",
+    )
+
+    affected = find_affected_snapshots(
+        db, workspace_id=w["ws_id"], asset_id=w["petr_id"],
+        earliest_event_date=PERIOD - timedelta(days=3),
+    )
+    assert len(affected) == 1
+    a = affected[0]
+    # 110 × frozen, NÃO 110 × live. fx_rate p/ BRL é 1 (asset BRL).
+    expected = Decimal("110") * frozen_price
+    assert a.new_market_value_brl == expected

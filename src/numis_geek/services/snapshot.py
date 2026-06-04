@@ -138,6 +138,71 @@ def detect_pendencies(
     return None
 
 
+# ── Helper para item NOVO em snapshot (Spec 52) ─────────────────────────────
+
+
+def _new_item_values(
+    snap: PortfolioSnapshot,
+    asset: Asset,
+    pos: dict,
+    *,
+    now: datetime,
+) -> tuple[
+    Decimal | None,        # unit_price
+    Decimal | None,        # market_value_native
+    Decimal | None,        # market_value_brl
+    Decimal | None,        # market_value_usd
+    SnapshotPendency | None,  # pendency a persistir (ou None)
+]:
+    """Spec 52 — decide unit_price + market_values pra um item NOVO sem
+    sobrescrever preço frozen com LIVE.
+
+    Regra:
+    - Se `snap.period_end_date == today`: usa `pos["current_price"]` —
+      é o caso "primeira captura". Asset.current_price representa o
+      preço de hoje, que é o period_end_price.
+    - Caso contrário: `unit_price=None` + `SnapshotPendency`
+      HISTORICAL_PRICE_REQUIRED + EDIT_PRICE. Spec 53 vai eliminar a
+      pendency tentando primeiro `historical_price.fetch_on`.
+
+    Caller persiste o `PortfolioSnapshotItem` + (opcional) pendency.
+    """
+    is_today = snap.period_end_date == date.today()
+    qty = pos.get("quantity_held") or Decimal("0")
+
+    if is_today:
+        unit_price = pos.get("current_price")
+        mv_native = pos.get("current_value")
+        mv_brl = pos.get("current_value_brl")
+        mv_usd: Decimal | None = None
+        if mv_brl is not None:
+            fx = snap.fx_rate_usd_brl
+            ccy = asset.currency.value
+            if ccy == "USD":
+                mv_usd = mv_native
+            elif ccy == "BRL" and fx and fx > 0:
+                mv_usd = mv_brl / fx
+        return unit_price, mv_native, mv_brl, mv_usd, None
+
+    # period_end no passado — não sabemos preço histórico.
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()),
+        snapshot_id=snap.id,
+        asset_id=asset.id,
+        reason=PendencyReason.HISTORICAL_PRICE_REQUIRED,
+        action_type=PendencyAction.EDIT_PRICE,
+        detail=(
+            f"Ativo adicionado retroativamente — informe o preço de "
+            f"fechamento de {snap.period_end_date.isoformat()}."
+        ),
+        created_at=now,
+    )
+    # qty pode ser != 0 (mov retroativa cravou posição), mas sem
+    # unit_price não temos market_value. Caller persiste qty.
+    _ = qty  # silencia lint
+    return None, None, None, None, pen
+
+
 # ── Snapshot creation ───────────────────────────────────────────────────────
 
 
@@ -425,6 +490,19 @@ def reopen_snapshot(
     for it in items:
         asset = db.get(Asset, it.asset_id)
         if asset is None:
+            continue
+        # Spec 52 — pula assets que já têm pendency (caso típico:
+        # HISTORICAL_PRICE_REQUIRED criada pelo
+        # `_sync_missing_value_mode_items` acima).
+        already = (
+            db.query(SnapshotPendency)
+            .filter(
+                SnapshotPendency.snapshot_id == snap.id,
+                SnapshotPendency.asset_id == asset.id,
+            )
+            .first()
+        )
+        if already is not None:
             continue
         det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
         if det is None:
@@ -797,22 +875,16 @@ def add_snapshot_item(
 
     now = datetime.now(timezone.utc)
     pos = compute_position(db, asset_id, as_of=snap.period_end_date)
-    currency = asset.currency.value
-    mv_native = pos["current_value"]
-    mv_brl = pos["current_value_brl"]
-    mv_usd: Decimal | None = None
-    if mv_brl is not None:
-        fx = snap.fx_rate_usd_brl
-        if currency == "USD":
-            mv_usd = mv_native
-        elif currency == "BRL" and fx and fx > 0:
-            mv_usd = mv_brl / fx
+    # Spec 52 — não escreve LIVE price em snapshot antigo.
+    unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
+        snap, asset, pos, now=now,
+    )
     item = PortfolioSnapshotItem(
         id=str(uuid.uuid4()),
         snapshot_id=snapshot_id,
         asset_id=asset_id,
         quantity=pos["quantity_held"] or Decimal("0"),
-        unit_price=pos["current_price"],
+        unit_price=unit_price,
         market_value_native=mv_native,
         market_value_brl=mv_brl,
         market_value_usd=mv_usd,
@@ -821,6 +893,8 @@ def add_snapshot_item(
         created_at=now,
     )
     db.add(item)
+    if hist_pen is not None:
+        db.add(hist_pen)
     db.flush()
 
     det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
@@ -889,22 +963,16 @@ def _sync_missing_value_mode_items(
         pos = compute_position(db, asset.id, as_of=snap.period_end_date)
         if not asset_has_position(pos):
             continue
-        currency = asset.currency.value
-        mv_native = pos["current_value"]
-        mv_brl = pos["current_value_brl"]
-        mv_usd: Decimal | None = None
-        if mv_brl is not None:
-            fx = snap.fx_rate_usd_brl
-            if currency == "USD":
-                mv_usd = mv_native
-            elif currency == "BRL" and fx and fx > 0:
-                mv_usd = mv_brl / fx
+        # Spec 52 — não escreve LIVE price em snapshot antigo.
+        unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
+            snap, asset, pos, now=now,
+        )
         db.add(PortfolioSnapshotItem(
             id=str(uuid.uuid4()),
             snapshot_id=snap.id,
             asset_id=asset.id,
             quantity=pos["quantity_held"],
-            unit_price=pos["current_price"],
+            unit_price=unit_price,
             market_value_native=mv_native,
             market_value_brl=mv_brl,
             market_value_usd=mv_usd,
@@ -912,6 +980,8 @@ def _sync_missing_value_mode_items(
             total_invested_brl=pos["total_invested_brl"],
             created_at=now,
         ))
+        if hist_pen is not None:
+            db.add(hist_pen)
         items_added += 1
     return items_added
 
@@ -1066,13 +1136,21 @@ def find_affected_snapshots(
             continue
 
         new_qty = pos["quantity_held"] or Decimal("0")
-        # market_value usa fx_rate FROZEN do snapshot, não o atual.
+        # Spec 52 — preço FROZEN do item existente, não LIVE
+        # (asset.current_price). Pra item novo em snapshot antigo o
+        # preview mostra mv None (vai virar pendency manual). Em
+        # snapshot de hoje (primeira captura) pode usar current_price.
         currency = asset.currency.value
-        current_price = pos["current_price"]
+        if existing is not None:
+            preview_unit_price = existing.unit_price
+        elif snap.period_end_date == date.today():
+            preview_unit_price = pos["current_price"]
+        else:
+            preview_unit_price = None
         new_mv_native: Decimal | None = None
         new_mv_brl: Decimal | None = None
-        if current_price is not None and new_qty != 0:
-            new_mv_native = new_qty * current_price
+        if preview_unit_price is not None and new_qty != 0:
+            new_mv_native = new_qty * preview_unit_price
             fx_snap = snap.fx_rate_usd_brl
             if currency == "BRL":
                 new_mv_brl = new_mv_native
@@ -1163,21 +1241,6 @@ def apply_recompute_to_snapshot(
     pos = compute_position(db, asset_id, as_of=snap.period_end_date)
     currency = asset.currency.value
     new_qty = pos["quantity_held"] or Decimal("0")
-    new_unit = pos["current_price"]
-    new_mv_native: Decimal | None = None
-    new_mv_brl: Decimal | None = None
-    new_mv_usd: Decimal | None = None
-    if new_unit is not None and new_qty != 0:
-        new_mv_native = new_qty * new_unit
-        fx_snap = snap.fx_rate_usd_brl
-        if currency == "BRL":
-            new_mv_brl = new_mv_native
-            if fx_snap and fx_snap > 0:
-                new_mv_usd = new_mv_native / fx_snap
-        elif currency == "USD":
-            new_mv_usd = new_mv_native
-            if fx_snap and fx_snap > 0:
-                new_mv_brl = new_mv_native * fx_snap
 
     if existing is None:
         if not asset_has_position(pos):
@@ -1185,28 +1248,64 @@ def apply_recompute_to_snapshot(
             raise ValueError(
                 "Asset has no position at period_end — nothing to recompute.",
             )
+        # Spec 52 — item NOVO: helper decide preço (current_price se
+        # period_end == hoje, senão pendency HISTORICAL_PRICE_REQUIRED).
+        unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
+            snap, asset, pos, now=now,
+        )
         existing = PortfolioSnapshotItem(
             id=str(uuid.uuid4()),
             snapshot_id=snapshot_id,
             asset_id=asset_id,
             quantity=new_qty,
-            unit_price=new_unit,
-            market_value_native=new_mv_native,
-            market_value_brl=new_mv_brl,
-            market_value_usd=new_mv_usd,
+            unit_price=unit_price,
+            market_value_native=mv_native,
+            market_value_brl=mv_brl,
+            market_value_usd=mv_usd,
             average_cost_brl=pos["average_cost_brl"],
             total_invested_brl=pos["total_invested_brl"],
             created_at=now,
         )
         db.add(existing)
+        if hist_pen is not None:
+            # Dedup contra pendency pré-existente do mesmo (snap, asset)
+            # — improvável aqui (item era novo), mas defensivo.
+            already = (
+                db.query(SnapshotPendency)
+                .filter(
+                    SnapshotPendency.snapshot_id == snapshot_id,
+                    SnapshotPendency.asset_id == asset_id,
+                )
+                .first()
+            )
+            if already is None:
+                db.add(hist_pen)
     else:
+        # Spec 52 — item EXISTENTE: preserva unit_price frozen. Só qty,
+        # average_cost e total_invested recalculam. market_value deriva
+        # do unit_price preservado × new_qty (e fx FROZEN do snapshot).
         existing.quantity = new_qty
-        existing.unit_price = new_unit
-        existing.market_value_native = new_mv_native
-        existing.market_value_brl = new_mv_brl
-        existing.market_value_usd = new_mv_usd
         existing.average_cost_brl = pos["average_cost_brl"]
         existing.total_invested_brl = pos["total_invested_brl"]
+        if existing.unit_price is not None and new_qty != 0:
+            mv_native = new_qty * existing.unit_price
+            existing.market_value_native = mv_native
+            fx_snap = snap.fx_rate_usd_brl
+            if currency == "BRL":
+                existing.market_value_brl = mv_native
+                existing.market_value_usd = (
+                    mv_native / fx_snap if fx_snap and fx_snap > 0 else None
+                )
+            elif currency == "USD":
+                existing.market_value_usd = mv_native
+                existing.market_value_brl = (
+                    mv_native * fx_snap if fx_snap and fx_snap > 0 else None
+                )
+        else:
+            # Sem preço frozen ou qty zerada — limpa market_value.
+            existing.market_value_native = None
+            existing.market_value_brl = None
+            existing.market_value_usd = None
 
     db.flush()
 
@@ -1396,6 +1495,17 @@ def retry_pendency_api(
     if pen.action_type != PendencyAction.RETRY_API:
         raise ValueError(
             f"Pendency {pendency_id} is not RETRY_API (got {pen.action_type.value})"
+        )
+
+    # Spec 52 — refresh_one chama o adapter LIVE (preço de hoje). Em
+    # snapshot antigo isso corrompe o histórico. Spec 53 vai substituir
+    # por historical_price.fetch_on; até lá, bloqueia e direciona o
+    # user pro fluxo EDIT_PRICE.
+    snap = db.get(PortfolioSnapshot, pen.snapshot_id)
+    if snap is not None and snap.period_end_date != date.today():
+        raise ValueError(
+            "Snapshot antigo — API retorna preço de hoje, não do period_end. "
+            "Preencha o preço manualmente."
         )
 
     result = refresh_one(db, asset, user_email=user_email or "system")
