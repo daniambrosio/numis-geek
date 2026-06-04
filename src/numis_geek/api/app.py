@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from numis_geek.api.middleware import AuditMiddleware
+from numis_geek.api.middleware import AuditMiddleware, RequestIDMiddleware
+from numis_geek.logging_config import configure_logging
 from numis_geek.scheduler import start_scheduler, stop_scheduler
 from numis_geek.version import get_version_info
 from numis_geek.api.routes import (
@@ -29,9 +30,15 @@ from numis_geek.api.routes import (
     prices,
     ptax,
     snapshots,
+    sysadmin_logs,
     users,
     workspaces,
 )
+
+# Spec 55 — setup logging antes de qualquer outra inicialização. Em
+# prod (LOG_DIR setada) adiciona RotatingFileHandler em
+# data/logs/numis.log.
+configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuditMiddleware)
+# RequestIDMiddleware adicionado por último → roda PRIMEIRO (Starlette
+# inverte a ordem). Assim o request.state.request_id já existe quando
+# o AuditMiddleware loga.
+app.add_middleware(RequestIDMiddleware)
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
@@ -77,6 +88,7 @@ app.include_router(portfolio.router, prefix="/api")
 app.include_router(prices.router, prefix="/api")
 app.include_router(backup.router, prefix="/api")
 app.include_router(extractions.router, prefix="/api")
+app.include_router(sysadmin_logs.router, prefix="/api")
 
 
 @app.get("/health")

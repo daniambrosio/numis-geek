@@ -39,11 +39,14 @@ COPY alembic.ini ./
 # Built frontend
 COPY --from=frontend-builder /frontend/dist frontend/dist/
 
-# Persistent data lives here (mount a volume in production)
-RUN mkdir -p data/attachments data/backups
+# Persistent data lives here (mount a volume in production).
+# Spec 55 adicionou data/logs pra RotatingFileHandler do backend.
+RUN mkdir -p data/attachments data/backups data/logs
 
 EXPOSE 8000
 
 ENV FRONTEND_DIST=frontend/dist
+# Spec 55 — habilita file logging (data/logs/numis.log com rotação).
+ENV LOG_DIR=data/logs
 
 CMD ["uv", "run", "uvicorn", "numis_geek.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

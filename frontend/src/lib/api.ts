@@ -77,6 +77,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       const snippet = bodyText && bodyText.length < 200 ? ` — ${bodyText}` : ''
       message = `${status}${snippet}`
     }
+    // Spec 55 — anexa request_id pra rastrear no audit_log + logs.
+    const rid = res.headers.get('X-Request-ID')
+    if (rid) message = `${message} [req:${rid}]`
     throw new Error(message)
   }
   if (res.status === 204) return undefined as T
