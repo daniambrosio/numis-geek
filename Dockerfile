@@ -12,12 +12,14 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 
-# Install dependencies before copying source so this layer is cached
+# Install dependencies first (layer cached; --no-install-project skips building
+# the package itself so we don't need src/ yet)
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Application source
+# Application source (needed to install the numis-geek package itself)
 COPY src/ src/
+RUN uv sync --frozen --no-dev
 COPY alembic/ alembic/
 COPY alembic.ini ./
 
