@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, ArrowRight, ChevronRight, Download, Plus, RotateCcw, X,
+  ArrowLeft, ArrowRight, ChevronRight, Download, Plus, RotateCcw,
 } from 'lucide-react'
 
 import {
@@ -356,23 +356,13 @@ export default function SnapshotDetail() {
 
   const isPending = snap?.status === 'IN_REVIEW'
   const [editingItem, setEditingItem] = useState<SnapshotItemOut | null>(null)
+  // Sort by the snapshot ITEM's own updated_at (when this row, in this
+  // snapshot, was last touched) — NOT by asset.price_updated_at, which
+  // gets stomped by the dashboard's bulk price refresh and produces
+  // random-looking order. Desc → just-edited rows float to the top.
   const sortedPositions = useMemo(
-    () => {
-      // While the snapshot is being reviewed, sort by most recently updated
-      // price so the user can spot the asset they just resolved (and verify
-      // the import is sane). Once CLOSED, sort by market_value desc.
-      if (isPending) {
-        return [...items].sort((a, b) => {
-          const ta = assetById.get(a.asset_id)?.price_updated_at ?? ''
-          const tb = assetById.get(b.asset_id)?.price_updated_at ?? ''
-          return tb.localeCompare(ta)
-        })
-      }
-      return [...items].sort(
-        (a, b) => Number(b.market_value_brl ?? 0) - Number(a.market_value_brl ?? 0),
-      )
-    },
-    [items, isPending, assetById],
+    () => [...items].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+    [items],
   )
 
   const [showAllPositions, setShowAllPositions] = useState(false)

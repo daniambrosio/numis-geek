@@ -276,13 +276,6 @@ export default function AssetDetail() {
     [distributions],
   )
   // Spec 42/45 hotfix — proventos total na moeda nativa do ativo
-  // (USD pra ABT, BRL pra PETR4 etc.). `distSumBRL` continua sendo
-  // útil pra cálculos de yield (YoC, DY) que precisam de unidade
-  // comum, mas no header da tabela queremos a moeda real.
-  const distSumNative = useMemo(
-    () => distributions.reduce((s, d) => s + d.net_amount, 0),
-    [distributions],
-  )
   // Spec 50 parte 2 — total USD pro footer da tabela de Proventos.
   const distSumUSD = useMemo(
     () => distributions.reduce((s, d) => {
