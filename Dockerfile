@@ -1,6 +1,13 @@
 # --- Stage 1: Build React frontend ---
 FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
+
+# Spec 54 — bakes version no bundle do frontend.
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_DATE=$BUILD_DATE
+
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
@@ -9,6 +16,12 @@ RUN npm run build
 # --- Stage 2: Python runtime ---
 FROM python:3.12-slim
 WORKDIR /app
+
+# Spec 54 — backend lê via env em runtime pra responder /version.
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_DATE=$BUILD_DATE
 
 RUN pip install --no-cache-dir uv
 

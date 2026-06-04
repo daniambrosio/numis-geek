@@ -75,8 +75,13 @@ fi
 if [ "$REBUILD" = "true" ]; then
   docker tag numis-geek:latest numis-geek:rollback 2>/dev/null \
     && log "tagged numis-geek:rollback" || log "WARN could not tag rollback image"
-  log "building image..."
-  docker compose -f "$CF" build 2>&1 | tail -5 | tee -a "$LOG"
+  # Spec 54 — injeta versão pra exibir no UI + detectar mismatch.
+  export GIT_SHA="$(git -C "$APP" rev-parse --short HEAD)"
+  export BUILD_DATE="$(date +%F)"
+  log "building image (GIT_SHA=$GIT_SHA BUILD_DATE=$BUILD_DATE)..."
+  docker compose -f "$CF" build \
+    --build-arg "GIT_SHA=$GIT_SHA" --build-arg "BUILD_DATE=$BUILD_DATE" \
+    2>&1 | tail -5 | tee -a "$LOG"
 fi
 
 # ── 3. Check for pending migrations (against the NEW image) ───────────────────

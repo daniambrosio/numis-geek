@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from numis_geek.api.middleware import AuditMiddleware
 from numis_geek.scheduler import start_scheduler, stop_scheduler
+from numis_geek.version import get_version_info
 from numis_geek.api.routes import (
     accounts,
     asset_movements,
@@ -41,7 +42,10 @@ async def lifespan(app: FastAPI):
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 
-app = FastAPI(title="Numis-Geek API", version="0.1.0", lifespan=lifespan)
+_version_info = get_version_info()
+app = FastAPI(
+    title="Numis-Geek API", version=_version_info["version"], lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -78,6 +82,15 @@ app.include_router(extractions.router, prefix="/api")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Spec 54 — público (sem auth), usado pelo banner de mismatch.
+# Registra em /version (dev: chega aqui após o Vite proxy strip)
+# e /api/version (prod: requisição vai direto pra FastAPI sem strip).
+@app.get("/version")
+@app.get("/api/version")
+def version():
+    return get_version_info()
 
 
 # In production the built React app is served from $FRONTEND_DIST.

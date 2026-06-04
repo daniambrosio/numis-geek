@@ -1060,6 +1060,15 @@ export const api = {
   },
   listSnapshotExtractions: (snapshot_id: string) =>
     request<BulkExtractionJobSummary[]>(`/snapshots/${snapshot_id}/extractions`),
+
+  // Spec 54 — público, sem auth. Banner usa pra detectar deploy novo.
+  version: () => request<VersionInfo>('/version'),
+}
+
+export interface VersionInfo {
+  version: string
+  sha: string
+  date: string
 }
 
 // ── Extractions (Spec 38) ────────────────────────────────────────────────────

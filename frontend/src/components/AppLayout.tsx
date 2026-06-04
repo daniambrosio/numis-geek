@@ -12,6 +12,7 @@ import { getComfort, toggleComfort } from '../lib/comfort'
 import { clearToken, type UserOut } from '../lib/api'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import PriceRefresh from './PriceRefresh'
+import VersionMismatchBanner from './VersionMismatchBanner'
 
 interface Props {
   user: UserOut
@@ -183,7 +184,9 @@ export default function AppLayout({ user, children }: Props) {
           </div>
           <div>
             <div className="text-sm font-semibold leading-tight">Numis-Geek</div>
-            <div className="text-[10px] uppercase tracking-wider text-gray-500">v1</div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500">
+              v{__APP_VERSION__}
+            </div>
           </div>
         </div>
 
@@ -239,10 +242,22 @@ export default function AppLayout({ user, children }: Props) {
             )
           })}
         </nav>
+
+        {/* Spec 54 — build version footer (sempre visível). */}
+        <div
+          className="border-t border-gray-200 dark:border-gray-800 px-5 py-2 text-[10px] text-gray-500 tnum"
+          title={`Versão ${__APP_VERSION__} · build ${__APP_SHA__} · ${__APP_BUILD_DATE__}`}
+          data-testid="sidebar-version-footer"
+        >
+          <div>v{__APP_VERSION__} · {__APP_SHA__}</div>
+          <div className="text-[9px]">{__APP_BUILD_DATE__}</div>
+        </div>
       </aside>
 
       {/* Main column */}
       <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Spec 54 — banner de mismatch backend↔frontend. */}
+        <VersionMismatchBanner />
         {/* Top bar */}
         <header className="h-14 shrink-0 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex items-center px-4 gap-4">
           {/* Search */}
