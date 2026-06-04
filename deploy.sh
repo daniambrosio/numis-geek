@@ -7,9 +7,10 @@
 #
 # What it does:
 #   1. git pull from origin/main
-#   2. alembic check — detects pending migrations
-#   3. sqlite3 .backup before any migration (safe copy while app is running)
-#   4. docker compose build only when pyproject.toml / uv.lock / Dockerfile / frontend/ changed
+#   2. Rebuild image when code/deps/migrations/frontend changed (baked into image)
+#      Skip rebuild only for pure docs/tests/spec changes
+#   3. Compare DB revision against heads in the NEW image to detect pending migrations
+#   4. sqlite3 .backup before any migration (safe copy while app is running)
 #   5. alembic upgrade head (if needed)
 #   6. docker compose up -d + health check
 #   7. rollback on failure (restores old image tag + DB backup if migration was involved)
@@ -52,46 +53,25 @@ fi
 git -C "$APP" pull origin main 2>&1 | tee -a "$LOG"
 log "pulled: $OLD_SHORT → $NEW_SHORT"
 
-# Detect changed files between old and new HEAD
+# Changed files between old and new HEAD
 CHANGED=$(git -C "$APP" diff --name-only "$OLD_HEAD" "$NEW_HEAD" 2>/dev/null || true)
 
-# ── 2. Check for pending migrations ───────────────────────────────────────────
-MIGRATIONS_PENDING=false
-ALEMBIC_OUT=$(docker compose -f "$CF" run --rm -T numis-geek uv run alembic check 2>&1 || true)
-if echo "$ALEMBIC_OUT" | grep -qi "outstanding"; then
-  MIGRATIONS_PENDING=true
-  log "migrations pending"
-elif echo "$ALEMBIC_OUT" | grep -qi "up to date"; then
-  log "schema up to date"
-else
-  # Unexpected output — treat as pending to be safe
-  MIGRATIONS_PENDING=true
-  log "WARN alembic check output unclear, treating as pending: $ALEMBIC_OUT"
-fi
-
-# ── 3. Backup DB before any migration ─────────────────────────────────────────
-if [ "$MIGRATIONS_PENDING" = "true" ]; then
-  TS=$(date '+%Y%m%d-%H%M%S')
-  BACKUP="$DB.pre-deploy-$TS"
-  sqlite3 "$DB" ".backup '$BACKUP'" \
-    && log "DB backup OK: $(basename "$BACKUP")" \
-    || fail "DB backup failed — aborting (no changes applied yet)"
-fi
-
-# ── 4. Detect if image rebuild needed ─────────────────────────────────────────
+# ── 2. Detect if image rebuild needed ─────────────────────────────────────────
+# Rebuild unless ALL changes are pure docs/tests/specs (nothing baked into the image)
+INFRA_ONLY=$(echo "$CHANGED" | grep -cvE "^(docs/|tests/|specs/|assets/|.*\.md$|deploy\.sh$|\.gitignore$)" || true)
 REBUILD=false
 if [ -n "$FORCE_REBUILD" ]; then
   REBUILD=true
-  log "rebuild: forced via --force-rebuild"
-elif echo "$CHANGED" | grep -qE "^(pyproject\.toml|uv\.lock|Dockerfile|frontend/)"; then
+  log "rebuild: forced"
+elif [ "$INFRA_ONLY" -gt 0 ]; then
   REBUILD=true
-  TRIGGERS=$(echo "$CHANGED" | grep -E "^(pyproject\.toml|uv\.lock|Dockerfile|frontend/)" | head -5 | tr '\n' ' ')
+  TRIGGERS=$(echo "$CHANGED" | grep -vE "^(docs/|tests/|specs/|assets/|.*\.md$|deploy\.sh$|\.gitignore$)" | head -5 | tr '\n' ' ')
   log "rebuild: triggered by $TRIGGERS"
 else
-  log "rebuild: skipped (code-only change)"
+  log "rebuild: skipped (docs/tests only)"
 fi
 
-# ── 5. Tag current image as rollback before overwriting ───────────────────────
+# Tag current image as rollback target before overwriting
 if [ "$REBUILD" = "true" ]; then
   docker tag numis-geek:latest numis-geek:rollback 2>/dev/null \
     && log "tagged numis-geek:rollback" || log "WARN could not tag rollback image"
@@ -99,17 +79,41 @@ if [ "$REBUILD" = "true" ]; then
   docker compose -f "$CF" build 2>&1 | tail -5 | tee -a "$LOG"
 fi
 
-# ── 6. Run migrations ─────────────────────────────────────────────────────────
+# ── 3. Check for pending migrations (against the NEW image) ───────────────────
+# Compare DB current revision against the heads known to the (now rebuilt) image.
+CURRENT_REV=$(docker compose -f "$CF" run --rm -T numis-geek \
+  uv run alembic current 2>/dev/null | grep -oE '[a-f0-9]{12}' | head -1 || true)
+HEAD_REV=$(docker compose -f "$CF" run --rm -T numis-geek \
+  uv run alembic heads 2>/dev/null | grep -oE '[a-f0-9]{12}' | head -1 || true)
+
+log "schema: current=$CURRENT_REV head=$HEAD_REV"
+
+MIGRATIONS_PENDING=false
+if [ -n "$HEAD_REV" ] && [ "$CURRENT_REV" != "$HEAD_REV" ]; then
+  MIGRATIONS_PENDING=true
+  log "migrations pending ($CURRENT_REV → $HEAD_REV)"
+fi
+
+# ── 4. Backup DB before any migration ─────────────────────────────────────────
+if [ "$MIGRATIONS_PENDING" = "true" ]; then
+  TS=$(date '+%Y%m%d-%H%M%S')
+  BACKUP="$DB.pre-deploy-$TS"
+  sqlite3 "$DB" ".backup '$BACKUP'" \
+    && log "DB backup OK: $(basename "$BACKUP")" \
+    || fail "DB backup failed — aborting (no changes applied to DB yet)"
+fi
+
+# ── 5. Run migrations ─────────────────────────────────────────────────────────
 if [ "$MIGRATIONS_PENDING" = "true" ]; then
   log "running alembic upgrade head"
   docker compose -f "$CF" run --rm -T numis-geek uv run alembic upgrade head 2>&1 | tee -a "$LOG"
 fi
 
-# ── 7. Restart ────────────────────────────────────────────────────────────────
+# ── 6. Restart container ──────────────────────────────────────────────────────
 log "restarting container"
 docker compose -f "$CF" up -d 2>&1 | tee -a "$LOG"
 
-# ── 8. Health check (6 attempts × 8 s = 48 s total) ──────────────────────────
+# ── 7. Health check (6 attempts × 8 s = 48 s window) ─────────────────────────
 HEALTHY=false
 for i in 1 2 3 4 5 6; do
   sleep 8
@@ -126,19 +130,17 @@ if [ "$HEALTHY" = "true" ]; then
   exit 0
 fi
 
-# ── 9. Rollback ───────────────────────────────────────────────────────────────
+# ── 8. Rollback ───────────────────────────────────────────────────────────────
 log "health check FAILED — rolling back to $OLD_SHORT"
 
-# Restore DB if we ran a migration and have a backup
+# Restore DB if we ran a migration
 if [ "$MIGRATIONS_PENDING" = "true" ] && [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
   docker compose -f "$CF" stop numis-geek 2>/dev/null || true
   cp "$BACKUP" "$DB" && log "DB restored from backup" || log "WARN DB restore failed"
 fi
 
-# Restore git working tree
 git -C "$APP" checkout "$OLD_HEAD" -- . 2>&1 | tee -a "$LOG"
 
-# Restore image if we rebuilt
 if [ "$REBUILD" = "true" ] && docker images numis-geek:rollback -q 2>/dev/null | grep -q .; then
   docker tag numis-geek:rollback numis-geek:latest
   log "image restored from numis-geek:rollback"
