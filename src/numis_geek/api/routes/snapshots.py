@@ -71,6 +71,21 @@ class SnapshotItemOut(BaseModel):
     market_value_usd: str | None
     average_cost_brl: str | None
     total_invested_brl: str | None
+    updated_at: str
+
+    @classmethod
+    def from_orm(cls, i: PortfolioSnapshotItem) -> "SnapshotItemOut":
+        return cls(
+            asset_id=i.asset_id,
+            quantity=str(i.quantity),
+            unit_price=str(i.unit_price) if i.unit_price is not None else None,
+            market_value_native=str(i.market_value_native) if i.market_value_native is not None else None,
+            market_value_brl=str(i.market_value_brl) if i.market_value_brl is not None else None,
+            market_value_usd=str(i.market_value_usd) if i.market_value_usd is not None else None,
+            average_cost_brl=str(i.average_cost_brl) if i.average_cost_brl is not None else None,
+            total_invested_brl=str(i.total_invested_brl) if i.total_invested_brl is not None else None,
+            updated_at=i.updated_at.isoformat(),
+        )
 
 
 class SnapshotOut(BaseModel):
@@ -409,19 +424,7 @@ def list_snapshot_items(
     items = db.query(PortfolioSnapshotItem).filter(
         PortfolioSnapshotItem.snapshot_id == snapshot_id
     ).all()
-    return [
-        SnapshotItemOut(
-            asset_id=i.asset_id,
-            quantity=str(i.quantity),
-            unit_price=str(i.unit_price) if i.unit_price is not None else None,
-            market_value_native=str(i.market_value_native) if i.market_value_native is not None else None,
-            market_value_brl=str(i.market_value_brl) if i.market_value_brl is not None else None,
-            market_value_usd=str(i.market_value_usd) if i.market_value_usd is not None else None,
-            average_cost_brl=str(i.average_cost_brl) if i.average_cost_brl is not None else None,
-            total_invested_brl=str(i.total_invested_brl) if i.total_invested_brl is not None else None,
-        )
-        for i in items
-    ]
+    return [SnapshotItemOut.from_orm(i) for i in items]
 
 
 @router.patch(
@@ -453,16 +456,7 @@ def patch_snapshot_item(
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return SnapshotItemOut(
-        asset_id=item.asset_id,
-        quantity=str(item.quantity),
-        unit_price=str(item.unit_price) if item.unit_price is not None else None,
-        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
-        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
-        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
-        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
-        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
-    )
+    return SnapshotItemOut.from_orm(item)
 
 
 @router.delete(
@@ -613,16 +607,7 @@ def add_snapshot_item_route(
         msg = str(e)
         status = 404 if "not found" in msg.lower() else 409
         raise HTTPException(status_code=status, detail=msg)
-    return SnapshotItemOut(
-        asset_id=item.asset_id,
-        quantity=str(item.quantity),
-        unit_price=str(item.unit_price) if item.unit_price is not None else None,
-        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
-        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
-        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
-        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
-        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
-    )
+    return SnapshotItemOut.from_orm(item)
 
 
 # ── Spec 51 — Retroactive Event Reconciliation ─────────────────────────────
@@ -698,16 +683,7 @@ def recompute_snapshot_item_route(
         msg = str(e)
         status_code = 404 if "not found" in msg.lower() else 409
         raise HTTPException(status_code=status_code, detail=msg)
-    return SnapshotItemOut(
-        asset_id=item.asset_id,
-        quantity=str(item.quantity),
-        unit_price=str(item.unit_price) if item.unit_price is not None else None,
-        market_value_native=str(item.market_value_native) if item.market_value_native is not None else None,
-        market_value_brl=str(item.market_value_brl) if item.market_value_brl is not None else None,
-        market_value_usd=str(item.market_value_usd) if item.market_value_usd is not None else None,
-        average_cost_brl=str(item.average_cost_brl) if item.average_cost_brl is not None else None,
-        total_invested_brl=str(item.total_invested_brl) if item.total_invested_brl is not None else None,
-    )
+    return SnapshotItemOut.from_orm(item)
 
 
 @router.post(

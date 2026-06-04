@@ -1298,6 +1298,7 @@ export interface SnapshotItemOut {
   market_value_usd: string | null
   average_cost_brl: string | null
   total_invested_brl: string | null
+  updated_at: string
 }
 
 export interface PriceRefreshOut {
