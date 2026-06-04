@@ -26,10 +26,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        rewrite: (path) => path.replace(/^\/api/, ''),
-      },
+      // Backend monta routers com prefix="/api" (ver app.py), então
+      // proxy forward sem rewrite — o path /api/X chega como /api/X.
+      '/api': 'http://localhost:8000',
     },
   },
 })

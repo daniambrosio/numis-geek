@@ -106,5 +106,16 @@ if _dist.is_dir():
     def _spa(full_path: str):
         candidate = _dist / full_path
         if candidate.is_file():
+            # Arquivos com hash no nome (Vite bundles) podem ser
+            # cacheados longamente. O FastAPI deixa as defaults; quem
+            # quiser cache-long ajusta no reverse proxy.
             return FileResponse(str(candidate))
-        return FileResponse(str(_dist / "index.html"))
+        # index.html NUNCA pode ser cacheado: ele referencia o
+        # bundle JS hashed, e se o browser servir um index.html velho
+        # ele vai carregar bundles que não existem mais. Igualmente,
+        # se algum dia uma rota /api/* cair aqui por roteamento errado,
+        # no-store evita que a HTML seja persistida como response da API.
+        return FileResponse(
+            str(_dist / "index.html"),
+            headers={"Cache-Control": "no-store"},
+        )

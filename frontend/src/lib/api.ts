@@ -24,6 +24,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(`${BASE}${path}`, {
+      // Defesa contra cache zumbi: se algum response anterior foi
+      // cacheado errado pelo browser (ex.: SPA catchall devolvendo
+      // index.html pra /api/users/me quando o proxy estava quebrado),
+      // 'no-store' obriga o browser a ignorar o cache E não cachear
+      // o novo response. Self-healing automático sem precisar usuário
+      // limpar cache manualmente.
+      cache: 'no-store',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -34,6 +41,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error('Não foi possível conectar ao servidor. Verifique se o backend está rodando.')
   }
   if (!res.ok) {
+    // Token zumbi de sessão anterior (SECRET_KEY antiga, expirado, etc.)
+    // — limpa pra próxima tentativa de login não voltar a usar o velho.
+    // Skippa pra /auth/login porque login não envia Bearer mesmo.
+    if (res.status === 401 && token && !path.startsWith('/auth/login')) {
+      clearToken()
+    }
     let detail: unknown = null
     let bodyText = ''
     try {

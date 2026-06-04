@@ -37,6 +37,15 @@ class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
 
+        # Defesa contra cache zumbi: o SPA catchall pode ter
+        # devolvido HTML pra /api/* num momento de roteamento errado
+        # (proxy quebrado, prefix faltando, etc.) e o browser cacheou
+        # essa resposta no disco. Setando no-store em toda resposta
+        # /api/* garante que nunca mais vamos cachear JSON da API
+        # como HTML — fix self-healing pro bug do login em loop.
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+
         if request.method not in _MUTATING:
             return response
         if not (200 <= response.status_code < 300):
