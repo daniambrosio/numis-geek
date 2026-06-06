@@ -19,6 +19,7 @@ import {
   type AssetOut,
   type DistributionOut,
   type DriftEntryOut,
+  type FinancialInstitutionOut,
   type SnapshotItemOut,
   type SnapshotOut,
   type SnapshotPendencyOut,
@@ -30,7 +31,7 @@ import PendencyPanel from '../components/PendencyPanel'
 import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
-import { Card, ClassBadge, SectionTitle } from '../components/ui'
+import { Card, ClassBadge, FILogo, SectionTitle } from '../components/ui'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
 
 const MONTH_NAMES_LONG = [
@@ -136,6 +137,7 @@ export default function SnapshotDetail() {
   const [items, setItems] = useState<SnapshotItemOut[]>([])
   const [pendencies, setPendencies] = useState<SnapshotPendencyOut[]>([])
   const [assets, setAssets] = useState<AssetOut[]>([])
+  const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [distributions, setDistributions] = useState<DistributionOut[]>([])
   const [allSnaps, setAllSnaps] = useState<SnapshotOut[]>([])
   const [prevItems, setPrevItems] = useState<SnapshotItemOut[]>([])
@@ -161,10 +163,11 @@ export default function SnapshotDetail() {
         const match = list.find(s => s.period_end_date.startsWith(ym))
         if (!match) { setError(`Sem snapshot para ${ym}.`); setLoading(false); return }
         setSnap(match)
-        const [its, pens, as, distPage, drifts] = await Promise.all([
+        const [its, pens, as, fis, distPage, drifts] = await Promise.all([
           api.listSnapshotItems(match.id),
           api.listSnapshotPendencies(match.id),
           api.listAssets({ include_inactive: true }),
+          api.listFinancialInstitutions().catch(() => [] as FinancialInstitutionOut[]),
           api.listDistributions({
             from: `${ym}-01`,
             to: match.period_end_date,
@@ -176,6 +179,7 @@ export default function SnapshotDetail() {
         setItems(its)
         setPendencies(pens)
         setAssets(as)
+        setInstitutions(fis)
         setDistributions(distPage.items)
         setDrift(drifts)
       })
@@ -209,6 +213,11 @@ export default function SnapshotDetail() {
     for (const a of assets) m.set(a.id, a)
     return m
   }, [assets])
+  const fiById = useMemo(() => {
+    const m = new Map<string, FinancialInstitutionOut>()
+    for (const fi of institutions) m.set(fi.id, fi)
+    return m
+  }, [institutions])
 
   async function refreshPendencies() {
     if (!snap) return
@@ -819,6 +828,7 @@ export default function SnapshotDetail() {
                     <tr className="text-[10px] uppercase tracking-wider text-gray-500">
                       <th className="text-left font-medium px-3 py-2">Ativo</th>
                       <th className="text-left font-medium px-3 py-2">Classe</th>
+                      <th className="text-left font-medium px-3 py-2">Instituição</th>
                       <th className="text-right font-medium px-3 py-2">Qtd</th>
                       <th className="text-right font-medium px-3 py-2">Preço fim</th>
                       <th className="text-right font-medium px-3 py-2">Valor (BRL)</th>
@@ -878,6 +888,18 @@ export default function SnapshotDetail() {
                             </div>
                           </td>
                           <td className="px-3"><ClassBadge klass={klass} size="xs" withDot={false} /></td>
+                          <td className="px-3">
+                            {(() => {
+                              const fi = fiById.get(a.financial_institution_id)
+                              const shortName = fi?.short_name ?? a.financial_institution_name
+                              return (
+                                <div className="flex items-center gap-1.5">
+                                  <FILogo slug={fi?.logo_slug ?? null} shortName={shortName} size="sm" />
+                                  <span className="text-[12px] text-gray-700 dark:text-gray-300 truncate max-w-[120px]">{shortName}</span>
+                                </div>
+                              )
+                            })()}
+                          </td>
                           <td className="px-3 text-right tnum text-gray-700 dark:text-gray-300">
                             {Number(it.quantity).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}
                           </td>
