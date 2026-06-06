@@ -885,7 +885,7 @@ export default function SnapshotDetail() {
                                 : `R$ ${closePrice.toFixed(2)}`}
                           </td>
                           <td className="px-3 text-right tnum font-medium">
-                            {fmtBRL(valueBRL, { compact: true })}
+                            {fmtBRL(valueBRL)}
                           </td>
                           <td className="px-3 text-right tnum text-gray-500">
                             {pct.toFixed(2)}%

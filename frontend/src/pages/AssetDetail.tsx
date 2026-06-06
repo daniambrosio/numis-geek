@@ -6,7 +6,9 @@ import { ArrowLeft, Coins, Edit2, MoreHorizontal, Plus, RefreshCw } from 'lucide
 import {
   api,
   type AccountOut,
+  type AffectedSnapshotOut,
   type AssetMovementOut,
+  type AssetMovementRequest,
   type AssetOut,
   type AssetPriceHistoryOut,
   type AssetPriceHistoryPeriod,
@@ -15,9 +17,11 @@ import {
   type DistributionOut,
   type FinancialInstitutionOut,
   type PositionOut,
+  type SyncOut,
   type UserOut,
 } from '../lib/api'
 import { SOURCE_LABEL, TIER_COLOR, formatRelative } from '../lib/price'
+import { useEscapeKey } from '../lib/useEscapeKey'
 
 const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
   FRESH: 'Atualizado nas últimas 24h',
@@ -25,11 +29,15 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
   OLD: 'Atualizado há mais de 7 dias',
   UNKNOWN: 'Nunca atualizado',
 }
+import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import AppLayout from '../components/AppLayout'
 import AssetDistributionsChart from '../components/AssetDistributionsChart'
 import AssetModal from '../components/AssetModal'
 import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
+import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import ManualPriceModal from '../components/ManualPriceModal'
+import MovementComposer from '../components/MovementComposer'
+import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
 import OpenOptionsCard from '../components/OpenOptionsCard'
 import OptionContextCard from '../components/OptionContextCard'
 import OptionModal from '../components/OptionModal'
@@ -187,6 +195,22 @@ export default function AssetDetail() {
   const [snapshotHistory, setSnapshotHistory] = useState<AssetSnapshotHistoryOut | null>(null)
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(false)
 
+  // Lançamentos sub-flow: side panel + composer + deactivate + spec 51 reconciliation
+  const [selectedMovement, setSelectedMovement] = useState<AssetMovementOut | null>(null)
+  const [editingMovement, setEditingMovement] = useState<AssetMovementOut | undefined>(undefined)
+  const [movementComposerOpen, setMovementComposerOpen] = useState(false)
+  const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
+  const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
+  const [reconciliation, setReconciliation] = useState<{
+    affected: AffectedSnapshotOut[]
+    assetId: string
+    assetLabel: string
+    triggerEventId: string
+    triggerEventType: string
+  } | null>(null)
+  // Sub-modals já tratam ESC. O hook só fecha o inline confirm.
+  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
+
   async function handleRefreshPrice() {
     if (!asset || refreshingPrice) return
     setRefreshingPrice(true)
@@ -210,6 +234,132 @@ export default function AssetDetail() {
 
   function handleEditPrice() {
     setManualPriceOpen(true)
+  }
+
+  async function refreshMovementsAndPosition() {
+    if (!asset) return
+    try {
+      const [pos, movs] = await Promise.all([
+        api.getAssetPosition(asset.id).catch(() => null),
+        api.listAssetMovementsForAsset(asset.id, { page: 1, page_size: 200, include_inactive: false })
+          .then(p => p.items).catch(() => [] as AssetMovementOut[]),
+      ])
+      if (pos) setPosition(pos)
+      setMovements([...movs].sort((a, b) => b.event_date.localeCompare(a.event_date)))
+    } catch { /* fail-soft */ }
+  }
+
+  async function handleMovementSave(data: AssetMovementRequest) {
+    let saved: AssetMovementOut
+    const isUpdate = !!editingMovement
+    if (editingMovement) {
+      saved = await api.updateAssetMovement(editingMovement.id, data)
+      setMovements(prev => prev.map(l => l.id === saved.id ? saved : l))
+      if (selectedMovement?.id === saved.id) setSelectedMovement(saved)
+    } else {
+      saved = await api.createAssetMovement(data)
+      setMovements(prev => [saved, ...prev].sort((a, b) => b.event_date.localeCompare(a.event_date)))
+    }
+    void refreshMovementsAndPosition()
+    // Spec 51 — sonda fechamentos afetados; abre o AffectedSnapshotsModal se houver.
+    try {
+      const affected = await api.previewAffectedSnapshots(saved.asset_id, saved.event_date)
+      if (affected.length > 0) {
+        setReconciliation({
+          affected,
+          assetId: saved.asset_id,
+          assetLabel: saved.asset_ticker || saved.asset_name,
+          triggerEventId: saved.id,
+          triggerEventType: isUpdate ? 'asset_movement.update' : 'asset_movement.create',
+        })
+      }
+    } catch (e) {
+      console.error('Failed to preview affected snapshots', e)
+    }
+    return saved
+  }
+
+  async function handleMovementCheckImpact(mov: AssetMovementOut) {
+    try {
+      const affected = await api.previewAffectedSnapshots(mov.asset_id, mov.event_date)
+      if (affected.length === 0) {
+        alert('Nenhum fechamento desincronizado — tudo certo.')
+        return
+      }
+      setReconciliation({
+        affected,
+        assetId: mov.asset_id,
+        assetLabel: mov.asset_ticker || mov.asset_name,
+        triggerEventId: mov.id,
+        triggerEventType: 'asset_movement.create',
+      })
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Erro ao consultar impacto')
+    }
+  }
+
+  async function handleMovementUploadDrafts(entityId: string, drafts: AttachmentDraft[]) {
+    const results = await Promise.allSettled(
+      drafts.map(d => api.uploadAttachment('movement', entityId, d.file)),
+    )
+    const failed = results
+      .map((r, i) => ({ r, name: drafts[i].name }))
+      .filter(x => x.r.status === 'rejected')
+    if (failed.length) {
+      const reason = failed
+        .map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message ?? 'erro desconhecido'}`)
+        .join(' · ')
+      throw new Error(reason)
+    }
+  }
+
+  async function handleMovementRemoveAttachment(attachmentId: string) {
+    await api.deleteAttachment(attachmentId)
+    if (editingMovement) {
+      const list = await api.listAttachments('movement', editingMovement.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    }
+  }
+
+  async function openMovementEdit(l: AssetMovementOut) {
+    setEditingMovement(l)
+    setMovementComposerOpen(true)
+    try {
+      const list = await api.listAttachments('movement', l.id)
+      setEditingAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    } catch {
+      setEditingAttachments([])
+    }
+  }
+
+  function handleMovementSyncUpdated(out: SyncOut) {
+    setMovements(prev => prev.map(x => x.id === out.entity_id ? {
+      ...x,
+      notion_sync_status: out.status,
+      notion_sync_error: out.error,
+      notion_last_synced_at: out.status === 'SYNCED' ? new Date().toISOString() : x.notion_last_synced_at,
+    } : x))
+    if (selectedMovement?.id === out.entity_id) {
+      setSelectedMovement(prev => prev ? {
+        ...prev,
+        notion_sync_status: out.status,
+        notion_sync_error: out.error,
+      } : prev)
+    }
+  }
+
+  async function handleMovementDeactivate(l: AssetMovementOut) {
+    await api.deactivateAssetMovement(l.id)
+    setMovements(prev => prev.filter(x => x.id !== l.id))
+    if (selectedMovement?.id === l.id) setSelectedMovement(null)
+    setConfirmDeactivate(null)
+    void refreshMovementsAndPosition()
   }
 
   async function handleSaveAsset(data: AssetRequest) {
@@ -576,7 +726,10 @@ export default function AssetDetail() {
         {/* Lançamentos full table */}
         <Card>
           <SectionTitle action={
-            <button className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+            <button
+              onClick={() => { setEditingMovement(undefined); setEditingAttachments([]); setMovementComposerOpen(true) }}
+              className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+            >
               <Plus className="w-3 h-3" /> Novo lançamento
             </button>
           }>
@@ -602,7 +755,11 @@ export default function AssetDetail() {
                   {movements.map(m => {
                     const typeCls = TYPE_MOVEMENT_PALETTE[m.type] || 'bg-gray-500/15 text-gray-500'
                     return (
-                      <tr key={m.id} className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
+                      <tr
+                        key={m.id}
+                        onClick={() => setSelectedMovement(m)}
+                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer"
+                      >
                         <td className="px-2 py-2 tnum text-gray-400">{fmtDate(m.event_date)}</td>
                         <td className="px-2">
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${typeCls}`}>
@@ -779,6 +936,67 @@ export default function AssetDetail() {
             window.setTimeout(() => setPriceMsg(null), 3000)
           }}
         />
+      )}
+
+      {selectedMovement && (
+        <LancamentoDetailPanel
+          key={selectedMovement.id}
+          lancamento={selectedMovement}
+          asset={asset}
+          fi={fi}
+          onClose={() => setSelectedMovement(null)}
+          onEdit={() => { void openMovementEdit(selectedMovement) }}
+          onDeactivate={() => setConfirmDeactivate(selectedMovement)}
+          onSyncUpdated={handleMovementSyncUpdated}
+          onCheckImpact={() => void handleMovementCheckImpact(selectedMovement)}
+        />
+      )}
+
+      {movementComposerOpen && (
+        <MovementComposer
+          initial={editingMovement}
+          preselectedAsset={asset}
+          assets={[asset]}
+          onSave={handleMovementSave}
+          onOptionLifecycleSaved={async () => { void refreshMovementsAndPosition() }}
+          onClose={() => {
+            setMovementComposerOpen(false)
+            setEditingMovement(undefined)
+            setEditingAttachments([])
+          }}
+          persistedAttachments={editingMovement ? editingAttachments : undefined}
+          onUploadDrafts={handleMovementUploadDrafts}
+          onRemovePersistedAttachment={handleMovementRemoveAttachment}
+        />
+      )}
+
+      {reconciliation && (
+        <AffectedSnapshotsModal
+          assetId={reconciliation.assetId}
+          assetLabel={reconciliation.assetLabel}
+          affected={reconciliation.affected}
+          triggerEventType={reconciliation.triggerEventType}
+          triggerEventId={reconciliation.triggerEventId}
+          onClose={() => setReconciliation(null)}
+          onApplied={() => setReconciliation(null)}
+          onSkipped={() => setReconciliation(null)}
+        />
+      )}
+
+      {confirmDeactivate && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar lançamento?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+              <strong>{confirmDeactivate.type_label}</strong> de{' '}
+              <strong>{confirmDeactivate.asset_name}</strong> será desativado.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+              <button onClick={() => handleMovementDeactivate(confirmDeactivate)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Desativar</button>
+            </div>
+          </div>
+        </div>
       )}
     </AppLayout>
   )

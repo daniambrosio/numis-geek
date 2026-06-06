@@ -35,6 +35,11 @@ export default function VersionMismatchBanner() {
   }, [])
 
   useEffect(() => {
+    // Em dev (`npm run dev`), `__APP_SHA__` é baked no startup do Vite e
+    // nunca muda entre reloads — só restart do dev server resolve. Banner
+    // ficaria permanente. MODE distingue 'development' do 'test' (vitest)
+    // e 'production' (build).
+    if (import.meta.env.MODE === 'development') return
     const t0 = setTimeout(check, INITIAL_DELAY_MS)
     const t1 = setInterval(check, POLL_MS)
     return () => { clearTimeout(t0); clearInterval(t1) }
