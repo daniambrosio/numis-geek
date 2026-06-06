@@ -9,6 +9,10 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.api.routes.asset_movements import (
+    AssetMovementListPage,
+    AssetMovementOut as AssetMovementFullOut,
+)
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import (
     Asset,
@@ -632,38 +636,6 @@ class PositionOut(BaseModel):
     rentabilidade: float | None = None
 
 
-class AssetMovementLite(BaseModel):
-    id: str
-    workspace_id: str
-    asset_id: str
-    type: str
-    type_label: str
-    event_date: str
-    settlement_date: str | None
-    quantity: float | None
-    unit_price: float | None
-    gross_amount: float | None
-    fee: float | None
-    tax: float | None
-    net_amount: float
-    currency: str
-    fx_rate: float
-    notes: str | None
-    external_id: str | None = None
-    external_source: str | None = None
-    nota_negociacao_number: str | None = None
-    is_active: bool
-    created_at: str
-    updated_at: str
-
-
-class AssetMovementsPage(BaseModel):
-    items: list[AssetMovementLite]
-    total: int
-    page: int
-    page_size: int
-
-
 class PriceRefreshOut(BaseModel):
     asset_id: str
     ticker: str | None
@@ -999,7 +971,7 @@ def asset_snapshot_history(
     )
 
 
-@router.get("/{asset_id}/asset-movements", response_model=AssetMovementsPage)
+@router.get("/{asset_id}/asset-movements", response_model=AssetMovementListPage)
 def list_asset_movements(
     asset_id: str,
     include_inactive: bool = Query(default=False),
@@ -1008,6 +980,11 @@ def list_asset_movements(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
+    """Retorna o mesmo shape de `/asset-movements` (full AssetMovementOut)
+    pra que o front possa usar o mesmo `LancamentoDetailPanel` na página
+    do ativo sem campos undefined (`notion_sync_status`, `asset_name`).
+    Antes esse endpoint devolvia um AssetMovementLite reduzido e o panel
+    explodia com `Cannot read properties of undefined (reading 'cls')`."""
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
     q = db.query(AssetMovement).filter(AssetMovement.asset_id == asset_id)
@@ -1021,33 +998,10 @@ def list_asset_movements(
         .all()
     )
     items = [
-        AssetMovementLite(
-            id=m.id,
-            workspace_id=m.workspace_id,
-            asset_id=m.asset_id,
-            type=m.type.value,
-            type_label=ASSET_MOVEMENT_TYPE_LABELS[m.type],
-            event_date=m.event_date.isoformat(),
-            settlement_date=m.settlement_date.isoformat() if m.settlement_date else None,
-            quantity=float(m.quantity) if m.quantity is not None else None,
-            unit_price=float(m.unit_price) if m.unit_price is not None else None,
-            gross_amount=float(m.gross_amount) if m.gross_amount is not None else None,
-            fee=float(m.fee) if m.fee is not None else None,
-            tax=float(m.tax) if m.tax is not None else None,
-            net_amount=float(m.net_amount),
-            currency=m.currency.value,
-            fx_rate=float(m.fx_rate),
-            notes=m.notes,
-            external_id=m.external_id,
-            external_source=m.external_source.value if m.external_source else None,
-            nota_negociacao_number=m.nota_negociacao_number,
-            is_active=m.is_active,
-            created_at=m.created_at.isoformat(),
-            updated_at=m.updated_at.isoformat(),
-        )
+        AssetMovementFullOut.from_orm(m, asset.name, asset.ticker)
         for m in rows
     ]
-    return AssetMovementsPage(items=items, total=total, page=page, page_size=page_size)
+    return AssetMovementListPage(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.put("/{asset_id}/deactivate", response_model=AssetOut)

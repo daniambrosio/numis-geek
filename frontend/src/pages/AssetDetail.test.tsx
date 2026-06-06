@@ -91,6 +91,49 @@ function mockBoringDeps() {
   })
 }
 
+import { fireEvent } from '@testing-library/react'
+import type { AssetMovementOut } from '../lib/api'
+
+const movement: AssetMovementOut = {
+  id: 'm1', workspace_id: 'ws1', asset_id: 'a1',
+  asset_name: 'Abbott Laboratories', asset_ticker: 'ABT',
+  type: 'BUY', type_label: 'Compra',
+  event_date: '2026-01-10', settlement_date: null,
+  quantity: 10, unit_price: 100,
+  gross_amount: 1000, fee: 0, tax: 0, net_amount: 1000,
+  currency: 'USD', fx_rate: 5.0,
+  notes: null, external_id: null, external_source: null,
+  nota_negociacao_number: null,
+  notion_sync_status: 'PENDING', notion_sync_error: null,
+  notion_last_synced_at: null,
+  is_active: true,
+  created_at: '2026-01-10T00:00:00Z', updated_at: '2026-01-10T00:00:00Z',
+}
+
+describe('AssetDetail click no lançamento — Spec sessão 2026-06-06', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('click numa row de lançamento abre o LancamentoDetailPanel', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'listAssetMovementsForAsset').mockResolvedValue({
+      items: [movement], total: 1, page: 1, page_size: 200,
+    })
+    vi.spyOn(api, 'getAssetPriceHistory').mockRejectedValue(new Error('skip chart'))
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+
+    renderPage()
+
+    // Aguarda a tabela aparecer
+    await waitFor(() => expect(screen.getByText('Compra')).toBeInTheDocument())
+
+    // Clica no row da tabela (o td "Compra" está dentro do tr)
+    fireEvent.click(screen.getByText('Compra'))
+
+    // Panel deve estar visível — usa o botão "Editar" como sinal
+    await waitFor(() => expect(screen.getByText('Editar')).toBeInTheDocument())
+  })
+})
+
 describe('AssetDetail price chart (Spec 46)', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
