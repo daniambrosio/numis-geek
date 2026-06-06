@@ -27,12 +27,13 @@ import {
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import AddSnapshotAssetModal from '../components/AddSnapshotAssetModal'
+import AssetFilterBar from '../components/AssetFilterBar'
 import PendencyPanel from '../components/PendencyPanel'
 import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
 import { Card, ClassBadge, FILogo, SectionTitle } from '../components/ui'
-import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
+import { KLASS, collapsedOf, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
 
 const MONTH_NAMES_LONG = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -365,6 +366,19 @@ export default function SnapshotDetail() {
 
   const isPending = snap?.status === 'IN_REVIEW'
   const [editingItem, setEditingItem] = useState<SnapshotItemOut | null>(null)
+
+  // Filtros da seção "Posições Congeladas" — espelham os filtros da página
+  // /ativos via AssetFilterBar (sessão 2026-06-06). Estado mantido aqui;
+  // o componente é só UI.
+  const [posSearch, setPosSearch] = useState('')
+  const [posKlassSel, setPosKlassSel] = useState<string[]>([])
+  const [posCountrySel, setPosCountrySel] = useState<string[]>([])
+  const [posFiSel, setPosFiSel] = useState<string[]>([])
+  // "Incluir sem valor" — items que ainda não têm market_value_brl
+  // (USD treasuries não-resolvidos, pendências em aberto). Default ON
+  // pra não esconder pendências por engano.
+  const [posIncludeNoValue, setPosIncludeNoValue] = useState(true)
+
   // Sort by the snapshot ITEM's own updated_at (when this row, in this
   // snapshot, was last touched) — NOT by asset.price_updated_at, which
   // gets stomped by the dashboard's bulk price refresh and produces
@@ -373,6 +387,34 @@ export default function SnapshotDetail() {
     () => [...items].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
     [items],
   )
+
+  const filteredPositions = useMemo(() => {
+    const q = posSearch.trim().toLowerCase()
+    return sortedPositions.filter(it => {
+      const a = assetById.get(it.asset_id)
+      if (!a) return false
+      if (q && !(a.ticker?.toLowerCase().includes(q) ?? false) && !a.name.toLowerCase().includes(q)) return false
+      if (posKlassSel.length && !posKlassSel.includes(collapsedOf(a.asset_class))) return false
+      if (posCountrySel.length && !posCountrySel.includes(a.country)) return false
+      if (posFiSel.length && !posFiSel.includes(a.financial_institution_id)) return false
+      if (!posIncludeNoValue) {
+        const hasValue = it.market_value_brl != null && Number(it.market_value_brl) > 0
+        if (!hasValue) return false
+      }
+      return true
+    })
+  }, [sortedPositions, assetById, posSearch, posKlassSel, posCountrySel, posFiSel, posIncludeNoValue])
+
+  const posFiOpts = useMemo(() => {
+    const present = new Set<string>()
+    for (const it of items) {
+      const a = assetById.get(it.asset_id)
+      if (a) present.add(a.financial_institution_id)
+    }
+    return institutions
+      .filter(fi => present.has(fi.id))
+      .map(fi => ({ id: fi.id, label: fi.short_name, color: fiTokenFor(fi.logo_slug, fi.short_name).color }))
+  }, [items, institutions, assetById])
 
   const [showAllPositions, setShowAllPositions] = useState(false)
   const sources = useMemo(
@@ -802,10 +844,21 @@ export default function SnapshotDetail() {
             </Card>
 
             {/* ── 7. Posições congeladas (prototype 7314) ────────────── */}
+            <AssetFilterBar
+              search={posSearch} onSearchChange={setPosSearch}
+              klassSel={posKlassSel} onKlassChange={setPosKlassSel}
+              countrySel={posCountrySel} onCountryChange={setPosCountrySel}
+              fiOpts={posFiOpts} fiSel={posFiSel} onFiChange={setPosFiSel}
+              includeZeroed={posIncludeNoValue} onIncludeZeroedChange={setPosIncludeNoValue}
+              includeZeroedLabel="Incluir sem valor"
+            />
+
             <Card padding="p-3">
               <div className="px-2 pt-2 pb-3 flex items-center justify-between">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                  Posições congeladas · {items.length} ativos
+                  Posições congeladas · {filteredPositions.length === items.length
+                    ? `${items.length} ativos`
+                    : `${filteredPositions.length} de ${items.length} ativos`}
                 </h3>
                 <button
                   disabled
@@ -817,7 +870,7 @@ export default function SnapshotDetail() {
               </div>
               <div
                 className={`overflow-x-auto -mx-1${
-                  showAllPositions && sortedPositions.length > 20
+                  showAllPositions && filteredPositions.length > 20
                     ? ' max-h-[600px] overflow-y-auto'
                     : ''
                 }`}
@@ -837,8 +890,8 @@ export default function SnapshotDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedPositions
-                      .slice(0, showAllPositions ? sortedPositions.length : 20)
+                    {filteredPositions
+                      .slice(0, showAllPositions ? filteredPositions.length : 20)
                       .map(it => {
                       const a = assetById.get(it.asset_id)
                       if (!a) return null
@@ -925,9 +978,9 @@ export default function SnapshotDetail() {
                     })}
                   </tbody>
                 </table>
-                {sortedPositions.length > 20 && !showAllPositions && (
+                {filteredPositions.length > 20 && !showAllPositions && (
                   <div className="px-3 py-2 text-[11px] text-gray-500 text-center">
-                    + {sortedPositions.length - 20} ativos ·{' '}
+                    + {filteredPositions.length - 20} ativos ·{' '}
                     <button
                       onClick={() => setShowAllPositions(true)}
                       className="text-indigo-500 dark:text-indigo-400 hover:underline"

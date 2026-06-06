@@ -6,28 +6,15 @@ import {
   type PositionOut, type UserOut, type WorkspaceOut,
 } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import AssetFilterBar from '../../components/AssetFilterBar'
 import AssetModal from '../../components/AssetModal'
 import AssetTable from '../../components/AssetTable'
 import AssetDetailPanel from '../../components/AssetDetailPanel'
 import { useEscapeKey } from '../../lib/useEscapeKey'
-import {
-  Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
-  GroupingToggle,
-} from '../../components/ui'
-import { KLASS, collapsedOf, fiTokenFor, type CollapsedClassCode } from '../../lib/tokens'
+import { Card, PageHeader } from '../../components/ui'
+import { collapsedOf, fiTokenFor } from '../../lib/tokens'
 
 type Grouping = 'none' | 'klass' | 'fi'
-
-const KLASS_OPTS = (Object.keys(KLASS) as CollapsedClassCode[]).map(id => ({
-  id,
-  label: KLASS[id].label,
-  color: KLASS[id].color,
-}))
-
-const COUNTRY_OPTS = [
-  { id: 'BR', label: '🇧🇷 Brasil' },
-  { id: 'US', label: '🇺🇸 EUA' },
-]
 
 const GROUPING_OPTS = [
   { id: 'none', label: 'Sem grupo' },
@@ -197,39 +184,21 @@ export default function SysadminAssets() {
           }
         />
 
-        <Card padding="p-3" className="space-y-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <SearchInput
-              value={search}
-              onChange={setSearch}
-              placeholder="Buscar por ticker ou nome…"
-              className="w-64"
-            />
-            <div className="flex-1" />
-            <ToggleSwitch on={includeInactive} onChange={setIncludeInactive} label="Incluir zerados" />
-          </div>
-          <div className="space-y-2 pt-3 border-t border-gray-200 dark:border-gray-800">
-            <FilterGroup label="Classe">
-              <MultiChips options={KLASS_OPTS} selected={klassSel} onChange={setKlassSel} />
-            </FilterGroup>
-            <FilterGroup label="País">
-              <MultiChips options={COUNTRY_OPTS} selected={countrySel} onChange={setCountrySel} />
-            </FilterGroup>
-            <FilterGroup label="Custodiante">
-              <MultiChips options={fiOpts} selected={fiSel} onChange={setFiSel} />
-            </FilterGroup>
-          </div>
-          <div className="flex items-center gap-3 pt-3 border-t border-gray-200 dark:border-gray-800 flex-wrap">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium min-w-[90px]">
-              Agrupar por
-            </span>
-            <GroupingToggle value={grouping} onChange={v => setGrouping(v as Grouping)} options={GROUPING_OPTS} />
-            <div className="flex-1" />
-            <div className="text-[11px] text-gray-500 dark:text-gray-400">
-              <span className="tnum">{filtered.length}</span> de <span className="tnum">{assets.length}</span> ativos
-            </div>
-          </div>
-        </Card>
+        <AssetFilterBar
+          search={search} onSearchChange={setSearch}
+          klassSel={klassSel} onKlassChange={setKlassSel}
+          countrySel={countrySel} onCountryChange={setCountrySel}
+          fiOpts={fiOpts} fiSel={fiSel} onFiChange={setFiSel}
+          includeZeroed={includeInactive} onIncludeZeroedChange={setIncludeInactive}
+          grouping={grouping} onGroupingChange={v => setGrouping(v as Grouping)}
+          groupingOpts={GROUPING_OPTS}
+          countSlot={
+            <>
+              <span className="tnum">{filtered.length}</span> de{' '}
+              <span className="tnum">{assets.length}</span> ativos
+            </>
+          }
+        />
 
         {loadError ? (
           <Card>
