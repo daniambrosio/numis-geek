@@ -1360,3 +1360,71 @@ def test_resolve_pendency_modo_valor_qty_zero_sets_market_value_to_typed_value(d
     assert item.market_value_brl == typed_value, (
         f"market_value_brl = {item.market_value_brl}, esperado {typed_value}"
     )
+
+
+def test_update_snapshot_item_price_marks_open_pendency_resolved(db):
+    """Spec sessão 2026-06-06: o modal de edição (clique em "Editar" na
+    Posições Congeladas OU em "Editar" numa pendência) chama o mesmo
+    endpoint PATCH /snapshots/{id}/items/{asset_id}. Antes, a pendência
+    ficava em aberto se o user editava por esse caminho. Agora
+    update_snapshot_item_price marca a pendência aberta como resolved."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    pen = (
+        db.query(SnapshotPendency)
+        .filter(
+            SnapshotPendency.snapshot_id == r.snapshot_id,
+            SnapshotPendency.asset_id == w["casa_id"],
+        )
+        .first()
+    )
+    assert pen is not None
+    assert pen.resolved_at is None
+
+    update_snapshot_item_price(
+        db,
+        snapshot_id=r.snapshot_id, asset_id=w["casa_id"],
+        user_id="alice", new_price=Decimal("900000"),
+        value_mode="total", note="lendo o extrato",
+    )
+    pen2 = db.get(SnapshotPendency, pen.id)
+    assert pen2.resolved_at is not None
+    assert pen2.resolved_by == "alice"
+    assert pen2.resolution_note == "lendo o extrato"
+
+
+def test_update_snapshot_item_price_modo_valor_qty_zero(db):
+    """Mesma garantia do resolve_pendency: pra qty=0 (modo VALOR), o
+    market_value vira o new_price direto, não 0."""
+    w = _seed(db)
+    now = datetime.now(timezone.utc)
+    asset_id = str(uuid.uuid4())
+    acc_id = db.query(Account).first().id
+    prev = Asset(
+        id=asset_id, workspace_id=w["ws_id"], account_id=acc_id,
+        asset_class=AssetClass.PRIVATE_PENSION, country="BR",
+        name="Prev V2 Test", ticker=None,
+        currency=Currency.BRL, current_price=None,
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(prev)
+    from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], asset_id=asset_id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 5),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("50000"), net_amount=Decimal("50000"),
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    db.flush()
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+
+    typed = Decimal("53385.74")
+    item = update_snapshot_item_price(
+        db, snapshot_id=r.snapshot_id, asset_id=asset_id,
+        user_id="alice", new_price=typed, value_mode="total",
+    )
+    assert item.quantity == Decimal("0")
+    assert item.market_value_brl == typed, f"got {item.market_value_brl}"

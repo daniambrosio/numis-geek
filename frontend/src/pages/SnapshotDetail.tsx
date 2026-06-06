@@ -487,6 +487,10 @@ export default function SnapshotDetail() {
                 periodEndDate={snap.period_end_date}
                 onResolved={refreshPendencies}
                 onConfirm={handleConfirm}
+                onEditPendency={(p) => {
+                  const it = items.find(i => i.asset_id === p.asset_id)
+                  if (it) setEditingItem(it)
+                }}
               />
             )}
 

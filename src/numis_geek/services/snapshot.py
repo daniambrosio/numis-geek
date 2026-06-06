@@ -788,7 +788,12 @@ def update_snapshot_item_price(
         db.add(item)
     item.unit_price = stored_price
     if item.quantity is not None:
-        mv_native = item.quantity * stored_price
+        # Mesma regra do resolve_pendency: qty>0 multiplica, qty=0
+        # (modo VALOR) usa stored_price direto como market_value total.
+        if item.quantity > 0:
+            mv_native = item.quantity * stored_price
+        else:
+            mv_native = stored_price
         item.market_value_native = mv_native
         ccy = asset.currency.value
         fx = snap.fx_rate_usd_brl
@@ -800,6 +805,24 @@ def update_snapshot_item_price(
             item.market_value_usd = mv_native
             if fx and fx > 0:
                 item.market_value_brl = mv_native * fx
+
+    # Se houver pendência aberta pra esse (snapshot, asset), marca como
+    # resolvida — assim o mesmo fluxo de edição cobre os 2 caminhos
+    # (Editar na seção Pendências e Editar na seção Posições Congeladas).
+    open_pen = (
+        db.query(SnapshotPendency)
+        .filter(
+            SnapshotPendency.snapshot_id == snapshot_id,
+            SnapshotPendency.asset_id == asset_id,
+            SnapshotPendency.resolved_at.is_(None),
+        )
+        .first()
+    )
+    if open_pen is not None:
+        open_pen.resolved_at = now
+        open_pen.resolved_by = user_id
+        open_pen.resolution_note = note
+
     db.flush()
 
     # Refresh snapshot totals.

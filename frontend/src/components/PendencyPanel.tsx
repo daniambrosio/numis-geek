@@ -78,6 +78,9 @@ interface Props {
   periodEndDate: string
   onResolved: () => void
   onConfirm?: () => void
+  /** Caller abre o SnapshotItemEditModal pra essa pendência (mesmo modal
+   *  do clique na Posições Congeladas). Default: prompt nativo (legacy). */
+  onEditPendency?: (pendency: SnapshotPendencyOut) => void
 }
 
 export default function PendencyPanel({
@@ -85,7 +88,7 @@ export default function PendencyPanel({
   pendencies, assetById,
   pendingTotal, totalAssetsCount, resolvedAssets,
   periodEndDate,
-  onResolved, onConfirm,
+  onResolved, onConfirm, onEditPendency,
 }: Props) {
   const groups = useMemo(
     () => groupPendenciesByFI(pendencies.filter(p => !p.resolved_at)),
@@ -173,6 +176,7 @@ export default function PendencyPanel({
                   pendency={p}
                   asset={assetById.get(p.asset_id)}
                   onResolved={onResolved}
+                  onEditPendency={onEditPendency}
                 />
               ))}
             </div>
@@ -192,11 +196,12 @@ export default function PendencyPanel({
 }
 
 function PendencyRow({
-  pendency, asset, onResolved,
+  pendency, asset, onResolved, onEditPendency,
 }: {
   pendency: SnapshotPendencyOut
   asset: AssetOut | undefined
   onResolved: () => void
+  onEditPendency?: (pendency: SnapshotPendencyOut) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -232,7 +237,13 @@ function PendencyRow({
     } catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
     finally { setBusy(false) }
   }
-  async function handleEdit() {
+  function handleEdit() {
+    // Preferido: SnapshotItemEditModal (mesmo modal das Posições Congeladas),
+    // que suporta toggle preço unitário ↔ valor total, preview, notas e
+    // remoção. patchSnapshotItem no backend marca a pendência como
+    // resolved automaticamente. Fallback pra window.prompt mantido só pra
+    // testes/legacy que não passam o callback.
+    if (onEditPendency) { onEditPendency(pendency); return }
     const raw = window.prompt(
       `Novo preço para ${pendency.asset_ticker ?? pendency.asset_name}:`,
       hasPrevious ? prevPriceNum!.toFixed(2).replace('.', ',') : '',
@@ -241,9 +252,10 @@ function PendencyRow({
     const n = Number(raw.replace(/\./g, '').replace(',', '.').trim())
     if (!Number.isFinite(n) || n < 0) { setErr('Informe um número >= 0'); return }
     setBusy(true); setErr(null)
-    try { await api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) }); onResolved() }
-    catch (e) { setErr(e instanceof Error ? e.message : 'Erro') }
-    finally { setBusy(false) }
+    api.resolveSnapshotPendency(pendency.id, { new_price: n.toFixed(2) })
+      .then(() => onResolved())
+      .catch(e => setErr(e instanceof Error ? e.message : 'Erro'))
+      .finally(() => setBusy(false))
   }
 
   return (
