@@ -18,6 +18,9 @@ interface Props {
   ym: string
   item: SnapshotItemOut
   asset: AssetOut
+  /** PTAX USD/BRL do snapshot (snap.fx_rate_usd_brl). Usado pra exibir
+   *  a conversão BRL ↔ USD no preview enquanto o user digita. */
+  fxRate?: number | null
   onSaved: (updated: SnapshotItemOut) => void
   onDeleted: (asset_id: string) => void
   onClose: () => void
@@ -36,7 +39,7 @@ function fmtNumber(n: number, decimals = 2): string {
 }
 
 export default function SnapshotItemEditModal({
-  snapshotId, ym, item, asset, onSaved, onDeleted, onClose,
+  snapshotId, ym, item, asset, fxRate, onSaved, onDeleted, onClose,
 }: Props) {
   const defaultMode: 'unit' | 'total' =
     asset.asset_class && TOTAL_CLASSES.has(asset.asset_class) ? 'total' : 'unit'
@@ -233,7 +236,7 @@ export default function SnapshotItemEditModal({
           </label>
 
           {previewUnit != null && previewTotal != null && (
-            <div className="rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 px-3 py-2 text-[11px] text-gray-600 dark:text-gray-300">
+            <div className="rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 px-3 py-2 text-[11px] text-gray-600 dark:text-gray-300 space-y-1">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   Preço unitário: <span className="tnum font-medium">{ccySymbol} {fmtNumber(previewUnit, mode === 'total' ? 4 : 2)}</span>
@@ -242,6 +245,12 @@ export default function SnapshotItemEditModal({
                   Valor total: <span className="tnum font-medium">{ccySymbol} {fmtNumber(previewTotal)}</span>
                 </div>
               </div>
+              {asset.currency === 'USD' && fxRate && fxRate > 0 && (
+                <div className="text-[10px] text-gray-500 dark:text-gray-400">
+                  ≈ <span className="tnum font-medium">R$ {fmtNumber(previewTotal * fxRate)}</span>
+                  {' '}<span className="text-gray-400">(PTAX {fxRate.toFixed(4)})</span>
+                </div>
+              )}
             </div>
           )}
 

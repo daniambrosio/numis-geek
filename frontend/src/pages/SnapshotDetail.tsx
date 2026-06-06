@@ -828,7 +828,7 @@ export default function SnapshotDetail() {
                     <tr className="text-[10px] uppercase tracking-wider text-gray-500">
                       <th className="text-left font-medium px-3 py-2">Ativo</th>
                       <th className="text-left font-medium px-3 py-2">Classe</th>
-                      <th className="text-left font-medium px-3 py-2">Instituição</th>
+                      <th className="text-left font-medium px-3 py-2">Custodiante</th>
                       <th className="text-right font-medium px-3 py-2">Qtd</th>
                       <th className="text-right font-medium px-3 py-2">Preço fim</th>
                       <th className="text-right font-medium px-3 py-2">Valor (BRL)</th>
@@ -843,7 +843,8 @@ export default function SnapshotDetail() {
                       const a = assetById.get(it.asset_id)
                       if (!a) return null
                       const klass = collapsedOf(a.asset_class)
-                      const valueBRL = Number(it.market_value_brl ?? 0)
+                      const hasValue = it.market_value_brl != null && Number(it.market_value_brl) > 0
+                      const valueBRL = hasValue ? Number(it.market_value_brl) : 0
                       const pct = totalBRL > 0 ? (valueBRL / totalBRL) * 100 : 0
                       const closePrice = it.unit_price != null ? Number(it.unit_price) : null
                       return (
@@ -911,10 +912,10 @@ export default function SnapshotDetail() {
                                 : `R$ ${closePrice.toFixed(2)}`}
                           </td>
                           <td className="px-3 text-right tnum font-medium">
-                            {fmtBRL(valueBRL)}
+                            {hasValue ? fmtBRL(valueBRL) : <span className="text-gray-500">—</span>}
                           </td>
                           <td className="px-3 text-right tnum text-gray-500">
-                            {pct.toFixed(2)}%
+                            {hasValue ? `${pct.toFixed(2)}%` : '—'}
                           </td>
                           <td className="px-3 text-gray-400">
                             <ChevronRight className="w-4 h-4" />
@@ -953,6 +954,7 @@ export default function SnapshotDetail() {
             ym={ym ?? snap.period_end_date.slice(0, 7)}
             item={editingItem}
             asset={a}
+            fxRate={snap.fx_rate_usd_brl != null ? Number(snap.fx_rate_usd_brl) : null}
             onSaved={async (updated) => {
               setEditingItem(null)
               // Replace the matching item in state so the table reflects
