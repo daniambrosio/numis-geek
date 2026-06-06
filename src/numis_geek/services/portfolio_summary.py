@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
@@ -157,12 +157,21 @@ def _history(db: Session, workspace_id: str, limit: int = 12) -> list[HistoryPoi
     ]
 
 
+def _net_amount_brl_expr():
+    """SQL expression: BRL distributions use net_amount as-is; USD ones
+    multiply by fx_rate (PTAX). Spec 56."""
+    return case(
+        (Distribution.currency == "USD", Distribution.net_amount * Distribution.fx_rate),
+        else_=Distribution.net_amount,
+    )
+
+
 def _total_received_brl(db: Session, workspace_id: str) -> Decimal:
-    """All-time sum of Distribution.net_amount × fx_rate for the workspace.
+    """All-time sum of Distribution net_amount (BRL-equiv) for the workspace.
     Includes distributions whose underlying asset is now inactive — they
     still happened historically. Excludes deactivated distribution rows."""
     total = (
-        db.query(func.sum(Distribution.net_amount * Distribution.fx_rate))
+        db.query(func.sum(_net_amount_brl_expr()))
         .filter(
             Distribution.workspace_id == workspace_id,
             Distribution.is_active == True,  # noqa: E712
@@ -179,7 +188,7 @@ def _received_by_type(db: Session, workspace_id: str) -> dict[str, Decimal]:
     rows = (
         db.query(
             Distribution.type,
-            func.sum(Distribution.net_amount * Distribution.fx_rate),
+            func.sum(_net_amount_brl_expr()),
         )
         .filter(
             Distribution.workspace_id == workspace_id,

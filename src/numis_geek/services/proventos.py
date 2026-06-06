@@ -267,7 +267,11 @@ def dy_eligible_amount_brl(db: Session, asset_id: str, *, days: int = 365) -> De
     ).all()
     total = Decimal("0")
     for r in rows:
-        total += (r.net_amount or Decimal("0")) * (r.fx_rate or Decimal("1"))
+        net = r.net_amount or Decimal("0")
+        # Spec 56 — BRL distributions já estão em BRL. fx_rate só converte USD.
+        dist_ccy = r.currency.value if hasattr(r.currency, "value") else r.currency
+        eff_fx = (r.fx_rate or Decimal("1")) if dist_ccy == "USD" else Decimal("1")
+        total += net * eff_fx
     return total
 
 

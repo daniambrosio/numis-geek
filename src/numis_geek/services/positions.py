@@ -165,6 +165,11 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         unit = r.unit_price or Decimal("0")
         fx = r.fx_rate or Decimal("1")
         gross = r.gross_amount or Decimal("0")
+        # Spec 56 — movement BRL já tem gross/unit em BRL. fx_rate fica
+        # armazenado pra exibir em USD depois (multicurrency design), mas
+        # NÃO multiplica em conversões BRL→BRL.
+        mv_ccy = r.currency.value if hasattr(r.currency, "value") else r.currency
+        effective_fx = fx if mv_ccy == "USD" else Decimal("1")
 
         is_non_cotado_row = r.quantity is None and r.gross_amount is not None
 
@@ -177,14 +182,14 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         # ── Basis update ────────────────────────────────────────────────────
         if r.type in _BASIS_ADD_TYPES:
             if is_non_cotado_row:
-                non_cotado_basis_brl += gross * fx
+                non_cotado_basis_brl += gross * effective_fx
             else:
                 basis_qty += qty
                 basis_cost_native += qty * unit
-                basis_cost_brl += qty * unit * fx
+                basis_cost_brl += qty * unit * effective_fx
         elif r.type in _BASIS_SUB_TYPES:
             if is_non_cotado_row:
-                non_cotado_basis_brl -= gross * fx
+                non_cotado_basis_brl -= gross * effective_fx
 
         # ── Cost-basis reset (PRIO3 / FULL_REDEMPTION) ─────────────────────
         if r.type == AssetMovementType.FULL_REDEMPTION or (
@@ -215,8 +220,11 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     total_received_brl = Decimal("0")
     for d in dq.all():
         net = d.net_amount or Decimal("0")
-        fx = d.fx_rate or Decimal("1")
-        total_received_brl += net * fx
+        # Spec 56 — só USD distributions convertem via PTAX. Hoje BRL dist
+        # sempre tem fx=1 (notion sync filtra), mas defesa contra futuro.
+        dist_ccy = d.currency.value if hasattr(d.currency, "value") else d.currency
+        eff_fx = (d.fx_rate or Decimal("1")) if dist_ccy == "USD" else Decimal("1")
+        total_received_brl += net * eff_fx
 
     # ── Derived figures from current_price (when set) ─────────────────────
     current_price = asset.current_price if asset and asset.current_price is not None else None
