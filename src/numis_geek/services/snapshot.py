@@ -649,7 +649,15 @@ def resolve_pendency(
             db.add(item)
         item.unit_price = new_price
         if item.quantity is not None:
-            mv_native = item.quantity * new_price
+            # Modo cotado (qty>0): mv = qty × unit_price (que já foi
+            # dividido por qty acima quando mode='total').
+            # Modo VALOR (qty=0): unit_price É o market_value total
+            # — multiplicar daria 0. Bug visto em 2026-06-06 com
+            # Previdência (XP Corp Light/Trend Pós-Fixado).
+            if item.quantity > 0:
+                mv_native = item.quantity * new_price
+            else:
+                mv_native = new_price
             item.market_value_native = mv_native
             # Recompute BRL/USD using snapshot fx_rate.
             ccy = asset.currency.value if asset else "BRL"

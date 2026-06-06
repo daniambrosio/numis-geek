@@ -1284,3 +1284,79 @@ def test_find_affected_snapshots_preview_uses_frozen_price(db):
     # 110 × frozen, NÃO 110 × live. fx_rate p/ BRL é 1 (asset BRL).
     expected = Decimal("110") * frozen_price
     assert a.new_market_value_brl == expected
+
+
+# ── Spec sessão 2026-06-06: modo-VALOR resolve_pendency ────────────────────
+
+
+def test_resolve_pendency_modo_valor_qty_zero_sets_market_value_to_typed_value(db):
+    """Bug 2026-06-06: ativo modo-VALOR (Previdência, FGTS, FIM/FIC) tem
+    quantity_held=0 porque movement é non_cotado (qty=NULL, gross_only).
+    Quando o user resolve a pendência tipando o valor total do extrato,
+    o código antigo fazia `mv = item.quantity * unit_price = 0 * 53385 = 0`
+    e o fechamento mostrava R$ 0. Fix: pra qty=0 modo-VALOR, market_value
+    = new_price direto (já é o total)."""
+    w = _seed(db)
+    # Adiciona um Previdência (PRIVATE_PENSION) no workspace com movement
+    # non-cotado (gross_only). Isso reproduz o XP Corp Light.
+    now = datetime.now(timezone.utc)
+    asset_id = str(uuid.uuid4())
+    acc_id = db.query(Account).first().id
+    prev = Asset(
+        id=asset_id, workspace_id=w["ws_id"], account_id=acc_id,
+        asset_class=AssetClass.PRIVATE_PENSION, country="BR",
+        name="XP Seg Prev Test", ticker=None,
+        currency=Currency.BRL, current_price=None,
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(prev)
+    from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], asset_id=asset_id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 5),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("50000"), net_amount=Decimal("50000"),
+        currency=Currency.BRL, fx_rate=Decimal("1"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    db.flush()
+
+    # Cria snapshot — modo-VALOR é detectado por _sync_missing_value_mode_items
+    # via create_snapshot → asset_has_position retorna True por
+    # total_invested_brl != 0.
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    pen = (
+        db.query(SnapshotPendency)
+        .filter(
+            SnapshotPendency.snapshot_id == r.snapshot_id,
+            SnapshotPendency.asset_id == asset_id,
+        )
+        .first()
+    )
+    assert pen is not None, "modo-VALOR asset deve gerar pendência"
+
+    # User digita o valor total do extrato (R$ 53.385,74)
+    typed_value = Decimal("53385.74")
+    resolve_pendency(
+        db, pendency_id=pen.id, user_id="alice",
+        new_price=typed_value,
+    )
+
+    # CRÍTICO: market_value_brl deve ser o valor digitado, NÃO 0.
+    item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .one()
+    )
+    assert item.quantity == Decimal("0")
+    assert item.unit_price == typed_value
+    assert item.market_value_native == typed_value, (
+        f"market_value_native = {item.market_value_native}, esperado {typed_value}"
+    )
+    assert item.market_value_brl == typed_value, (
+        f"market_value_brl = {item.market_value_brl}, esperado {typed_value}"
+    )
