@@ -1063,3 +1063,40 @@ def test_bulk_apply_skips_auto_priced_assets(db):
     # because the bulk path filters it out from the open list entirely.
     not_in_ids = {p["pendency_id"] for p in result.bulk_detail.pendency_not_in_extract}
     assert pen.id not in not_in_ids
+    # Spec 57 follow-up — auto-priced match is surfaced in auto_skipped,
+    # NOT orphan, so the UI can show "recognized, no action needed".
+    auto_tickers = {a["ticker"] for a in result.bulk_detail.auto_skipped}
+    assert auto_tickers == {"AAPL"}
+    orphan_tickers = {o["ticker"] for o in result.bulk_detail.orphan}
+    assert "AAPL" not in orphan_tickers
+
+
+def test_preview_bulk_extract_classifies_without_writes(db):
+    """preview_bulk_extract returns the same buckets that confirm would,
+    but performs no DB writes — Asset prices/pendencies unchanged."""
+    w = _world(db)
+    # PETR4 (matched), VALE3 (matched but no pendency), ABEV3 (orphan).
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+            {"ticker_raw": "VALE3", "ticker_normalized": "VALE3",
+             "quantity": 10, "unit_price": 99.00, "confidence": 0.9},
+            {"ticker_raw": "ABEV3", "ticker_normalized": "ABEV3",
+             "quantity": 50, "unit_price": 12.00, "confidence": 0.9},
+        ]
+    })
+    petr_before = db.get(Asset, w["petr_id"]).current_price
+    vale_before = db.get(Asset, w["vale_id"]).current_price
+    pen_petr_before = db.get(SnapshotPendency, w["pen_petr"]).resolved_at
+
+    result = extraction_service.preview_bulk_extract(db, job_id=job_id)
+
+    # Classification mirrors confirm.
+    assert {a["ticker"] for a in result.bulk_detail.applied} == {"PETR4"}
+    assert {m["ticker"] for m in result.bulk_detail.matched_no_pendency} == {"VALE3"}
+    assert {o["ticker"] for o in result.bulk_detail.orphan} == {"ABEV3"}
+    # No writes happened.
+    assert db.get(Asset, w["petr_id"]).current_price == petr_before
+    assert db.get(Asset, w["vale_id"]).current_price == vale_before
+    assert db.get(SnapshotPendency, w["pen_petr"]).resolved_at == pen_petr_before

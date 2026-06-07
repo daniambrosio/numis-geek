@@ -55,11 +55,22 @@ class BulkApplyDetail:
 
     Each entry is a plain dict so the route layer can serialize via Pydantic
     without re-mapping field names.
+
+    For PREVIEW (read-only): `applied` becomes the prospective list — same
+    shape, but `new_price`/`previous_price` reflect what WOULD happen.
     """
-    applied: list[dict]              # matched + pendency resolved
+    applied: list[dict]              # matched + pendency (resolved for apply, prospective for preview)
     matched_no_pendency: list[dict]  # asset exists but no open pendency in snapshot
     orphan: list[dict]               # extract line had no matching asset
     pendency_not_in_extract: list[dict]  # snapshot pendency the extract didn't cover
+    # Spec 57 follow-up — asset matched but price_source is automated
+    # (BRAPI/FINNHUB/...); extract is ignored. UI shows this so the user
+    # knows the line was recognized but no action is needed.
+    auto_skipped: list[dict] = None  # populated only by preview/apply paths that classify
+
+    def __post_init__(self):
+        if self.auto_skipped is None:
+            self.auto_skipped = []
 
 
 @dataclass
@@ -734,40 +745,38 @@ def _institution_short_name_for_asset(db: Session, asset: Asset) -> str | None:
     return fi.short_name if fi else None
 
 
-def _apply_bulk_to_snapshot(
+def _classify_bulk_extract(
     db: Session, job: ExtractionJob, payload: dict,
     *,
-    user_id: str | None,
-    user_email: str | None,
     institution_short_name: str | None = None,
     manual_mappings: dict[str, str] | None = None,
     manual_prices: dict[str, float] | None = None,
     manual_modes: dict[str, str] | None = None,
-) -> ExtractionApplyResult:
-    """Bulk path (Spec 48): match positions[] by ticker to open pendencies
-    in the snapshot. Each match calls resolve_pendency (which updates
-    Asset.current_price + PortfolioSnapshotItem + recomputes totals) with
-    the bulk attachment as the resolution attachment.
+) -> tuple[
+    list[dict],  # apply_plan: items the writer must process (incl. pendency, asset, price, mode)
+    BulkApplyDetail,
+    list[str],   # classification-time errors (e.g. missing ticker, snapshot not found)
+]:
+    """Spec 57 follow-up — pure classification, no writes.
 
-    Returns three categorized lists in BulkApplyDetail so the UI can render
-    a 3-section review/result panel without re-querying.
+    Returns the prospective plan PLUS the categorized buckets the UI shows.
+    `_apply_bulk_to_snapshot` calls this and then performs writes for each
+    item in `apply_plan`. The preview endpoint calls this and discards
+    `apply_plan` (or reuses it to show predicted new/previous prices).
     """
-    snap = db.get(PortfolioSnapshot, job.snapshot_id)
+    snap = db.get(PortfolioSnapshot, job.snapshot_id) if job.snapshot_id else None
     if snap is None:
-        return ExtractionApplyResult(
-            applied_count=0, skipped_count=0,
-            errors=[f"snapshot {job.snapshot_id} not found"],
-            bulk_detail=BulkApplyDetail(
-                applied=[], matched_no_pendency=[], orphan=[],
-                pendency_not_in_extract=[],
-            ),
-        )
+        return [], BulkApplyDetail(
+            applied=[], matched_no_pendency=[], orphan=[],
+            pendency_not_in_extract=[], auto_skipped=[],
+        ), [f"snapshot {job.snapshot_id} not found"]
 
     # Bulk extract only resolves pendencies whose action is "user edits the
     # price" (EDIT_PRICE/UPLOAD_FILE). RETRY_API pendencies belong to assets
     # with an automated price source — their fix is re-fetching the provider,
     # not overwriting the price from a brokerage extract.
     from numis_geek.models.portfolio_snapshot import PendencyAction
+    from numis_geek.services.price_freshness import AUTOMATED_SOURCES
 
     open_pendencies = (
         db.query(SnapshotPendency)
@@ -781,17 +790,14 @@ def _apply_bulk_to_snapshot(
     pendency_by_asset = {p.asset_id: p for p in open_pendencies}
 
     positions = payload.get("positions") or []
-    applied_list: list[dict] = []
+    apply_plan: list[dict] = []
+    applied_preview: list[dict] = []
     matched_no_pendency: list[dict] = []
     orphan: list[dict] = []
+    auto_skipped: list[dict] = []
     matched_asset_ids: set[str] = set()
     errors: list[str] = []
 
-    # Lazy import to avoid circular: services.snapshot imports models that
-    # touch extraction in tests.
-    from numis_geek.services import snapshot as snapshot_service
-
-    # Spec 49 hotfix — index manual mappings/prices/modes by ticker_raw.
     overrides = dict(manual_mappings or {})
     price_overrides = dict(manual_prices or {})
     mode_overrides = dict(manual_modes or {})
@@ -803,16 +809,6 @@ def _apply_bulk_to_snapshot(
             price_overrides.get(ticker_raw_key)
             or price_overrides.get(ticker)
         )
-        manual_mode = (
-            mode_overrides.get(ticker_raw_key)
-            or mode_overrides.get(ticker)
-            or "unit"
-        )
-        # Effective unit_price: manual override → extracted unit_price →
-        # market_value (LLM sometimes only fills the consolidated value).
-        # Total-mode manual override is converted to unit_price below using
-        # the asset's existing position quantity (Spec 49 hotfix #4 — fixes
-        # the Fundo Verde BTG 3.9 BI market_value blowup).
         unit_price_raw = (
             manual_price
             or pos.get("unit_price")
@@ -836,24 +832,28 @@ def _apply_bulk_to_snapshot(
             })
             continue
 
-        # Auto-priced asset: skip silently unless the user explicitly forced
-        # this pendency via manual mapping. Provider is authoritative; the
-        # extract neither resolves a pendency nor shows up as noise in the
-        # matched-without-pendency bucket.
-        from numis_geek.services.price_freshness import AUTOMATED_SOURCES
+        asset_fi = _institution_short_name_for_asset(db, asset)
+
+        # Auto-priced asset: extract is informational only. Surface in
+        # auto_skipped so the UI can show "recognized, no action needed",
+        # but never feed it into the apply plan (provider owns the price).
         if asset.price_source in AUTOMATED_SOURCES and not manual_pendency_id:
+            auto_skipped.append({
+                "asset_id": asset.id,
+                "ticker": ticker,
+                "asset_name": asset.name,
+                "institution_short_name": asset_fi,
+                "price_source": asset.price_source.value,
+                "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
+            })
             continue
 
-        asset_fi = _institution_short_name_for_asset(db, asset)
         if (
             institution_short_name
             and asset_fi != institution_short_name
             and not manual_pendency_id
         ):
-            # Asset belongs to a different FI than the user scoped to.
-            # Skip silently — neither matched_no_pendency nor orphan; the
-            # extract just doesn't apply here. Manual mappings override this
-            # filter (Spec 49 hotfix — user explicitly chose the pendency).
+            # Different FI than the one scoped: silently out of scope.
             continue
 
         matched_asset_ids.add(asset.id)
@@ -874,42 +874,32 @@ def _apply_bulk_to_snapshot(
             )
             continue
 
-        previous_price = asset.current_price
-        new_price = Decimal(str(unit_price_raw))
-        # Spec 49 hotfix #9 — defer to resolve_pendency for the unit/total
-        # conversion. Bulk only forwards the explicit user override; default
-        # is None (auto-detect by asset_class inside resolve_pendency).
         effective_mode = (
             mode_overrides.get(ticker_raw_key)
             or mode_overrides.get(ticker)
         )
-        note = (
-            f"bulk extract (job {job.id})"
-            + (f" · FI={institution_short_name}" if institution_short_name else "")
-            + (f" · mode={effective_mode}" if effective_mode else "")
-        )
-        try:
-            snapshot_service.resolve_pendency(
-                db,
-                pendency_id=pendency.id,
-                user_id=user_id,
-                user_email=user_email,
-                new_price=new_price,
-                value_mode=effective_mode,
-                file_id=job.attachment_id,
-                note=note,
-            )
-        except ValueError as e:
-            errors.append(f"pendency {pendency.id}: {e}")
-            continue
-        applied_list.append({
+        new_price = Decimal(str(unit_price_raw))
+        apply_plan.append({
+            "pendency_id": pendency.id,
+            "asset_id": asset.id,
+            "ticker": ticker,
+            "asset_name": asset.name,
+            "institution_short_name": asset_fi,
+            "new_price": new_price,
+            "previous_price": asset.current_price,
+            "effective_mode": effective_mode,
+            "ticker_raw_key": ticker_raw_key,
+        })
+        applied_preview.append({
             "pendency_id": pendency.id,
             "asset_id": asset.id,
             "ticker": ticker,
             "asset_name": asset.name,
             "institution_short_name": asset_fi,
             "new_price": str(new_price),
-            "previous_price": str(previous_price) if previous_price is not None else None,
+            "previous_price": (
+                str(asset.current_price) if asset.current_price is not None else None
+            ),
         })
 
     # Pendencies still open after this pass — scoped to the FI when set.
@@ -931,15 +921,119 @@ def _apply_bulk_to_snapshot(
             "institution_short_name": asset_fi,
         })
 
-    db.flush()
+    return apply_plan, BulkApplyDetail(
+        applied=applied_preview,
+        matched_no_pendency=matched_no_pendency,
+        orphan=orphan,
+        pendency_not_in_extract=not_in_extract,
+        auto_skipped=auto_skipped,
+    ), errors
+
+
+def preview_bulk_extract(
+    db: Session, *, job_id: str,
+    institution_short_name: str | None = None,
+    manual_mappings: dict[str, str] | None = None,
+    manual_prices: dict[str, float] | None = None,
+    manual_modes: dict[str, str] | None = None,
+) -> ExtractionApplyResult:
+    """Read-only classification of an EXTRACTED bulk job. Returns the same
+    `BulkApplyDetail` shape the UI gets after Apply, but no writes happen.
+    Useful for the review modal so it shows exactly what Apply will do."""
+    job = db.get(ExtractionJob, job_id)
+    if job is None:
+        raise ExtractionError(f"Job {job_id} not found")
+    if job.snapshot_id is None:
+        raise ExtractionError("Preview only available for bulk jobs (snapshot_id set)")
+    payload = job.extracted_json or {}
+    apply_plan, detail, errors = _classify_bulk_extract(
+        db, job, payload,
+        institution_short_name=institution_short_name,
+        manual_mappings=manual_mappings,
+        manual_prices=manual_prices,
+        manual_modes=manual_modes,
+    )
+    _ = apply_plan  # discarded — preview is read-only
     return ExtractionApplyResult(
-        applied_count=len(applied_list),
-        skipped_count=len(orphan) + len(matched_no_pendency),
+        applied_count=len(detail.applied),
+        skipped_count=len(detail.orphan) + len(detail.matched_no_pendency),
         errors=errors,
-        bulk_detail=BulkApplyDetail(
-            applied=applied_list,
-            matched_no_pendency=matched_no_pendency,
-            orphan=orphan,
-            pendency_not_in_extract=not_in_extract,
-        ),
+        bulk_detail=detail,
+    )
+
+
+def _apply_bulk_to_snapshot(
+    db: Session, job: ExtractionJob, payload: dict,
+    *,
+    user_id: str | None,
+    user_email: str | None,
+    institution_short_name: str | None = None,
+    manual_mappings: dict[str, str] | None = None,
+    manual_prices: dict[str, float] | None = None,
+    manual_modes: dict[str, str] | None = None,
+) -> ExtractionApplyResult:
+    """Bulk path (Spec 48): match positions[] by ticker to open pendencies
+    in the snapshot. Each match calls resolve_pendency (which updates
+    Asset.current_price + PortfolioSnapshotItem + recomputes totals) with
+    the bulk attachment as the resolution attachment.
+
+    Returns categorized lists in BulkApplyDetail so the UI can render
+    the review/result panel without re-querying.
+    """
+    apply_plan, detail, errors = _classify_bulk_extract(
+        db, job, payload,
+        institution_short_name=institution_short_name,
+        manual_mappings=manual_mappings,
+        manual_prices=manual_prices,
+        manual_modes=manual_modes,
+    )
+    if not apply_plan and not detail.applied:
+        # Snapshot-not-found case: detail is empty + error already set.
+        return ExtractionApplyResult(
+            applied_count=0, skipped_count=0, errors=errors, bulk_detail=detail,
+        )
+
+    from numis_geek.services import snapshot as snapshot_service
+
+    actually_applied: list[dict] = []
+    for item in apply_plan:
+        note = (
+            f"bulk extract (job {job.id})"
+            + (f" · FI={institution_short_name}" if institution_short_name else "")
+            + (f" · mode={item['effective_mode']}" if item["effective_mode"] else "")
+        )
+        try:
+            snapshot_service.resolve_pendency(
+                db,
+                pendency_id=item["pendency_id"],
+                user_id=user_id,
+                user_email=user_email,
+                new_price=item["new_price"],
+                value_mode=item["effective_mode"],
+                file_id=job.attachment_id,
+                note=note,
+            )
+        except ValueError as e:
+            errors.append(f"pendency {item['pendency_id']}: {e}")
+            continue
+        actually_applied.append({
+            "pendency_id": item["pendency_id"],
+            "asset_id": item["asset_id"],
+            "ticker": item["ticker"],
+            "asset_name": item["asset_name"],
+            "institution_short_name": item["institution_short_name"],
+            "new_price": str(item["new_price"]),
+            "previous_price": (
+                str(item["previous_price"]) if item["previous_price"] is not None else None
+            ),
+        })
+
+    db.flush()
+    # Overwrite the prospective `applied` with what actually went through.
+    detail.applied = actually_applied
+    return ExtractionApplyResult(
+        applied_count=len(actually_applied),
+        skipped_count=len(detail.orphan) + len(detail.matched_no_pendency),
+        errors=errors,
+        bulk_detail=detail,
     )

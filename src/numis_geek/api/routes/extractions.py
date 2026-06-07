@@ -114,6 +114,16 @@ class BulkApplyDetailOut(BaseModel):
     matched_no_pendency: list[dict]
     orphan: list[dict]
     pendency_not_in_extract: list[dict]
+    # Spec 57 follow-up — assets matched but auto-priced (BRAPI/FINNHUB/…).
+    # UI shows them in a collapsed informational bucket; apply ignores them.
+    auto_skipped: list[dict] = []
+
+
+class PreviewExtractionBody(BaseModel):
+    institution_short_name: str | None = None
+    manual_mappings: dict[str, str] | None = None
+    manual_prices: dict[str, float] | None = None
+    manual_modes: dict[str, str] | None = None
 
 
 class ApplyResultOut(BaseModel):
@@ -231,6 +241,49 @@ def confirm_extraction(
             matched_no_pendency=result.bulk_detail.matched_no_pendency,
             orphan=result.bulk_detail.orphan,
             pendency_not_in_extract=result.bulk_detail.pendency_not_in_extract,
+            auto_skipped=result.bulk_detail.auto_skipped,
+        )
+    return ApplyResultOut(
+        applied_count=result.applied_count,
+        skipped_count=result.skipped_count,
+        errors=result.errors,
+        bulk_detail=detail_out,
+    )
+
+
+@router.post("/{job_id}/preview", response_model=ApplyResultOut)
+def preview_extraction(
+    job_id: str,
+    body: PreviewExtractionBody,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 57 follow-up — read-only classification preview for a bulk
+    job. Returns the same shape as confirm, with no writes. UI uses this
+    to render the review modal so what's shown matches what will happen."""
+    j = db.get(ExtractionJob, job_id)
+    if j is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _check_access(j, current_user)
+    try:
+        result = extraction_service.preview_bulk_extract(
+            db,
+            job_id=job_id,
+            institution_short_name=body.institution_short_name,
+            manual_mappings=body.manual_mappings,
+            manual_prices=body.manual_prices,
+            manual_modes=body.manual_modes,
+        )
+    except extraction_service.ExtractionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    detail_out = None
+    if result.bulk_detail is not None:
+        detail_out = BulkApplyDetailOut(
+            applied=result.bulk_detail.applied,
+            matched_no_pendency=result.bulk_detail.matched_no_pendency,
+            orphan=result.bulk_detail.orphan,
+            pendency_not_in_extract=result.bulk_detail.pendency_not_in_extract,
+            auto_skipped=result.bulk_detail.auto_skipped,
         )
     return ApplyResultOut(
         applied_count=result.applied_count,

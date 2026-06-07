@@ -1061,6 +1061,23 @@ export const api = {
     request<ExtractionJobOut>(`/extractions/${id}/reject`, {
       method: 'POST', body: JSON.stringify({ reason: reason ?? null }),
     }),
+  // Spec 57 follow-up — read-only classification preview for bulk jobs.
+  previewExtraction: (
+    id: string,
+    opts: {
+      institution_short_name?: string | null
+      manual_mappings?: Record<string, string> | null
+      manual_prices?: Record<string, number> | null
+    } = {},
+  ) =>
+    request<ExtractionApplyResultOut>(`/extractions/${id}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({
+        institution_short_name: opts.institution_short_name ?? null,
+        manual_mappings: opts.manual_mappings ?? null,
+        manual_prices: opts.manual_prices ?? null,
+      }),
+    }),
   // Spec 48 — bulk extract for a snapshot.
   createBulkExtract: (snapshot_id: string, attachment_id: string) =>
     request<BulkExtractJobOut>(`/snapshots/${snapshot_id}/bulk-extract`, {
@@ -1155,6 +1172,16 @@ export interface BulkApplyDetailOut {
     ticker: string | null
     asset_name: string
     institution_short_name: string | null
+  }>
+  // Spec 57 follow-up — asset matched but price_source is automated
+  // (BRAPI/FINNHUB/...); UI shows in a collapsed informational bucket.
+  auto_skipped: Array<{
+    asset_id: string
+    ticker: string | null
+    asset_name: string
+    institution_short_name: string | null
+    price_source: string
+    unit_price: string | null
   }>
 }
 

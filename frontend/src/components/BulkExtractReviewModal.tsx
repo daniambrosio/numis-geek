@@ -1,18 +1,25 @@
 /* Spec 48 — Bulk extract review modal.
  *
- * Opens after BulkUploadZone completes extraction. Shows 3 sections:
+ * Opens after BulkUploadZone completes extraction. Shows 4 sections:
  *   - Casadas (will resolve)
- *   - Linhas órfãs (ticker not in workspace, ignored)
  *   - Pendências não cobertas no extrato (info only)
+ *   - Linhas órfãs (ticker not in workspace — needs manual map or ignore)
+ *   - Ignoradas automaticamente (auto-priced — Spec 57; collapsed)
  *
  * Optional FI dropdown — picks the FI to scope matching to. V1: this is
  * passed as metadata to confirmExtraction; the backend filters matches.
+ *
+ * Spec 57 follow-up — classification comes from the backend preview
+ * endpoint so the modal shows exactly what confirm will do (instead of
+ * a divergent client-side guess that didn't know about auto-priced
+ * skip).
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Sparkles, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Sparkles, X } from 'lucide-react'
 
 import {
   api,
+  type BulkApplyDetailOut,
   type BulkExtractJobOut,
   type FinancialInstitutionOut,
   type SnapshotPendencyOut,
@@ -65,57 +72,93 @@ export default function BulkExtractReviewModal({
     return j?.positions ?? []
   }, [job])
 
-  // Client-side preview: classify each position against open pendencies by ticker.
-  // The backend does the authoritative version on confirm; this is just so the
-  // user sees what will happen.
   const openPendencies = useMemo(
     () => pendencies.filter(p => !p.resolved_at),
     [pendencies],
   )
-  const pendencyByTicker = useMemo(() => {
-    const m = new Map<string, SnapshotPendencyOut>()
-    for (const p of openPendencies) {
-      if (p.asset_ticker) m.set(p.asset_ticker, p)
-    }
-    return m
-  }, [openPendencies])
+  const pendencyById = useMemo(
+    () => new Map(openPendencies.map(p => [p.id, p])),
+    [openPendencies],
+  )
 
+  // Spec 57 follow-up — server-authoritative classification. Re-fetched
+  // whenever the user changes FI scope or manual mapping; debouncing is
+  // overkill since the call is local + read-only.
+  const [serverDetail, setServerDetail] = useState<BulkApplyDetailOut | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    setPreviewLoading(true)
+    api.previewExtraction(job.id, {
+      institution_short_name: fiShortName || null,
+      manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
+    })
+      .then(r => {
+        if (cancelled) return
+        setServerDetail(r.bulk_detail ?? null)
+        setPreviewLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        // Keep last good state; surface as error so user knows preview is stale.
+        setPreviewLoading(false)
+        setError('Não consegui carregar a prévia. Tente reabrir.')
+      })
+    return () => { cancelled = true }
+  }, [job.id, fiShortName, manualMappings])
+
+  // Adapt server payload to the shape the renderer expects. `matched`
+  // pairs each applied row with its pendency object (looked up from
+  // openPendencies by id). `price` reflects the unit_price the backend
+  // would use (extracted or manual override); NaN signals "no price yet".
   const preview = useMemo(() => {
     const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number; manual: boolean }> = []
     const orphan: Array<{ ticker: string; price: number | null }> = []
-    const matchedAssetIds = new Set<string>()
-    const pendencyById = new Map(openPendencies.map(p => [p.id, p]))
-    for (const pos of positions) {
-      const t = tickerOf(pos)
-      if (!t) continue
-      const price = typeof pos.unit_price === 'number' ? pos.unit_price : null
-      // Manual override always wins (Spec 49 hotfix).
-      const manualPenId = manualMappings[pos.ticker_raw || ''] ?? manualMappings[t]
-      if (manualPenId) {
-        const forced = pendencyById.get(manualPenId)
-        if (forced) {
-          matched.push({ ticker: t, pendency: forced, price: price ?? NaN, manual: true })
-          matchedAssetIds.add(forced.asset_id)
-          continue
-        }
+    const notCovered: SnapshotPendencyOut[] = []
+    const autoSkipped: Array<{ ticker: string; asset_name: string; institution: string | null; price_source: string }> = []
+    if (serverDetail) {
+      for (const a of serverDetail.applied) {
+        const pen = pendencyById.get(a.pendency_id)
+        if (!pen) continue
+        const tickerKey = positions.find(p => tickerOf(p) === a.ticker)?.ticker_raw ?? (a.ticker ?? '')
+        matched.push({
+          ticker: a.ticker ?? '',
+          pendency: pen,
+          price: Number(a.new_price),
+          manual: !!manualMappings[tickerKey],
+        })
       }
-      const p = pendencyByTicker.get(t)
-      if (p && (fiShortName === '' || p.asset_institution_short_name === fiShortName)) {
-        matched.push({ ticker: t, pendency: p, price: price ?? NaN, manual: false })
-        matchedAssetIds.add(p.asset_id)
-      } else if (p) {
-        // Pendency exists but is from another FI — skip (backend will too).
-      } else {
-        orphan.push({ ticker: t, price })
+      for (const o of serverDetail.orphan) {
+        orphan.push({
+          ticker: o.ticker,
+          price: o.unit_price != null ? Number(o.unit_price) : null,
+        })
+      }
+      for (const m of serverDetail.matched_no_pendency) {
+        // Treated as orphan from the user's perspective — same dropdown to
+        // map manually. Backend ignores them otherwise.
+        orphan.push({
+          ticker: m.ticker ?? '',
+          price: m.unit_price != null ? Number(m.unit_price) : null,
+        })
+      }
+      for (const p of serverDetail.pendency_not_in_extract) {
+        const pen = pendencyById.get(p.pendency_id)
+        if (pen) notCovered.push(pen)
+      }
+      for (const s of serverDetail.auto_skipped) {
+        autoSkipped.push({
+          ticker: s.ticker ?? '',
+          asset_name: s.asset_name,
+          institution: s.institution_short_name,
+          price_source: s.price_source,
+        })
       }
     }
-    const notCovered = openPendencies.filter(p => {
-      if (matchedAssetIds.has(p.asset_id)) return false
-      if (fiShortName && p.asset_institution_short_name !== fiShortName) return false
-      return true
-    })
-    return { matched, orphan, notCovered }
-  }, [positions, pendencyByTicker, openPendencies, fiShortName, manualMappings])
+    return { matched, orphan, notCovered, autoSkipped }
+  }, [serverDetail, pendencyById, positions, manualMappings])
+
+  const [autoSkippedOpen, setAutoSkippedOpen] = useState(false)
 
   async function handleApply() {
     setApplying(true); setError(null)
@@ -196,6 +239,9 @@ export default function BulkExtractReviewModal({
             <span className="text-[11px] text-gray-500">
               Filtra o matching: só pendências dessa FI serão resolvidas.
             </span>
+            {previewLoading && (
+              <span className="text-[11px] text-gray-400 italic">recalculando…</span>
+            )}
           </div>
 
           <Section
@@ -424,6 +470,43 @@ export default function BulkExtractReviewModal({
               </ul>
             )}
           </Section>
+
+          {preview.autoSkipped.length > 0 && (
+            <div
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/30"
+              data-testid="bulk-section-auto-skipped"
+            >
+              <button
+                type="button"
+                onClick={() => setAutoSkippedOpen(o => !o)}
+                className="w-full px-3 py-2 flex items-center gap-2 text-left"
+              >
+                {autoSkippedOpen
+                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                <span className="text-[12px] font-semibold text-gray-700 dark:text-gray-300">
+                  Ignoradas automaticamente ({preview.autoSkipped.length})
+                </span>
+                <span className="text-[11px] text-gray-500">
+                  — ativos com preço gerenciado por API, extrato não toca
+                </span>
+              </button>
+              {autoSkippedOpen && (
+                <ul className="px-3 pb-3 text-[11px] text-gray-500 space-y-0.5">
+                  {preview.autoSkipped.map(s => (
+                    <li key={`${s.ticker}-${s.asset_name}`}>
+                      <span className="font-mono text-gray-600 dark:text-gray-400">{s.ticker}</span>
+                      <span className="ml-1">— {s.asset_name}</span>
+                      {s.institution && <span className="ml-1 text-gray-400">· {s.institution}</span>}
+                      <span className="ml-1.5 text-[10px] uppercase tracking-wider text-gray-400">
+                        [{s.price_source}]
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="text-[12px] text-red-600 dark:text-red-400">{error}</div>
