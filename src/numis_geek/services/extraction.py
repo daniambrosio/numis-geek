@@ -14,7 +14,9 @@ batch uploads become a thing.
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -70,6 +72,69 @@ class ExtractionApplyResult:
 
 class ExtractionError(Exception):
     pass
+
+
+# ── disambiguator ────────────────────────────────────────────────────────────
+
+# Datas no notes vêm em três formatos vistos em extratos: DD/MM/YYYY,
+# YYYY-MM-DD, MM/YYYY. Captura o mais específico que encontrar.
+_DATE_PATTERNS = (
+    re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"),       # 2034-08-16
+    re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b"),       # 16/08/2034
+    re.compile(r"\b(\d{2})/(\d{4})\b"),               # 08/2034
+)
+
+
+def _maturity_from_notes(notes: str | None) -> str | None:
+    """Return an ISO-ish maturity tag (`2034-08-16` or `2034-08`) extracted
+    from the free-text notes, or None if no date pattern matches."""
+    if not notes:
+        return None
+    text = notes
+    if m := _DATE_PATTERNS[0].search(text):
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    if m := _DATE_PATTERNS[1].search(text):
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    if m := _DATE_PATTERNS[2].search(text):
+        return f"{m.group(2)}-{m.group(1)}"
+    return None
+
+
+def _disambiguate_duplicate_tickers(validated: Any) -> None:
+    """Spec 57 defensive layer: when two positions returned by the LLM share
+    a ticker_raw (e.g. 10x 'United States of America' for distinct
+    Treasury maturities), append the maturity extracted from `notes` to
+    make each ticker_raw unique. Mutates `validated.positions` in place.
+
+    Safe no-op when:
+    - the output model has no `positions` attribute (other source_hints)
+    - all ticker_raws are already unique
+    - duplicate has no `notes` to mine a date from (left as-is; downstream
+      still flags it as orphan, but at least the user sees ONE per row)
+    """
+    positions = getattr(validated, "positions", None)
+    if not positions:
+        return
+    counts = Counter(p.ticker_raw for p in positions if p.ticker_raw)
+    dups = {t for t, n in counts.items() if n > 1}
+    if not dups:
+        return
+    seen: set[str] = set(t for t in counts if t not in dups)
+    for pos in positions:
+        if pos.ticker_raw not in dups:
+            continue
+        maturity = _maturity_from_notes(getattr(pos, "notes", None))
+        if not maturity:
+            continue
+        new_raw = f"{pos.ticker_raw} {maturity}"
+        # Bump suffix if a date collision still occurs (rare).
+        suffix = 2
+        candidate = new_raw
+        while candidate in seen:
+            candidate = f"{new_raw} #{suffix}"
+            suffix += 1
+        pos.ticker_raw = candidate
+        seen.add(candidate)
 
 
 # ── create + run (sync) ──────────────────────────────────────────────────────
@@ -162,6 +227,7 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         )
         parsed_obj = parse_json_block(call.text)
         validated = template.output_model.model_validate(parsed_obj)
+        _disambiguate_duplicate_tickers(validated)
 
         job.extracted_json = validated.model_dump()
         job.model = call.model

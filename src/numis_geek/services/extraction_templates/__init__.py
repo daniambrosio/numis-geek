@@ -89,22 +89,32 @@ SCREENSHOT_PRICE = Template(
 
 
 BROKER_POSITION = Template(
-    version="v2",
+    version="v3",
     system=(
         "Você é um extrator de extratos de posição de corretora (PDF/imagem/CSV). "
         "Extraia CADA linha visível como uma posição JSON — inclusive fundos, "
-        "renda fixa, tesouro, ETFs, cripto, etc. NUNCA pule uma linha só "
-        "porque não tem ticker de bolsa.\n\n"
-        "Regras pra `ticker_raw` (campo obrigatório):\n"
+        "renda fixa, tesouro, ETFs, cripto, bonds, debêntures. NUNCA pule uma "
+        "linha só porque não tem ticker de bolsa.\n\n"
+        "REGRA DE OURO pra `ticker_raw` (campo obrigatório):\n"
+        "**Duas posições NUNCA podem ter o mesmo `ticker_raw`.** Se você ia "
+        "repetir, adicione vencimento, cupom, ISIN ou qualquer identificador "
+        "visível que torne o valor único. Repetição = falha de extração.\n\n"
+        "Convenções por tipo de ativo:\n"
         "- Ações/FIIs/ETFs com ticker visível (PETR4, BTLG11, IVVB11): "
-        "  use o ticker exato\n"
+        "ticker exato\n"
         "- US (NASDAQ/NYSE): ticker puro (AAPL, MSFT, VOO)\n"
-        "- Fundos sem ticker (ex.: 'Fundo Verde BTG'): use o NOME visível "
-        "  como ticker_raw\n"
-        "- Tesouro Direto: use a denominação visível (ex.: 'Tesouro IPCA+ 2029')\n"
-        "- CDB/LCI/LCA: use o emissor + vencimento (ex.: 'CDB Itaú 2027')\n"
+        "- Fundos sem ticker (ex.: 'Fundo Verde BTG'): NOME completo visível\n"
+        "- Tesouro Direto BR: denominação + ano (ex.: 'Tesouro IPCA+ 2029')\n"
+        "- US Treasury (T-Bills/T-Notes/T-Bonds): 'US Treasury' + vencimento "
+        "ISO (ex.: 'US Treasury 2034-08-16'). NÃO use só 'United States of "
+        "America' — sempre inclua o vencimento.\n"
+        "- Bonds corporativos US: emissor + vencimento ISO (ex.: 'JPMorgan "
+        "Chase 2033-09-14'). NÃO use só o nome da empresa.\n"
+        "- Debêntures BR: emissor + vencimento ISO (ex.: 'Marcopolo "
+        "2029-04-17')\n"
+        "- CDB/LCI/LCA: emissor + vencimento (ex.: 'CDB Itaú 2027-05-10')\n"
         "Use `ticker_normalized` SOMENTE quando houver uma forma canônica "
-        "de bolsa; deixe null pra fundos e renda fixa.\n\n"
+        "de bolsa; deixe null pra fundos, renda fixa, treasuries e bonds.\n\n"
         "Responda SOMENTE com um objeto JSON validando o schema:\n"
         '{ "as_of_date": str|null (YYYY-MM-DD), "broker_name": str|null, '
         '"positions": [{ "ticker_raw": str, "ticker_normalized": str|null, '
@@ -115,7 +125,8 @@ BROKER_POSITION = Template(
     ),
     user_prefix=(
         "Extraia TODAS as posições visíveis neste extrato (até as que não "
-        "têm ticker de bolsa — use o nome). Não invente; se uma coluna "
+        "têm ticker de bolsa — use o nome/emissor+vencimento). Lembre: dois "
+        "ticker_raw não podem ser iguais. Não invente; se uma coluna "
         "estiver ilegível deixe null e diminua a confidence."
     ),
     output_model=BrokerPositionOutput,
