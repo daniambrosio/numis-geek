@@ -958,3 +958,108 @@ def test_bulk_apply_stores_attachment_in_audit(db):
         r.details and '"institution_short_name": "XP"' in r.details
         for r in rows
     )
+
+
+# ── Avenue regression: ticker normalization + auto-priced skip ──────────────
+
+
+def test_bulk_apply_matches_ticker_case_insensitive_with_whitespace(db):
+    """Ticker comparison must strip + lowercase both sides — LLM output
+    isn't guaranteed to be uppercase or trimmed."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            # lowercase, trailing space
+            {"ticker_raw": "petr4 ", "ticker_normalized": "petr4 ",
+             "quantity": 100, "unit_price": 41.00, "confidence": 0.9},
+            # mixed case, leading space
+            {"ticker_raw": " Itub4", "ticker_normalized": " Itub4",
+             "quantity": 200, "unit_price": 33.00, "confidence": 0.9},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 2, result.bulk_detail
+    assert result.bulk_detail.orphan == []
+    assert db.get(Asset, w["petr_id"]).current_price == Decimal("41.00")
+    assert db.get(Asset, w["itub_id"]).current_price == Decimal("33.00")
+
+
+def test_bulk_apply_skips_auto_priced_assets(db):
+    """Assets with automated price source (BRAPI/FINNHUB/...) must be
+    ignored by extract apply — their price is owned by the provider and
+    even an open RETRY_API pendency must not be resolved this way."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.user import User, UserRole
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create(f"AutoPriced-{uuid.uuid4().hex[:6]}")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email=f"auto-{uuid.uuid4().hex[:6]}@test.com", name="Auto",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="Avenue", short_name="Avenue",
+        country="US", is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="Avenue Inv", account_type=AccountType.investment,
+        currency=Currency.USD, is_active=True, created_at=now, updated_at=now,
+    )
+    # Auto-priced via FINNHUB (typical for AAPL/MSFT etc). Pre-existing
+    # current_price must NOT be overwritten by the extract.
+    aapl = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.STOCK, country="US",
+        name="Apple Inc", ticker="AAPL",
+        currency=Currency.USD,
+        current_price=Decimal("200.00"),
+        price_source=PriceSource.FINNHUB,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add_all([user, fi, acc, aapl, snap])
+    db.flush()
+    # Open RETRY_API pendency — should NOT be resolved by the extract.
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=aapl.id,
+        reason=PendencyReason.STALE_PRICE,
+        action_type=PendencyAction.RETRY_API,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+
+    job_id = _make_bulk_job(db, ws.id, snap.id, user.id, {
+        "positions": [
+            {"ticker_raw": "AAPL", "ticker_normalized": "AAPL",
+             "quantity": 5, "unit_price": 999.99, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=user.id, user_email="auto@test.com",
+    )
+    # Skipped silently — neither applied, nor matched_no_pendency, nor orphan.
+    assert result.applied_count == 0
+    assert result.bulk_detail.applied == []
+    assert result.bulk_detail.matched_no_pendency == []
+    assert result.bulk_detail.orphan == []
+    # Price untouched, RETRY_API pendency still open.
+    assert db.get(Asset, aapl.id).current_price == Decimal("200.00")
+    assert db.get(SnapshotPendency, pen.id).resolved_at is None
+    # And the RETRY_API pendency does NOT leak into pendency_not_in_extract,
+    # because the bulk path filters it out from the open list entirely.
+    not_in_ids = {p["pendency_id"] for p in result.bulk_detail.pendency_not_in_extract}
+    assert pen.id not in not_in_ids

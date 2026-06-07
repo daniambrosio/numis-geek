@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
@@ -550,7 +551,14 @@ def _apply_broker_position(
     db: Session, job: ExtractionJob, payload: dict, *, user_id: str | None,
 ) -> ExtractionApplyResult:
     """BROKER_POSITION → update Asset.current_price for each line we can
-    resolve to a workspace asset. Unmatched lines are reported."""
+    resolve to a workspace asset. Unmatched lines are reported.
+
+    Assets with an automated price source (BRAPI/FINNHUB/COINBASE/TESOURO)
+    are skipped — those prices are owned by their provider, not by
+    user-uploaded extracts.
+    """
+    from numis_geek.services.price_freshness import AUTOMATED_SOURCES
+
     positions = payload.get("positions") or []
     applied = 0
     skipped = 0
@@ -562,17 +570,17 @@ def _apply_broker_position(
             skipped += 1
             errors.append("position with no ticker")
             continue
-        asset = (
-            db.query(Asset)
-            .filter(
-                Asset.workspace_id == job.workspace_id,
-                Asset.ticker == ticker,
-            )
-            .first()
-        )
+        asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
         if asset is None:
             skipped += 1
             errors.append(f"ticker {ticker!r} not found")
+            continue
+        if asset.price_source in AUTOMATED_SOURCES:
+            skipped += 1
+            errors.append(
+                f"ticker {ticker!r}: preço gerenciado por {asset.price_source.value} "
+                "— extrato ignorado (use refresh da API)."
+            )
             continue
         price = pos.get("unit_price")
         if price is None:
@@ -595,7 +603,9 @@ def _resolve_asset_by_ticker_or_name(
 ) -> Asset | None:
     """Match an extracted line to a workspace Asset.
 
-    1. Exact ticker match (case-sensitive — tickers are normalized in DB)
+    1. Case-insensitive ticker match (with strip) — LLM output isn't
+       guaranteed to be uppercase or trimmed; DB tickers may also have
+       mixed case for funds/CDBs.
     2. Case-insensitive name match — handles funds, fixed income, and other
        assets registered without a canonical exchange ticker (e.g. the
        `Fundo Verde BTG` case where Asset.ticker carries the fund name)
@@ -604,18 +614,21 @@ def _resolve_asset_by_ticker_or_name(
     """
     if not candidate:
         return None
-    # Step 1 — exact ticker.
+    needle = candidate.strip().lower()
+    if not needle:
+        return None
+    # Step 1 — ticker, case-insensitive + trimmed on both sides.
     hit = (
         db.query(Asset)
         .filter(
             Asset.workspace_id == workspace_id,
-            Asset.ticker == candidate,
+            Asset.is_active == True,  # noqa: E712
+            func.lower(func.trim(Asset.ticker)) == needle,
         )
         .first()
     )
     if hit is not None:
         return hit
-    needle = candidate.lower().strip()
     # Step 2 — exact name (case-insensitive).
     hit = next(
         (
@@ -684,11 +697,18 @@ def _apply_bulk_to_snapshot(
             ),
         )
 
+    # Bulk extract only resolves pendencies whose action is "user edits the
+    # price" (EDIT_PRICE/UPLOAD_FILE). RETRY_API pendencies belong to assets
+    # with an automated price source — their fix is re-fetching the provider,
+    # not overwriting the price from a brokerage extract.
+    from numis_geek.models.portfolio_snapshot import PendencyAction
+
     open_pendencies = (
         db.query(SnapshotPendency)
         .filter(
             SnapshotPendency.snapshot_id == snap.id,
             SnapshotPendency.resolved_at.is_(None),
+            SnapshotPendency.action_type != PendencyAction.RETRY_API,
         )
         .all()
     )
@@ -748,6 +768,14 @@ def _apply_bulk_to_snapshot(
                 "ticker": ticker,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
             })
+            continue
+
+        # Auto-priced asset: skip silently unless the user explicitly forced
+        # this pendency via manual mapping. Provider is authoritative; the
+        # extract neither resolves a pendency nor shows up as noise in the
+        # matched-without-pendency bucket.
+        from numis_geek.services.price_freshness import AUTOMATED_SOURCES
+        if asset.price_source in AUTOMATED_SOURCES and not manual_pendency_id:
             continue
 
         asset_fi = _institution_short_name_for_asset(db, asset)
