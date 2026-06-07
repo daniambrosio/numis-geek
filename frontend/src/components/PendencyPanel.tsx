@@ -177,22 +177,26 @@ export default function PendencyPanel({
                   {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
                 </div>
               </div>
-              <BulkAttachmentManager
-                snapshotId={snapshotId}
-                pendencies={pendencies}
-                onResolved={onResolved}
-                institutionId={fiId}
-                purpose="positions"
-              />
-              {fiId && (
+              <div
+                className={`grid gap-3 ${fiId ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}
+              >
                 <BulkAttachmentManager
                   snapshotId={snapshotId}
                   pendencies={pendencies}
                   onResolved={onResolved}
                   institutionId={fiId}
-                  purpose="income"
+                  purpose="positions"
                 />
-              )}
+                {fiId && (
+                  <BulkAttachmentManager
+                    snapshotId={snapshotId}
+                    pendencies={pendencies}
+                    onResolved={onResolved}
+                    institutionId={fiId}
+                    purpose="income"
+                  />
+                )}
+              </div>
               <div className="space-y-2 mt-2">
                 {g.items.map(p => (
                   <PendencyRow

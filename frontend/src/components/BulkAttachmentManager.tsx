@@ -262,7 +262,7 @@ export default function BulkAttachmentManager({
   }
 
   return (
-    <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.02] p-3 space-y-2.5" data-testid="bulk-manager">
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.02] p-3 space-y-2.5" data-testid="bulk-manager">
       <div className="flex items-center gap-2">
         <UploadIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
         <h4 className="text-[12px] font-semibold text-gray-900 dark:text-gray-100">
