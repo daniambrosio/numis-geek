@@ -40,9 +40,11 @@ type ExtractedPosition = {
   quantity?: number
 }
 
-function fmtBRL(n: number | null | undefined): string {
+function fmtMoney(n: number | null | undefined, currency: string | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '—'
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+  const ccy = (currency || 'BRL').toUpperCase()
+  // pt-BR locale shows USD as "US$ 1.234,56" — matches the rest of the app.
+  return n.toLocaleString('pt-BR', { style: 'currency', currency: ccy })
 }
 
 function tickerOf(pos: ExtractedPosition): string | null {
@@ -112,10 +114,10 @@ export default function BulkExtractReviewModal({
   // openPendencies by id). `price` reflects the unit_price the backend
   // would use (extracted or manual override); NaN signals "no price yet".
   const preview = useMemo(() => {
-    const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number; manual: boolean }> = []
-    const orphan: Array<{ ticker: string; price: number | null }> = []
+    const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number; currency: string | null; manual: boolean }> = []
+    const orphan: Array<{ ticker: string; price: number | null; currency: string | null }> = []
     const notCovered: SnapshotPendencyOut[] = []
-    const autoSkipped: Array<{ ticker: string; asset_name: string; institution: string | null; price_source: string }> = []
+    const autoSkipped: Array<{ ticker: string; asset_name: string; currency: string | null; institution: string | null; price_source: string }> = []
     if (serverDetail) {
       for (const a of serverDetail.applied) {
         const pen = pendencyById.get(a.pendency_id)
@@ -125,6 +127,7 @@ export default function BulkExtractReviewModal({
           ticker: a.ticker ?? '',
           pendency: pen,
           price: Number(a.new_price),
+          currency: a.currency,
           manual: !!manualMappings[tickerKey],
         })
       }
@@ -132,6 +135,7 @@ export default function BulkExtractReviewModal({
         orphan.push({
           ticker: o.ticker,
           price: o.unit_price != null ? Number(o.unit_price) : null,
+          currency: o.currency,
         })
       }
       for (const m of serverDetail.matched_no_pendency) {
@@ -140,6 +144,7 @@ export default function BulkExtractReviewModal({
         orphan.push({
           ticker: m.ticker ?? '',
           price: m.unit_price != null ? Number(m.unit_price) : null,
+          currency: m.currency,
         })
       }
       for (const p of serverDetail.pendency_not_in_extract) {
@@ -150,6 +155,7 @@ export default function BulkExtractReviewModal({
         autoSkipped.push({
           ticker: s.ticker ?? '',
           asset_name: s.asset_name,
+          currency: s.currency,
           institution: s.institution_short_name,
           price_source: s.price_source,
         })
@@ -253,11 +259,13 @@ export default function BulkExtractReviewModal({
               <div className="text-[11px] text-gray-500 italic">Nenhum ticker do extrato bateu com pendência aberta.</div>
             ) : (
               <ul className="space-y-1.5">
-                {preview.matched.map(({ ticker, pendency, price, manual }) => {
+                {preview.matched.map(({ ticker, pendency, price, currency, manual }) => {
                   const tickerKey = positions.find(p => tickerOf(p) === ticker)?.ticker_raw ?? ticker
                   const hasExtractPrice = Number.isFinite(price) && price > 0
                   const manualPrice = manualPrices[tickerKey]
                   const needsPrice = !hasExtractPrice && !manualPrice
+                  // Currency hierarchy: applied row → pendency's asset → BRL default.
+                  const ccy = currency ?? pendency.asset_currency ?? 'BRL'
                   return (
                     <li
                       key={pendency.id}
@@ -287,10 +295,10 @@ export default function BulkExtractReviewModal({
                       </div>
                       {hasExtractPrice && !manualPrice && (
                         <div className="tnum text-gray-700 dark:text-gray-300 shrink-0">
-                          {fmtBRL(price)}
+                          {fmtMoney(price, ccy)}
                           {pendency.previous_unit_price && (
                             <span className="ml-2 text-[10px] text-gray-400">
-                              (anterior {fmtBRL(Number(pendency.previous_unit_price))})
+                              (anterior {fmtMoney(Number(pendency.previous_unit_price), ccy)})
                             </span>
                           )}
                         </div>
@@ -301,7 +309,7 @@ export default function BulkExtractReviewModal({
                           inputMode="decimal"
                           placeholder={
                             pendency.previous_unit_price
-                              ? `Anterior: ${fmtBRL(Number(pendency.previous_unit_price))}`
+                              ? `Anterior: ${fmtMoney(Number(pendency.previous_unit_price), ccy)}`
                               : 'Preço (ex 1.234,56)'
                           }
                           value={manualPrice ?? ''}
@@ -377,7 +385,7 @@ export default function BulkExtractReviewModal({
                       <div className="flex-1 min-w-0">
                         <span className="font-mono text-gray-700 dark:text-gray-300">{o.ticker}</span>
                         {o.price != null && (
-                          <span className="ml-1 text-gray-500 tnum">— {fmtBRL(o.price)}</span>
+                          <span className="ml-1 text-gray-500 tnum">— {fmtMoney(o.price, o.currency ?? 'BRL')}</span>
                         )}
                       </div>
                       <select
@@ -459,7 +467,7 @@ export default function BulkExtractReviewModal({
                             title={
                               o.price == null
                                 ? `Sem preço no extrato — informe manualmente${showsSuggestion ? ` (sugestão: ${suggested})` : ''}`
-                                : `Sobrescrever preço extraído (${fmtBRL(o.price)})`
+                                : `Sobrescrever preço extraído (${fmtMoney(o.price, o.currency ?? 'BRL')})`
                             }
                           />
                         )

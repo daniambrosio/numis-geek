@@ -1154,6 +1154,7 @@ export interface BulkApplyDetailOut {
     asset_id: string
     ticker: string | null
     asset_name: string
+    currency: string | null
     institution_short_name: string | null
     new_price: string
     previous_price: string | null
@@ -1162,15 +1163,21 @@ export interface BulkApplyDetailOut {
     asset_id: string
     ticker: string | null
     asset_name: string
+    currency: string | null
     institution_short_name: string | null
     unit_price: string | null
   }>
-  orphan: Array<{ ticker: string; unit_price: string | null }>
+  orphan: Array<{
+    ticker: string
+    unit_price: string | null
+    currency: string | null
+  }>
   pendency_not_in_extract: Array<{
     pendency_id: string
     asset_id: string
     ticker: string | null
     asset_name: string
+    currency: string | null
     institution_short_name: string | null
   }>
   // Spec 57 follow-up — asset matched but price_source is automated
@@ -1179,6 +1186,7 @@ export interface BulkApplyDetailOut {
     asset_id: string
     ticker: string | null
     asset_name: string
+    currency: string | null
     institution_short_name: string | null
     price_source: string
     unit_price: string | null
@@ -1330,6 +1338,7 @@ export interface SnapshotPendencyOut {
   asset_id: string
   asset_ticker: string | null
   asset_name: string
+  asset_currency: string | null
   asset_institution_short_name: string | null
   reason: PendencyReason
   action_type: PendencyAction

@@ -900,13 +900,16 @@ def _classify_bulk_extract(
         if asset is None:
             asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
         if asset is None:
+            # Currency only from LLM payload for orphan (no asset to look up).
             orphan.append({
                 "ticker": ticker,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
+                "currency": pos.get("currency") or None,
             })
             continue
 
         asset_fi = _institution_short_name_for_asset(db, asset)
+        asset_currency = asset.currency.value if asset.currency else None
 
         # Auto-priced asset: extract is informational only. Surface in
         # auto_skipped so the UI can show "recognized, no action needed",
@@ -916,6 +919,7 @@ def _classify_bulk_extract(
                 "asset_id": asset.id,
                 "ticker": ticker,
                 "asset_name": asset.name,
+                "currency": asset_currency,
                 "institution_short_name": asset_fi,
                 "price_source": asset.price_source.value,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
@@ -937,6 +941,7 @@ def _classify_bulk_extract(
                 "asset_id": asset.id,
                 "ticker": ticker,
                 "asset_name": asset.name,
+                "currency": asset_currency,
                 "institution_short_name": asset_fi,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
             })
@@ -958,6 +963,7 @@ def _classify_bulk_extract(
             "asset_id": asset.id,
             "ticker": ticker,
             "asset_name": asset.name,
+            "currency": asset_currency,
             "institution_short_name": asset_fi,
             "new_price": new_price,
             "previous_price": asset.current_price,
@@ -969,6 +975,7 @@ def _classify_bulk_extract(
             "asset_id": asset.id,
             "ticker": ticker,
             "asset_name": asset.name,
+            "currency": asset_currency,
             "institution_short_name": asset_fi,
             "new_price": str(new_price),
             "previous_price": (
@@ -992,6 +999,7 @@ def _classify_bulk_extract(
             "asset_id": asset.id,
             "ticker": asset.ticker,
             "asset_name": asset.name,
+            "currency": asset.currency.value if asset.currency else None,
             "institution_short_name": asset_fi,
         })
 
@@ -1095,6 +1103,7 @@ def _apply_bulk_to_snapshot(
             "asset_id": item["asset_id"],
             "ticker": item["ticker"],
             "asset_name": item["asset_name"],
+            "currency": item.get("currency"),
             "institution_short_name": item["institution_short_name"],
             "new_price": str(item["new_price"]),
             "previous_price": (

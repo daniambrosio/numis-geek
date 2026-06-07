@@ -220,6 +220,7 @@ class SnapshotPendencyOut(BaseModel):
     asset_id: str
     asset_ticker: str | None
     asset_name: str
+    asset_currency: str | None
     asset_institution_short_name: str | None
     reason: str
     action_type: str
@@ -247,6 +248,9 @@ class SnapshotPendencyOut(BaseModel):
             asset_id=p.asset_id,
             asset_ticker=asset.ticker if asset else None,
             asset_name=asset.name if asset else p.asset_id[:8],
+            asset_currency=(
+                asset.currency.value if asset and asset.currency else None
+            ),
             asset_institution_short_name=institution_short_name,
             reason=p.reason.value,
             action_type=p.action_type.value,
