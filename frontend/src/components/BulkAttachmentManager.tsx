@@ -28,6 +28,13 @@ interface Props {
   snapshotId: string
   pendencies: SnapshotPendencyOut[]
   onResolved: () => void
+  /**
+   * Spec 58 — when set, the manager scopes uploads + listings to this FI.
+   * Uploads auto-trigger extraction with institution_id, and only jobs
+   * tagged with this FI are listed. When null/undefined, falls back to
+   * the legacy per-snapshot behavior.
+   */
+  institutionId?: string | null
 }
 
 function fmtSize(bytes: number): string {
@@ -42,7 +49,7 @@ function KindIcon({ kind }: { kind: AttachmentKind }) {
 }
 
 export default function BulkAttachmentManager({
-  snapshotId, pendencies, onResolved,
+  snapshotId, pendencies, onResolved, institutionId,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachmentOut[]>([])
   const [jobs, setJobs] = useState<BulkExtractionJobSummary[]>([])
@@ -72,28 +79,57 @@ export default function BulkAttachmentManager({
 
   useEffect(() => { void refresh() }, [refresh])
 
-  // Pick the latest job per attachment (newest by created_at).
+  // Pick the latest job per attachment (newest by created_at). When
+  // scoped to a FI, only consider jobs at that FI — otherwise an
+  // attachment extracted twice (once per FI) would show the wrong job.
   const jobByAttachmentId = useMemo(() => {
     const m = new Map<string, BulkExtractionJobSummary>()
     for (const j of jobs) {
+      if (institutionId && j.institution_id !== institutionId) continue
       const prev = m.get(j.attachment_id)
       if (!prev || j.created_at > prev.created_at) m.set(j.attachment_id, j)
     }
     return m
-  }, [jobs])
+  }, [jobs, institutionId])
+
+  // Spec 58 — only show attachments with a job at this FI when scoped.
+  // Otherwise per-FI groups would all show the same global attachment list.
+  // Legacy unscoped mode (institutionId=null) shows everything.
+  const visibleAttachments = useMemo(() => {
+    if (!institutionId) return attachments
+    return attachments.filter(att => jobByAttachmentId.has(att.id))
+  }, [attachments, jobByAttachmentId, institutionId])
 
   const handleFile = useCallback(async (file: File) => {
     setError(null)
     setUploading(true)
     try {
-      await api.uploadAttachment('snapshot', snapshotId, file)
+      const att = await api.uploadAttachment('snapshot', snapshotId, file)
       await refresh()
+      // Spec 58 — when scoped to a FI, the upload point also implies
+      // "extract under this FI". Auto-trigger so the user lands in the
+      // review modal in one step instead of two clicks.
+      if (institutionId) {
+        setExtractingId(att.id)
+        try {
+          const job = await api.createBulkExtractForFI(
+            snapshotId, institutionId, att.id,
+          )
+          await refresh()
+          if (job.status === 'EXTRACTED') setReviewJob(job)
+          else if (job.status === 'FAILED') {
+            setError(job.error_message ?? 'Extração falhou.')
+          }
+        } finally {
+          setExtractingId(null)
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro no upload')
     } finally {
       setUploading(false)
     }
-  }, [snapshotId, refresh])
+  }, [snapshotId, refresh, institutionId])
 
   // cmd+V paste handler.
   useEffect(() => {
@@ -121,7 +157,9 @@ export default function BulkAttachmentManager({
     setError(null)
     setExtractingId(attachmentId)
     try {
-      const job = await api.createBulkExtract(snapshotId, attachmentId)
+      const job = institutionId
+        ? await api.createBulkExtractForFI(snapshotId, institutionId, attachmentId)
+        : await api.createBulkExtract(snapshotId, attachmentId)
       await refresh()
       if (job.status === 'EXTRACTED') {
         setReviewJob(job)
@@ -140,11 +178,15 @@ export default function BulkAttachmentManager({
     setError(null)
     try {
       const full = await api.getExtraction(jobId)
+      // Spec 58 — pick FI from the job summary we already loaded.
+      const summary = jobs.find(j => j.id === jobId)
       setReviewJob({
         id: full.id,
         status: full.status,
         extracted_json: full.extracted_json,
         error_message: full.error_message,
+        institution_id: summary?.institution_id ?? null,
+        institution_short_name: summary?.institution_short_name ?? null,
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro')
@@ -258,13 +300,13 @@ export default function BulkAttachmentManager({
       )}
 
       {/* Attachment list */}
-      {!loading && attachments.length === 0 ? (
+      {!loading && visibleAttachments.length === 0 ? (
         <div className="text-[11px] text-gray-500 italic py-1">
           Nenhum anexo subido ainda.
         </div>
       ) : (
         <ul className="space-y-1.5">
-          {attachments.map(att => {
+          {visibleAttachments.map(att => {
             const job = jobByAttachmentId.get(att.id) ?? null
             return (
               <AttachmentRow

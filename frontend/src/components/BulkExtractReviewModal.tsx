@@ -56,7 +56,10 @@ export default function BulkExtractReviewModal({
 }: Props) {
   useEscapeKey(onClose)
   const [fis, setFis] = useState<FinancialInstitutionOut[]>([])
-  const [fiShortName, setFiShortName] = useState<string>('')
+  // Spec 58 — when the job was created scoped to a FI, that's the source
+  // of truth and the dropdown is hidden. User can't override here.
+  const scopedFiShortName = job.institution_short_name ?? null
+  const [fiShortName, setFiShortName] = useState<string>(scopedFiShortName ?? '')
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Spec 49 hotfix — manual orphan→pendency mapping. key = ticker_raw, value = pendency_id.
@@ -229,22 +232,33 @@ export default function BulkExtractReviewModal({
         <div className="p-5 overflow-y-auto flex-1 space-y-4">
           <div className="flex items-center gap-3 flex-wrap">
             <label className="text-[12px] text-gray-600 dark:text-gray-300">
-              Esse extrato é da:
+              {scopedFiShortName ? 'Extrato de:' : 'Esse extrato é da:'}
             </label>
-            <select
-              value={fiShortName}
-              onChange={e => setFiShortName(e.target.value)}
-              className="h-8 px-2 text-[12px] rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800"
-              data-testid="bulk-review-fi-select"
-            >
-              <option value="">(qualquer FI)</option>
-              {fis.filter(f => f.is_active).map(f => (
-                <option key={f.id} value={f.short_name}>{f.short_name}</option>
-              ))}
-            </select>
-            <span className="text-[11px] text-gray-500">
-              Filtra o matching: só pendências dessa FI serão resolvidas.
-            </span>
+            {scopedFiShortName ? (
+              <span
+                className="h-8 px-2.5 inline-flex items-center text-[12px] font-medium rounded-md bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30"
+                data-testid="bulk-review-fi-fixed"
+              >
+                {scopedFiShortName}
+              </span>
+            ) : (
+              <select
+                value={fiShortName}
+                onChange={e => setFiShortName(e.target.value)}
+                className="h-8 px-2 text-[12px] rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800"
+                data-testid="bulk-review-fi-select"
+              >
+                <option value="">(qualquer FI)</option>
+                {fis.filter(f => f.is_active).map(f => (
+                  <option key={f.id} value={f.short_name}>{f.short_name}</option>
+                ))}
+              </select>
+            )}
+            {!scopedFiShortName && (
+              <span className="text-[11px] text-gray-500">
+                Filtra o matching: só pendências dessa FI serão resolvidas.
+              </span>
+            )}
             {previewLoading && (
               <span className="text-[11px] text-gray-400 italic">recalculando…</span>
             )}

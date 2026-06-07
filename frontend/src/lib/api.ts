@@ -1083,6 +1083,14 @@ export const api = {
     request<BulkExtractJobOut>(`/snapshots/${snapshot_id}/bulk-extract`, {
       method: 'POST', body: JSON.stringify({ attachment_id }),
     }),
+  // Spec 58 — bulk extract scoped to a single FI.
+  createBulkExtractForFI: (
+    snapshot_id: string, fi_id: string, attachment_id: string,
+  ) =>
+    request<BulkExtractJobOut>(
+      `/snapshots/${snapshot_id}/institutions/${fi_id}/bulk-extract`,
+      { method: 'POST', body: JSON.stringify({ attachment_id }) },
+    ),
   // Spec 49 — persistent attachments + per-attachment extraction status.
   listSnapshotAttachments: (snapshot_id: string) => {
     const qs = new URLSearchParams({
@@ -1205,6 +1213,9 @@ export interface BulkExtractJobOut {
   status: ExtractionStatus
   extracted_json: Record<string, unknown> | null
   error_message: string | null
+  // Spec 58 — present when job was scoped at creation.
+  institution_id?: string | null
+  institution_short_name?: string | null
 }
 
 export interface BulkExtractionJobSummary {
@@ -1220,6 +1231,9 @@ export interface BulkExtractionJobSummary {
   input_tokens: number | null
   output_tokens: number | null
   cost_usd: string | null
+  // Spec 58 — when set, job was scoped to this FI.
+  institution_id: string | null
+  institution_short_name: string | null
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────

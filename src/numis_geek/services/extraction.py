@@ -159,10 +159,15 @@ def create_and_run(
     pendency_id: str | None = None,
     snapshot_id: str | None = None,
     asset_id: str | None = None,
+    institution_id: str | None = None,
     user_id: str | None = None,
     user_email: str | None = None,
 ) -> ExtractionJob:
-    """Create an ExtractionJob and run the LLM inline (Spec 38 V1 sync mode)."""
+    """Create an ExtractionJob and run the LLM inline (Spec 38 V1 sync mode).
+
+    `institution_id` (Spec 58) scopes the bulk-extract apply pool to a
+    single FI when set — both display name AND candidate Asset filter.
+    """
     attachment = db.get(Attachment, attachment_id)
     if attachment is None or not attachment.is_active:
         raise ExtractionError(f"Attachment {attachment_id} not found")
@@ -175,6 +180,7 @@ def create_and_run(
         snapshot_id=snapshot_id,
         pendency_id=pendency_id,
         asset_id=asset_id,
+        institution_id=institution_id,
         attachment_id=attachment_id,
         source_hint=source_hint,
         status=ExtractionStatus.PENDING,
@@ -647,7 +653,9 @@ def _apply_broker_position(
             skipped += 1
             errors.append("position with no ticker")
             continue
-        asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
+        asset = _resolve_asset_by_ticker_or_name(
+            db, job.workspace_id, ticker, institution_id=job.institution_id,
+        )
         if asset is None:
             skipped += 1
             errors.append(f"ticker {ticker!r} not found")
@@ -725,6 +733,8 @@ def _extract_dates(s: str | None) -> set[str]:
 
 def _resolve_asset_by_ticker_or_name(
     db: Session, workspace_id: str, candidate: str,
+    *,
+    institution_id: str | None = None,
 ) -> Asset | None:
     """Match an extracted line to a workspace Asset.
 
@@ -744,32 +754,39 @@ def _resolve_asset_by_ticker_or_name(
        asset shares a maturity date with the candidate, return it. Handles
        `JPMorgan Chase 2033-09-14` (extract) ↔ `JPM 5.717 14/09/33`
        (asset) — same date, different formats.
+
+    Spec 58 — when `institution_id` is set, restricts the candidate pool
+    to assets whose account belongs to that FI. Shrinks the matcher's
+    universe → less ambiguity in steps 3 and 4.
     """
     if not candidate:
         return None
     needle = candidate.strip().lower()
     if not needle:
         return None
-    # Step 1 — ticker, case-insensitive + trimmed on both sides.
-    hit = (
-        db.query(Asset)
-        .filter(
-            Asset.workspace_id == workspace_id,
-            Asset.is_active == True,  # noqa: E712
-            func.lower(func.trim(Asset.ticker)) == needle,
+
+    def _scope(q):
+        if institution_id is None:
+            return q
+        return (
+            q.join(Account, Asset.account_id == Account.id, isouter=False)
+             .filter(Account.financial_institution_id == institution_id)
         )
-        .first()
+
+    base = db.query(Asset).filter(
+        Asset.workspace_id == workspace_id,
+        Asset.is_active == True,  # noqa: E712
     )
+    # Step 1 — ticker, case-insensitive + trimmed on both sides.
+    hit = _scope(base.filter(
+        func.lower(func.trim(Asset.ticker)) == needle,
+    )).first()
     if hit is not None:
         return hit
     # Step 2 — exact name (case-insensitive).
+    all_assets = _scope(base).all()
     hit = next(
-        (
-            a for a in db.query(Asset)
-            .filter(Asset.workspace_id == workspace_id, Asset.is_active == True)  # noqa: E712
-            .all()
-            if a.name and a.name.lower() == needle
-        ),
+        (a for a in all_assets if a.name and a.name.lower() == needle),
         None,
     )
     if hit is not None:
@@ -778,11 +795,7 @@ def _resolve_asset_by_ticker_or_name(
     needle_norm = _alnum_lower(candidate)
     if len(needle_norm) < 4:
         return None
-    candidates = (
-        db.query(Asset)
-        .filter(Asset.workspace_id == workspace_id, Asset.is_active == True)  # noqa: E712
-        .all()
-    )
+    candidates = all_assets
     matches: list[Asset] = []
     for a in candidates:
         for asset_str in (a.name, a.ticker):
@@ -831,6 +844,16 @@ def _classify_bulk_extract(
     BulkApplyDetail,
     list[str],   # classification-time errors (e.g. missing ticker, snapshot not found)
 ]:
+    # Spec 58 — job-scoped FI overrides body-provided short_name. When
+    # set, we ALSO restrict the candidate Asset pool to accounts at this
+    # FI (not just filter the matched set at the end). Smaller pool →
+    # less ambiguity in the substring/date matcher.
+    scoped_fi_id: str | None = job.institution_id
+    if scoped_fi_id:
+        fi = db.get(FinancialInstitution, scoped_fi_id)
+        if fi is None:
+            raise ExtractionError(f"institution {scoped_fi_id} not found")
+        institution_short_name = fi.short_name
     """Spec 57 follow-up — pure classification, no writes.
 
     Returns the prospective plan PLUS the categorized buckets the UI shows.
@@ -898,7 +921,9 @@ def _classify_bulk_extract(
             if forced_pen and forced_pen.snapshot_id == snap.id:
                 asset = db.get(Asset, forced_pen.asset_id)
         if asset is None:
-            asset = _resolve_asset_by_ticker_or_name(db, job.workspace_id, ticker)
+            asset = _resolve_asset_by_ticker_or_name(
+                db, job.workspace_id, ticker, institution_id=scoped_fi_id,
+            )
         if asset is None:
             # Currency only from LLM payload for orphan (no asset to look up).
             orphan.append({

@@ -6,7 +6,7 @@
  *
  * Spec 47 made this the single source of truth — SnapshotDetail imports
  * it instead of duplicating the render. */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle, Edit2, Lock, RefreshCw, RotateCcw, Upload,
@@ -15,6 +15,7 @@ import {
 import {
   api,
   type AssetOut,
+  type FinancialInstitutionOut,
   type SnapshotPendencyOut,
 } from '../lib/api'
 import { Card, ClassBadge } from './ui'
@@ -98,6 +99,18 @@ export default function PendencyPanel({
     ? Math.round((resolvedAssets / totalAssetsCount) * 100)
     : 0
 
+  // Spec 58 — load FIs to map group name → id so each per-FI group can
+  // pass institutionId to its own BulkAttachmentManager.
+  const [fis, setFis] = useState<FinancialInstitutionOut[]>([])
+  useEffect(() => {
+    api.listFinancialInstitutions().then(setFis).catch(() => { /* silent */ })
+  }, [])
+  const fiIdByShortName = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const f of fis) m.set(f.short_name, f.id)
+    return m
+  }, [fis])
+
   return (
     <Card padding="p-5" className="border-amber-500/30 bg-amber-500/[0.04]">
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
@@ -149,39 +162,41 @@ export default function PendencyPanel({
         </div>
       </div>
 
-      {/* Spec 49 — persistent attachment manager (drop/click/paste +
-          per-attachment Extract/Review actions). */}
-      <BulkAttachmentManager
-        snapshotId={snapshotId}
-        pendencies={pendencies}
-        onResolved={onResolved}
-      />
-
-      {/* Per-asset pending list, grouped by FI */}
-      <div className="space-y-4">
-        {groups.map(g => (
-          <div key={g.name} data-testid={`pendency-group-${g.name}`}>
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
-                {g.name}
+      {/* Spec 58 — per-FI groups, each with its own attachment manager.
+          Upload inside a group scopes the extraction job to that FI. */}
+      <div className="space-y-5">
+        {groups.map(g => {
+          const fiId = fiIdByShortName.get(g.name) ?? null
+          return (
+            <div key={g.name} data-testid={`pendency-group-${g.name}`}>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                  {g.name}
+                </div>
+                <div className="text-[10px] text-gray-500 tnum">
+                  {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
+                </div>
               </div>
-              <div className="text-[10px] text-gray-500 tnum">
-                {g.items.length} aberta{g.items.length === 1 ? '' : 's'}
+              <BulkAttachmentManager
+                snapshotId={snapshotId}
+                pendencies={pendencies}
+                onResolved={onResolved}
+                institutionId={fiId}
+              />
+              <div className="space-y-2 mt-2">
+                {g.items.map(p => (
+                  <PendencyRow
+                    key={p.id}
+                    pendency={p}
+                    asset={assetById.get(p.asset_id)}
+                    onResolved={onResolved}
+                    onEditPendency={onEditPendency}
+                  />
+                ))}
               </div>
             </div>
-            <div className="space-y-2">
-              {g.items.map(p => (
-                <PendencyRow
-                  key={p.id}
-                  pendency={p}
-                  asset={assetById.get(p.asset_id)}
-                  onResolved={onResolved}
-                  onEditPendency={onEditPendency}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-gray-500">

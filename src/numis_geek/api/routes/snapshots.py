@@ -185,6 +185,9 @@ class BulkExtractionJobOut(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     cost_usd: str | None
+    # Spec 58 — when set, the job was scoped to this FI at creation time.
+    institution_id: str | None
+    institution_short_name: str | None
 
     @classmethod
     def from_orm(cls, j: ExtractionJob) -> "BulkExtractionJobOut":
@@ -192,6 +195,16 @@ class BulkExtractionJobOut(BaseModel):
         if j.extracted_json:
             payload_positions = j.extracted_json.get("positions") or []
             positions = len(payload_positions)
+        fi_short = None
+        if j.institution_id:
+            from numis_geek.models.financial_institution import (
+                FinancialInstitution,
+            )
+            from sqlalchemy.orm.session import Session as _SessionType
+            sess = _SessionType.object_session(j)
+            if sess is not None:
+                fi = sess.get(FinancialInstitution, j.institution_id)
+                fi_short = fi.short_name if fi else None
         return cls(
             id=j.id,
             attachment_id=j.attachment_id,
@@ -205,6 +218,8 @@ class BulkExtractionJobOut(BaseModel):
             input_tokens=j.input_tokens,
             output_tokens=j.output_tokens,
             cost_usd=str(j.cost_usd) if j.cost_usd is not None else None,
+            institution_id=j.institution_id,
+            institution_short_name=fi_short,
         )
 
 
@@ -955,3 +970,60 @@ def list_bulk_extractions(
         .all()
     )
     return [BulkExtractionJobOut.from_orm(j) for j in rows]
+
+
+# ── Spec 58 — bulk extract scoped to one FI ─────────────────────────────────
+
+
+@router.post(
+    "/{snapshot_id}/institutions/{fi_id}/bulk-extract",
+    status_code=status.HTTP_201_CREATED,
+)
+def bulk_extract_per_fi(
+    snapshot_id: str,
+    fi_id: str,
+    body: BulkExtractRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 58 — create + run an ExtractionJob scoped to a single FI.
+
+    Same as POST /snapshots/{id}/bulk-extract but the job carries
+    `institution_id`, which downstream limits the candidate Asset pool
+    and skips the FI-dropdown in the review modal.
+    """
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    if snap.status != SnapshotStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk extract only allowed on IN_REVIEW snapshots",
+        )
+    fi = db.get(FinancialInstitution, fi_id)
+    if not fi:
+        raise HTTPException(status_code=404, detail="Institution not found")
+    try:
+        job = extraction_service.create_and_run(
+            db,
+            workspace_id=ws_id,
+            attachment_id=body.attachment_id,
+            source_hint=ExtractionSourceHint.BROKER_POSITION,
+            snapshot_id=snapshot_id,
+            institution_id=fi_id,
+            pendency_id=None,
+            asset_id=None,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except extraction_service.ExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": job.id,
+        "status": job.status.value,
+        "extracted_json": job.extracted_json,
+        "error_message": job.error_message,
+        "institution_id": job.institution_id,
+        "institution_short_name": fi.short_name,
+    }

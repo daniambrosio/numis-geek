@@ -1368,3 +1368,83 @@ def test_resolve_date_match_no_date_in_candidate_skipped():
     finally:
         s.rollback()
         s.close()
+
+
+# ── Spec 58 — institution_id-scoped extraction ──────────────────────────────
+
+
+def test_bulk_apply_scopes_candidate_pool_by_institution_id(db):
+    """Spec 58 — when job.institution_id is set, the matcher only sees
+    assets at that FI. Two FIs with the same ticker name → only the
+    one at the scoped FI matches; the other becomes invisible to
+    the matcher."""
+    w = _world(db)
+    # _world has petr@XP and aapl@Avenue. Pretend PETR4 also exists at
+    # Avenue (real case: same ticker different broker). Without scope,
+    # _resolve hits multi-match. With FI scope = Avenue, only the
+    # Avenue PETR4 candidate exists.
+    from numis_geek.services.workspace import WorkspaceService  # noqa: F401
+
+    fi_xp = (
+        db.query(FinancialInstitution)
+        .filter(FinancialInstitution.short_name == "XP")
+        .first()
+    )
+    fi_av = (
+        db.query(FinancialInstitution)
+        .filter(FinancialInstitution.short_name == "Avenue")
+        .first()
+    )
+    assert fi_xp and fi_av
+
+    # Create a per-FI job via the service directly.
+    set_llm_client(FakeLLM({
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 50.00, "confidence": 0.95},
+        ]
+    }))
+    att_id = _make_attachment(w["ws_id"])
+    job = extraction_service.create_and_run(
+        db,
+        workspace_id=w["ws_id"],
+        attachment_id=att_id,
+        source_hint=ExtractionSourceHint.BROKER_POSITION,
+        snapshot_id=w["snap_id"],
+        institution_id=fi_av.id,  # Avenue scope
+        user_id=w["user_id"],
+        user_email="scope@test.com",
+    )
+    assert job.status == ExtractionStatus.EXTRACTED
+    assert job.institution_id == fi_av.id
+
+    # PETR4 exists only at XP in _world → scoped Avenue pool sees nothing.
+    result = extraction_service.confirm_extraction(
+        db, job_id=job.id, user_id=w["user_id"], user_email="scope@test.com",
+    )
+    # PETR4 not in Avenue pool → orphan, NOT auto-resolved to XP's PETR4.
+    orphan_tickers = {o["ticker"] for o in result.bulk_detail.orphan}
+    assert "PETR4" in orphan_tickers
+    # XP's PETR4 pendency stays open.
+    assert db.get(SnapshotPendency, w["pen_petr"]).resolved_at is None
+
+
+def test_bulk_apply_legacy_path_unscoped_still_works(db):
+    """Backward compat — jobs without institution_id still resolve via
+    the workspace-wide matcher (no behavioral regression for existing
+    flow)."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+        ]
+    })
+    from numis_geek.models.extraction_job import ExtractionJob as _EJ
+    job = db.get(_EJ, job_id)
+    assert job.institution_id is None
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    assert {a["ticker"] for a in result.bulk_detail.applied} == {"PETR4"}

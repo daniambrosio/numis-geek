@@ -58,6 +58,14 @@ class ExtractionJob(Base):
     asset_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("asset.id"), nullable=True,
     )
+    # Spec 58 — when set, scopes both the LLM prompt context AND the
+    # candidate Asset pool used by _classify_bulk_extract to a single FI.
+    # Null on legacy jobs created before spec 58 (and on
+    # screenshot/singular pendency-driven jobs).
+    institution_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("financial_institution.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # The uploaded file (Spec 19 Attachment).
     attachment_id: Mapped[str] = mapped_column(
