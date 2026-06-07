@@ -90,47 +90,47 @@ def auth_header(token):
 
 
 def test_login_creates_audit(client, seed):
-    r = client.post("/auth/login", json={"email": "audit_admin@test.com", "password": "adminpass"})
+    r = client.post("/api/auth/login", json={"email": "audit_admin@test.com", "password": "adminpass"})
     assert r.status_code == 200
-    logs = client.get("/audit", headers=auth_header(seed["admin_token"])).json()
+    logs = client.get("/api/audit", headers=auth_header(seed["admin_token"])).json()
     actions = [e["action"] for e in logs["items"]]
     assert "auth.login" in actions
 
 
 def test_invite_creates_audit(client, seed):
-    client.post("/users/invite", json={
+    client.post("/api/users/invite", json={
         "email": "foraudit@test.com", "password": "pass", "role": "member",
     }, headers=auth_header(seed["admin_token"]))
-    logs = client.get("/audit", headers=auth_header(seed["admin_token"])).json()
+    logs = client.get("/api/audit", headers=auth_header(seed["admin_token"])).json()
     actions = [e["action"] for e in logs["items"]]
     assert "user.invited" in actions
 
 
 def test_deactivate_creates_audit(client, seed):
-    r = client.post("/users/invite", json={
+    r = client.post("/api/users/invite", json={
         "email": "todeact_audit@test.com", "password": "pass",
     }, headers=auth_header(seed["admin_token"]))
     uid = r.json()["id"]
-    client.put(f"/users/{uid}/deactivate", headers=auth_header(seed["admin_token"]))
-    logs = client.get("/audit", headers=auth_header(seed["admin_token"])).json()
+    client.put(f"/api/users/{uid}/deactivate", headers=auth_header(seed["admin_token"]))
+    logs = client.get("/api/audit", headers=auth_header(seed["admin_token"])).json()
     actions = [e["action"] for e in logs["items"]]
     assert "user.deactivated" in actions
 
 
 def test_list_audit_admin(client, seed):
-    r = client.get("/audit", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/audit", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     assert "items" in r.json()
     assert r.json()["total"] > 0
 
 
 def test_list_audit_member_forbidden(client, seed):
-    r = client.get("/audit", headers=auth_header(seed["member_token"]))
+    r = client.get("/api/audit", headers=auth_header(seed["member_token"]))
     assert r.status_code == 403
 
 
 def test_audit_filter_by_action(client, seed):
-    r = client.get("/audit?action=auth.login", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/audit?action=auth.login", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     for item in r.json()["items"]:
         assert item["action"] == "auth.login"
@@ -139,27 +139,27 @@ def test_audit_filter_by_action(client, seed):
 # ── Regression tests for role/access bugs ─────────────────────────────────────
 
 def test_sysadmin_can_access_audit(client, seed):
-    r = client.get("/audit", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/audit", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
 
 
 def test_sysadmin_audit_has_no_workspace_filter(client, seed):
     # Sysadmin sees all logs, not just one workspace
-    r = client.get("/audit", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/audit", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     assert r.json()["total"] >= r.json()["total"]  # sysadmin total >= admin total (tautology guards against 0)
-    r_admin = client.get("/audit", headers=auth_header(seed["admin_token"]))
+    r_admin = client.get("/api/audit", headers=auth_header(seed["admin_token"]))
     assert r.json()["total"] >= r_admin.json()["total"]
 
 
 def test_explicit_audit_entry_has_resource_type(client, seed):
     # Regression: route-level audit entries must have resource_type set
     # (was broken when middleware commit raced with route db session commit)
-    r = client.post("/users/invite", json={
+    r = client.post("/api/users/invite", json={
         "email": "resource_check@test.com", "password": "pass",
     }, headers=auth_header(seed["admin_token"]))
     assert r.status_code == 201
-    logs = client.get("/audit?action=user.invited", headers=auth_header(seed["admin_token"])).json()
+    logs = client.get("/api/audit?action=user.invited", headers=auth_header(seed["admin_token"])).json()
     assert logs["total"] > 0
     entry = logs["items"][0]
     assert entry["resource_type"] == "user"

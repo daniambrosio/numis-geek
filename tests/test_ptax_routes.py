@@ -101,12 +101,12 @@ def auth(token):
 
 
 def test_status_requires_sysadmin(client, seed):
-    r = client.get("/sysadmin/ptax/status", headers=auth(seed["admin_tok"]))
+    r = client.get("/api/sysadmin/ptax/status", headers=auth(seed["admin_tok"]))
     assert r.status_code == 403
 
 
 def test_status_returns_counts(client, seed):
-    r = client.get("/sysadmin/ptax/status", headers=auth(seed["sys_tok"]))
+    r = client.get("/api/sysadmin/ptax/status", headers=auth(seed["sys_tok"]))
     assert r.status_code == 200
     body = r.json()
     assert body["total_rows"] >= 3
@@ -115,7 +115,7 @@ def test_status_returns_counts(client, seed):
 
 
 def test_list_paginated_desc(client, seed):
-    r = client.get("/sysadmin/ptax?page=1&page_size=2", headers=auth(seed["sys_tok"]))
+    r = client.get("/api/sysadmin/ptax?page=1&page_size=2", headers=auth(seed["sys_tok"]))
     assert r.status_code == 200
     body = r.json()
     assert len(body["items"]) == 2
@@ -135,7 +135,7 @@ def test_sync_route_calls_service(client, seed):
 
     with patch("numis_geek.api.routes.ptax.sync_ptax", side_effect=fake_sync):
         r = client.post(
-            "/sysadmin/ptax/sync",
+            "/api/sysadmin/ptax/sync",
             headers=auth(seed["sys_tok"]),
             json={"mode": "incremental"},
         )
@@ -148,7 +148,7 @@ def test_sync_route_calls_service(client, seed):
 
 
 def test_workspace_status_allows_admin_user(client, seed):
-    r = client.get("/ptax/status", headers=auth(seed["admin_tok"]))
+    r = client.get("/api/ptax/status", headers=auth(seed["admin_tok"]))
     assert r.status_code == 200
     body = r.json()
     assert body["total_rows"] >= 3
@@ -169,7 +169,7 @@ def test_workspace_sync_allows_admin_user(client, seed):
 
     with patch("numis_geek.api.routes.ptax.sync_ptax", side_effect=fake_sync):
         r = client.post(
-            "/ptax/sync",
+            "/api/ptax/sync",
             headers=auth(seed["admin_tok"]),
             json={"mode": "incremental"},
         )

@@ -110,13 +110,13 @@ def auth_header(token):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_list_accounts_empty(client, seed):
-    r = client.get("/accounts", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     assert r.json() == []
 
 
 def test_create_account_checking(client, seed):
-    r = client.post("/accounts", json={
+    r = client.post("/api/accounts", json={
         "name": "BTest Corrente",
         "account_type": "checking",
         "financial_institution_id": seed["fi_id"],
@@ -133,7 +133,7 @@ def test_create_account_checking(client, seed):
 
 
 def test_create_account_investment(client, seed):
-    r = client.post("/accounts", json={
+    r = client.post("/api/accounts", json={
         "name": "BTest Investimentos",
         "account_type": "investment",
         "financial_institution_id": seed["fi_id"],
@@ -146,7 +146,7 @@ def test_create_account_investment(client, seed):
 
 
 def test_create_account_member_forbidden(client, seed):
-    r = client.post("/accounts", json={
+    r = client.post("/api/accounts", json={
         "name": "Should Fail",
         "account_type": "checking",
         "financial_institution_id": seed["fi_id"],
@@ -156,7 +156,7 @@ def test_create_account_member_forbidden(client, seed):
 
 
 def test_list_shows_fi_name(client, seed):
-    r = client.get("/accounts", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     items = r.json()
     assert len(items) >= 1
@@ -167,7 +167,7 @@ def test_list_shows_fi_name(client, seed):
 
 def test_update_account(client, seed):
     # Create an account to update
-    r = client.post("/accounts", json={
+    r = client.post("/api/accounts", json={
         "name": "Original Name",
         "account_type": "checking",
         "financial_institution_id": seed["fi_id"],
@@ -176,7 +176,7 @@ def test_update_account(client, seed):
     }, headers=auth_header(seed["admin_token"]))
     account_id = r.json()["id"]
 
-    r2 = client.put(f"/accounts/{account_id}", json={
+    r2 = client.put(f"/api/accounts/{account_id}", json={
         "name": "Updated Name",
         "account_type": "checking",
         "financial_institution_id": seed["fi_id"],
@@ -190,7 +190,7 @@ def test_update_account(client, seed):
 
 def test_deactivate_account(client, seed):
     # Create account then deactivate
-    r = client.post("/accounts", json={
+    r = client.post("/api/accounts", json={
         "name": "To Deactivate",
         "account_type": "investment",
         "financial_institution_id": seed["fi_id"],
@@ -198,12 +198,12 @@ def test_deactivate_account(client, seed):
     }, headers=auth_header(seed["admin_token"]))
     account_id = r.json()["id"]
 
-    r2 = client.put(f"/accounts/{account_id}/deactivate", headers=auth_header(seed["admin_token"]))
+    r2 = client.put(f"/api/accounts/{account_id}/deactivate", headers=auth_header(seed["admin_token"]))
     assert r2.status_code == 200
     assert r2.json()["is_active"] is False
 
     # Should no longer appear in list
-    r3 = client.get("/accounts", headers=auth_header(seed["admin_token"]))
+    r3 = client.get("/api/accounts", headers=auth_header(seed["admin_token"]))
     ids = [a["id"] for a in r3.json()]
     assert account_id not in ids
 
@@ -211,7 +211,7 @@ def test_deactivate_account(client, seed):
 def test_sysadmin_can_manage_accounts(client, seed):
     # Sysadmin has no workspace, so create under admin's workspace via a different path.
     # Sysadmin can LIST all accounts (not filtered by workspace)
-    r = client.get("/accounts", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/accounts", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     # sysadmin sees all — should see at least what admin created
     assert len(r.json()) >= 1
@@ -221,7 +221,7 @@ def test_sysadmin_can_manage_accounts(client, seed):
 
 def test_by_custodian_basic_shape(client, seed):
     """Returns list of {financial_institution, accounts, assets} groups."""
-    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200, r.text
     groups = r.json()
     assert isinstance(groups, list)
@@ -238,14 +238,14 @@ def test_by_custodian_basic_shape(client, seed):
 def test_by_custodian_includes_investment_accounts_only(client, seed):
     """The 'accounts' inside each group are limited to investment-type accounts."""
     # Create both a checking and an investment account at the same FI (using existing seed FI).
-    client.post("/accounts", json={
+    client.post("/api/accounts", json={
         "name": "BC Investimentos",
         "account_type": "investment",
         "financial_institution_id": seed["fi_id"],
         "currency": "BRL",
     }, headers=auth_header(seed["admin_token"]))
 
-    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
     groups = r.json()
     for g in groups:
         for a in g["accounts"]:
@@ -255,13 +255,13 @@ def test_by_custodian_includes_investment_accounts_only(client, seed):
 def test_by_custodian_skips_fi_with_neither(client, seed):
     """FIs with neither investment accounts nor assets in the workspace are skipped."""
     # Create a fresh FI with no associations
-    r_fi = client.post("/financial-institutions", json={
+    r_fi = client.post("/api/financial-institutions", json={
         "long_name": "Custodian-Empty Bank",
         "short_name": "CEmpty",
     }, headers=auth_header(seed["sysadmin_token"]))
     new_fi_id = r_fi.json()["id"]
 
-    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
     groups = r.json()
     fi_ids = [g["financial_institution"]["id"] for g in groups]
     assert new_fi_id not in fi_ids
@@ -277,7 +277,7 @@ def test_by_custodian_workspace_isolation(client, seed):
 
     # Create an investment account in OTHER workspace at the seed FI
     db.close()
-    r_create = client.post("/accounts", json={
+    r_create = client.post("/api/accounts", json={
         "name": "Other WS Investimentos",
         "account_type": "investment",
         "financial_institution_id": seed["fi_id"],
@@ -286,7 +286,7 @@ def test_by_custodian_workspace_isolation(client, seed):
     other_acc_id = r_create.json()["id"]
 
     # Original WS admin should NOT see other_acc_id in their by-custodian view
-    r = client.get("/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/accounts/by-custodian", headers=auth_header(seed["admin_token"]))
     all_account_ids = [
         a["id"]
         for g in r.json()
@@ -297,7 +297,7 @@ def test_by_custodian_workspace_isolation(client, seed):
 
 def test_by_custodian_sysadmin_cross_workspace(client, seed):
     """Sysadmin without workspace_id sees groups across workspaces."""
-    r = client.get("/accounts/by-custodian", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/accounts/by-custodian", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     groups = r.json()
     # We have at least one investment account from earlier tests in this module.

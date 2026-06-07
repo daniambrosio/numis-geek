@@ -365,6 +365,7 @@ def test_parse_json_block_handles_fenced_json():
 
 
 def test_split_image_returns_original_when_within_bounds():
+    pytest.importorskip("PIL")
     from io import BytesIO
     from PIL import Image
     from numis_geek.services.extraction import _split_image_for_anthropic
@@ -380,6 +381,7 @@ def test_split_image_returns_original_when_within_bounds():
 def test_xlsx_payload_is_converted_to_csv_text():
     """Spec 19 hotfix — XLSX uploads precisam virar texto CSV-like antes
     de ir pro LLM (Claude não decoda zip XLSX nativamente)."""
+    pytest.importorskip("openpyxl")
     from io import BytesIO
     from openpyxl import Workbook
     from numis_geek.services.extraction import _xlsx_to_csv_text
@@ -401,6 +403,7 @@ def test_xlsx_payload_is_converted_to_csv_text():
 
 
 def test_split_image_tiles_when_taller_than_8000px():
+    pytest.importorskip("PIL")
     from io import BytesIO
     from PIL import Image
     from numis_geek.services.extraction import _split_image_for_anthropic

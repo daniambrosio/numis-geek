@@ -103,13 +103,13 @@ def auth(token):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_list_empty_authenticated(client, seed):
-    r = client.get("/financial-institutions", headers=auth(seed["admin_token"]))
+    r = client.get("/api/financial-institutions", headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
 
 def test_create_fi_sysadmin(client, seed):
-    r = client.post("/financial-institutions", json={
+    r = client.post("/api/financial-institutions", json={
         "long_name": "Banco Teste S.A.",
         "short_name": "Teste",
         "logo_slug": "teste",
@@ -123,7 +123,7 @@ def test_create_fi_sysadmin(client, seed):
 
 
 def test_create_fi_admin_forbidden(client, seed):
-    r = client.post("/financial-institutions", json={
+    r = client.post("/api/financial-institutions", json={
         "long_name": "Not Allowed",
         "short_name": "NA",
     }, headers=auth(seed["admin_token"]))
@@ -131,7 +131,7 @@ def test_create_fi_admin_forbidden(client, seed):
 
 
 def test_list_shows_created(client, seed):
-    r = client.get("/financial-institutions", headers=auth(seed["admin_token"]))
+    r = client.get("/api/financial-institutions", headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     short_names = [fi["short_name"] for fi in r.json()]
     assert "Teste" in short_names
@@ -139,7 +139,7 @@ def test_list_shows_created(client, seed):
 
 def test_update_fi(client, seed):
     fi_id = seed["fi_id"]
-    r = client.put(f"/financial-institutions/{fi_id}", json={
+    r = client.put(f"/api/financial-institutions/{fi_id}", json={
         "long_name": "Banco Teste Atualizado S.A.",
         "short_name": "Teste2",
         "logo_slug": "teste2",
@@ -150,32 +150,32 @@ def test_update_fi(client, seed):
 
 def test_deactivate_fi(client, seed):
     fi_id = seed["fi_id"]
-    r = client.put(f"/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
+    r = client.put(f"/api/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
     assert r.status_code == 200
     assert r.json()["is_active"] is False
 
 
 def test_deactivated_excluded_from_list(client, seed):
-    r = client.get("/financial-institutions", headers=auth(seed["admin_token"]))
+    r = client.get("/api/financial-institutions", headers=auth(seed["admin_token"]))
     ids = [fi["id"] for fi in r.json()]
     assert seed["fi_id"] not in ids
 
 
 def test_deactivate_admin_forbidden(client, seed):
     # Create a fresh IF to try to deactivate
-    r_create = client.post("/financial-institutions", json={
+    r_create = client.post("/api/financial-institutions", json={
         "long_name": "Banco Guard",
         "short_name": "Guard",
     }, headers=auth(seed["sysadmin_token"]))
     fi_id = r_create.json()["id"]
-    r = client.put(f"/financial-institutions/{fi_id}/deactivate", headers=auth(seed["admin_token"]))
+    r = client.put(f"/api/financial-institutions/{fi_id}/deactivate", headers=auth(seed["admin_token"]))
     assert r.status_code == 403
 
 
 # ── Spec 19: country (ISO-2) ─────────────────────────────────────────────────
 
 def test_create_fi_with_country(client, seed):
-    r = client.post("/financial-institutions", json={
+    r = client.post("/api/financial-institutions", json={
         "long_name": "Avenue Securities",
         "short_name": "Avenue-T",
         "country": "US",
@@ -185,7 +185,7 @@ def test_create_fi_with_country(client, seed):
 
 
 def test_country_defaults_to_br_when_omitted(client, seed):
-    r = client.post("/financial-institutions", json={
+    r = client.post("/api/financial-institutions", json={
         "long_name": "Banco BR S.A.",
         "short_name": "BR-Default",
     }, headers=auth(seed["sysadmin_token"]))
@@ -194,13 +194,13 @@ def test_country_defaults_to_br_when_omitted(client, seed):
 
 
 def test_update_changes_country(client, seed):
-    r = client.post("/financial-institutions", json={
+    r = client.post("/api/financial-institutions", json={
         "long_name": "Some FI",
         "short_name": "Some-FI",
         "country": "BR",
     }, headers=auth(seed["sysadmin_token"]))
     fi_id = r.json()["id"]
-    r2 = client.put(f"/financial-institutions/{fi_id}", json={
+    r2 = client.put(f"/api/financial-institutions/{fi_id}", json={
         "long_name": "Some FI",
         "short_name": "Some-FI",
         "country": "US",

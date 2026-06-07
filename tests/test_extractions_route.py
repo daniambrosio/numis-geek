@@ -152,7 +152,7 @@ def test_post_extraction_runs_inline_and_returns_extracted(client, seed):
         "as_of_timestamp": None, "source_app": None, "confidence": 0.9,
     }))
     r = client.post(
-        "/extractions",
+        "/api/extractions",
         json={"attachment_id": seed["att_id"], "source_hint": "SCREENSHOT_PRICE"},
         headers=_auth(seed["token"]),
     )
@@ -165,7 +165,7 @@ def test_post_extraction_runs_inline_and_returns_extracted(client, seed):
 
 def test_get_extraction(client, seed):
     job_id = seed["job_id"]
-    r = client.get(f"/extractions/{job_id}", headers=_auth(seed["token"]))
+    r = client.get(f"/api/extractions/{job_id}", headers=_auth(seed["token"]))
     assert r.status_code == 200
     assert r.json()["id"] == job_id
 
@@ -173,7 +173,7 @@ def test_get_extraction(client, seed):
 def test_confirm_extraction_applies_price(client, seed):
     job_id = seed["job_id"]
     r = client.post(
-        f"/extractions/{job_id}/confirm",
+        f"/api/extractions/{job_id}/confirm",
         json={},
         headers=_auth(seed["token"]),
     )
@@ -196,14 +196,14 @@ def test_reject_extraction(client, seed):
         "as_of_timestamp": None, "source_app": None, "confidence": 0.1,
     }))
     r1 = client.post(
-        "/extractions",
+        "/api/extractions",
         json={"attachment_id": seed["att_id"], "source_hint": "SCREENSHOT_PRICE"},
         headers=_auth(seed["token"]),
     )
     new_job_id = r1.json()["id"]
 
     r2 = client.post(
-        f"/extractions/{new_job_id}/reject",
+        f"/api/extractions/{new_job_id}/reject",
         json={"reason": "no quero"},
         headers=_auth(seed["token"]),
     )

@@ -219,7 +219,7 @@ def png_bytes() -> bytes:
 
 def test_upload_png_to_asset(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": seed["asset_a"]},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["admin_a_token"]),
@@ -236,7 +236,7 @@ def test_upload_png_to_asset(client, seed):
 
 def test_upload_to_movement(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "movement", "source_id": seed["movement_a"]},
         files={"file": ("nota.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")},
         headers=auth(seed["admin_a_token"]),
@@ -247,7 +247,7 @@ def test_upload_to_movement(client, seed):
 
 def test_upload_rejects_disallowed_mime(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": seed["asset_a"]},
         files={"file": ("exec.sh", io.BytesIO(b"#!/bin/bash"), "application/x-sh")},
         headers=auth(seed["admin_a_token"]),
@@ -258,7 +258,7 @@ def test_upload_rejects_disallowed_mime(client, seed):
 def test_upload_rejects_oversize(client, seed):
     big = b"\x00" * (attachment_storage.MAX_BYTES + 1)
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": seed["asset_a"]},
         files={"file": ("big.png", io.BytesIO(big), "image/png")},
         headers=auth(seed["admin_a_token"]),
@@ -268,7 +268,7 @@ def test_upload_rejects_oversize(client, seed):
 
 def test_upload_rejects_unknown_source(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": str(uuid.uuid4())},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["admin_a_token"]),
@@ -278,7 +278,7 @@ def test_upload_rejects_unknown_source(client, seed):
 
 def test_upload_rejects_invalid_source_type(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "transaction", "source_id": seed["asset_a"]},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["admin_a_token"]),
@@ -289,7 +289,7 @@ def test_upload_rejects_invalid_source_type(client, seed):
 def test_upload_cross_workspace_blocked(client, seed):
     # admin_b tries to upload to an asset in workspace A
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": seed["asset_a"]},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["admin_b_token"]),
@@ -299,7 +299,7 @@ def test_upload_cross_workspace_blocked(client, seed):
 
 def test_upload_sysadmin_cross_workspace_works(client, seed):
     r = client.post(
-        "/attachments",
+        "/api/attachments",
         data={"source_type": "asset", "source_id": seed["asset_b"]},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["sysadmin_token"]),
@@ -312,7 +312,7 @@ def test_upload_sysadmin_cross_workspace_works(client, seed):
 
 def test_list_returns_uploaded(client, seed):
     r = client.get(
-        "/attachments",
+        "/api/attachments",
         params={"source_type": "asset", "source_id": seed["asset_a"]},
         headers=auth(seed["admin_a_token"]),
     )
@@ -324,7 +324,7 @@ def test_list_returns_uploaded(client, seed):
 
 def test_list_cross_workspace_blocked(client, seed):
     r = client.get(
-        "/attachments",
+        "/api/attachments",
         params={"source_type": "asset", "source_id": seed["asset_a"]},
         headers=auth(seed["admin_b_token"]),
     )
@@ -335,7 +335,7 @@ def test_list_cross_workspace_blocked(client, seed):
 
 def test_download_works(client, seed):
     r = client.get(
-        f"/attachments/{seed['att_id']}/download",
+        f"/api/attachments/{seed['att_id']}/download",
         headers=auth(seed["admin_a_token"]),
     )
     assert r.status_code == 200
@@ -345,7 +345,7 @@ def test_download_works(client, seed):
 
 def test_download_cross_workspace_blocked(client, seed):
     r = client.get(
-        f"/attachments/{seed['att_id']}/download",
+        f"/api/attachments/{seed['att_id']}/download",
         headers=auth(seed["admin_b_token"]),
     )
     assert r.status_code == 404
@@ -367,14 +367,14 @@ def test_delete_hard_removes_row_and_file(client, seed):
         db.close()
 
     r = client.delete(
-        f"/attachments/{seed['att_id']}",
+        f"/api/attachments/{seed['att_id']}",
         headers=auth(seed["admin_a_token"]),
     )
     assert r.status_code == 204
 
     # No longer appears in list.
     r2 = client.get(
-        "/attachments",
+        "/api/attachments",
         params={"source_type": "asset", "source_id": seed["asset_a"]},
         headers=auth(seed["admin_a_token"]),
     )
@@ -394,7 +394,7 @@ def test_delete_hard_removes_row_and_file(client, seed):
 
 def test_delete_missing_returns_404(client, seed):
     r = client.delete(
-        f"/attachments/{seed['att_id']}",
+        f"/api/attachments/{seed['att_id']}",
         headers=auth(seed["admin_a_token"]),
     )
     assert r.status_code == 404

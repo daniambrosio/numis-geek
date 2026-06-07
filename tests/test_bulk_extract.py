@@ -444,7 +444,7 @@ def test_delete_attachment_cascades_extracted_job(db):
     app.dependency_overrides[get_db] = lambda: (yield db)
     try:
         with TestClient(app) as c:
-            r = c.delete(f"/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
+            r = c.delete(f"/api/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code == 204, r.text
     finally:
         app.dependency_overrides.clear()
@@ -492,7 +492,7 @@ def test_delete_attachment_allowed_when_confirmed_job_snapshot_deleted(db):
     app.dependency_overrides[get_db] = lambda: (yield db)
     try:
         with TestClient(app) as c:
-            r = c.delete(f"/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
+            r = c.delete(f"/api/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code == 204, r.text
     finally:
         app.dependency_overrides.clear()
@@ -524,7 +524,7 @@ def test_delete_attachment_blocked_when_job_confirmed(db):
     app.dependency_overrides[get_db] = lambda: (yield db)
     try:
         with TestClient(app) as c:
-            r = c.delete(f"/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
+            r = c.delete(f"/api/attachments/{att_id}", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code == 409
             assert "Reabra o fechamento" in r.json()["detail"]
     finally:

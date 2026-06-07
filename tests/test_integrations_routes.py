@@ -86,12 +86,12 @@ def auth(token):
 
 
 def test_list_credentials_requires_sysadmin(client, seed):
-    r = client.get("/sysadmin/integrations", headers=auth(seed["admin_tok"]))
+    r = client.get("/api/sysadmin/integrations", headers=auth(seed["admin_tok"]))
     assert r.status_code == 403
 
 
 def test_providers_listed(client, seed):
-    r = client.get("/sysadmin/integrations/providers", headers=auth(seed["sys_tok"]))
+    r = client.get("/api/sysadmin/integrations/providers", headers=auth(seed["sys_tok"]))
     assert r.status_code == 200
     providers = [p["provider"] for p in r.json()]
     assert {"BCB", "BRAPI", "FINNHUB", "YFINANCE"}.issubset(set(providers))
@@ -99,7 +99,7 @@ def test_providers_listed(client, seed):
 
 def test_create_and_mask_credential(client, seed):
     r = client.post(
-        "/sysadmin/integrations",
+        "/api/sysadmin/integrations",
         headers=auth(seed["sys_tok"]),
         json={
             "provider": "FINNHUB",
@@ -123,21 +123,21 @@ def test_duplicate_credential_rejected(client, seed):
         "label": "x",
         "secret_value": "tokenA",
     }
-    r1 = client.post("/sysadmin/integrations", headers=auth(seed["sys_tok"]), json=payload)
+    r1 = client.post("/api/sysadmin/integrations", headers=auth(seed["sys_tok"]), json=payload)
     assert r1.status_code == 201
-    r2 = client.post("/sysadmin/integrations", headers=auth(seed["sys_tok"]), json=payload)
+    r2 = client.post("/api/sysadmin/integrations", headers=auth(seed["sys_tok"]), json=payload)
     assert r2.status_code == 409
 
 
 def test_patch_credential_resets_test_state(client, seed):
     r = client.post(
-        "/sysadmin/integrations",
+        "/api/sysadmin/integrations",
         headers=auth(seed["sys_tok"]),
         json={"provider": "FINNHUB", "key_name": "ALT_TOKEN", "secret_value": "old"},
     )
     cid = r.json()["id"]
     r2 = client.patch(
-        f"/sysadmin/integrations/{cid}",
+        f"/api/sysadmin/integrations/{cid}",
         headers=auth(seed["sys_tok"]),
         json={"secret_value": "newvalue1234"},
     )
@@ -147,10 +147,10 @@ def test_patch_credential_resets_test_state(client, seed):
 
 def test_delete_credential(client, seed):
     r = client.post(
-        "/sysadmin/integrations",
+        "/api/sysadmin/integrations",
         headers=auth(seed["sys_tok"]),
         json={"provider": "BRAPI", "key_name": "TO_DELETE", "secret_value": "x"},
     )
     cid = r.json()["id"]
-    r2 = client.delete(f"/sysadmin/integrations/{cid}", headers=auth(seed["sys_tok"]))
+    r2 = client.delete(f"/api/sysadmin/integrations/{cid}", headers=auth(seed["sys_tok"]))
     assert r2.status_code == 204

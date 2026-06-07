@@ -124,11 +124,23 @@ def seed():
         currency=Currency.BRL, fx_rate=Decimal("1"),
         is_active=True, created_at=now, updated_at=now,
     ))
-    # PTAX so BRL→USD path works
+    # PTAX so BRL→USD path works. The chart resolves PTAX by end-of-month
+    # with a 15-day walkback, so seed BOTH the distribution date and a date
+    # close to end-of-month to cover both lookup paths.
     db.add(PTAXRate(
         id=str(uuid.uuid4()), date=today, rate=Decimal("5.0"),
         source="BCB_SGS", fetched_at=now,
     ))
+    from datetime import timedelta
+    if today.month == 12:
+        last_day = date(today.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(today.year, today.month + 1, 1) - timedelta(days=1)
+    if last_day != today:
+        db.add(PTAXRate(
+            id=str(uuid.uuid4()), date=last_day, rate=Decimal("5.0"),
+            source="BCB_SGS", fetched_at=now,
+        ))
     db.commit()
 
     tok = AuthService(db).login("chart_member@test.com", "memberpass")
@@ -143,7 +155,7 @@ def auth(tok):
 
 
 def test_chart_defaults_return_200(client, seed):
-    r = client.get("/distributions/chart", headers=auth(seed["tok"]))
+    r = client.get("/api/distributions/chart", headers=auth(seed["tok"]))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["currency"] == "BRL"
@@ -153,14 +165,14 @@ def test_chart_defaults_return_200(client, seed):
 
 
 def test_chart_period_24m_returns_24_rows(client, seed):
-    r = client.get("/distributions/chart?period=24m", headers=auth(seed["tok"]))
+    r = client.get("/api/distributions/chart?period=24m", headers=auth(seed["tok"]))
     assert r.status_code == 200
     assert len(r.json()["rows"]) == 24
 
 
 def test_chart_breakdown_type_lists_all_5_legend_keys(client, seed):
     r = client.get(
-        "/distributions/chart?breakdown=type", headers=auth(seed["tok"]),
+        "/api/distributions/chart?breakdown=type", headers=auth(seed["tok"]),
     )
     assert r.status_code == 200
     legend_keys = [s["key"] for s in r.json()["legend"]]
@@ -169,7 +181,7 @@ def test_chart_breakdown_type_lists_all_5_legend_keys(client, seed):
 
 def test_chart_synthetic_off_drops_option_premium_rows(client, seed):
     r = client.get(
-        "/distributions/chart?breakdown=type&include_synthetic=false",
+        "/api/distributions/chart?breakdown=type&include_synthetic=false",
         headers=auth(seed["tok"]),
     )
     assert r.status_code == 200
@@ -183,7 +195,7 @@ def test_chart_synthetic_off_drops_option_premium_rows(client, seed):
 
 def test_chart_currency_usd_converts(client, seed):
     r = client.get(
-        "/distributions/chart?currency=USD&breakdown=total",
+        "/api/distributions/chart?currency=USD&breakdown=total",
         headers=auth(seed["tok"]),
     )
     assert r.status_code == 200
@@ -194,7 +206,7 @@ def test_chart_currency_usd_converts(client, seed):
 
 def test_chart_member_cross_workspace_forbidden(client, seed):
     r = client.get(
-        f"/distributions/chart?workspace_id={seed['ws_other_id']}",
+        f"/api/distributions/chart?workspace_id={seed['ws_other_id']}",
         headers=auth(seed["tok"]),
     )
     assert r.status_code == 403
@@ -202,17 +214,17 @@ def test_chart_member_cross_workspace_forbidden(client, seed):
 
 def test_chart_sysadmin_cross_workspace_ok(client, seed):
     r = client.get(
-        f"/distributions/chart?workspace_id={seed['ws_id']}",
+        f"/api/distributions/chart?workspace_id={seed['ws_id']}",
         headers=auth(seed["sa_tok"]),
     )
     assert r.status_code == 200
 
 
 def test_chart_invalid_period_422(client, seed):
-    r = client.get("/distributions/chart?period=99m", headers=auth(seed["tok"]))
+    r = client.get("/api/distributions/chart?period=99m", headers=auth(seed["tok"]))
     assert r.status_code == 422
 
 
 def test_chart_invalid_breakdown_422(client, seed):
-    r = client.get("/distributions/chart?breakdown=xyz", headers=auth(seed["tok"]))
+    r = client.get("/api/distributions/chart?breakdown=xyz", headers=auth(seed["tok"]))
     assert r.status_code == 422

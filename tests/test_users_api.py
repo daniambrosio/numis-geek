@@ -101,7 +101,7 @@ def auth_header(token):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_list_users_admin(client, seed):
-    r = client.get("/users", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/users", headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     emails = [u["email"] for u in r.json()]
     assert "admin@test.com" in emails
@@ -109,12 +109,12 @@ def test_list_users_admin(client, seed):
 
 
 def test_list_users_member_forbidden(client, seed):
-    r = client.get("/users", headers=auth_header(seed["member_token"]))
+    r = client.get("/api/users", headers=auth_header(seed["member_token"]))
     assert r.status_code == 403
 
 
 def test_invite_user(client, seed):
-    r = client.post("/users/invite", json={
+    r = client.post("/api/users/invite", json={
         "email": "invited@test.com",
         "name": "Novo Usuário",
         "password": "pass123",
@@ -127,38 +127,38 @@ def test_invite_user(client, seed):
 
 def test_change_role(client, seed):
     member_id = seed["member_id"]
-    r = client.put(f"/users/{member_id}/role", json={"role": "admin"}, headers=auth_header(seed["admin_token"]))
+    r = client.put(f"/api/users/{member_id}/role", json={"role": "admin"}, headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     assert r.json()["role"] == "admin"
     # restore
-    client.put(f"/users/{member_id}/role", json={"role": "member"}, headers=auth_header(seed["admin_token"]))
+    client.put(f"/api/users/{member_id}/role", json={"role": "member"}, headers=auth_header(seed["admin_token"]))
 
 
 def test_deactivate_user(client, seed):
-    r = client.post("/users/invite", json={
+    r = client.post("/api/users/invite", json={
         "email": "todeactivate@test.com",
         "password": "pass",
     }, headers=auth_header(seed["admin_token"]))
     user_id = r.json()["id"]
-    r2 = client.put(f"/users/{user_id}/deactivate", headers=auth_header(seed["admin_token"]))
+    r2 = client.put(f"/api/users/{user_id}/deactivate", headers=auth_header(seed["admin_token"]))
     assert r2.status_code == 200
     assert r2.json()["is_active"] is False
 
 
 def test_get_me(client, seed):
-    r = client.get("/users/me", headers=auth_header(seed["member_token"]))
+    r = client.get("/api/users/me", headers=auth_header(seed["member_token"]))
     assert r.status_code == 200
     assert r.json()["email"] == "member@test.com"
 
 
 def test_update_name(client, seed):
-    r = client.put("/users/me", json={"name": "Daniel"}, headers=auth_header(seed["member_token"]))
+    r = client.put("/api/users/me", json={"name": "Daniel"}, headers=auth_header(seed["member_token"]))
     assert r.status_code == 200
     assert r.json()["name"] == "Daniel"
 
 
 def test_change_password_success(client, seed):
-    r = client.put("/users/me/password", json={
+    r = client.put("/api/users/me/password", json={
         "current_password": "memberpass",
         "new_password": "newpass123",
     }, headers=auth_header(seed["member_token"]))
@@ -166,7 +166,7 @@ def test_change_password_success(client, seed):
 
 
 def test_change_password_wrong_current(client, seed):
-    r = client.put("/users/me/password", json={
+    r = client.put("/api/users/me/password", json={
         "current_password": "wrongpass",
         "new_password": "irrelevant",
     }, headers=auth_header(seed["admin_token"]))
@@ -176,7 +176,7 @@ def test_change_password_wrong_current(client, seed):
 # ── Regression tests ──────────────────────────────────────────────────────────
 
 def test_sysadmin_can_list_users(client, seed):
-    r = client.get("/users", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/users", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     emails = [u["email"] for u in r.json()]
     assert "admin@test.com" in emails
@@ -185,7 +185,7 @@ def test_sysadmin_can_list_users(client, seed):
 
 
 def test_sysadmin_sees_workspace_name_for_users(client, seed):
-    r = client.get("/users", headers=auth_header(seed["sysadmin_token"]))
+    r = client.get("/api/users", headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     users = {u["email"]: u for u in r.json()}
     assert users["admin@test.com"]["workspace_name"] == "Test WS"
@@ -194,7 +194,7 @@ def test_sysadmin_sees_workspace_name_for_users(client, seed):
 
 def test_update_user_name_admin(client, seed):
     member_id = seed["member_id"]
-    r = client.put(f"/users/{member_id}/name", json={"name": "Updated Name"},
+    r = client.put(f"/api/users/{member_id}/name", json={"name": "Updated Name"},
                    headers=auth_header(seed["admin_token"]))
     assert r.status_code == 200
     assert r.json()["name"] == "Updated Name"
@@ -202,7 +202,7 @@ def test_update_user_name_admin(client, seed):
 
 def test_update_user_name_sysadmin(client, seed):
     admin_id = seed["admin_id"]
-    r = client.put(f"/users/{admin_id}/name", json={"name": "Admin Renamed"},
+    r = client.put(f"/api/users/{admin_id}/name", json={"name": "Admin Renamed"},
                    headers=auth_header(seed["sysadmin_token"]))
     assert r.status_code == 200
     assert r.json()["name"] == "Admin Renamed"
@@ -210,15 +210,15 @@ def test_update_user_name_sysadmin(client, seed):
 
 def test_update_user_name_member_forbidden(client, seed):
     admin_id = seed["admin_id"]
-    r = client.put(f"/users/{admin_id}/name", json={"name": "Hacked"},
+    r = client.put(f"/api/users/{admin_id}/name", json={"name": "Hacked"},
                    headers=auth_header(seed["member_token"]))
     assert r.status_code == 403
 
 
 def test_updated_name_visible_in_list(client, seed):
     member_id = seed["member_id"]
-    client.put(f"/users/{member_id}/name", json={"name": "FinalName"},
+    client.put(f"/api/users/{member_id}/name", json={"name": "FinalName"},
                headers=auth_header(seed["admin_token"]))
-    r = client.get("/users", headers=auth_header(seed["admin_token"]))
+    r = client.get("/api/users", headers=auth_header(seed["admin_token"]))
     users = {u["id"]: u for u in r.json()}
     assert users[member_id]["name"] == "FinalName"

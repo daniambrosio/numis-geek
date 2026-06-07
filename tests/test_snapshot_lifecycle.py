@@ -267,7 +267,7 @@ def test_detect_skips_no_source_assets(db):
 def test_create_snapshot_downgrades_to_in_review_when_pendencies(db):
     w = _seed(db)
     result = create_snapshot(
-        db, workspace_id=w["ws_id"], period_end=PERIOD,
+        db, workspace_id=w["ws_id"], period_end=PERIOD, now=NOW,
     )
     assert result.status == SnapshotStatus.IN_REVIEW
     # 4 pendencies expected (petr_stale, aapl, casa, avenue_generic).

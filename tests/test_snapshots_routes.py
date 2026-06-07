@@ -89,7 +89,7 @@ def auth(token):
 
 def test_post_target_ym_resolves_to_last_calendar_day(client, seed):
     r = client.post(
-        "/snapshots",
+        "/api/snapshots",
         json={"target_ym": "2026-01"},
         headers=auth(seed["admin_tok"]),
     )
@@ -103,7 +103,7 @@ def test_post_target_ym_resolves_to_last_calendar_day(client, seed):
 
 def test_post_target_ym_with_auto_uses_automated_source(client, seed):
     r = client.post(
-        "/snapshots",
+        "/api/snapshots",
         json={"target_ym": "2026-02", "auto": True},
         headers=auth(seed["admin_tok"]),
     )
@@ -116,7 +116,7 @@ def test_post_target_ym_with_auto_uses_automated_source(client, seed):
 
 def test_post_period_end_date_still_works(client, seed):
     r = client.post(
-        "/snapshots",
+        "/api/snapshots",
         json={"period_end_date": "2026-03-31"},
         headers=auth(seed["admin_tok"]),
     )
@@ -127,21 +127,21 @@ def test_post_period_end_date_still_works(client, seed):
 def test_post_409_when_closed_snapshot_already_exists(client, seed):
     # First POST creates CLOSED. Second POST hits the force_reopen guard.
     body = {"target_ym": "2026-12", "auto": True}
-    r1 = client.post("/snapshots", json=body, headers=auth(seed["admin_tok"]))
+    r1 = client.post("/api/snapshots", json=body, headers=auth(seed["admin_tok"]))
     assert r1.status_code == 201, r1.text
-    r2 = client.post("/snapshots", json=body, headers=auth(seed["admin_tok"]))
+    r2 = client.post("/api/snapshots", json=body, headers=auth(seed["admin_tok"]))
     assert r2.status_code == 409, r2.text
     assert "CLOSED" in r2.json()["detail"]
 
 
 def test_post_400_when_neither_field(client, seed):
-    r = client.post("/snapshots", json={}, headers=auth(seed["admin_tok"]))
+    r = client.post("/api/snapshots", json={}, headers=auth(seed["admin_tok"]))
     assert r.status_code == 400
 
 
 def test_post_400_when_both_fields(client, seed):
     r = client.post(
-        "/snapshots",
+        "/api/snapshots",
         json={"period_end_date": "2026-04-30", "target_ym": "2026-04"},
         headers=auth(seed["admin_tok"]),
     )

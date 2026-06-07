@@ -143,13 +143,13 @@ def _today():
 # ── Basic CRUD ─────────────────────────────────────────────────────────────
 
 def test_list_distributions_empty(client, seed):
-    r = client.get("/distributions", headers=auth(seed["admin_token"]))
+    r = client.get("/api/distributions", headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     assert r.json()["items"] == []
 
 
 def test_create_dividend(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_usd"],
         "type": "DIVIDEND",
@@ -169,7 +169,7 @@ def test_create_dividend(client, seed):
 
 
 def test_create_interest(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "INTEREST",
@@ -183,7 +183,7 @@ def test_create_interest(client, seed):
 
 
 def test_create_jcp(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "JCP",
@@ -198,7 +198,7 @@ def test_create_jcp(client, seed):
 
 def test_securities_lending_without_asset(client, seed):
     """Avenue case: 'rendimento de aluguel' has no specific ticker."""
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": None,
         "type": "SECURITIES_LENDING",
@@ -215,7 +215,7 @@ def test_securities_lending_without_asset(client, seed):
 
 
 def test_gross_must_be_positive(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "DIVIDEND",
@@ -227,7 +227,7 @@ def test_gross_must_be_positive(client, seed):
 
 
 def test_currency_must_match_asset(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "DIVIDEND",
@@ -242,7 +242,7 @@ def test_currency_must_match_asset(client, seed):
 def test_event_date_not_future(client, seed):
     from datetime import timedelta
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "DIVIDEND",
@@ -254,7 +254,7 @@ def test_event_date_not_future(client, seed):
 
 
 def test_update_distribution(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "DIVIDEND",
@@ -264,7 +264,7 @@ def test_update_distribution(client, seed):
     }, headers=auth(seed["admin_token"]))
     did = r.json()["id"]
 
-    r2 = client.put(f"/distributions/{did}", json={
+    r2 = client.put(f"/api/distributions/{did}", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "JCP",
@@ -279,7 +279,7 @@ def test_update_distribution(client, seed):
 
 
 def test_deactivate_distribution(client, seed):
-    r = client.post("/distributions", json={
+    r = client.post("/api/distributions", json={
         "financial_institution_id": seed["fi_id"],
         "asset_id": seed["asset_brl"],
         "type": "DIVIDEND",
@@ -288,13 +288,13 @@ def test_deactivate_distribution(client, seed):
         "currency": "BRL",
     }, headers=auth(seed["admin_token"]))
     did = r.json()["id"]
-    r2 = client.put(f"/distributions/{did}/deactivate", headers=auth(seed["admin_token"]))
+    r2 = client.put(f"/api/distributions/{did}/deactivate", headers=auth(seed["admin_token"]))
     assert r2.status_code == 200
     assert r2.json()["is_active"] is False
 
 
 def test_filter_by_type(client, seed):
-    r = client.get("/distributions?type=DIVIDEND", headers=auth(seed["admin_token"]))
+    r = client.get("/api/distributions?type=DIVIDEND", headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     items = r.json()["items"]
     assert all(it["type"] == "DIVIDEND" for it in items)

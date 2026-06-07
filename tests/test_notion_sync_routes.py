@@ -139,7 +139,7 @@ def _mock_synced(page_id="page-1"):
 
 
 def test_pending_counts(client, seed):
-    r = client.get("/notion-sync/pending", headers=auth(seed["admin_tok"]))
+    r = client.get("/api/notion-sync/pending", headers=auth(seed["admin_tok"]))
     assert r.status_code == 200
     body = r.json()
     assert body["assets"] >= 1
@@ -149,7 +149,7 @@ def test_pending_counts(client, seed):
 def test_push_asset_calls_service(client, seed):
     with patch("numis_geek.api.routes.notion_sync.push_asset", return_value=_mock_synced("page-A")) as p:
         r = client.post(
-            f"/notion-sync/asset/{seed['asset_id']}",
+            f"/api/notion-sync/asset/{seed['asset_id']}",
             headers=auth(seed["admin_tok"]),
         )
     assert r.status_code == 200
@@ -164,7 +164,7 @@ def test_push_movement_route(client, seed):
         return_value=_mock_synced("page-M"),
     ) as p:
         r = client.post(
-            f"/notion-sync/asset-movement/{seed['movement_id']}",
+            f"/api/notion-sync/asset-movement/{seed['movement_id']}",
             headers=auth(seed["admin_tok"]),
         )
     assert r.status_code == 200
@@ -174,7 +174,7 @@ def test_push_movement_route(client, seed):
 
 def test_push_unknown_id_returns_404(client, seed):
     r = client.post(
-        "/notion-sync/asset/does-not-exist",
+        "/api/notion-sync/asset/does-not-exist",
         headers=auth(seed["admin_tok"]),
     )
     assert r.status_code == 404
@@ -186,7 +186,7 @@ def test_resolve_force_push(client, seed):
         return_value=_mock_synced("page-A"),
     ) as p:
         r = client.post(
-            f"/notion-sync/asset/{seed['asset_id']}/resolve?action=force_push",
+            f"/api/notion-sync/asset/{seed['asset_id']}/resolve?action=force_push",
             headers=auth(seed["admin_tok"]),
         )
     assert r.status_code == 200
@@ -205,7 +205,7 @@ def test_resolve_abort_clears_conflict(client, seed):
     db.close()
 
     r = client.post(
-        f"/notion-sync/asset/{seed['asset_id']}/resolve?action=abort",
+        f"/api/notion-sync/asset/{seed['asset_id']}/resolve?action=abort",
         headers=auth(seed["admin_tok"]),
     )
     assert r.status_code == 200
@@ -230,7 +230,7 @@ def test_bulk_assets_only_pending(client, seed):
         "numis_geek.api.routes.notion_sync.push_asset",
         return_value=_mock_synced("page-A"),
     ) as p:
-        r = client.post("/notion-sync/asset/bulk", headers=auth(seed["admin_tok"]))
+        r = client.post("/api/notion-sync/asset/bulk", headers=auth(seed["admin_tok"]))
     assert r.status_code == 200
     body = r.json()
     assert body["total"] >= 1

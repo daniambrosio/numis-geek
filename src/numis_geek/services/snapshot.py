@@ -227,6 +227,7 @@ def create_snapshot(
     initial_status: SnapshotStatus = SnapshotStatus.CLOSED,
     replace_if_exists: bool = True,
     force_reopen: bool = False,
+    now: datetime | None = None,
 ) -> SnapshotResult:
     """Create or replace a snapshot for workspace at period_end.
 
@@ -259,7 +260,7 @@ def create_snapshot(
     except FxRateNotFound:
         fx = None
 
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     snap = PortfolioSnapshot(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,

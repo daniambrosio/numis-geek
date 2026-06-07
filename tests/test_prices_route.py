@@ -167,7 +167,7 @@ def test_refresh_no_body_runs_all_automated(client, seed):
         "numis_geek.services.price_update.coinbase_spot",
         return_value=CoinbaseQuote(symbol="BTC", price=Decimal("67000"), currency="USD"),
     ):
-        r = client.post("/prices/refresh", headers=auth(seed["tok"]), json={})
+        r = client.post("/api/prices/refresh", headers=auth(seed["tok"]), json={})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] == 3   # br + us + btc
@@ -181,7 +181,7 @@ def test_refresh_filtered_by_source(client, seed):
         return_value=BrapiQuote(ticker="PETR4", price=Decimal("38.5")),
     ):
         r = client.post(
-            "/prices/refresh", headers=auth(seed["tok"]),
+            "/api/prices/refresh", headers=auth(seed["tok"]),
             json={"source": "BRAPI"},
         )
     assert r.status_code == 200
@@ -196,7 +196,7 @@ def test_refresh_by_asset_ids_skips_manual(client, seed):
         return_value=BrapiQuote(ticker="PETR4", price=Decimal("38.5")),
     ):
         r = client.post(
-            "/prices/refresh", headers=auth(seed["tok"]),
+            "/api/prices/refresh", headers=auth(seed["tok"]),
             json={"asset_ids": [seed["asset_br_id"], seed["asset_manual_id"]]},
         )
     assert r.status_code == 200
@@ -214,7 +214,7 @@ def test_single_refresh_returns_price_source(client, seed):
         return_value=BrapiQuote(ticker="PETR4", price=Decimal("39.99")),
     ):
         r = client.post(
-            f"/assets/{seed['asset_br_id']}/refresh-price",
+            f"/api/assets/{seed['asset_br_id']}/refresh-price",
             headers=auth(seed["tok"]),
         )
     assert r.status_code == 200, r.text
@@ -225,7 +225,7 @@ def test_single_refresh_returns_price_source(client, seed):
 
 def test_single_refresh_422_on_manual(client, seed):
     r = client.post(
-        f"/assets/{seed['asset_manual_id']}/refresh-price",
+        f"/api/assets/{seed['asset_manual_id']}/refresh-price",
         headers=auth(seed["tok"]),
     )
     assert r.status_code == 422
@@ -246,7 +246,7 @@ def test_legacy_bulk_endpoint_still_works_with_deprecation_headers(client, seed)
         "numis_geek.services.price_update.coinbase_spot",
         return_value=CoinbaseQuote(symbol="BTC", price=Decimal("67000"), currency="USD"),
     ):
-        r = client.post("/assets/refresh-prices/bulk", headers=auth(seed["tok"]))
+        r = client.post("/api/assets/refresh-prices/bulk", headers=auth(seed["tok"]))
     assert r.status_code == 200
     assert r.headers.get("Deprecation") == "true"
     assert r.headers.get("Sunset") == "2026-12-31"
@@ -258,7 +258,7 @@ def test_legacy_bulk_endpoint_still_works_with_deprecation_headers(client, seed)
 
 def test_manual_price_patch_updates_manual_asset(client, seed):
     r = client.patch(
-        f"/assets/{seed['asset_manual_id']}/price",
+        f"/api/assets/{seed['asset_manual_id']}/price",
         headers=auth(seed["tok"]),
         json={"price": "850000.00"},
     )
@@ -274,7 +274,7 @@ def test_manual_price_patch_allowed_on_automated_asset(client, seed):
     (the next automated refresh overwrites it). Removes the 422 guard
     that was blocking legitimate user overrides."""
     r = client.patch(
-        f"/assets/{seed['asset_br_id']}/price",
+        f"/api/assets/{seed['asset_br_id']}/price",
         headers=auth(seed["tok"]),
         json={"price": "100.00"},
     )
@@ -284,7 +284,7 @@ def test_manual_price_patch_allowed_on_automated_asset(client, seed):
 
 def test_manual_price_patch_rejects_negative(client, seed):
     r = client.patch(
-        f"/assets/{seed['asset_manual_id']}/price",
+        f"/api/assets/{seed['asset_manual_id']}/price",
         headers=auth(seed["tok"]),
         json={"price": "-1.00"},
     )
@@ -296,7 +296,7 @@ def test_manual_price_patch_emits_audit_with_note(client, seed):
     from numis_geek.models.audit_log import AuditLog
 
     r = client.patch(
-        f"/assets/{seed['asset_manual_id']}/price",
+        f"/api/assets/{seed['asset_manual_id']}/price",
         headers=auth(seed["tok"]),
         json={"price": "920000.00", "note": "Avaliação anual feita por corretor"},
     )

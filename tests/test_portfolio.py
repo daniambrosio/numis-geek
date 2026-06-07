@@ -252,7 +252,7 @@ def test_summary_empty_workspace_returns_empty():
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 
 def test_get_portfolio_authenticated(client, seed):
-    r = client.get("/portfolio", headers=auth(seed["admin_token"]))
+    r = client.get("/api/portfolio", headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     data = r.json()
     assert data["source"] == "snapshot"
@@ -264,18 +264,18 @@ def test_get_portfolio_authenticated(client, seed):
 
 
 def test_get_portfolio_requires_auth(client):
-    r = client.get("/portfolio")
+    r = client.get("/api/portfolio")
     assert r.status_code in (401, 403)
 
 
 def test_sysadmin_needs_workspace_id(client, seed):
-    r = client.get("/portfolio", headers=auth(seed["sysadmin_token"]))
+    r = client.get("/api/portfolio", headers=auth(seed["sysadmin_token"]))
     assert r.status_code == 400
 
 
 def test_sysadmin_with_workspace_id(client, seed):
     r = client.get(
-        "/portfolio", params={"workspace_id": seed["ws_id"]},
+        "/api/portfolio", params={"workspace_id": seed["ws_id"]},
         headers=auth(seed["sysadmin_token"]),
     )
     assert r.status_code == 200
@@ -284,7 +284,7 @@ def test_sysadmin_with_workspace_id(client, seed):
 
 def test_admin_cant_query_other_workspace(client, seed):
     r = client.get(
-        "/portfolio", params={"workspace_id": "some-other-ws"},
+        "/api/portfolio", params={"workspace_id": "some-other-ws"},
         headers=auth(seed["admin_token"]),
     )
     assert r.status_code == 403

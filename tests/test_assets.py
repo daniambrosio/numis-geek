@@ -173,13 +173,13 @@ def auth(token):
 
 
 def test_list_assets_empty(client, seed):
-    r = client.get("/assets", headers=auth(seed["admin_token_a"]))
+    r = client.get("/api/assets", headers=auth(seed["admin_token_a"]))
     assert r.status_code == 200
     assert r.json() == []
 
 
 def test_create_stock_br(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Petrobras PN",
@@ -196,7 +196,7 @@ def test_create_stock_br(client, seed):
 
 
 def test_create_member_can_create(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Itaú PN",
@@ -207,7 +207,7 @@ def test_create_member_can_create(client, seed):
 
 
 def test_create_fixed_income(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "CDB BTG 110% CDI 2028",
@@ -229,7 +229,7 @@ def test_create_fixed_income(client, seed):
 
 
 def test_create_real_estate(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
         "account_id": seed["acc_particular_a"],
         "name": "Apto Pinheiros 302",
@@ -249,7 +249,7 @@ def test_create_real_estate(client, seed):
 
 
 def test_create_vehicle(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "VEHICLE", "country": "BR",
         "account_id": seed["acc_particular_a"],
         "name": "Toyota Corolla 2022",
@@ -268,7 +268,7 @@ def test_create_vehicle(client, seed):
 
 
 def test_fi_required(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         # missing financial_institution_id
         "name": "No FI",
@@ -280,7 +280,7 @@ def test_fi_required(client, seed):
 
 def test_nonexistent_account_rejected(client, seed):
     """Spec 10: when account_id doesn't exist, return 404."""
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR",
         "account_id": "00000000-0000-0000-0000-000000000000",
         "name": "Should Fail",
@@ -291,7 +291,7 @@ def test_nonexistent_account_rejected(client, seed):
 
 
 def test_ticker_required_for_stock(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Stock w/o ticker",
@@ -301,7 +301,7 @@ def test_ticker_required_for_stock(client, seed):
 
 
 def test_ticker_forbidden_for_real_estate(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
         "account_id": seed["acc_particular_a"],
         "name": "Casa com ticker",
@@ -313,7 +313,7 @@ def test_ticker_forbidden_for_real_estate(client, seed):
 
 
 def test_details_required_for_fixed_income(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "CDB no details",
@@ -323,7 +323,7 @@ def test_details_required_for_fixed_income(client, seed):
 
 
 def test_details_forbidden_for_stock(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Stock w/ extras",
@@ -335,7 +335,7 @@ def test_details_forbidden_for_stock(client, seed):
 
 
 def test_cnpj_only_for_fund(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Stock w/ cnpj",
@@ -347,7 +347,7 @@ def test_cnpj_only_for_fund(client, seed):
 
 
 def test_real_estate_missing_required_field(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",
         "account_id": seed["acc_particular_a"],
         "name": "Casa incompleta",
@@ -358,7 +358,7 @@ def test_real_estate_missing_required_field(client, seed):
 
 
 def test_unique_per_workspace_ticker_fi(client, seed):
-    r1 = client.post("/assets", json={
+    r1 = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
         "account_id": seed["acc_avenue_a"],
         "name": "Apple",
@@ -368,7 +368,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
     assert r1.status_code == 201, r1.text
 
     # Same ticker, same custodian, same class → blocked.
-    r2 = client.post("/assets", json={
+    r2 = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
         "account_id": seed["acc_avenue_a"],
         "name": "Apple Dup",
@@ -379,7 +379,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
 
     # Same ticker, same custodian, DIFFERENT class → also blocked
     # (catches class typos like registering AAPL as STOCK_BR by mistake).
-    r3 = client.post("/assets", json={
+    r3 = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_avenue_a"],
         "name": "Apple as BR (typo)",
@@ -391,7 +391,7 @@ def test_unique_per_workspace_ticker_fi(client, seed):
 
 def test_same_ticker_different_fi_allowed(client, seed):
     # AAPL @ Avenue already exists from previous test; create AAPL @ XP — should succeed.
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "US",
         "account_id": seed["acc_xp_a"],
         "name": "Apple via XP BDR",
@@ -403,7 +403,7 @@ def test_same_ticker_different_fi_allowed(client, seed):
 
 def test_member_cannot_read_other_workspace(client, seed):
     # admin_b creates an asset in workspace B
-    r_create = client.post("/assets", json={
+    r_create = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR",
         "account_id": seed["acc_xp_b"],
         "name": "WS B Asset",
@@ -414,11 +414,11 @@ def test_member_cannot_read_other_workspace(client, seed):
     asset_id_b = r_create.json()["id"]
 
     # member of workspace A tries to read it
-    r = client.get(f"/assets/{asset_id_b}", headers=auth(seed["member_token_a"]))
+    r = client.get(f"/api/assets/{asset_id_b}", headers=auth(seed["member_token_a"]))
     assert r.status_code == 404
 
     # And cannot edit it
-    r2 = client.put(f"/assets/{asset_id_b}", json={
+    r2 = client.put(f"/api/assets/{asset_id_b}", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "Hijack",
@@ -428,13 +428,13 @@ def test_member_cannot_read_other_workspace(client, seed):
     assert r2.status_code == 404
 
     # And the member's listing shouldn't include it
-    r3 = client.get("/assets", headers=auth(seed["member_token_a"]))
+    r3 = client.get("/api/assets", headers=auth(seed["member_token_a"]))
     ids = [a["id"] for a in r3.json()]
     assert asset_id_b not in ids
 
 
 def test_sysadmin_lists_across_workspaces(client, seed):
-    r = client.get("/assets", headers=auth(seed["sysadmin_token"]))
+    r = client.get("/api/assets", headers=auth(seed["sysadmin_token"]))
     assert r.status_code == 200
     items = r.json()
     workspace_ids_seen = {a["workspace_id"] for a in items}
@@ -443,7 +443,7 @@ def test_sysadmin_lists_across_workspaces(client, seed):
 
 
 def test_sysadmin_filter_by_workspace(client, seed):
-    r = client.get(f"/assets?workspace_id={seed['ws_b']}", headers=auth(seed["sysadmin_token"]))
+    r = client.get(f"/api/assets?workspace_id={seed['ws_b']}", headers=auth(seed["sysadmin_token"]))
     assert r.status_code == 200
     items = r.json()
     assert all(a["workspace_id"] == seed["ws_b"] for a in items)
@@ -451,7 +451,7 @@ def test_sysadmin_filter_by_workspace(client, seed):
 
 
 def test_sysadmin_creates_in_specified_workspace(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "CRYPTO", "country": "BR",
         "account_id": seed["acc_xp_b"],
         "name": "Bitcoin via Sysadmin",
@@ -464,7 +464,7 @@ def test_sysadmin_creates_in_specified_workspace(client, seed):
 
 
 def test_sysadmin_create_requires_workspace(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "No WS",
@@ -475,7 +475,7 @@ def test_sysadmin_create_requires_workspace(client, seed):
 
 
 def test_update_asset(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "REIT", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "HGLG11 original",
@@ -484,7 +484,7 @@ def test_update_asset(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     asset_id = r.json()["id"]
 
-    r2 = client.put(f"/assets/{asset_id}", json={
+    r2 = client.put(f"/api/assets/{asset_id}", json={
         "asset_class": "REIT", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "CSHG Logística FII",
@@ -496,7 +496,7 @@ def test_update_asset(client, seed):
 
 
 def test_deactivate_asset(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "To Deactivate",
@@ -505,21 +505,21 @@ def test_deactivate_asset(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     asset_id = r.json()["id"]
 
-    r2 = client.put(f"/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
+    r2 = client.put(f"/api/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
     assert r2.status_code == 200
     assert r2.json()["is_active"] is False
 
     # default list excludes it
-    r3 = client.get("/assets", headers=auth(seed["admin_token_a"]))
+    r3 = client.get("/api/assets", headers=auth(seed["admin_token_a"]))
     assert asset_id not in [a["id"] for a in r3.json()]
 
     # include_inactive=true brings it back
-    r4 = client.get("/assets?include_inactive=true", headers=auth(seed["admin_token_a"]))
+    r4 = client.get("/api/assets?include_inactive=true", headers=auth(seed["admin_token_a"]))
     assert asset_id in [a["id"] for a in r4.json()]
 
 
 def test_audit_log_created_for_asset_mutations(client, seed):
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "ETF", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "BOVA11",
@@ -528,7 +528,7 @@ def test_audit_log_created_for_asset_mutations(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     asset_id = r.json()["id"]
 
-    client.put(f"/assets/{asset_id}", json={
+    client.put(f"/api/assets/{asset_id}", json={
         "asset_class": "ETF", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "BOVA11 ETF Ibovespa",
@@ -536,7 +536,7 @@ def test_audit_log_created_for_asset_mutations(client, seed):
         "ticker": "BOVA11",
     }, headers=auth(seed["admin_token_a"]))
 
-    client.put(f"/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
+    client.put(f"/api/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
 
     db = TestSession()
     try:
@@ -553,7 +553,7 @@ def test_audit_log_created_for_asset_mutations(client, seed):
 
 def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
     # Create a fresh FI through the sysadmin endpoint
-    r_fi = client.post("/financial-institutions", json={
+    r_fi = client.post("/api/financial-institutions", json={
         "long_name": "Bank Restrict",
         "short_name": "Restrict",
     }, headers=auth(seed["sysadmin_token"]))
@@ -574,7 +574,7 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
     db.close()
 
     # Bind an asset to it
-    r_asset = client.post("/assets", json={
+    r_asset = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR",
         "account_id": acc_id,
         "name": "Bound asset",
@@ -585,12 +585,12 @@ def test_fi_deactivate_blocked_when_active_asset_exists(client, seed):
     asset_id = r_asset.json()["id"]
 
     # Deactivation must fail
-    r_blocked = client.put(f"/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
+    r_blocked = client.put(f"/api/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
     assert r_blocked.status_code == 409
 
     # After deactivating the asset, FI deactivation succeeds
-    client.put(f"/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
-    r_ok = client.put(f"/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
+    client.put(f"/api/assets/{asset_id}/deactivate", headers=auth(seed["admin_token_a"]))
+    r_ok = client.put(f"/api/financial-institutions/{fi_id}/deactivate", headers=auth(seed["sysadmin_token"]))
     assert r_ok.status_code == 200
 
 
@@ -601,7 +601,7 @@ def _create_test_asset(client, seed, ticker: str = "PETR4") -> str:
     """Helper: create a stock asset in ws_a so we can attach snapshot items.
     Caller passes a unique ticker per test to dodge the
     (ticker, fi, workspace) unique constraint when tests run together."""
-    r = client.post("/assets", json={
+    r = client.post("/api/assets", json={
         "asset_class": "STOCK", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": f"{ticker} stock", "ticker": ticker,
@@ -657,7 +657,7 @@ def test_price_history_returns_chronological_points(client, seed):
     _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-04-30", "31.80")
 
     r = client.get(
-        f"/assets/{asset_id}/price-history?period=all",
+        f"/api/assets/{asset_id}/price-history?period=all",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200, r.text
@@ -678,7 +678,7 @@ def test_price_history_cross_workspace_returns_404(client, seed):
     _seed_snapshot_with_item(seed["ws_a"], asset_id, "2026-02-28", "31.80")
 
     r = client.get(
-        f"/assets/{asset_id}/price-history",
+        f"/api/assets/{asset_id}/price-history",
         headers=auth(seed["admin_token_b"]),
     )
     assert r.status_code == 404
@@ -697,7 +697,7 @@ def test_price_history_period_6m_filters_old_snapshots(client, seed):
     _seed_snapshot_with_item(seed["ws_a"], asset_id, recent, "31.80")
 
     r6 = client.get(
-        f"/assets/{asset_id}/price-history?period=6m",
+        f"/api/assets/{asset_id}/price-history?period=6m",
         headers=auth(seed["admin_token_a"]),
     )
     assert r6.status_code == 200
@@ -707,7 +707,7 @@ def test_price_history_period_6m_filters_old_snapshots(client, seed):
 
     # period=all keeps both
     r_all = client.get(
-        f"/assets/{asset_id}/price-history?period=all",
+        f"/api/assets/{asset_id}/price-history?period=all",
         headers=auth(seed["admin_token_a"]),
     )
     dates_all = [p["date"] for p in r_all.json()["points"]]
@@ -718,7 +718,7 @@ def test_price_history_period_6m_filters_old_snapshots(client, seed):
 def test_price_history_no_snapshots_returns_empty(client, seed):
     asset_id = _create_test_asset(client, seed, ticker="PH4")
     r = client.get(
-        f"/assets/{asset_id}/price-history",
+        f"/api/assets/{asset_id}/price-history",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200
@@ -793,7 +793,7 @@ def test_snapshot_history_returns_desc_with_market_values(client, seed):
     )
 
     r = client.get(
-        f"/assets/{asset_id}/snapshot-history",
+        f"/api/assets/{asset_id}/snapshot-history",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200, r.text
@@ -819,7 +819,7 @@ def test_snapshot_history_excludes_in_review(client, seed):
         seed["ws_a"], asset_id, "2025-12-31", status="IN_REVIEW",
     )
     r = client.get(
-        f"/assets/{asset_id}/snapshot-history",
+        f"/api/assets/{asset_id}/snapshot-history",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200
@@ -830,7 +830,7 @@ def test_snapshot_history_excludes_in_review(client, seed):
 def test_snapshot_history_no_snapshots_returns_empty(client, seed):
     asset_id = _create_test_asset(client, seed, ticker="SH3")
     r = client.get(
-        f"/assets/{asset_id}/snapshot-history",
+        f"/api/assets/{asset_id}/snapshot-history",
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 200
@@ -841,14 +841,14 @@ def test_snapshot_history_cross_workspace_returns_404(client, seed):
     asset_id = _create_test_asset(client, seed, ticker="SH4")
     _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2025-10-31")
     r = client.get(
-        f"/assets/{asset_id}/snapshot-history",
+        f"/api/assets/{asset_id}/snapshot-history",
         headers=auth(seed["admin_token_b"]),
     )
     assert r.status_code == 404
 
 
 def test_get_asset_returns_details(client, seed):
-    r_create = client.post("/assets", json={
+    r_create = client.post("/api/assets", json={
         "asset_class": "FIXED_INCOME", "country": "BR",
         "account_id": seed["acc_xp_a"],
         "name": "LCI BTG IPCA",
@@ -862,7 +862,7 @@ def test_get_asset_returns_details(client, seed):
     }, headers=auth(seed["admin_token_a"]))
     asset_id = r_create.json()["id"]
 
-    r_get = client.get(f"/assets/{asset_id}", headers=auth(seed["admin_token_a"]))
+    r_get = client.get(f"/api/assets/{asset_id}", headers=auth(seed["admin_token_a"]))
     assert r_get.status_code == 200
     body = r_get.json()
     assert body["details"]["indexer"] == "IPCA"
