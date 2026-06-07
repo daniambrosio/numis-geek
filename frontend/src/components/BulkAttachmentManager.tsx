@@ -23,6 +23,7 @@ import {
   type SnapshotPendencyOut,
 } from '../lib/api'
 import BulkExtractReviewModal from './BulkExtractReviewModal'
+import BulkIncomeReviewModal from './BulkIncomeReviewModal'
 
 interface Props {
   snapshotId: string
@@ -35,6 +36,14 @@ interface Props {
    * the legacy per-snapshot behavior.
    */
   institutionId?: string | null
+  /**
+   * Spec 58 Stage 4 — what the upload is for:
+   *  - 'positions' (default): updates Asset prices, resolves pendencies.
+   *  - 'income': creates Distribution rows (dividendos, juros, aluguel).
+   * Scoped per-FI via `institutionId`. Required to be 'positions' when
+   * `institutionId` is null (legacy bucket).
+   */
+  purpose?: 'positions' | 'income'
 }
 
 function fmtSize(bytes: number): string {
@@ -49,8 +58,9 @@ function KindIcon({ kind }: { kind: AttachmentKind }) {
 }
 
 export default function BulkAttachmentManager({
-  snapshotId, pendencies, onResolved, institutionId,
+  snapshotId, pendencies, onResolved, institutionId, purpose = 'positions',
 }: Props) {
+  const isIncome = purpose === 'income'
   const [attachments, setAttachments] = useState<AttachmentOut[]>([])
   const [jobs, setJobs] = useState<BulkExtractionJobSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -82,15 +92,19 @@ export default function BulkAttachmentManager({
   // Pick the latest job per attachment (newest by created_at). When
   // scoped to a FI, only consider jobs at that FI — otherwise an
   // attachment extracted twice (once per FI) would show the wrong job.
+  // Spec 58 Stage 4: also filter by source_hint so the Income manager
+  // doesn't list Positions jobs (and vice-versa).
+  const expectedHint = isIncome ? 'BROKER_INCOME' : 'BROKER_POSITION'
   const jobByAttachmentId = useMemo(() => {
     const m = new Map<string, BulkExtractionJobSummary>()
     for (const j of jobs) {
       if (institutionId && j.institution_id !== institutionId) continue
+      if (institutionId && j.source_hint !== expectedHint) continue
       const prev = m.get(j.attachment_id)
       if (!prev || j.created_at > prev.created_at) m.set(j.attachment_id, j)
     }
     return m
-  }, [jobs, institutionId])
+  }, [jobs, institutionId, expectedHint])
 
   // Spec 58 — only show attachments with a job at this FI when scoped.
   // Otherwise per-FI groups would all show the same global attachment list.
@@ -112,9 +126,9 @@ export default function BulkAttachmentManager({
       if (institutionId) {
         setExtractingId(att.id)
         try {
-          const job = await api.createBulkExtractForFI(
-            snapshotId, institutionId, att.id,
-          )
+          const job = isIncome
+            ? await api.createBulkIncomeForFI(snapshotId, institutionId, att.id)
+            : await api.createBulkExtractForFI(snapshotId, institutionId, att.id)
           await refresh()
           if (job.status === 'EXTRACTED') setReviewJob(job)
           else if (job.status === 'FAILED') {
@@ -129,7 +143,7 @@ export default function BulkAttachmentManager({
     } finally {
       setUploading(false)
     }
-  }, [snapshotId, refresh, institutionId])
+  }, [snapshotId, refresh, institutionId, isIncome])
 
   // cmd+V paste handler.
   useEffect(() => {
@@ -158,7 +172,9 @@ export default function BulkAttachmentManager({
     setExtractingId(attachmentId)
     try {
       const job = institutionId
-        ? await api.createBulkExtractForFI(snapshotId, institutionId, attachmentId)
+        ? (isIncome
+            ? await api.createBulkIncomeForFI(snapshotId, institutionId, attachmentId)
+            : await api.createBulkExtractForFI(snapshotId, institutionId, attachmentId))
         : await api.createBulkExtract(snapshotId, attachmentId)
       await refresh()
       if (job.status === 'EXTRACTED') {
@@ -250,10 +266,11 @@ export default function BulkAttachmentManager({
       <div className="flex items-center gap-2">
         <UploadIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
         <h4 className="text-[12px] font-semibold text-gray-900 dark:text-gray-100">
-          Anexos do fechamento
+          {isIncome ? 'Proventos do mês' : 'Posições do mês'}
         </h4>
         <span className="text-[10px] text-indigo-600 dark:text-indigo-400 inline-flex items-center gap-1 ml-1">
-          <Sparkles className="w-3 h-3" /> extração via LLM
+          <Sparkles className="w-3 h-3" />
+          {isIncome ? 'cria Distribution rows' : 'atualiza preços'}
         </span>
       </div>
 
@@ -326,7 +343,17 @@ export default function BulkAttachmentManager({
         </ul>
       )}
 
-      {reviewJob && (
+      {reviewJob && (isIncome ? (
+        <BulkIncomeReviewModal
+          job={reviewJob}
+          onApplied={() => {
+            setReviewJob(null)
+            void refresh()
+            onResolved()
+          }}
+          onClose={() => setReviewJob(null)}
+        />
+      ) : (
         <BulkExtractReviewModal
           job={reviewJob}
           pendencies={pendencies}
@@ -337,7 +364,7 @@ export default function BulkAttachmentManager({
           }}
           onClose={() => setReviewJob(null)}
         />
-      )}
+      ))}
     </div>
   )
 }

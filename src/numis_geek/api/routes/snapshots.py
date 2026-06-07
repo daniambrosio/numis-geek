@@ -188,13 +188,20 @@ class BulkExtractionJobOut(BaseModel):
     # Spec 58 — when set, the job was scoped to this FI at creation time.
     institution_id: str | None
     institution_short_name: str | None
+    # Spec 58 Stage 4 — distinguishes positions (BROKER_POSITION) from
+    # proventos (BROKER_INCOME) so the UI can show each in its own bucket.
+    source_hint: str
 
     @classmethod
     def from_orm(cls, j: ExtractionJob) -> "BulkExtractionJobOut":
-        positions = 0
+        # Items count varies by source_hint: positions[] for BROKER_POSITION,
+        # events[] for BROKER_INCOME. Use whichever the payload has.
+        items_count = 0
         if j.extracted_json:
-            payload_positions = j.extracted_json.get("positions") or []
-            positions = len(payload_positions)
+            items_count = (
+                len(j.extracted_json.get("positions") or [])
+                or len(j.extracted_json.get("events") or [])
+            )
         fi_short = None
         if j.institution_id:
             from numis_geek.models.financial_institution import (
@@ -209,7 +216,7 @@ class BulkExtractionJobOut(BaseModel):
             id=j.id,
             attachment_id=j.attachment_id,
             status=j.status.value,
-            positions_count=positions,
+            positions_count=items_count,
             error_message=j.error_message,
             created_at=j.created_at.isoformat() if j.created_at else "",
             completed_at=j.completed_at.isoformat() if j.completed_at else None,
@@ -220,6 +227,7 @@ class BulkExtractionJobOut(BaseModel):
             cost_usd=str(j.cost_usd) if j.cost_usd is not None else None,
             institution_id=j.institution_id,
             institution_short_name=fi_short,
+            source_hint=j.source_hint.value,
         )
 
 
@@ -970,6 +978,64 @@ def list_bulk_extractions(
         .all()
     )
     return [BulkExtractionJobOut.from_orm(j) for j in rows]
+
+
+# ── Spec 58 Stage 4 — bulk income (proventos) scoped to one FI ──────────────
+
+
+@router.post(
+    "/{snapshot_id}/institutions/{fi_id}/bulk-income",
+    status_code=status.HTTP_201_CREATED,
+)
+def bulk_income_per_fi(
+    snapshot_id: str,
+    fi_id: str,
+    body: BulkExtractRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 58 Stage 4 — bulk income (proventos) extraction.
+
+    Creates an ExtractionJob with source_hint=BROKER_INCOME scoped to
+    the given FI. Deterministic parsers (parse_avenue_proventos_csv,
+    etc.) handle known broker formats without LLM cost; everything else
+    falls back to the placeholder BROKER_INCOME LLM template.
+    """
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if not snap or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    if snap.status != SnapshotStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk income only allowed on IN_REVIEW snapshots",
+        )
+    fi = db.get(FinancialInstitution, fi_id)
+    if not fi:
+        raise HTTPException(status_code=404, detail="Institution not found")
+    try:
+        job = extraction_service.create_and_run(
+            db,
+            workspace_id=ws_id,
+            attachment_id=body.attachment_id,
+            source_hint=ExtractionSourceHint.BROKER_INCOME,
+            snapshot_id=snapshot_id,
+            institution_id=fi_id,
+            pendency_id=None,
+            asset_id=None,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+        )
+    except extraction_service.ExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": job.id,
+        "status": job.status.value,
+        "extracted_json": job.extracted_json,
+        "error_message": job.error_message,
+        "institution_id": job.institution_id,
+        "institution_short_name": fi.short_name,
+    }
 
 
 # ── Spec 58 — bulk extract scoped to one FI ─────────────────────────────────

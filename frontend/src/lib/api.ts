@@ -1091,6 +1091,14 @@ export const api = {
       `/snapshots/${snapshot_id}/institutions/${fi_id}/bulk-extract`,
       { method: 'POST', body: JSON.stringify({ attachment_id }) },
     ),
+  // Spec 58 Stage 4 — bulk income (proventos) scoped to a single FI.
+  createBulkIncomeForFI: (
+    snapshot_id: string, fi_id: string, attachment_id: string,
+  ) =>
+    request<BulkExtractJobOut>(
+      `/snapshots/${snapshot_id}/institutions/${fi_id}/bulk-income`,
+      { method: 'POST', body: JSON.stringify({ attachment_id }) },
+    ),
   // Spec 49 — persistent attachments + per-attachment extraction status.
   listSnapshotAttachments: (snapshot_id: string) => {
     const qs = new URLSearchParams({
@@ -1222,7 +1230,7 @@ export interface BulkExtractionJobSummary {
   id: string
   attachment_id: string
   status: ExtractionStatus
-  positions_count: number
+  positions_count: number  // items count — positions[] or events[] depending on hint
   error_message: string | null
   created_at: string
   completed_at: string | null
@@ -1234,6 +1242,8 @@ export interface BulkExtractionJobSummary {
   // Spec 58 — when set, job was scoped to this FI.
   institution_id: string | null
   institution_short_name: string | null
+  // Spec 58 Stage 4 — 'BROKER_POSITION' or 'BROKER_INCOME' (et al).
+  source_hint: ExtractionSourceHint
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────

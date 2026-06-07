@@ -252,3 +252,195 @@ def test_parser_for_case_insensitive_fi_name():
             mime_type="text/csv",
         )
         assert fn is parse_avenue_proventos_csv
+
+
+# ── End-to-end: parser → run_extraction → confirm → Distribution rows ──────
+
+
+def test_e2e_avenue_proventos_creates_distributions(tmp_path, monkeypatch):
+    """Stages A+B+C wired together. Upload Avenue CSV → deterministic
+    parser runs (no LLM) → confirm creates Distribution rows.
+    Re-running with same content is idempotent (duplicate bucket)."""
+    import uuid as _uuid
+    from datetime import date as _date, datetime, timezone
+    from decimal import Decimal as _D
+    import bcrypt
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from numis_geek.db.base import Base
+    import numis_geek.models  # noqa: F401
+    from numis_geek.models.account import Account, AccountType, Currency
+    from numis_geek.models.asset import Asset, AssetClass, PriceSource
+    from numis_geek.models.attachment import (
+        Attachment, AttachmentKind, AttachmentSourceType,
+    )
+    from numis_geek.models.distribution import Distribution
+    from numis_geek.models.extraction_job import (
+        ExtractionSourceHint, ExtractionStatus,
+    )
+    from numis_geek.models.financial_institution import FinancialInstitution
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, SnapshotSource, SnapshotStatus,
+    )
+    from numis_geek.models.user import User, UserRole
+    from numis_geek.services import attachment_storage
+    from numis_geek.services import extraction as extraction_service
+    from numis_geek.services.workspace import WorkspaceService
+
+    eng = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(eng)
+    Session = sessionmaker(bind=eng, autoflush=False, autocommit=False)
+    s = Session()
+
+    # Storage root → tmp_path for the test.
+    monkeypatch.setattr(attachment_storage, "ROOT", tmp_path)
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(s).create("AvenueProventos-WS")
+    user = User(
+        id=str(_uuid.uuid4()), workspace_id=ws.id,
+        email="provs@test.com", name="P",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(_uuid.uuid4()), long_name="Avenue", short_name="Avenue",
+        country="US", is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(_uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="Avenue Inv", account_type=AccountType.investment,
+        currency=Currency.USD, is_active=True, created_at=now, updated_at=now,
+    )
+    # Asset to match a dividend (WMT). Treasury and lending intentionally
+    # left out so we exercise the orphan path too.
+    wmt = Asset(
+        id=str(_uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.STOCK, country="US",
+        name="Walmart Inc", ticker="WMT",
+        currency=Currency.USD, current_price=_D("80"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(_uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=_date(2026, 5, 31),
+        total_value_brl=_D("0"), total_value_usd=_D("0"),
+        total_invested_brl=_D("0"), total_received_brl=_D("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    s.add_all([user, fi, acc, wmt, snap])
+    s.flush()
+
+    # Save a minimal Avenue CSV with WMT (matches) + a treasury cupom
+    # (orphan: no asset) + lending (no ticker, NOT orphan since asset_id nullable).
+    csv_bytes = (
+        "Data transação,Data liquidação,Descrição,Valor,Saldo\n"
+        "27/05/2026,27/05/2026,Dividendos de WMT,12.32,727.33\n"
+        "27/05/2026,27/05/2026,Imposto sobre dividendo de WMT,-3.70,723.63\n"
+        "16/05/2026,18/05/2026,Cupom de T 4.25 15/11/34,212.50,718.71\n"
+        "13/05/2026,13/05/2026,Rentabilidade de aluguel de ativo,0.64,0.64\n"
+        "13/05/2026,13/05/2026,Imposto de aluguel de ativo,-0.19,0.45\n"
+    ).encode("utf-8")
+    saved = attachment_storage.save_bytes(ws.id, csv_bytes, "text/csv")
+    att = Attachment(
+        id=str(_uuid.uuid4()), workspace_id=ws.id,
+        source_type=AttachmentSourceType.SNAPSHOT, source_id=snap.id,
+        kind=AttachmentKind.CSV, filename="proventos.csv", mime_type="text/csv",
+        size_bytes=saved.size_bytes, storage_key=saved.storage_key,
+        uploaded_at=now, is_active=True,
+    )
+    s.add(att)
+    s.flush()
+
+    # ── Run extraction ──
+    job = extraction_service.create_and_run(
+        s,
+        workspace_id=ws.id,
+        attachment_id=att.id,
+        source_hint=ExtractionSourceHint.BROKER_INCOME,
+        snapshot_id=snap.id,
+        institution_id=fi.id,
+        user_id=user.id,
+        user_email=user.email,
+    )
+    assert job.status == ExtractionStatus.EXTRACTED, job.error_message
+    # Deterministic path → no LLM cost, prompt_version marker.
+    assert job.prompt_version == "deterministic:parse_avenue_proventos_csv"
+    assert job.cost_usd == _D("0")
+    assert job.input_tokens == 0
+
+    # 3 events parsed (WMT dividend, T 4.25 coupon, lending).
+    assert len(job.extracted_json["events"]) == 3
+
+    # ── Preview (read-only) ──
+    preview = extraction_service.preview_bulk_income(s, job_id=job.id)
+    # WMT (matched) + lending (no ticker → allowed) = 2 will apply.
+    # T 4.25 coupon → orphan (no asset cadastrado).
+    assert preview.applied_count == 2
+    assert {o["ticker"] for o in preview.bulk_detail.orphan} == {"T 4.25 15/11/34"}
+
+    # ── Confirm (writes) ──
+    result = extraction_service.confirm_extraction(
+        s, job_id=job.id, user_id=user.id, user_email=user.email,
+    )
+    assert result.applied_count == 2
+    assert {a["ticker"] for a in result.bulk_detail.applied} == {"WMT", None}
+    assert result.bulk_detail.matched_no_pendency == []  # no duplicates yet
+
+    # Distribution rows persisted.
+    dists = s.query(Distribution).filter(Distribution.workspace_id == ws.id).all()
+    assert len(dists) == 2
+    by_type = {d.type.value: d for d in dists}
+    wmt_dist = by_type["DIVIDEND"]
+    assert wmt_dist.asset_id == wmt.id
+    assert wmt_dist.gross_amount == _D("12.32")
+    assert wmt_dist.tax == _D("3.70")
+    assert wmt_dist.net_amount == _D("8.62")
+    assert wmt_dist.event_date == _date(2026, 5, 27)
+    lending_dist = by_type["SECURITIES_LENDING"]
+    assert lending_dist.asset_id is None
+    assert lending_dist.net_amount == _D("0.45")
+
+    # ── Idempotency: re-confirm same job → duplicates, no new Distributions ──
+    s.commit()  # commit so the duplicate query in classify sees the rows
+    # New job for the SAME csv (simulates re-upload).
+    att2 = Attachment(
+        id=str(_uuid.uuid4()), workspace_id=ws.id,
+        source_type=AttachmentSourceType.SNAPSHOT, source_id=snap.id,
+        kind=AttachmentKind.CSV, filename="proventos2.csv", mime_type="text/csv",
+        size_bytes=saved.size_bytes, storage_key=saved.storage_key,  # same blob
+        uploaded_at=now, is_active=True,
+    )
+    s.add(att2)
+    s.flush()
+    job2 = extraction_service.create_and_run(
+        s,
+        workspace_id=ws.id,
+        attachment_id=att2.id,
+        source_hint=ExtractionSourceHint.BROKER_INCOME,
+        snapshot_id=snap.id,
+        institution_id=fi.id,
+        user_id=user.id,
+        user_email=user.email,
+    )
+    result2 = extraction_service.confirm_extraction(
+        s, job_id=job2.id, user_id=user.id, user_email=user.email,
+    )
+    # Re-applied = 0; the WMT + lending events flagged as duplicate.
+    assert result2.applied_count == 0
+    duplicates = {(r["ticker"], r["type"]) for r in result2.bulk_detail.matched_no_pendency}
+    assert ("WMT", "DIVIDEND") in duplicates
+    assert (None, "SECURITIES_LENDING") in duplicates
+    # Still only 2 Distributions in DB.
+    s.commit()
+    final_count = s.query(Distribution).filter(Distribution.workspace_id == ws.id).count()
+    assert final_count == 2

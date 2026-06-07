@@ -27,10 +27,12 @@ from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from numis_geek.models.account import Account
+from numis_geek.models.account import Account, Currency
 from numis_geek.models.asset import Asset
 from numis_geek.models.attachment import Attachment, AttachmentKind
 from numis_geek.models.audit_log import AuditLog  # noqa: F401  (used implicitly via AuditService)
+from numis_geek.models.distribution import Distribution, DistributionType
+from numis_geek.models.external import ExternalSource
 from numis_geek.models.extraction_job import (
     ExtractionJob, ExtractionSourceHint, ExtractionStatus,
 )
@@ -231,11 +233,45 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
     if job.institution_id:
         fi = db.get(FinancialInstitution, job.institution_id)
         fi_short_name = fi.short_name if fi else None
+
+    # Spec 58 Stage 4 — if a deterministic Python parser exists for this
+    # (fi, hint, mime) combination, skip the LLM entirely. 100% accurate,
+    # zero token cost. Falls back to LLM when no parser matches.
+    from numis_geek.services.extraction_parsers import parser_for as _parser_for
+    det_parser = _parser_for(
+        institution_short_name=fi_short_name,
+        source_hint=job.source_hint,
+        mime_type=attachment.mime_type,
+    )
+
+    job.status = ExtractionStatus.RUNNING
+    job.started_at = datetime.now(timezone.utc)
+    db.flush()
+
+    if det_parser is not None:
+        try:
+            blob = Path(attachment_storage.absolute_path_for(attachment)).read_bytes()
+            payload_dict = det_parser(blob)
+            job.extracted_json = payload_dict
+            job.prompt_version = f"deterministic:{det_parser.__name__}"
+            job.model = None
+            job.input_tokens = 0
+            job.output_tokens = 0
+            job.cost_usd = Decimal("0")
+            job.confidence = Decimal("1.00")
+            job.status = ExtractionStatus.EXTRACTED
+            job.completed_at = datetime.now(timezone.utc)
+            job.error_message = None
+        except Exception as exc:
+            job.status = ExtractionStatus.FAILED
+            job.error_message = f"Deterministic parser failed: {exc}"
+            job.completed_at = datetime.now(timezone.utc)
+        db.flush()
+        return job
+
     template: Template = template_for(
         job.source_hint, institution_short_name=fi_short_name,
     )
-    job.status = ExtractionStatus.RUNNING
-    job.started_at = datetime.now(timezone.utc)
     job.prompt_version = template.version
     db.flush()
 
@@ -586,6 +622,15 @@ def _apply_payload(
         return _apply_screenshot_price(db, job, payload, user_id=user_id)
     if hint == ExtractionSourceHint.BROKER_POSITION:
         return _apply_broker_position(db, job, payload, user_id=user_id)
+    # Spec 58 Stage 4 — BROKER_INCOME (proventos) bulk path.
+    if (
+        hint == ExtractionSourceHint.BROKER_INCOME
+        and job.snapshot_id
+        and not job.pendency_id
+    ):
+        return _apply_bulk_income_to_snapshot(
+            db, job, payload, user_id=user_id, user_email=user_email,
+        )
     # Other hints are scaffold-only in V1.
     return ExtractionApplyResult(
         applied_count=0, skipped_count=0,
@@ -1150,6 +1195,243 @@ def _apply_bulk_to_snapshot(
     return ExtractionApplyResult(
         applied_count=len(actually_applied),
         skipped_count=len(detail.orphan) + len(detail.matched_no_pendency),
+        errors=errors,
+        bulk_detail=detail,
+    )
+
+
+# ── Spec 58 Stage 4 — BROKER_INCOME apply (Distribution rows) ───────────────
+
+
+_DIST_TYPE_BY_PAYLOAD: dict[str, DistributionType] = {
+    "DIVIDEND": DistributionType.DIVIDEND,
+    "INTEREST": DistributionType.INTEREST,
+    "JCP": DistributionType.JCP,
+    "SECURITIES_LENDING": DistributionType.SECURITIES_LENDING,
+}
+
+
+def _external_id_for_income(
+    *, fi_short_name: str, event_date_iso: str, ticker_raw: str | None,
+    type_str: str, gross_amount: float,
+) -> str:
+    """Content-addressed id for idempotency. Re-uploading the same CSV
+    (or a re-export with identical rows) won't duplicate Distribution
+    rows — the (external_source, external_id) index dedups."""
+    safe_fi = (fi_short_name or "unknown").strip().lower().replace(" ", "_")
+    safe_ticker = (ticker_raw or "_").strip()
+    gross_str = f"{float(gross_amount):.2f}"
+    return f"{safe_fi}:{event_date_iso}:{safe_ticker}:{type_str}:{gross_str}"
+
+
+def _classify_bulk_income(
+    db: Session, job: ExtractionJob, payload: dict,
+) -> tuple[
+    list[dict],   # apply_plan
+    list[dict],   # preview rows (matched)
+    list[dict],   # orphan: events whose ticker didn't resolve to an Asset
+    list[dict],   # duplicate: external_id already present in DB
+    list[str],    # errors
+]:
+    """Read-only classification of a BROKER_INCOME payload. Resolves
+    each event to an Asset (when applicable) and looks up existing
+    Distribution rows by external_id to flag duplicates."""
+    errors: list[str] = []
+    apply_plan: list[dict] = []
+    preview: list[dict] = []
+    orphan: list[dict] = []
+    duplicate: list[dict] = []
+
+    if not job.institution_id:
+        errors.append("BROKER_INCOME job must be scoped to an institution")
+        return apply_plan, preview, orphan, duplicate, errors
+
+    fi = db.get(FinancialInstitution, job.institution_id)
+    if fi is None:
+        errors.append(f"institution {job.institution_id} not found")
+        return apply_plan, preview, orphan, duplicate, errors
+
+    events = payload.get("events") or []
+
+    for ev in events:
+        type_str = (ev.get("type") or "").upper()
+        if type_str not in _DIST_TYPE_BY_PAYLOAD:
+            errors.append(f"unknown distribution type: {type_str!r}")
+            continue
+        dist_type = _DIST_TYPE_BY_PAYLOAD[type_str]
+        event_date_iso = ev.get("event_date")
+        gross = ev.get("gross_amount")
+        net = ev.get("net_amount")
+        tax = ev.get("tax_amount")
+        if event_date_iso is None or gross is None or net is None:
+            errors.append(f"event missing required fields: {ev!r}")
+            continue
+        try:
+            event_d = datetime.strptime(event_date_iso, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            errors.append(f"invalid event_date {event_date_iso!r}")
+            continue
+
+        ticker = ev.get("ticker_raw")
+        asset: Asset | None = None
+        if ticker:
+            asset = _resolve_asset_by_ticker_or_name(
+                db, job.workspace_id, ticker, institution_id=job.institution_id,
+            )
+
+        currency_str = (ev.get("currency") or "USD").upper()
+        try:
+            currency_enum = Currency(currency_str)
+        except ValueError:
+            errors.append(f"unknown currency {currency_str!r}")
+            continue
+
+        ext_id = _external_id_for_income(
+            fi_short_name=fi.short_name,
+            event_date_iso=event_date_iso,
+            ticker_raw=ticker,
+            type_str=type_str,
+            gross_amount=float(gross),
+        )
+
+        existing = (
+            db.query(Distribution)
+            .filter(
+                Distribution.workspace_id == job.workspace_id,
+                Distribution.external_source == ExternalSource.MANUAL_CSV,
+                Distribution.external_id == ext_id,
+            )
+            .first()
+        )
+
+        row = {
+            "external_id": ext_id,
+            "event_date": event_date_iso,
+            "ticker": ticker,
+            "asset_id": asset.id if asset else None,
+            "asset_name": asset.name if asset else None,
+            "type": type_str,
+            "gross_amount": str(Decimal(str(gross))),
+            "tax_amount": str(Decimal(str(tax))) if tax is not None else None,
+            "net_amount": str(Decimal(str(net))),
+            "currency": currency_str,
+            "institution_short_name": fi.short_name,
+        }
+
+        if existing is not None:
+            row["distribution_id"] = existing.id
+            duplicate.append(row)
+            continue
+
+        # Orphan = ticker present but no asset matched. Lending (ticker=None)
+        # is allowed without an asset (Distribution.asset_id is nullable).
+        if ticker and asset is None:
+            orphan.append(row)
+            continue
+
+        apply_plan.append({
+            **row,
+            "_currency_enum": currency_enum,
+            "_dist_type": dist_type,
+            "_event_d": event_d,
+            "_gross": Decimal(str(gross)),
+            "_net": Decimal(str(net)),
+            "_tax": Decimal(str(tax)) if tax is not None else None,
+        })
+        preview.append(row)
+
+    return apply_plan, preview, orphan, duplicate, errors
+
+
+def _apply_bulk_income_to_snapshot(
+    db: Session, job: ExtractionJob, payload: dict,
+    *,
+    user_id: str | None,
+    user_email: str | None,
+) -> ExtractionApplyResult:
+    """BROKER_INCOME path (Spec 58 Stage 4): create Distribution rows
+    from a proventos extract. Idempotent via (external_source, external_id)."""
+    apply_plan, preview_rows, orphan_rows, duplicate_rows, errors = (
+        _classify_bulk_income(db, job, payload)
+    )
+
+    created: list[dict] = []
+    fi_id = job.institution_id
+    now = datetime.now(timezone.utc)
+    for item in apply_plan:
+        dist = Distribution(
+            id=str(uuid.uuid4()),
+            workspace_id=job.workspace_id,
+            financial_institution_id=fi_id,
+            asset_id=item.get("asset_id"),
+            type=item["_dist_type"],
+            event_date=item["_event_d"],
+            gross_amount=item["_gross"],
+            tax=item["_tax"],
+            net_amount=item["_net"],
+            currency=item["_currency_enum"],
+            fx_rate=Decimal("1.0"),
+            notes=f"avenue proventos (job {job.id})",
+            is_active=True,
+            external_id=item["external_id"],
+            external_source=ExternalSource.MANUAL_CSV,
+            created_at=now, updated_at=now,
+            created_by=user_id, updated_by=user_id,
+        )
+        db.add(dist)
+        db.flush()
+        created.append({
+            "distribution_id": dist.id,
+            "external_id": item["external_id"],
+            "event_date": item["event_date"],
+            "ticker": item["ticker"],
+            "asset_id": item.get("asset_id"),
+            "asset_name": item.get("asset_name"),
+            "type": item["type"],
+            "gross_amount": item["gross_amount"],
+            "tax_amount": item["tax_amount"],
+            "net_amount": item["net_amount"],
+            "currency": item["currency"],
+            "institution_short_name": item["institution_short_name"],
+        })
+
+    detail = BulkApplyDetail(
+        applied=created,
+        matched_no_pendency=duplicate_rows,  # repurposed: duplicates
+        orphan=orphan_rows,
+        pendency_not_in_extract=[],          # n/a for income
+        auto_skipped=[],                     # n/a
+    )
+    return ExtractionApplyResult(
+        applied_count=len(created),
+        skipped_count=len(duplicate_rows) + len(orphan_rows),
+        errors=errors,
+        bulk_detail=detail,
+    )
+
+
+def preview_bulk_income(
+    db: Session, *, job_id: str,
+) -> ExtractionApplyResult:
+    """Read-only preview of a BROKER_INCOME job — same shape as confirm
+    would return, but no writes."""
+    job = db.get(ExtractionJob, job_id)
+    if job is None:
+        raise ExtractionError(f"Job {job_id} not found")
+    payload = job.extracted_json or {}
+    apply_plan, preview_rows, orphan_rows, duplicate_rows, errors = (
+        _classify_bulk_income(db, job, payload)
+    )
+    detail = BulkApplyDetail(
+        applied=preview_rows,
+        matched_no_pendency=duplicate_rows,
+        orphan=orphan_rows,
+        pendency_not_in_extract=[],
+        auto_skipped=[],
+    )
+    return ExtractionApplyResult(
+        applied_count=len(preview_rows),
+        skipped_count=len(orphan_rows) + len(duplicate_rows),
         errors=errors,
         bulk_detail=detail,
     )

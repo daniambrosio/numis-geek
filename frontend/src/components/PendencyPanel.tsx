@@ -182,7 +182,17 @@ export default function PendencyPanel({
                 pendencies={pendencies}
                 onResolved={onResolved}
                 institutionId={fiId}
+                purpose="positions"
               />
+              {fiId && (
+                <BulkAttachmentManager
+                  snapshotId={snapshotId}
+                  pendencies={pendencies}
+                  onResolved={onResolved}
+                  institutionId={fiId}
+                  purpose="income"
+                />
+              )}
               <div className="space-y-2 mt-2">
                 {g.items.map(p => (
                   <PendencyRow
