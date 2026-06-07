@@ -684,6 +684,45 @@ def _alnum_lower(s: str | None) -> str:
     return "".join(c.lower() for c in s if c.isalnum())
 
 
+# Date patterns for maturity-based matching across asset name/ticker and
+# extracted ticker_raw. Brokers use wildly different formats:
+#   - ISO: '2034-05-16'
+#   - BR: '16/05/2034' or '16/05/34'
+#   - US: '05/16/2034' or '05/16/34'
+_DATE_RE_ISO = re.compile(r"(?<!\d)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
+_DATE_RE_DMY4 = re.compile(r"(?<!\d)(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?!\d)")
+_DATE_RE_DMY2 = re.compile(r"(?<!\d)(\d{1,2})[-/](\d{1,2})[-/](\d{2})(?!\d)")
+
+
+def _extract_dates(s: str | None) -> set[str]:
+    """Return all ISO YYYY-MM-DD dates extractable from `s`. For 2-digit
+    years with a DD/MM-vs-MM/DD ambiguity (e.g. '11/04/29'), returns BOTH
+    interpretations when both are valid month-day combos. Year pivot: YY
+    < 70 → 20YY, else 19YY (matches industry convention for maturity
+    dates that are always in the future or recent past)."""
+    if not s:
+        return set()
+    out: set[str] = set()
+    for m in _DATE_RE_ISO.finditer(s):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            out.add(f"{y:04d}-{mo:02d}-{d:02d}")
+    for m in _DATE_RE_DMY4.finditer(s):
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            out.add(f"{y:04d}-{mo:02d}-{d:02d}")
+    for m in _DATE_RE_DMY2.finditer(s):
+        a, b, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        full_year = 2000 + yy if yy < 70 else 1900 + yy
+        # DD/MM/YY interpretation
+        if 1 <= b <= 12 and 1 <= a <= 31:
+            out.add(f"{full_year:04d}-{b:02d}-{a:02d}")
+        # MM/DD/YY interpretation
+        if 1 <= a <= 12 and 1 <= b <= 31:
+            out.add(f"{full_year:04d}-{a:02d}-{b:02d}")
+    return out
+
+
 def _resolve_asset_by_ticker_or_name(
     db: Session, workspace_id: str, candidate: str,
 ) -> Asset | None:
@@ -700,6 +739,11 @@ def _resolve_asset_by_ticker_or_name(
        punctuation/whitespace, so `Franklin U.S. Dollar` (ticker) matches
        `Franklin U.S. Dollar-ST MMF Adv` (extract). Only returns when
        exactly one asset matches, to avoid spurious resolutions.
+    4. Date-based match for fixed income: extracts ISO/BR/US date formats
+       from candidate and from each asset's name+ticker. If exactly one
+       asset shares a maturity date with the candidate, return it. Handles
+       `JPMorgan Chase 2033-09-14` (extract) ↔ `JPM 5.717 14/09/33`
+       (asset) — same date, different formats.
     """
     if not candidate:
         return None
@@ -748,8 +792,21 @@ def _resolve_asset_by_ticker_or_name(
             if asset_norm in needle_norm or needle_norm in asset_norm:
                 matches.append(a)
                 break  # one hit per asset is enough
-    # Only return when unambiguous — multi-match is too risky to auto-resolve.
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    # Step 4 — date overlap. Fixed income often shares only a maturity
+    # date across naming variants (Asset.ticker='JPM 5.717 14/09/33',
+    # extract='JPMorgan Chase 2033-09-14'). Run only when Step 3 didn't
+    # already produce a single hit.
+    candidate_dates = _extract_dates(candidate)
+    if not candidate_dates:
+        return None
+    date_matches: list[Asset] = []
+    for a in candidates:
+        asset_dates = _extract_dates(a.ticker) | _extract_dates(a.name)
+        if candidate_dates & asset_dates:
+            date_matches.append(a)
+    return date_matches[0] if len(date_matches) == 1 else None
 
 
 def _institution_short_name_for_asset(db: Session, asset: Asset) -> str | None:

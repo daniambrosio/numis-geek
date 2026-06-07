@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from numis_geek.services.extraction import (
     _disambiguate_duplicate_tickers,
+    _extract_dates,
     _maturity_from_notes,
 )
 from numis_geek.services.extraction_templates import (
@@ -122,3 +123,66 @@ def test_disambiguate_handles_non_position_output_safely():
     class FakeOutput:
         pass
     _disambiguate_duplicate_tickers(FakeOutput())  # must not raise
+
+
+# ── _extract_dates ──────────────────────────────────────────────────────────
+
+
+def test_extract_dates_iso():
+    assert _extract_dates("US Treasury 2034-05-16") == {"2034-05-16"}
+
+
+def test_extract_dates_dmy_4digit():
+    assert _extract_dates("Vencimento 16/05/2034") == {"2034-05-16"}
+
+
+def test_extract_dates_dmy_2digit_unambiguous():
+    """DD/MM/YY where one interpretation is invalid (MM > 12) returns
+    only the valid one."""
+    # 14/09/33 — MM=14 invalid → only DD/MM → 2033-09-14
+    assert _extract_dates("JPM 5.717 14/09/33") == {"2033-09-14"}
+    # 31/08/30 — MM=31 invalid → only DD/MM → 2030-08-31
+    assert _extract_dates("T 3.625 31/08/30") == {"2030-08-31"}
+
+
+def test_extract_dates_dmy_2digit_ambiguous_returns_both():
+    """When both DD/MM and MM/DD are valid, return both interpretations."""
+    # 11/04/29 — DD=11 MM=04 → 2029-04-11; MM=11 DD=04 → 2029-11-04
+    assert _extract_dates("MOVIBZ 7.85 11/04/29") == {
+        "2029-04-11", "2029-11-04",
+    }
+
+
+def test_extract_dates_us_format_2digit():
+    """MM/DD/YY where DD > 12 (DD/MM interpretation invalid) returns only
+    MM/DD interpretation."""
+    # 02/15/34 — DD/MM: DD=02 MM=15 invalid; MM/DD: MM=02 DD=15 → 2034-02-15
+    assert _extract_dates("T 4 02/15/34") == {"2034-02-15"}
+
+
+def test_extract_dates_year_pivot():
+    """YY < 70 → 20YY, YY >= 70 → 19YY."""
+    assert "1995-06-15" in _extract_dates("Old bond 15/06/95")
+    assert "2025-06-15" in _extract_dates("New bond 15/06/25")
+
+
+def test_extract_dates_none_input():
+    assert _extract_dates(None) == set()
+    assert _extract_dates("") == set()
+
+
+def test_extract_dates_no_date():
+    assert _extract_dates("AAPL") == set()
+    assert _extract_dates("Just a string") == set()
+
+
+def test_extract_dates_multiple():
+    """A string with two dates returns both."""
+    out = _extract_dates("Issued 2023-01-15 matures 2034-05-16")
+    assert out == {"2023-01-15", "2034-05-16"}
+
+
+def test_extract_dates_iso_does_not_collide_with_dmy_2digit():
+    """ISO '2034-05-16' must not be misread as DD/MM/YY '34-05-16' due to
+    word-boundary lookahead/lookbehind."""
+    assert _extract_dates("2034-05-16") == {"2034-05-16"}

@@ -1254,3 +1254,117 @@ def test_resolve_minimum_length_guard():
     finally:
         s.rollback()
         s.close()
+
+
+# ── Step 4 date-based match: cross-format treasury / bond matching ──────────
+
+
+def test_resolve_date_match_jpm_cross_format():
+    """Real Avenue case: extract emits 'JPMorgan Chase 2033-09-14' (ISO),
+    asset is registered as 'JPM 5.717 14/09/33' (BR DD/MM/YY). Step 3
+    substring fails (no shared tokens), but Step 4 date match wins."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+
+    s = TestSession()
+    try:
+        w = _make_minimal_world(
+            s, fund_name="JPM 5.717 14/09/33", fund_ticker="JPM 5.717 14/09/33",
+        )
+        hit = _resolve_asset_by_ticker_or_name(
+            s, w["ws_id"], "JPMorgan Chase 2033-09-14",
+        )
+        assert hit is not None
+        assert hit.id == w["asset_id"]
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_resolve_date_match_no_overlap_returns_none():
+    """Different maturity dates → no Step-4 hit. (And no Step-3 hit since
+    'US Treasury' isn't a substring of 'T 3.875 15/08/34'.)"""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+
+    s = TestSession()
+    try:
+        w = _make_minimal_world(
+            s, fund_name="T 3.875 15/08/34", fund_ticker="T 3.875 15/08/34",
+        )
+        # Extract date 2034-05-16 vs asset 2034-08-15 → no overlap.
+        hit = _resolve_asset_by_ticker_or_name(
+            s, w["ws_id"], "US Treasury 2034-05-16",
+        )
+        assert hit is None
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_resolve_date_match_ambiguous_multi_match_returns_none():
+    """Candidate date overlaps with two assets → None (don't guess)."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.user import User, UserRole
+
+    s = TestSession()
+    try:
+        now = datetime.now(timezone.utc)
+        ws = WorkspaceService(s).create(f"DateAmb-{uuid.uuid4().hex[:6]}")
+        user = User(
+            id=str(uuid.uuid4()), workspace_id=ws.id,
+            email=f"da-{uuid.uuid4().hex[:6]}@test.com", name="DA",
+            password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+            role=UserRole.admin, is_active=True,
+            created_at=now, updated_at=now,
+        )
+        fi = FinancialInstitution(
+            id=str(uuid.uuid4()), long_name="X", short_name="X", country="US",
+            is_active=True, created_at=now, updated_at=now,
+        )
+        acc = Account(
+            id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+            name="Inv", account_type=AccountType.investment, currency=Currency.USD,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        # Two bonds with the same maturity date → ambiguous.
+        a1 = Asset(
+            id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+            asset_class=AssetClass.STOCK, country="US",
+            name="Bond A 14/09/33", ticker="A 14/09/33",
+            currency=Currency.USD, current_price=Decimal("100"),
+            price_source=PriceSource.MANUAL,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        a2 = Asset(
+            id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+            asset_class=AssetClass.STOCK, country="US",
+            name="Bond B 14/09/33", ticker="B 14/09/33",
+            currency=Currency.USD, current_price=Decimal("100"),
+            price_source=PriceSource.MANUAL,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        s.add_all([user, fi, acc, a1, a2])
+        s.flush()
+        hit = _resolve_asset_by_ticker_or_name(s, ws.id, "Random Bond 2033-09-14")
+        assert hit is None
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_resolve_date_match_no_date_in_candidate_skipped():
+    """No date in candidate → Step 4 doesn't fire (no false match against
+    asset that happens to have a date)."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+
+    s = TestSession()
+    try:
+        w = _make_minimal_world(
+            s, fund_name="T 3.875 15/08/34", fund_ticker="T 3.875 15/08/34",
+        )
+        # 'AAPL' has no date → Step 4 doesn't try → None.
+        hit = _resolve_asset_by_ticker_or_name(s, w["ws_id"], "AAPL")
+        assert hit is None
+    finally:
+        s.rollback()
+        s.close()
