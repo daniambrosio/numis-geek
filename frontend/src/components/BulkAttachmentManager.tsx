@@ -52,6 +52,7 @@ export default function BulkAttachmentManager({
   const [reviewJob, setReviewJob] = useState<BulkExtractJobOut | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   const fileRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
@@ -151,12 +152,20 @@ export default function BulkAttachmentManager({
   }
 
   async function handleRemove(attachmentId: string) {
+    if (deletingIds.has(attachmentId)) return
     setError(null)
+    setDeletingIds(prev => {
+      const next = new Set(prev); next.add(attachmentId); return next
+    })
     try {
       await api.deleteAttachment(attachmentId)
       await refresh()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erro')
+      setError(e instanceof Error ? e.message : 'Erro ao remover anexo')
+    } finally {
+      setDeletingIds(prev => {
+        const next = new Set(prev); next.delete(attachmentId); return next
+      })
     }
   }
 
@@ -264,6 +273,7 @@ export default function BulkAttachmentManager({
                 job={job}
                 otherRunning={extractingId !== null && extractingId !== att.id}
                 meRunning={extractingId === att.id}
+                deleting={deletingIds.has(att.id)}
                 onPreview={() => handlePreview(att)}
                 onExtract={() => handleExtract(att.id)}
                 onReview={(jobId) => handleRevisar(jobId)}
@@ -317,13 +327,14 @@ function statusBadge(
 }
 
 function AttachmentRow({
-  att, job, otherRunning, meRunning,
+  att, job, otherRunning, meRunning, deleting,
   onPreview, onExtract, onReview, onRemove,
 }: {
   att: AttachmentOut
   job: BulkExtractionJobSummary | null
   otherRunning: boolean
   meRunning: boolean
+  deleting?: boolean
   onPreview: () => void
   onExtract: () => void
   onReview: (jobId: string) => void
@@ -331,11 +342,15 @@ function AttachmentRow({
 }) {
   const badge = statusBadge(job, meRunning)
   const isExtracting = meRunning || (job?.status === 'RUNNING' || job?.status === 'PENDING')
-  const canRemove = !isExtracting && job?.status !== 'CONFIRMED'
+  const canRemove = !isExtracting && job?.status !== 'CONFIRMED' && !deleting
 
   return (
     <li
-      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+      className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md border bg-white dark:bg-gray-900 transition-colors ${
+        deleting
+          ? 'border-red-500/40 bg-red-500/[0.04] opacity-60 pointer-events-none'
+          : 'border-gray-200 dark:border-gray-800'
+      }`}
       data-testid={`attachment-row-${att.id}`}
     >
       <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 bg-indigo-500/15 text-indigo-600 dark:text-indigo-300">
@@ -343,7 +358,14 @@ function AttachmentRow({
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[12px] font-medium truncate text-gray-900 dark:text-gray-100">{att.filename}</div>
-        <div className="text-[10px] text-gray-500 tnum">
+        <div className="text-[10px] text-gray-500 tnum flex items-center gap-1.5">
+          {deleting ? (
+            <>
+              <Loader2 className="w-3 h-3 animate-spin text-red-400" />
+              <span className="text-red-400">removendo…</span>
+            </>
+          ) : (
+            <>
           {fmtSize(att.size_bytes)}
           {badge && (
             <span className={`ml-2 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider ${badge.color}`}>
@@ -365,6 +387,8 @@ function AttachmentRow({
             <span className="ml-2 text-[10px] text-red-500" title={job.error_message}>
               {job.error_message.slice(0, 60)}…
             </span>
+          )}
+            </>
           )}
         </div>
       </div>
