@@ -204,7 +204,7 @@ def test_template_for_avenue_returns_avenue_template():
         institution_short_name="Avenue",
     )
     assert t is BROKER_POSITION_AVENUE
-    assert t.version == "avenue-v1"
+    assert t.version.startswith("avenue-")
     # Generic fallback still works.
     assert template_for(ExtractionSourceHint.BROKER_POSITION) is BROKER_POSITION
 

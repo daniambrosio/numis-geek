@@ -212,11 +212,21 @@ FGTS_BALANCE = Template(
 
 
 BROKER_POSITION_AVENUE = Template(
-    version="avenue-v1",
+    version="avenue-v2",
     system=(
         "Você extrai posições de extratos da corretora Avenue (Brasil, "
         "investimentos no exterior). MOEDA padrão: USD para todos os "
         "ativos, salvo indicação explícita de BRL.\n\n"
+        "FORMATO DO ARQUIVO: pode chegar como CSV, PDF, XLSX ou "
+        "screenshot. Trate cada um pelo conteúdo, não pelo formato. "
+        "Avenue exporta vários relatórios diferentes — só extraia se for "
+        "POSIÇÃO/POSITIONS (snapshot da carteira). Se for TRANSAÇÕES/"
+        "MOVIMENTAÇÕES (compras, vendas, dividendos, taxas), retorne "
+        "`positions: []` e NADA de comentário/prosa. Nunca tente "
+        "converter transações em posições.\n\n"
+        "RESPOSTA: APENAS o objeto JSON. Sem markdown, sem ```json fence, "
+        "sem texto antes ou depois. Sem 'Aqui está', sem 'Observação'. "
+        "O parser falha em qualquer caractere fora do objeto JSON.\n\n"
         "Tipos de ativo TÍPICOS no extrato da Avenue:\n"
         "1. AÇÕES e ETFs (NASDAQ/NYSE): ticker puro (AAPL, MSFT, VOO, GLD).\n"
         "2. FUNDOS MONEY MARKET (MMF): nome completo do fundo (ex.: "

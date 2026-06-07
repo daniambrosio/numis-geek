@@ -173,44 +173,53 @@ def get_llm_client(db: Session) -> LLMClient:
 def parse_json_block(text: str) -> dict:
     """Extract the first JSON object from the LLM reply.
 
-    Claude tends to wrap JSON in ```json fences. This helper handles fenced
-    blocks, raw JSON, or "here's the JSON:" prefixed responses. On parse
-    failure tries a small set of fixups (trailing commas) before bubbling
-    a contextual error.
+    Claude often wraps JSON in ```json fences and sometimes appends prose
+    after the closing fence ("**Observação importante**: ..."). This
+    helper finds the first balanced `{...}` block — ignoring text BEFORE
+    AND AFTER — and parses that. Brace counting is string-aware so braces
+    inside string values don't confuse the depth tracking.
+
+    On parse failure tries a small set of fixups (trailing commas) before
+    bubbling a contextual error.
     """
     import re
 
     text = text.strip()
 
-    # Strip ```json ... ``` fence if present.
-    if text.startswith("```"):
-        fenced = text.strip("`").strip()
-        # Drop the leading "json\n" hint when Claude includes it.
-        if fenced.lower().startswith("json"):
-            fenced = fenced[4:].lstrip("\n")
-        # Trim trailing "```" if it survived.
-        fenced = fenced.rstrip("`").strip()
-        text = fenced
+    # Find the first `{`. Strip everything before it (markdown fences,
+    # prefatory prose, etc).
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("LLM reply contained no JSON object")
 
-    # If there's prose before the JSON, find the first `{` and the matching `}`.
-    if not text.startswith("{"):
-        start = text.find("{")
-        if start == -1:
-            raise ValueError("LLM reply contained no JSON object")
-        # Find matching brace by depth — naive but enough for our prompts.
-        depth = 0
-        end = -1
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        if end == -1:
-            raise ValueError("LLM reply has unterminated JSON object")
-        text = text[start : end + 1]
+    # Walk forward tracking brace depth, respecting string literals so
+    # `{` and `}` inside JSON strings don't shift the count.
+    depth = 0
+    in_string = False
+    escape = False
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        raise ValueError("LLM reply has unterminated JSON object")
+    text = text[start : end + 1]
 
     try:
         return json.loads(text)

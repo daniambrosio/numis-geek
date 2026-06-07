@@ -1453,7 +1453,7 @@ def test_bulk_extract_uses_avenue_template_when_scoped_to_avenue(db):
         user_email="avenue@test.com",
     )
     assert job.status == ExtractionStatus.EXTRACTED, job.error_message
-    assert job.prompt_version == "avenue-v1"
+    assert job.prompt_version.startswith("avenue-")
 
     # Without institution_id → fallback to generic v3.
     set_llm_client(FakeLLM({"positions": []}))

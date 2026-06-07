@@ -364,6 +364,51 @@ def test_parse_json_block_handles_fenced_json():
     assert parse_json_block(raw) == {"a": 1, "nested": {"b": 2}}
 
 
+def test_parse_json_block_ignores_trailing_prose_after_fence():
+    """Real Avenue regression — LLM emitted a fenced JSON followed by
+    a markdown note. Old parser failed with 'Extra data at char N'.
+    Brace-aware tokenizer must stop at the first balanced `{...}`."""
+    from numis_geek.integrations.llm import parse_json_block
+
+    raw = (
+        '```json\n'
+        '{"positions": [], "summary_total_usd": 727.33}\n'
+        '```\n\n'
+        '**Observação importante**: este extrato contém apenas transações.'
+    )
+    assert parse_json_block(raw) == {
+        "positions": [], "summary_total_usd": 727.33,
+    }
+
+
+def test_parse_json_block_ignores_braces_inside_strings():
+    """Brace counting must respect string literals — `{` inside a value
+    should not increment depth."""
+    from numis_geek.integrations.llm import parse_json_block
+
+    raw = '{"notes": "value with {braces} inside", "k": 1}'
+    assert parse_json_block(raw) == {
+        "notes": "value with {braces} inside", "k": 1,
+    }
+
+
+def test_parse_json_block_handles_escaped_quotes():
+    """Escaped quotes must not flip the in_string state prematurely."""
+    from numis_geek.integrations.llm import parse_json_block
+
+    raw = r'{"q": "he said \"hi\" with {brace}", "k": 2}'
+    assert parse_json_block(raw) == {
+        "q": 'he said "hi" with {brace}', "k": 2,
+    }
+
+
+def test_parse_json_block_no_json_object_raises():
+    from numis_geek.integrations.llm import parse_json_block
+
+    with pytest.raises(ValueError, match="no JSON object"):
+        parse_json_block("just prose, no JSON here")
+
+
 def test_split_image_returns_original_when_within_bounds():
     pytest.importorskip("PIL")
     from io import BytesIO
