@@ -2,36 +2,13 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type AuditLogOut, type AuditPage, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
+import AuditDetailDrawer from '../../components/AuditDetailDrawer'
 import { Card, PageHeader } from '../../components/ui'
-
-const ACTION_OPTIONS = [
-  '', 'auth.login', 'user.invited', 'user.role_changed', 'user.deactivated',
-  'profile.name_changed', 'profile.password_changed',
-  'financial_institution.created', 'financial_institution.updated', 'financial_institution.deactivated',
-]
-
-function actionLabel(action: string): string {
-  const map: Record<string, string> = {
-    'auth.login': 'Login',
-    'user.invited': 'Usuário convidado',
-    'user.role_changed': 'Role alterada',
-    'user.deactivated': 'Usuário desativado',
-    'profile.name_changed': 'Nome alterado',
-    'profile.password_changed': 'Senha alterada',
-    'financial_institution.created': 'IF criada',
-    'financial_institution.updated': 'IF atualizada',
-    'financial_institution.deactivated': 'IF desativada',
-  }
-  return map[action] ?? action
-}
-
-function actionColor(action: string): string {
-  if (action.startsWith('auth.')) return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-  if (action.startsWith('user.')) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-  if (action.startsWith('profile.')) return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-  if (action.startsWith('financial_institution.')) return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-}
+import {
+  ACTION_FILTER_GROUPS,
+  describeAudit,
+  toneClasses,
+} from '../../lib/auditCatalog'
 
 export default function AdminAudit() {
   const navigate = useNavigate()
@@ -40,6 +17,7 @@ export default function AdminAudit() {
   const [page, setPage] = useState(1)
   const [actionFilter, setActionFilter] = useState('')
   const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState<AuditLogOut | null>(null)
 
   useEffect(() => {
     api.me().catch(() => navigate('/login')).then(u => u && setMe(u))
@@ -75,8 +53,12 @@ export default function AdminAudit() {
               className="h-8 px-2 text-[12px] rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-indigo-500"
             >
               <option value="">Todas as ações</option>
-              {ACTION_OPTIONS.filter(Boolean).map(a => (
-                <option key={a} value={a}>{actionLabel(a)}</option>
+              {ACTION_FILTER_GROUPS.map(group => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.actions.map(a => (
+                    <option key={a.value} value={a.value}>{a.label}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           }
@@ -89,31 +71,41 @@ export default function AdminAudit() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800">
-                  {['Data', 'Usuário', 'Ação', 'Recurso'].map(h => (
+                  {['Data', 'Usuário', 'Ação', 'Recurso', 'Resumo'].map(h => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {data?.items.map((log: AuditLogOut) => (
-                  <tr key={log.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
-                      {new Date(log.created_at).toLocaleString('pt-BR')}
-                    </td>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{log.user_email}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${actionColor(log.action)}`}>
-                        {actionLabel(log.action)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
-                      {log.resource_type && <span>{log.resource_type}{log.resource_id ? ` · ${log.resource_id.slice(0, 8)}…` : ''}</span>}
-                    </td>
-                  </tr>
-                ))}
+                {data?.items.map((log: AuditLogOut) => {
+                  const desc = describeAudit(log)
+                  return (
+                    <tr
+                      key={log.id}
+                      onClick={() => setSelected(log)}
+                      className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-pointer"
+                    >
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
+                        {new Date(log.created_at).toLocaleString('pt-BR')}
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{log.user_email}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(desc.actionTone)}`}>
+                          {desc.actionLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 dark:text-gray-200 text-sm">
+                        {desc.resourceLabel}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs max-w-md">
+                        <div className="line-clamp-2">{desc.summary}</div>
+                      </td>
+                    </tr>
+                  )
+                })}
                 {data?.items.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
+                    <td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-400 dark:text-gray-600">
                       Nenhum registro encontrado.
                     </td>
                   </tr>
@@ -147,6 +139,8 @@ export default function AdminAudit() {
           </div>
         )}
       </div>
+
+      <AuditDetailDrawer log={selected} onClose={() => setSelected(null)} />
     </AppLayout>
   )
 }
