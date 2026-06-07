@@ -675,6 +675,15 @@ def _apply_broker_position(
 # ── Spec 48 — bulk apply to a snapshot ──────────────────────────────────────
 
 
+def _alnum_lower(s: str | None) -> str:
+    """Aggressive normalization for substring matching: keep only
+    alphanumeric chars, lowercased. Collapses punctuation/whitespace
+    differences (`S/T` vs `-ST`, `U.S.` vs `US`, `A(acc)USD` vs `Aacc`)."""
+    if not s:
+        return ""
+    return "".join(c.lower() for c in s if c.isalnum())
+
+
 def _resolve_asset_by_ticker_or_name(
     db: Session, workspace_id: str, candidate: str,
 ) -> Asset | None:
@@ -686,8 +695,11 @@ def _resolve_asset_by_ticker_or_name(
     2. Case-insensitive name match — handles funds, fixed income, and other
        assets registered without a canonical exchange ticker (e.g. the
        `Fundo Verde BTG` case where Asset.ticker carries the fund name)
-    3. Substring match against `Asset.name` — last-resort fuzz for when
-       the LLM returns a slightly truncated/expanded label
+    3. Normalized substring match against `Asset.name` AND `Asset.ticker`,
+       either direction — last-resort fuzz. Normalization strips
+       punctuation/whitespace, so `Franklin U.S. Dollar` (ticker) matches
+       `Franklin U.S. Dollar-ST MMF Adv` (extract). Only returns when
+       exactly one asset matches, to avoid spurious resolutions.
     """
     if not candidate:
         return None
@@ -718,19 +730,24 @@ def _resolve_asset_by_ticker_or_name(
     )
     if hit is not None:
         return hit
-    # Step 3 — name substring (either direction). Avoids matching against
-    # 1-2 char strings that would over-match.
-    if len(needle) < 4:
+    # Step 3 — normalized substring against name AND ticker.
+    needle_norm = _alnum_lower(candidate)
+    if len(needle_norm) < 4:
         return None
     candidates = (
         db.query(Asset)
         .filter(Asset.workspace_id == workspace_id, Asset.is_active == True)  # noqa: E712
         .all()
     )
-    matches = [
-        a for a in candidates
-        if a.name and (needle in a.name.lower() or a.name.lower() in needle)
-    ]
+    matches: list[Asset] = []
+    for a in candidates:
+        for asset_str in (a.name, a.ticker):
+            asset_norm = _alnum_lower(asset_str)
+            if len(asset_norm) < 4:
+                continue
+            if asset_norm in needle_norm or needle_norm in asset_norm:
+                matches.append(a)
+                break  # one hit per asset is enough
     # Only return when unambiguous — multi-match is too risky to auto-resolve.
     return matches[0] if len(matches) == 1 else None
 

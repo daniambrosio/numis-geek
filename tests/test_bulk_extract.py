@@ -1100,3 +1100,157 @@ def test_preview_bulk_extract_classifies_without_writes(db):
     assert db.get(Asset, w["petr_id"]).current_price == petr_before
     assert db.get(Asset, w["vale_id"]).current_price == vale_before
     assert db.get(SnapshotPendency, w["pen_petr"]).resolved_at == pen_petr_before
+
+
+# ── Step 3 substring: ticker + aggressive normalization (Franklin case) ─────
+
+
+def _make_minimal_world(db, fund_name: str, fund_ticker: str):
+    """Single-asset workspace fixture for matcher edge cases."""
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.user import User, UserRole
+
+    now = datetime.now(timezone.utc)
+    ws = WorkspaceService(db).create(f"Match-{uuid.uuid4().hex[:6]}")
+    user = User(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        email=f"m-{uuid.uuid4().hex[:6]}@test.com", name="M",
+        password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+        role=UserRole.admin, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    fi = FinancialInstitution(
+        id=str(uuid.uuid4()), long_name="Avenue", short_name="Avenue",
+        country="US", is_active=True, created_at=now, updated_at=now,
+    )
+    acc = Account(
+        id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+        name="Avenue Inv", account_type=AccountType.investment,
+        currency=Currency.USD, is_active=True, created_at=now, updated_at=now,
+    )
+    fund = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+        asset_class=AssetClass.STOCK, country="US",
+        name=fund_name, ticker=fund_ticker,
+        currency=Currency.USD, current_price=Decimal("100.00"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=ws.id,
+        period_end_date=date(2026, 4, 30),
+        total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
+        source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
+        notion_sync_status="PENDING",
+    )
+    db.add_all([user, fi, acc, fund, snap])
+    db.flush()
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=fund.id,
+        reason=PendencyReason.MANUAL_SOURCE,
+        action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+    return {"ws_id": ws.id, "user_id": user.id, "snap_id": snap.id,
+            "asset_id": fund.id, "pen_id": pen.id}
+
+
+def test_resolve_uses_ticker_substring_with_punctuation():
+    """Spec 57 follow-up — Step 3 matches Asset.ticker (not only name) and
+    normalizes punctuation. Real case: Asset.ticker='Franklin U.S. Dollar'
+    + Asset.name='Franklin U.S. Dollar S/T MMF A(acc)USD' must resolve
+    when extract emits 'Franklin U.S. Dollar-ST MMF Adv'."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+
+    s = TestSession()
+    try:
+        w = _make_minimal_world(
+            s,
+            fund_name="Franklin U.S. Dollar S/T MMF A(acc)USD",
+            fund_ticker="Franklin U.S. Dollar",
+        )
+        hit = _resolve_asset_by_ticker_or_name(
+            s, w["ws_id"], "Franklin U.S. Dollar-ST MMF Adv",
+        )
+        assert hit is not None
+        assert hit.id == w["asset_id"]
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_resolve_ambiguous_match_returns_none():
+    """Two assets whose normalized form is substring of the same candidate
+    is too risky to auto-resolve — returns None and lets user map manually."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+    from numis_geek.services.workspace import WorkspaceService
+    from numis_geek.models.user import User, UserRole
+
+    s = TestSession()
+    try:
+        now = datetime.now(timezone.utc)
+        ws = WorkspaceService(s).create(f"Amb-{uuid.uuid4().hex[:6]}")
+        user = User(
+            id=str(uuid.uuid4()), workspace_id=ws.id,
+            email=f"amb-{uuid.uuid4().hex[:6]}@test.com", name="A",
+            password_hash=bcrypt.hashpw(b"x", bcrypt.gensalt()).decode(),
+            role=UserRole.admin, is_active=True,
+            created_at=now, updated_at=now,
+        )
+        fi = FinancialInstitution(
+            id=str(uuid.uuid4()), long_name="X", short_name="X", country="BR",
+            is_active=True, created_at=now, updated_at=now,
+        )
+        acc = Account(
+            id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=fi.id,
+            name="Inv", account_type=AccountType.investment, currency=Currency.BRL,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        # Both tickers normalize to substring of 'tesouroipca2029notas...'.
+        a1 = Asset(
+            id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+            asset_class=AssetClass.STOCK, country="BR",
+            name="Tesouro IPCA Long", ticker="Tesouro IPCA",
+            currency=Currency.BRL, current_price=Decimal("1"),
+            price_source=PriceSource.MANUAL,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        a2 = Asset(
+            id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc.id,
+            asset_class=AssetClass.STOCK, country="BR",
+            name="Tesouro IPCA 2029 Curto", ticker="Tesouro IPCA 2029",
+            currency=Currency.BRL, current_price=Decimal("1"),
+            price_source=PriceSource.MANUAL,
+            is_active=True, created_at=now, updated_at=now,
+        )
+        s.add_all([user, fi, acc, a1, a2])
+        s.flush()
+        # Both tickers normalize to substrings of 'tesouroipca2029longo':
+        # 'tesouroipca' (a1.ticker) ⊂ … and 'tesouroipca2029' (a2.ticker) ⊂ …
+        # → multi-match → None.
+        hit = _resolve_asset_by_ticker_or_name(s, ws.id, "Tesouro IPCA 2029 Longo")
+        assert hit is None
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_resolve_minimum_length_guard():
+    """Candidate with < 4 alphanumeric chars after normalize must not
+    trigger substring match (would over-match)."""
+    from numis_geek.services.extraction import _resolve_asset_by_ticker_or_name
+
+    s = TestSession()
+    try:
+        w = _make_minimal_world(
+            s, fund_name="Apple Inc", fund_ticker="AAPL",
+        )
+        # 'A.A.' normalizes to 'aa' (2 chars) → guard returns None.
+        hit = _resolve_asset_by_ticker_or_name(s, w["ws_id"], "A.A.")
+        assert hit is None
+    finally:
+        s.rollback()
+        s.close()
