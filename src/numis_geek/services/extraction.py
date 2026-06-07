@@ -225,7 +225,15 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         db.flush()
         return job
 
-    template: Template = template_for(job.source_hint)
+    # Spec 58 Stage 3 — pick per-FI template when the job is scoped to a
+    # specific institution. Avenue → BROKER_POSITION_AVENUE etc.
+    fi_short_name: str | None = None
+    if job.institution_id:
+        fi = db.get(FinancialInstitution, job.institution_id)
+        fi_short_name = fi.short_name if fi else None
+    template: Template = template_for(
+        job.source_hint, institution_short_name=fi_short_name,
+    )
     job.status = ExtractionStatus.RUNNING
     job.started_at = datetime.now(timezone.utc)
     job.prompt_version = template.version

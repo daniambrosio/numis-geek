@@ -186,3 +186,67 @@ def test_extract_dates_iso_does_not_collide_with_dmy_2digit():
     """ISO '2034-05-16' must not be misread as DD/MM/YY '34-05-16' due to
     word-boundary lookahead/lookbehind."""
     assert _extract_dates("2034-05-16") == {"2034-05-16"}
+
+
+# ── template_for: per-FI routing (Spec 58 Stage 3) ──────────────────────────
+
+
+def test_template_for_avenue_returns_avenue_template():
+    from numis_geek.services.extraction_templates import (
+        BROKER_POSITION,
+        BROKER_POSITION_AVENUE,
+        template_for,
+    )
+    from numis_geek.models.extraction_job import ExtractionSourceHint
+
+    t = template_for(
+        ExtractionSourceHint.BROKER_POSITION,
+        institution_short_name="Avenue",
+    )
+    assert t is BROKER_POSITION_AVENUE
+    assert t.version == "avenue-v1"
+    # Generic fallback still works.
+    assert template_for(ExtractionSourceHint.BROKER_POSITION) is BROKER_POSITION
+
+
+def test_template_for_avenue_case_insensitive():
+    from numis_geek.services.extraction_templates import (
+        BROKER_POSITION_AVENUE,
+        template_for,
+    )
+    from numis_geek.models.extraction_job import ExtractionSourceHint
+
+    for variant in ("avenue", "AVENUE", " Avenue "):
+        assert template_for(
+            ExtractionSourceHint.BROKER_POSITION,
+            institution_short_name=variant,
+        ) is BROKER_POSITION_AVENUE
+
+
+def test_template_for_unknown_fi_falls_back_to_generic():
+    from numis_geek.services.extraction_templates import (
+        BROKER_POSITION,
+        template_for,
+    )
+    from numis_geek.models.extraction_job import ExtractionSourceHint
+
+    t = template_for(
+        ExtractionSourceHint.BROKER_POSITION,
+        institution_short_name="UnknownBroker",
+    )
+    assert t is BROKER_POSITION  # generic, not Avenue
+
+
+def test_template_for_generic_hint_with_fi_routes_to_fi_template():
+    """GENERIC hint is the V1 fallback for unknown documents — even so,
+    if we know the FI, use the FI-specific template."""
+    from numis_geek.services.extraction_templates import (
+        BROKER_POSITION_AVENUE,
+        template_for,
+    )
+    from numis_geek.models.extraction_job import ExtractionSourceHint
+
+    assert template_for(
+        ExtractionSourceHint.GENERIC,
+        institution_short_name="Avenue",
+    ) is BROKER_POSITION_AVENUE

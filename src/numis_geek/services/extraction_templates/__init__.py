@@ -208,6 +208,72 @@ FGTS_BALANCE = Template(
 )
 
 
+# ── Spec 58 Stage 3 — per-FI BROKER_POSITION templates ─────────────────────
+
+
+BROKER_POSITION_AVENUE = Template(
+    version="avenue-v1",
+    system=(
+        "Você extrai posições de extratos da corretora Avenue (Brasil, "
+        "investimentos no exterior). MOEDA padrão: USD para todos os "
+        "ativos, salvo indicação explícita de BRL.\n\n"
+        "Tipos de ativo TÍPICOS no extrato da Avenue:\n"
+        "1. AÇÕES e ETFs (NASDAQ/NYSE): ticker puro (AAPL, MSFT, VOO, GLD).\n"
+        "2. FUNDOS MONEY MARKET (MMF): nome completo do fundo (ex.: "
+        "'Franklin U.S. Dollar S/T MMF A(acc)USD'). Use o NOME COMPLETO "
+        "como ticker_raw, preservando pontuação visível.\n"
+        "3. TREASURIES US (T-Bills, T-Notes, T-Bonds): identifique pela "
+        "menção a 'United States of America', 'US Treasury', 'T-Bills', "
+        "'T-Notes', etc. SEMPRE componha `ticker_raw` como "
+        "'US Treasury YYYY-MM-DD' usando o vencimento ISO. Inclua a taxa "
+        "de cupom no `notes` (ex.: 'cupom 3.625%'). NUNCA emita só "
+        "'United States of America' como ticker_raw — vencimento é "
+        "obrigatório pra desambiguar.\n"
+        "4. BONDS CORPORATIVOS US: formato '<Emissor> YYYY-MM-DD' (ex.: "
+        "'JPMorgan Chase 2033-09-14'). Inclua cupom no notes.\n"
+        "5. SALDO EM CONTA / CASH: emita uma posição com "
+        "ticker_raw='Avenue Cash USD' (ou similar), unit_price=valor do "
+        "saldo, quantity=1, currency=USD.\n\n"
+        "REGRA DE OURO: dois `ticker_raw` NUNCA podem ser iguais. Use o "
+        "vencimento, cupom ou identificador único disponível na linha pra "
+        "desambiguar. Repetição = falha de extração.\n\n"
+        "Pra `unit_price`: use o preço POR UNIDADE do extrato. Pra bonds "
+        "isso é o preço cotado (% face value, ex.: 105.11). Pra ações é o "
+        "preço da ação. Pra MMFs é o NAV (geralmente ~$1).\n\n"
+        "Pra `quantity`: número de unidades/lotes do extrato. Pra bonds "
+        "Avenue mostra qty em milhares de face value — use o número exato "
+        "do extrato sem converter.\n\n"
+        "Pra `market_value`: total de mercado em USD da linha.\n\n"
+        "Use `ticker_normalized` SOMENTE pra ações/ETFs com ticker "
+        "canônico (AAPL, MSFT). Deixe null pra MMFs, treasuries, bonds, "
+        "cash.\n\n"
+        "Responda SOMENTE com um objeto JSON validando o schema:\n"
+        '{ "as_of_date": str|null (YYYY-MM-DD), "broker_name": str|null, '
+        '"positions": [{ "ticker_raw": str, "ticker_normalized": str|null, '
+        '"quantity": float, "unit_price": float, "currency": "BRL"|"USD", '
+        '"market_value": float|null, "confidence": float (0..1), '
+        '"notes": str|null }], '
+        '"summary_total_brl": float|null, "summary_total_usd": float|null }'
+    ),
+    user_prefix=(
+        "Extraia TODAS as posições visíveis neste extrato da Avenue. "
+        "Inclua saldo em conta como linha separada se aparecer. Lembre: "
+        "dois ticker_raw não podem ser iguais — use vencimento pra "
+        "diferenciar treasuries/bonds. Não invente; se uma coluna estiver "
+        "ilegível deixe null e diminua a confidence."
+    ),
+    output_model=BrokerPositionOutput,
+)
+
+
+# Per-FI BROKER_POSITION overrides. Key is normalized FI short_name
+# (lowercase). When no per-FI template exists, fall back to the
+# generic BROKER_POSITION.
+_BROKER_POSITION_BY_FI: dict[str, Template] = {
+    "avenue": BROKER_POSITION_AVENUE,
+}
+
+
 TEMPLATES: dict[ExtractionSourceHint, Template] = {
     ExtractionSourceHint.SCREENSHOT_PRICE: SCREENSHOT_PRICE,
     ExtractionSourceHint.BROKER_POSITION: BROKER_POSITION,
@@ -217,10 +283,23 @@ TEMPLATES: dict[ExtractionSourceHint, Template] = {
 }
 
 
-def template_for(hint: ExtractionSourceHint) -> Template:
-    if hint == ExtractionSourceHint.GENERIC:
-        # V1 fallback: treat unknown documents as BROKER_POSITION (most common
-        # snapshot pendency upload). The reply schema validation will catch
-        # mismatches.
-        return BROKER_POSITION
+def template_for(
+    hint: ExtractionSourceHint,
+    *,
+    institution_short_name: str | None = None,
+) -> Template:
+    """Pick the template for an extraction job.
+
+    Spec 58 Stage 3 — when both `hint == BROKER_POSITION` AND
+    `institution_short_name` matches a known FI, use the FI-specific
+    template. Otherwise fall back to the generic one.
+    """
+    if hint in (ExtractionSourceHint.BROKER_POSITION, ExtractionSourceHint.GENERIC):
+        if institution_short_name:
+            specific = _BROKER_POSITION_BY_FI.get(institution_short_name.strip().lower())
+            if specific is not None:
+                return specific
+        if hint == ExtractionSourceHint.GENERIC:
+            # V1 fallback: treat unknown documents as BROKER_POSITION.
+            return BROKER_POSITION
     return TEMPLATES[hint]

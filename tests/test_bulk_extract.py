@@ -1429,6 +1429,47 @@ def test_bulk_apply_scopes_candidate_pool_by_institution_id(db):
     assert db.get(SnapshotPendency, w["pen_petr"]).resolved_at is None
 
 
+def test_bulk_extract_uses_avenue_template_when_scoped_to_avenue(db):
+    """Spec 58 Stage 3 — job.institution_id pointing at FI 'Avenue' must
+    pick the Avenue-specific template; prompt_version reflects that."""
+    w = _world(db)
+    fi_av = (
+        db.query(FinancialInstitution)
+        .filter(FinancialInstitution.short_name == "Avenue")
+        .first()
+    )
+    assert fi_av is not None
+
+    set_llm_client(FakeLLM({"positions": []}))
+    att_id = _make_attachment(w["ws_id"])
+    job = extraction_service.create_and_run(
+        db,
+        workspace_id=w["ws_id"],
+        attachment_id=att_id,
+        source_hint=ExtractionSourceHint.BROKER_POSITION,
+        snapshot_id=w["snap_id"],
+        institution_id=fi_av.id,
+        user_id=w["user_id"],
+        user_email="avenue@test.com",
+    )
+    assert job.status == ExtractionStatus.EXTRACTED, job.error_message
+    assert job.prompt_version == "avenue-v1"
+
+    # Without institution_id → fallback to generic v3.
+    set_llm_client(FakeLLM({"positions": []}))
+    att2 = _make_attachment(w["ws_id"])
+    legacy_job = extraction_service.create_and_run(
+        db,
+        workspace_id=w["ws_id"],
+        attachment_id=att2,
+        source_hint=ExtractionSourceHint.BROKER_POSITION,
+        snapshot_id=w["snap_id"],
+        user_id=w["user_id"],
+        user_email="generic@test.com",
+    )
+    assert legacy_job.prompt_version == "v3"
+
+
 def test_bulk_apply_legacy_path_unscoped_still_works(db):
     """Backward compat — jobs without institution_id still resolve via
     the workspace-wide matcher (no behavioral regression for existing
