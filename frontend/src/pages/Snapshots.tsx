@@ -1,7 +1,7 @@
 /* Spec 35 — /snapshots: list of monthly snapshots + next-job card. */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ArrowRight, ChevronRight, Plus } from 'lucide-react'
 
 import { api, type SnapshotOut, type UserOut } from '../lib/api'
 import AppLayout from '../components/AppLayout'
@@ -89,6 +89,12 @@ export default function Snapshots() {
   )
 
   const target = useMemo(() => apuracaoTarget(), [])
+  // Se o target já tem snapshot (qualquer status), o botão muda de função:
+  // IN_REVIEW → leva pra ele; CLOSED → esconde (já tá fechado, nada a fazer).
+  const targetSnap = useMemo(
+    () => snaps.find(s => periodYm(s.period_end_date) === target.ym) ?? null,
+    [snaps, target.ym],
+  )
 
   async function handleApurar() {
     setCreating(true)
@@ -114,13 +120,23 @@ export default function Snapshots() {
           count={snaps.length}
           countLabel="apurações no histórico"
           action={
-            <button
-              onClick={handleApurar}
-              disabled={creating}
-              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" /> Apurar {target.label}
-            </button>
+            targetSnap?.status === 'CLOSED' ? null
+              : targetSnap?.status === 'IN_REVIEW' ? (
+                <Link
+                  to={`/snapshots/${periodYm(targetSnap.period_end_date)}`}
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-amber-500 hover:bg-amber-400 text-white transition-colors"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" /> Continuar {target.label}
+                </Link>
+              ) : (
+                <button
+                  onClick={handleApurar}
+                  disabled={creating}
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Apurar {target.label}
+                </button>
+              )
           }
         />
 

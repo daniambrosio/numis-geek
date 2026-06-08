@@ -155,9 +155,53 @@ class BrokerIncomeOutput(BaseModel):
 
 
 BROKER_INCOME = Template(
-    version="v0-draft",
-    system="TODO Spec 38 — produção exige prompt validado vs amostras reais.",
-    user_prefix="Extraia os eventos de provento deste extrato.",
+    version="broker-income-v1",
+    system=(
+        "Você extrai eventos de PROVENTOS de extratos de corretora "
+        "(brasileiras ou exterior). Um arquivo pode conter movimentações "
+        "variadas (compras, vendas, taxas administrativas, IOF de câmbio, "
+        "transferências, etc.) — IGNORE TUDO QUE NÃO FOR PROVENTO.\n\n"
+        "FORMATO: arquivo pode chegar como CSV, PDF, XLSX ou screenshot. "
+        "Use o conteúdo, não a extensão.\n\n"
+        "RESPOSTA: APENAS o objeto JSON. Sem markdown, sem ```json fence, "
+        "sem texto antes ou depois. Sem 'Aqui está', sem 'Observação'. "
+        "O parser falha em qualquer caractere fora do objeto JSON.\n\n"
+        "O QUE CONTA COMO PROVENTO (use SOMENTE estes valores em `type`):\n"
+        "- DIVIDEND — dividendo de ação/ETF/REIT. Inclua TAMBÉM rendimento "
+        "mensal de FII (no BR FII paga como 'rendimento', mas mapeia pra "
+        "DIVIDEND no nosso schema).\n"
+        "- JCP — juros sobre capital próprio (específico BR).\n"
+        "- INTEREST — juros/cupom de renda fixa, treasury, bond, CDB, "
+        "debênture. Use TAMBÉM pra amortização de principal de renda fixa.\n"
+        "- SECURITIES_LENDING — empréstimo/aluguel de ações (BTC).\n\n"
+        "NÃO EXTRAIR (ignore essas linhas):\n"
+        "- Compras, vendas, subscrições (não são proventos).\n"
+        "- Taxa de custódia, taxa de administração, IOF de câmbio, "
+        "tarifas bancárias, mensalidade da corretora.\n"
+        "- Transferências entre contas, depósitos, saques.\n"
+        "- Eventos corporativos sem cash (split, grupamento, bonificação "
+        "em ações).\n\n"
+        "TRATAMENTO DE IMPOSTO:\n"
+        "- Quando o extrato mostra IRRF/IR retido DIRETAMENTE relacionado "
+        "a um provento (mesma linha ou linha-par), preencha `tax_amount` "
+        "no evento correspondente. `gross_amount` = bruto antes do IR; "
+        "`net_amount` = bruto - imposto.\n"
+        "- Se IRRF aparece em linha separada com referência ao provento, "
+        "consolide no mesmo evento (não emita um evento separado de imposto).\n\n"
+        "CAMPOS POR EVENTO:\n"
+        "- event_date: ISO YYYY-MM-DD da data de pagamento (não a "
+        "data ex/com).\n"
+        "- ticker_raw: ticker/símbolo exatamente como aparece (PETR4, "
+        "AAPL, HGLG11, 'US Treasury 2034-08-15', etc.).\n"
+        "- type: DIVIDEND, JCP, INTEREST ou SECURITIES_LENDING (sem variações).\n"
+        "- gross_amount: valor bruto (antes do IR). Decimal positivo.\n"
+        "- tax_amount: IRRF/IOF SE for retido no provento (caso contrário null).\n"
+        "- net_amount: valor líquido recebido em conta (= gross - tax).\n"
+        "- currency: BRL ou USD conforme a moeda do pagamento.\n"
+        "- confidence: 0–1.\n\n"
+        "Se nenhum provento for encontrado, retorne `events: []`."
+    ),
+    user_prefix="Extraia TODOS os proventos deste extrato.",
     output_model=BrokerIncomeOutput,
 )
 

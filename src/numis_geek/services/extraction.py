@@ -18,7 +18,7 @@ import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -275,12 +275,26 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
     job.prompt_version = template.version
     db.flush()
 
+    # Para BROKER_INCOME scoped a snapshot, passa o período pra o prompt
+    # (o filtro autoritativo é server-side em _classify_bulk_income).
+    period_label: str | None = None
+    if (
+        job.source_hint == ExtractionSourceHint.BROKER_INCOME
+        and job.snapshot_id
+    ):
+        snap = db.get(PortfolioSnapshot, job.snapshot_id)
+        if snap:
+            period_start, period_end = _income_period_bounds(snap)
+            period_label = (
+                f"{period_start.isoformat()} a {period_end.isoformat()}"
+            )
+
     try:
         client: LLMClient = get_llm_client(db)
         payload = _read_attachment_payload(attachment)
         call = client.call(
             system=template.system,
-            user_text=_user_message(template, payload),
+            user_text=_user_message(template, payload, period_label=period_label),
             image_bytes=payload.image_bytes,
             image_mime=payload.image_mime,
             image_parts=payload.image_parts,
@@ -429,8 +443,18 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
         return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
 
 
-def _user_message(template: Template, payload: _Payload) -> str:
+def _user_message(
+    template: Template,
+    payload: _Payload,
+    *,
+    period_label: str | None = None,
+) -> str:
     parts = [template.user_prefix]
+    if period_label:
+        parts.append(
+            f"\n\nPERÍODO DO FECHAMENTO: {period_label}. Eventos fora deste "
+            "intervalo serão filtrados pelo sistema — não tente forçar."
+        )
     if payload.image_parts and len(payload.image_parts) > 1:
         parts.append(
             f"\n\nNOTA: a imagem original excedia o limite de 8000px, então "
@@ -1211,6 +1235,15 @@ _DIST_TYPE_BY_PAYLOAD: dict[str, DistributionType] = {
 }
 
 
+def _income_period_bounds(snap: PortfolioSnapshot) -> tuple[date, date]:
+    """Janela mensal coberta pelo snapshot — primeiro dia do mês até
+    period_end_date inclusive. Eventos com event_date fora desse range
+    não pertencem a esse fechamento."""
+    period_end = snap.period_end_date
+    period_start = period_end.replace(day=1)
+    return period_start, period_end
+
+
 def _external_id_for_income(
     *, fi_short_name: str, event_date_iso: str, ticker_raw: str | None,
     type_str: str, gross_amount: float,
@@ -1251,7 +1284,17 @@ def _classify_bulk_income(
         errors.append(f"institution {job.institution_id} not found")
         return apply_plan, preview, orphan, duplicate, errors
 
+    # Garante que só eventos do período do snapshot sejam aplicados —
+    # extratos costumam vir multi-mês (ex.: Mar a Mai num único XLSX).
+    period_start: date | None = None
+    period_end: date | None = None
+    if job.snapshot_id:
+        snap = db.get(PortfolioSnapshot, job.snapshot_id)
+        if snap:
+            period_start, period_end = _income_period_bounds(snap)
+
     events = payload.get("events") or []
+    out_of_period = 0
 
     for ev in events:
         type_str = (ev.get("type") or "").upper()
@@ -1271,6 +1314,10 @@ def _classify_bulk_income(
         except (TypeError, ValueError):
             errors.append(f"invalid event_date {event_date_iso!r}")
             continue
+        if period_start and period_end:
+            if event_d < period_start or event_d > period_end:
+                out_of_period += 1
+                continue
 
         ticker = ev.get("ticker_raw")
         asset: Asset | None = None
@@ -1339,6 +1386,12 @@ def _classify_bulk_income(
             "_tax": Decimal(str(tax)) if tax is not None else None,
         })
         preview.append(row)
+
+    if out_of_period > 0 and period_start and period_end:
+        errors.append(
+            f"{out_of_period} evento(s) fora do período "
+            f"{period_start.isoformat()}–{period_end.isoformat()} ignorado(s)"
+        )
 
     return apply_plan, preview, orphan, duplicate, errors
 
