@@ -28,7 +28,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account, Currency
-from numis_geek.models.asset import Asset
+from numis_geek.models.asset import Asset, AssetClass
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.attachment import Attachment, AttachmentKind
 from numis_geek.models.audit_log import AuditLog  # noqa: F401  (used implicitly via AuditService)
 from numis_geek.models.distribution import Distribution, DistributionType
@@ -1396,6 +1397,172 @@ def _classify_bulk_income(
     return apply_plan, preview, orphan, duplicate, errors
 
 
+_OPTION_SIDE_BY_PAYLOAD: dict[str, AssetMovementType] = {
+    "SELL_OPEN": AssetMovementType.SELL_OPEN,
+    "BUY_TO_CLOSE": AssetMovementType.BUY_TO_CLOSE,
+}
+
+
+def _external_id_for_option_event(
+    *, fi_short_name: str, event_date_iso: str, option_ticker_raw: str,
+    side: str, gross_amount: float,
+) -> str:
+    """Content-addressed id for option premium movements. Same shape as
+    distribution external_id pra idempotência: re-upload do mesmo extrato
+    não duplica AssetMovement."""
+    norm_ticker = option_ticker_raw.strip().upper()
+    return (
+        f"{fi_short_name}|{event_date_iso}|{norm_ticker}|"
+        f"OPTION:{side}|{gross_amount:.2f}"
+    )
+
+
+def _classify_bulk_option_events(
+    db: Session, job: ExtractionJob, payload: dict,
+) -> tuple[
+    list[dict],   # apply_plan
+    list[dict],   # preview
+    list[dict],   # orphan: option_ticker não bate com nenhum Asset OPTION
+    list[dict],   # duplicate: external_id já existe em AssetMovement
+    list[str],    # errors
+]:
+    """Classifica option_events do payload do BROKER_INCOME. Roteia pra
+    AssetMovement (não Distribution) — single source of truth pra opções."""
+    errors: list[str] = []
+    apply_plan: list[dict] = []
+    preview: list[dict] = []
+    orphan: list[dict] = []
+    duplicate: list[dict] = []
+
+    if not job.institution_id:
+        return apply_plan, preview, orphan, duplicate, errors
+    fi = db.get(FinancialInstitution, job.institution_id)
+    if fi is None:
+        return apply_plan, preview, orphan, duplicate, errors
+
+    period_start: date | None = None
+    period_end: date | None = None
+    if job.snapshot_id:
+        snap = db.get(PortfolioSnapshot, job.snapshot_id)
+        if snap:
+            period_start, period_end = _income_period_bounds(snap)
+
+    option_events = payload.get("option_events") or []
+    out_of_period = 0
+
+    for ev in option_events:
+        side_str = (ev.get("side") or "").upper()
+        if side_str not in _OPTION_SIDE_BY_PAYLOAD:
+            errors.append(f"unknown option side: {side_str!r}")
+            continue
+        side_enum = _OPTION_SIDE_BY_PAYLOAD[side_str]
+        event_date_iso = ev.get("event_date")
+        ticker = ev.get("option_ticker_raw")
+        qty = ev.get("quantity")
+        unit_price = ev.get("unit_price")
+        gross = ev.get("gross_amount")
+        if event_date_iso is None or ticker is None or qty is None or gross is None:
+            errors.append(f"option event missing required fields: {ev!r}")
+            continue
+        try:
+            event_d = datetime.strptime(event_date_iso, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            errors.append(f"invalid event_date {event_date_iso!r}")
+            continue
+        if period_start and period_end:
+            if event_d < period_start or event_d > period_end:
+                out_of_period += 1
+                continue
+
+        # Lookup do Asset OPTION pelo ticker exato (workspace + class=OPTION).
+        asset = (
+            db.query(Asset)
+            .filter(
+                Asset.workspace_id == job.workspace_id,
+                Asset.asset_class == AssetClass.OPTION,
+                Asset.ticker == ticker.strip().upper(),
+            )
+            .first()
+        )
+
+        currency_str = (ev.get("currency") or "BRL").upper()
+        try:
+            currency_enum = Currency(currency_str)
+        except ValueError:
+            errors.append(f"unknown currency {currency_str!r}")
+            continue
+
+        net = ev.get("net_amount")
+        fee = ev.get("fee")
+        net_decimal = (
+            Decimal(str(net)) if net is not None else Decimal(str(gross))
+        )
+
+        ext_id = _external_id_for_option_event(
+            fi_short_name=fi.short_name,
+            event_date_iso=event_date_iso,
+            option_ticker_raw=ticker,
+            side=side_str,
+            gross_amount=float(gross),
+        )
+        existing = (
+            db.query(AssetMovement)
+            .filter(
+                AssetMovement.workspace_id == job.workspace_id,
+                AssetMovement.external_source == ExternalSource.MANUAL_CSV,
+                AssetMovement.external_id == ext_id,
+            )
+            .first()
+        )
+
+        row = {
+            "external_id": ext_id,
+            "event_date": event_date_iso,
+            "option_ticker": ticker,
+            "side": side_str,
+            "asset_id": asset.id if asset else None,
+            "asset_name": asset.name if asset else None,
+            "quantity": str(Decimal(str(qty))),
+            "unit_price": str(Decimal(str(unit_price))) if unit_price is not None else None,
+            "gross_amount": str(Decimal(str(gross))),
+            "fee": str(Decimal(str(fee))) if fee is not None else None,
+            "net_amount": str(net_decimal),
+            "currency": currency_str,
+            "institution_short_name": fi.short_name,
+            "row_kind": "option_event",
+        }
+
+        if existing is not None:
+            row["movement_id"] = existing.id
+            duplicate.append(row)
+            continue
+        if asset is None:
+            orphan.append(row)
+            continue
+
+        apply_plan.append({
+            **row,
+            "_asset": asset,
+            "_side_enum": side_enum,
+            "_currency_enum": currency_enum,
+            "_event_d": event_d,
+            "_qty": Decimal(str(qty)),
+            "_unit_price": Decimal(str(unit_price)) if unit_price is not None else None,
+            "_gross": Decimal(str(gross)),
+            "_fee": Decimal(str(fee)) if fee is not None else None,
+            "_net": net_decimal,
+        })
+        preview.append(row)
+
+    if out_of_period > 0 and period_start and period_end:
+        errors.append(
+            f"{out_of_period} option_event(s) fora do período "
+            f"{period_start.isoformat()}–{period_end.isoformat()} ignorado(s)"
+        )
+
+    return apply_plan, preview, orphan, duplicate, errors
+
+
 def _apply_bulk_income_to_snapshot(
     db: Session, job: ExtractionJob, payload: dict,
     *,
@@ -1403,10 +1570,18 @@ def _apply_bulk_income_to_snapshot(
     user_email: str | None,
 ) -> ExtractionApplyResult:
     """BROKER_INCOME path (Spec 58 Stage 4): create Distribution rows
-    from a proventos extract. Idempotent via (external_source, external_id)."""
+    from a proventos extract. Idempotent via (external_source, external_id).
+
+    Linhas de prêmio de opção (payload.option_events) viram AssetMovement
+    SELL_OPEN/BUY_TO_CLOSE em vez de Distribution — o sintético
+    OPTION_PREMIUM é derivado disso pelo services/proventos.py."""
     apply_plan, preview_rows, orphan_rows, duplicate_rows, errors = (
         _classify_bulk_income(db, job, payload)
     )
+    (
+        opt_plan, opt_preview, opt_orphan, opt_duplicate, opt_errors,
+    ) = _classify_bulk_option_events(db, job, payload)
+    errors = errors + opt_errors
 
     created: list[dict] = []
     fi_id = job.institution_id
@@ -1448,16 +1623,60 @@ def _apply_bulk_income_to_snapshot(
             "institution_short_name": item["institution_short_name"],
         })
 
+    # Option premium events → AssetMovement SELL_OPEN / BUY_TO_CLOSE.
+    for item in opt_plan:
+        asset: Asset = item["_asset"]
+        mov = AssetMovement(
+            id=str(uuid.uuid4()),
+            workspace_id=job.workspace_id,
+            asset_id=asset.id,
+            type=item["_side_enum"],
+            event_date=item["_event_d"],
+            quantity=item["_qty"],
+            unit_price=item["_unit_price"],
+            gross_amount=item["_gross"],
+            fee=item["_fee"],
+            net_amount=item["_net"],
+            currency=item["_currency_enum"],
+            fx_rate=Decimal("1.0"),
+            notes=f"{job.institution_id and 'XP' or ''} proventos opção (job {job.id})",
+            is_active=True,
+            external_id=item["external_id"],
+            external_source=ExternalSource.MANUAL_CSV,
+            created_at=now, updated_at=now,
+            created_by=user_id, updated_by=user_id,
+        )
+        db.add(mov)
+        db.flush()
+        created.append({
+            "movement_id": mov.id,
+            "external_id": item["external_id"],
+            "event_date": item["event_date"],
+            "ticker": item["option_ticker"],
+            "asset_id": asset.id,
+            "asset_name": asset.name,
+            "type": f"OPTION_{item['side']}",
+            "gross_amount": item["gross_amount"],
+            "tax_amount": None,
+            "net_amount": item["net_amount"],
+            "currency": item["currency"],
+            "institution_short_name": item["institution_short_name"],
+            "row_kind": "option_event",
+        })
+
     detail = BulkApplyDetail(
         applied=created,
-        matched_no_pendency=duplicate_rows,  # repurposed: duplicates
-        orphan=orphan_rows,
+        matched_no_pendency=duplicate_rows + opt_duplicate,  # repurposed: duplicates
+        orphan=orphan_rows + opt_orphan,
         pendency_not_in_extract=[],          # n/a for income
         auto_skipped=[],                     # n/a
     )
     return ExtractionApplyResult(
         applied_count=len(created),
-        skipped_count=len(duplicate_rows) + len(orphan_rows),
+        skipped_count=(
+            len(duplicate_rows) + len(orphan_rows)
+            + len(opt_duplicate) + len(opt_orphan)
+        ),
         errors=errors,
         bulk_detail=detail,
     )
@@ -1475,16 +1694,22 @@ def preview_bulk_income(
     apply_plan, preview_rows, orphan_rows, duplicate_rows, errors = (
         _classify_bulk_income(db, job, payload)
     )
+    (
+        opt_plan, opt_preview, opt_orphan, opt_duplicate, opt_errors,
+    ) = _classify_bulk_option_events(db, job, payload)
     detail = BulkApplyDetail(
-        applied=preview_rows,
-        matched_no_pendency=duplicate_rows,
-        orphan=orphan_rows,
+        applied=preview_rows + opt_preview,
+        matched_no_pendency=duplicate_rows + opt_duplicate,
+        orphan=orphan_rows + opt_orphan,
         pendency_not_in_extract=[],
         auto_skipped=[],
     )
     return ExtractionApplyResult(
-        applied_count=len(preview_rows),
-        skipped_count=len(orphan_rows) + len(duplicate_rows),
-        errors=errors,
+        applied_count=len(preview_rows) + len(opt_preview),
+        skipped_count=(
+            len(orphan_rows) + len(duplicate_rows)
+            + len(opt_orphan) + len(opt_duplicate)
+        ),
+        errors=errors + opt_errors,
         bulk_detail=detail,
     )

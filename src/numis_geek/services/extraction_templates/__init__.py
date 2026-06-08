@@ -148,10 +148,30 @@ class BrokerIncomeEvent(BaseModel):
     confidence: float
 
 
+class BrokerOptionEvent(BaseModel):
+    """Linha de prêmio de venda/recompra de opção identificada no extrato
+    de proventos. Roteada server-side pra AssetMovement (não Distribution).
+    """
+    event_date: str
+    option_ticker_raw: str  # ITUBR364, PETRR300, etc.
+    side: str               # "SELL_OPEN" ou "BUY_TO_CLOSE"
+    quantity: float
+    unit_price: float       # prêmio por opção
+    gross_amount: float     # quantity × unit_price (antes de fees)
+    fee: float | None = None
+    net_amount: float | None = None
+    currency: str = "BRL"
+    notes: str | None = None
+    confidence: float
+
+
 class BrokerIncomeOutput(BaseModel):
     as_of_date: str | None = None
     broker_name: str | None = None
     events: list[BrokerIncomeEvent]
+    # Prêmios de opção vão aqui em vez de events[] — viram AssetMovement,
+    # não Distribution. Default [] mantém retro-compat com extratos sem opção.
+    option_events: list[BrokerOptionEvent] = []
 
 
 BROKER_INCOME = Template(
@@ -174,13 +194,31 @@ BROKER_INCOME = Template(
         "- INTEREST — juros/cupom de renda fixa, treasury, bond, CDB, "
         "debênture. Use TAMBÉM pra amortização de principal de renda fixa.\n"
         "- SECURITIES_LENDING — empréstimo/aluguel de ações (BTC).\n\n"
-        "NÃO EXTRAIR (ignore essas linhas):\n"
-        "- Compras, vendas, subscrições (não são proventos).\n"
+        "NÃO EXTRAIR em events[] (ignore ou roteie diferente):\n"
+        "- Compras/vendas de ação/ETF/FII (são trades, não proventos).\n"
         "- Taxa de custódia, taxa de administração, IOF de câmbio, "
         "tarifas bancárias, mensalidade da corretora.\n"
         "- Transferências entre contas, depósitos, saques.\n"
         "- Eventos corporativos sem cash (split, grupamento, bonificação "
         "em ações).\n\n"
+        "PRÊMIOS DE OPÇÃO (vão em option_events[], NÃO em events[]):\n"
+        "- Quando o extrato mostra venda/recompra de opção (PUT ou CALL) com "
+        "ticker tipo PETRR300, ITUBR364, ITUBF475, WEGER408 — emita uma "
+        "linha em option_events[] em vez de events[]:\n"
+        "  - option_ticker_raw: o ticker exato (PETRR300, ITUBR364, …).\n"
+        "  - side: SELL_OPEN se for venda pra abrir; BUY_TO_CLOSE se "
+        "recompra pra fechar.\n"
+        "  - quantity: número de opções (ex.: 1000).\n"
+        "  - unit_price: prêmio por opção (ex.: 0.09).\n"
+        "  - gross_amount: quantity × unit_price.\n"
+        "  - fee: corretagem/taxa se isolada na linha; senão null.\n"
+        "  - net_amount: valor líquido creditado/debitado em conta.\n"
+        "  - currency: BRL ou USD.\n"
+        "  - notes: copie qualquer info adicional (strike, vencimento) se "
+        "aparecer.\n"
+        "- Linhas sem ticker de opção claro → NÃO chute. Coloque em events[] "
+        "como erro de classificação só se realmente parecer provento; "
+        "caso contrário ignore.\n\n"
         "TRATAMENTO DE IMPOSTO:\n"
         "- Quando o extrato mostra IRRF/IR retido DIRETAMENTE relacionado "
         "a um provento (mesma linha ou linha-par), preencha `tax_amount` "
