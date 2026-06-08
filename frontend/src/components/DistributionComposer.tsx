@@ -7,6 +7,7 @@ import {
   type DistributionType,
   type FinancialInstitutionOut,
 } from '../lib/api'
+import { parseDecimal } from '../lib/parseDecimal'
 import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
@@ -37,10 +38,7 @@ interface Props {
   onRemovePersistedAttachment?: (attachmentId: string) => Promise<void>
 }
 
-const num = (s: string): number => {
-  const n = parseFloat(s.replace(',', '.'))
-  return Number.isFinite(n) ? n : 0
-}
+const num = (s: string): number => parseDecimal(s) ?? 0
 
 const fmtMoney = (n: number, ccy: 'BRL' | 'USD', opts: { sign?: boolean } = {}) => {
   const sign = opts.sign && n > 0 ? '+ ' : opts.sign && n < 0 ? '− ' : ''

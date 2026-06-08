@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, ArrowRight, ChevronRight, Download, Plus, RotateCcw,
+  ArrowLeft, ArrowRight, ChevronRight, Download, Loader2, Plus, RotateCcw,
 } from 'lucide-react'
 
 import {
@@ -145,6 +145,10 @@ export default function SnapshotDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [addAssetOpen, setAddAssetOpen] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncToast, setSyncToast] = useState<{
+    text: string; tone: 'success' | 'info' | 'error'
+  } | null>(null)
   // Spec 51 Bloco 3 — entradas de "divergência aceita" do audit log.
   const [drift, setDrift] = useState<DriftEntryOut[]>([])
 
@@ -264,30 +268,48 @@ export default function SnapshotDetail() {
   }
 
   async function handleSyncItems() {
-    if (!snap) return
+    if (!snap || syncing) return
+    setSyncing(true); setSyncToast(null)
     try {
       const result = await api.syncSnapshotItems(snap.id)
       if (result.items_added === 0) {
-        alert('Nenhum ativo faltando — snapshot já está completo.')
-        return
+        setSyncToast({
+          text: 'Nenhum ativo faltando — snapshot já está completo.',
+          tone: 'info',
+        })
+      } else {
+        // Refresh items + pendencies after server side-effects.
+        const [its, pens] = await Promise.all([
+          api.listSnapshotItems(snap.id),
+          api.listSnapshotPendencies(snap.id),
+        ])
+        setItems(its)
+        setPendencies(pens)
+        setSyncToast({
+          text:
+            `${result.items_added} ativo(s) adicionado(s).`
+            + (result.pendencies_added > 0
+              ? ` ${result.pendencies_added} pendência(s) criada(s) — preencha os saldos.`
+              : ''),
+          tone: 'success',
+        })
       }
-      // Refresh items + pendencies after server side-effects.
-      const [its, pens] = await Promise.all([
-        api.listSnapshotItems(snap.id),
-        api.listSnapshotPendencies(snap.id),
-      ])
-      setItems(its)
-      setPendencies(pens)
-      alert(
-        `${result.items_added} ativo(s) adicionado(s).`
-        + (result.pendencies_added > 0
-          ? ` ${result.pendencies_added} pendência(s) criada(s) — preencha os saldos.`
-          : ''),
-      )
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Erro')
+      setSyncToast({
+        text: e instanceof Error ? e.message : 'Erro',
+        tone: 'error',
+      })
+    } finally {
+      setSyncing(false)
     }
   }
+
+  // Auto-clear toast after 6s.
+  useEffect(() => {
+    if (!syncToast) return
+    const t = window.setTimeout(() => setSyncToast(null), 6000)
+    return () => window.clearTimeout(t)
+  }, [syncToast])
 
   // Derived
   const totalBRL = snap ? Number(snap.total_value_brl) : 0
@@ -490,11 +512,14 @@ export default function SnapshotDetail() {
               <>
                 <button
                   onClick={handleSyncItems}
+                  disabled={syncing}
                   title="Adiciona ativos que deveriam estar no fechamento mas não estão (ex.: previdência/fundo lançado depois)"
-                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
                   data-testid="snapshot-sync-items"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" /> Sincronizar ativos
+                  {syncing
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sincronizando…</>
+                    : <><RotateCcw className="w-3.5 h-3.5" /> Sincronizar ativos</>}
                 </button>
                 <button
                   onClick={() => setAddAssetOpen(true)}
@@ -521,6 +546,21 @@ export default function SnapshotDetail() {
         {error && (
           <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/20 p-4 text-[13px] text-red-700 dark:text-red-300">
             {error}
+          </div>
+        )}
+        {syncToast && (
+          <div
+            role="status"
+            data-testid="snapshot-sync-toast"
+            className={`rounded-lg px-3 py-2 text-[12px] border ${
+              syncToast.tone === 'success'
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                : syncToast.tone === 'error'
+                  ? 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300'
+                  : 'border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/40 text-gray-700 dark:text-gray-300'
+            }`}
+          >
+            {syncToast.text}
           </div>
         )}
 
@@ -883,8 +923,9 @@ export default function SnapshotDetail() {
                       <th className="text-left font-medium px-3 py-2">Classe</th>
                       <th className="text-left font-medium px-3 py-2">Custodiante</th>
                       <th className="text-right font-medium px-3 py-2">Qtd</th>
-                      <th className="text-right font-medium px-3 py-2">Preço fim</th>
-                      <th className="text-right font-medium px-3 py-2">Valor (BRL)</th>
+                      <th className="text-right font-medium px-3 py-2">Preço unitário</th>
+                      <th className="text-right font-medium px-3 py-2">Valor total (BRL)</th>
+                      <th className="text-right font-medium px-3 py-2">Valor total (USD)</th>
                       <th className="text-right font-medium px-3 py-2">% portfólio</th>
                       <th className="px-2" />
                     </tr>
@@ -898,6 +939,9 @@ export default function SnapshotDetail() {
                       const klass = collapsedOf(a.asset_class)
                       const hasValue = it.market_value_brl != null && Number(it.market_value_brl) > 0
                       const valueBRL = hasValue ? Number(it.market_value_brl) : 0
+                      const valueUSD = it.market_value_usd != null
+                        ? Number(it.market_value_usd)
+                        : (hasValue && fxRate && fxRate > 0 ? valueBRL / fxRate : null)
                       const pct = totalBRL > 0 ? (valueBRL / totalBRL) * 100 : 0
                       const closePrice = it.unit_price != null ? Number(it.unit_price) : null
                       return (
@@ -966,6 +1010,9 @@ export default function SnapshotDetail() {
                           </td>
                           <td className="px-3 text-right tnum font-medium">
                             {hasValue ? fmtBRL(valueBRL) : <span className="text-gray-500">—</span>}
+                          </td>
+                          <td className="px-3 text-right tnum text-gray-500">
+                            {valueUSD != null && valueUSD > 0 ? fmtUSD(valueUSD) : '—'}
                           </td>
                           <td className="px-3 text-right tnum text-gray-500">
                             {hasValue ? `${pct.toFixed(2)}%` : '—'}

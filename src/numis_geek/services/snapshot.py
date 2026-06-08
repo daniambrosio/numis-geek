@@ -297,7 +297,7 @@ def create_snapshot(
 
     for asset in assets:
         pos = compute_position(db, asset.id, as_of=period_end)
-        if not asset_has_position(pos):
+        if not asset_has_position(pos, asset):
             continue
         qty = pos["quantity_held"]
 
@@ -993,7 +993,7 @@ def _sync_missing_value_mode_items(
         if asset.id in existing_asset_ids:
             continue
         pos = compute_position(db, asset.id, as_of=snap.period_end_date)
-        if not asset_has_position(pos):
+        if not asset_has_position(pos, asset):
             continue
         # Spec 52 — não escreve LIVE price em snapshot antigo.
         unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
@@ -1164,7 +1164,7 @@ def find_affected_snapshots(
         pos = compute_position(db, asset_id, as_of=snap.period_end_date)
         # Se a posição recalculada não justifica o ativo no snapshot e
         # não há item, não tem nada pra reportar.
-        if not asset_has_position(pos) and existing is None:
+        if not asset_has_position(pos, asset) and existing is None:
             continue
 
         new_qty = pos["quantity_held"] or Decimal("0")
@@ -1275,7 +1275,7 @@ def apply_recompute_to_snapshot(
     new_qty = pos["quantity_held"] or Decimal("0")
 
     if existing is None:
-        if not asset_has_position(pos):
+        if not asset_has_position(pos, asset):
             # Nothing to do — recompute would still produce an empty item.
             raise ValueError(
                 "Asset has no position at period_end — nothing to recompute.",

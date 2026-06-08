@@ -24,6 +24,7 @@ import {
   type FinancialInstitutionOut,
   type SnapshotPendencyOut,
 } from '../lib/api'
+import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
 
 interface Props {
@@ -172,12 +173,11 @@ export default function BulkExtractReviewModal({
   async function handleApply() {
     setApplying(true); setError(null)
     try {
-      // Parse manual price overrides ("1.234,56" → 1234.56).
+      // Parse manual price overrides ("1.234,56" or "1234.56" → 1234.56).
       const priceMap: Record<string, number> = {}
       for (const [k, v] of Object.entries(manualPrices)) {
-        const normalized = v.replace(/\./g, '').replace(',', '.').trim()
-        const n = Number(normalized)
-        if (Number.isFinite(n) && n > 0) priceMap[k] = n
+        const n = parseDecimal(v)
+        if (n != null && n > 0) priceMap[k] = n
       }
       const result = await api.confirmExtraction(job.id, {
         institution_short_name: fiShortName || null,
@@ -551,8 +551,8 @@ export default function BulkExtractReviewModal({
               const tickerKey = positions.find(p => tickerOf(p) === ticker)?.ticker_raw ?? ticker
               const raw = (manualPrices[tickerKey] ?? '').trim()
               if (!raw) return false
-              const n = Number(raw.replace(/\./g, '').replace(',', '.'))
-              return Number.isFinite(n) && n > 0
+              const n = parseDecimal(raw)
+              return n != null && n > 0
             }).length
             const blocked = applying || applicable === 0
             const missing = preview.matched.length - applicable

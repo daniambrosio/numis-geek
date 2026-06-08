@@ -32,7 +32,7 @@ from typing import TypedDict
 
 from sqlalchemy.orm import Session
 
-from numis_geek.models.asset import Asset
+from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.corporate_action import CorporateAction, CorporateActionType
 from numis_geek.models.distribution import Distribution
@@ -69,23 +69,29 @@ _QTY_SUB_TYPES = {
 _TOLERANCE = Decimal("1e-6")
 
 
-def asset_has_position(pos: "Position") -> bool:
+def asset_has_position(pos: "Position", asset: Asset | None = None) -> bool:
     """True when an asset still has a tracked position at the given moment.
 
     Centralizes the "is this asset present?" rule so every consumer
     (snapshot creation, snapshot reopen, portfolio listings, dashboards)
     treats VALUE-mode assets correctly. An asset has a position when:
 
+    - CASH assets sempre — são saldos em conta digitados manualmente por
+      snapshot, sem movement nenhum (qty=0, invested=0). Sem essa exceção,
+      os 5 "Saldo em Conta (XP/Itaú/MP/Wise/Avenue)" somem do fechamento
+      e o user não consegue atualizar o saldo do mês.
     - quantity_held != 0 (modo cotado: STOCK, ETF, REIT, CRYPTO, OPTION,
       FIXED_INCOME papéis), OR
-    - total_invested_brl != 0 (modo valor: FUND, PRIVATE_PENSION, CASH,
-      FGTS, FIXED_INCOME tipo cofrinho — onde os movimentos têm gross
-      mas quantity=NULL, mantidos em non_cotado_basis_brl).
+    - total_invested_brl != 0 (modo valor: FUND, PRIVATE_PENSION, FGTS,
+      FIXED_INCOME tipo cofrinho — onde os movimentos têm gross mas
+      quantity=NULL, mantidos em non_cotado_basis_brl).
 
     Spec 49 hotfix #12: a guarda `qty == 0` em `create_snapshot` excluía
     silenciosamente todos os ativos VALUE-puros do fechamento. Esse
     helper é a fonte única da regra.
     """
+    if asset is not None and asset.asset_class == AssetClass.CASH:
+        return True
     qty = pos.get("quantity_held") or Decimal("0")
     invested = pos.get("total_invested_brl") or Decimal("0")
     return qty != 0 or invested != 0

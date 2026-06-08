@@ -12,6 +12,7 @@ import {
   type AssetOut,
   type SnapshotItemOut,
 } from '../lib/api'
+import { parseDecimal } from '../lib/parseDecimal'
 
 interface Props {
   snapshotId: string
@@ -68,13 +69,17 @@ export default function SnapshotItemEditModal({
     inputRef.current?.select()
   }, [])
 
-  // ESC closes, ⌘↵ submits.
+  // ESC cancela, Enter salva. Dentro do textarea de notas Enter mantém
+  // o comportamento natural (quebra de linha); ⌘/Ctrl+Enter sempre salva.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') { e.preventDefault(); onClose() }
-      else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); void submit()
-      }
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+      if (e.key !== 'Enter') return
+      const target = e.target as HTMLElement | null
+      const inTextarea = target?.tagName === 'TEXTAREA'
+      if (inTextarea && !(e.metaKey || e.ctrlKey)) return
+      e.preventDefault()
+      void submit()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -82,11 +87,8 @@ export default function SnapshotItemEditModal({
   }, [raw, mode, note])
 
   function parsePrice(s: string): number | null {
-    const normalized = s.replace(/\./g, '').replace(',', '.').trim()
-    if (!normalized) return null
-    const n = Number(normalized)
-    if (!Number.isFinite(n) || n < 0) return null
-    return n
+    const n = parseDecimal(s)
+    return n != null && n >= 0 ? n : null
   }
 
   async function submit() {

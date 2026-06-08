@@ -180,7 +180,7 @@ export default function AffectedSnapshotsModal({
                   <th className="text-left py-2 px-2">Período</th>
                   <th className="text-left py-2 px-2">Status</th>
                   <th className="text-right py-2 px-2">Qtd antes → depois</th>
-                  <th className="text-right py-2 px-2">Valor BRL antes → depois</th>
+                  <th className="text-right py-2 px-2">Valor total (BRL) antes → depois</th>
                 </tr>
               </thead>
               <tbody>

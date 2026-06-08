@@ -4,6 +4,7 @@ import { Plus, TrendingUp, Wallet } from 'lucide-react'
 import { api, type AccountOut, type AssetOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
 import { Card, PageHeader, SectionTitle, FILogo, CcyPill, Field, INPUT_CLS } from '../../components/ui'
+import { parseDecimal } from '../../lib/parseDecimal'
 import { useEscapeKey } from '../../lib/useEscapeKey'
 
 const TYPE_META = {
@@ -50,7 +51,7 @@ function Modal({ initial, institutions, onSave, onClose }: ModalProps) {
         account_type: accountType,
         financial_institution_id: fiId,
         currency,
-        opening_balance: accountType === 'checking' && openingBalance !== '' ? parseFloat(openingBalance) : null,
+        opening_balance: accountType === 'checking' && openingBalance !== '' ? parseDecimal(openingBalance) : null,
         account_info: accountInfo.trim() || null,
       })
       onClose()

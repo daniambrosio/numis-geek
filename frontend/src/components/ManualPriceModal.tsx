@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { api, type AssetOut, type ManualPriceOut } from '../lib/api'
+import { parseDecimal } from '../lib/parseDecimal'
 import { formatRelative } from '../lib/price'
 
 interface Props {
@@ -56,12 +57,8 @@ export default function ManualPriceModal({ asset, onClose, onSaved }: Props) {
   }, [raw, note])
 
   function parsePrice(s: string): number | null {
-    // Accept either "850000.00" or "850000,00"
-    const normalized = s.replace(/\./g, '').replace(',', '.').trim()
-    if (!normalized) return null
-    const n = Number(normalized)
-    if (!Number.isFinite(n) || n < 0) return null
-    return n
+    const n = parseDecimal(s)
+    return n != null && n >= 0 ? n : null
   }
 
   async function submit() {

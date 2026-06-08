@@ -259,9 +259,9 @@ export default function AssetSnapshotsCard({
             <tr className="text-[10px] uppercase tracking-wider text-gray-500 border-b border-gray-200 dark:border-gray-800">
               <th className="text-left font-medium py-2 px-2">Período</th>
               <th className="text-right font-medium py-2 px-2">Qtd</th>
-              <th className="text-right font-medium py-2 px-2">Preço fim</th>
-              <th className="text-right font-medium py-2 px-2">Valor BRL</th>
-              <th className="text-right font-medium py-2 px-2">Valor USD</th>
+              <th className="text-right font-medium py-2 px-2">Preço unitário</th>
+              <th className="text-right font-medium py-2 px-2">Valor total (BRL)</th>
+              <th className="text-right font-medium py-2 px-2">Valor total (USD)</th>
               <th className="text-right font-medium py-2 px-2">Δ MoM</th>
             </tr>
           </thead>

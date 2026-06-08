@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type AccountOut, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
+import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
 
 const CLASS_LABELS: Record<AssetClass, string> = {
@@ -137,7 +138,7 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
         currency,
         ticker: tickerForbidden ? null : (ticker.trim() || null),
         cnpj: isFund ? (cnpj.trim() || null) : null,
-        current_price: currentPrice.trim() === '' ? null : parseFloat(currentPrice),
+        current_price: currentPrice.trim() === '' ? null : parseDecimal(currentPrice),
         notes: notes.trim() || null,
       }
       if (showWorkspacePicker && workspaceId) {
@@ -151,8 +152,8 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
           issue_date: fiIssueDate || null,
           maturity_date: fiMaturityDate,
           indexer: fiIndexer,
-          rate: fiRate === '' ? null : parseFloat(fiRate),
-          face_value: fiFaceValue === '' ? null : parseFloat(fiFaceValue),
+          rate: fiRate === '' ? null : parseDecimal(fiRate),
+          face_value: fiFaceValue === '' ? null : parseDecimal(fiFaceValue),
         }
       } else if (showPhysical) {
         payload.details = {
@@ -160,7 +161,7 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
           city: phCity.trim() || null,
           state: phState.trim() || null,
           country: phCountry.trim() || null,
-          area_m2: phAreaM2 === '' ? null : parseFloat(phAreaM2),
+          area_m2: phAreaM2 === '' ? null : parseDecimal(phAreaM2),
           registration_number: phRegistration.trim() || null,
           make: phMake.trim() || null,
           model: phModel.trim() || null,
