@@ -24,6 +24,7 @@ function makePendency(over: Partial<SnapshotPendencyOut> = {}): SnapshotPendency
   return {
     id: 'pen-1', snapshot_id: 'snap-1',
     asset_id: 'a-petr', asset_ticker: 'PETR4', asset_name: 'Petrobras',
+    asset_currency: 'BRL',
     asset_institution_short_name: 'XP',
     reason: 'MANUAL_SOURCE', action_type: 'EDIT_PRICE',
     detail: null, resolved_at: null, resolved_by: null,

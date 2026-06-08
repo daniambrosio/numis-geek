@@ -12,6 +12,7 @@ function makePendency(overrides: Partial<SnapshotPendencyOut> = {}): SnapshotPen
     asset_id: 'a-1',
     asset_ticker: 'PETR4',
     asset_name: 'Petrobras',
+    asset_currency: 'BRL',
     asset_institution_short_name: null,
     reason: 'API_FAILED',
     action_type: 'RETRY_API',
