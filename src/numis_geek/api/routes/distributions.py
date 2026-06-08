@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
-from numis_geek.models.account import Currency
-from numis_geek.models.asset import Asset
+from numis_geek.models.account import Account, Currency
+from numis_geek.models.asset import Asset, AssetClass
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.distribution import (
     DISTRIBUTION_TYPE_LABELS,
     Distribution,
@@ -154,8 +155,33 @@ class DistributionOut(BaseModel):
         )
 
 
+class SyntheticPremiumOut(BaseModel):
+    """OPTION_PREMIUM sintético derivado de AssetMovement SELL_OPEN/
+    BUY_TO_CLOSE em assets OPTION. Não persistido — computado on the fly.
+    Shape paralelo ao DistributionOut pra facilitar agregação na UI, mas
+    em campo separado pra não confundir com Distribution real."""
+    id: str            # 'synthetic:<movement_id>'
+    movement_id: str
+    workspace_id: str
+    financial_institution_id: str | None
+    financial_institution_name: str | None
+    asset_id: str | None         # underlying do option (não o option em si)
+    underlying_ticker: str | None
+    option_asset_id: str
+    option_ticker: str | None
+    type: str          # sempre 'OPTION_PREMIUM'
+    type_label: str    # 'Prêmio sintético'
+    side: str          # SELL_OPEN ou BUY_TO_CLOSE
+    event_date: str
+    gross_amount: float
+    net_amount: float
+    currency: str
+    fx_rate: float
+
+
 class DistributionListPage(BaseModel):
     items: list[DistributionOut]
+    synthetic_premiums: list[SyntheticPremiumOut] = []
     total: int
     page: int
     page_size: int
@@ -271,6 +297,82 @@ def _hydrate(
     return fis, assets
 
 
+def _build_synthetic_premiums(
+    db: Session,
+    *,
+    workspace_id: str | None,
+    asset_id: str | None,
+    financial_institution_id: str | None,
+    from_: date | None,
+    to: date | None,
+) -> list[SyntheticPremiumOut]:
+    """Deriva OPTION_PREMIUM sintético dos AssetMovement SELL_OPEN/
+    BUY_TO_CLOSE em assets OPTION. Mesma regra do
+    services/proventos.py:list_proventos — só que devolve no shape
+    consumido pela KPI do snapshot."""
+    q = (
+        db.query(AssetMovement, Asset)
+        .join(Asset, Asset.id == AssetMovement.asset_id)
+        .filter(
+            Asset.asset_class == AssetClass.OPTION,
+            AssetMovement.type.in_([
+                AssetMovementType.SELL_OPEN,
+                AssetMovementType.BUY_TO_CLOSE,
+            ]),
+            AssetMovement.is_active.is_(True),
+        )
+    )
+    if workspace_id:
+        q = q.filter(AssetMovement.workspace_id == workspace_id)
+    if asset_id:
+        # asset_id filtra pelo underlying (mesma convenção do list_proventos).
+        q = q.filter(Asset.underlying_id == asset_id)
+    if from_:
+        q = q.filter(AssetMovement.event_date >= from_)
+    if to:
+        q = q.filter(AssetMovement.event_date <= to)
+
+    rows = q.all()
+    if not rows:
+        return []
+
+    # Resolve FI via Asset.account_id + filtra se foi pedido.
+    fi_cache: dict[str, FinancialInstitution | None] = {}
+    underlying_cache: dict[str, Asset | None] = {}
+    out: list[SyntheticPremiumOut] = []
+    for m, opt in rows:
+        acc = db.get(Account, opt.account_id) if opt.account_id else None
+        fi_id = acc.financial_institution_id if acc else None
+        if financial_institution_id and fi_id != financial_institution_id:
+            continue
+        if fi_id and fi_id not in fi_cache:
+            fi_cache[fi_id] = db.get(FinancialInstitution, fi_id)
+        fi = fi_cache.get(fi_id) if fi_id else None
+        if opt.underlying_id and opt.underlying_id not in underlying_cache:
+            underlying_cache[opt.underlying_id] = db.get(Asset, opt.underlying_id)
+        underlying = underlying_cache.get(opt.underlying_id) if opt.underlying_id else None
+        out.append(SyntheticPremiumOut(
+            id=f"synthetic:{m.id}",
+            movement_id=m.id,
+            workspace_id=m.workspace_id,
+            financial_institution_id=fi_id,
+            financial_institution_name=fi.short_name if fi else None,
+            asset_id=opt.underlying_id,
+            underlying_ticker=underlying.ticker if underlying else None,
+            option_asset_id=opt.id,
+            option_ticker=opt.ticker,
+            type="OPTION_PREMIUM",
+            type_label="Prêmio sintético",
+            side=m.type.value,
+            event_date=m.event_date.isoformat(),
+            gross_amount=float(m.net_amount),  # mesma convenção do services/proventos
+            net_amount=float(m.net_amount),
+            currency=m.currency.value,
+            fx_rate=float(m.fx_rate),
+        ))
+    return out
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=DistributionListPage)
@@ -281,6 +383,7 @@ def list_distributions(
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
     include_inactive: bool = Query(default=False),
+    include_synthetic: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     workspace_id: str | None = Query(default=None),
@@ -325,7 +428,24 @@ def list_distributions(
         )
         for d in rows
     ]
-    return DistributionListPage(items=items, total=total, page=page, page_size=page_size)
+    synthetic_premiums: list[SyntheticPremiumOut] = []
+    if include_synthetic:
+        ws_filter = current_user.workspace_id
+        if current_user.role == UserRole.sysadmin:
+            ws_filter = workspace_id  # None ⇒ cross-workspace pra sysadmin
+        synthetic_premiums = _build_synthetic_premiums(
+            db,
+            workspace_id=ws_filter,
+            asset_id=asset_id,
+            financial_institution_id=financial_institution_id,
+            from_=from_,
+            to=to,
+        )
+
+    return DistributionListPage(
+        items=items, synthetic_premiums=synthetic_premiums,
+        total=total, page=page, page_size=page_size,
+    )
 
 
 @router.get("/chart", response_model=ChartDataOut)

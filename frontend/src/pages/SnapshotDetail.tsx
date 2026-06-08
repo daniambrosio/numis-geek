@@ -23,6 +23,7 @@ import {
   type SnapshotItemOut,
   type SnapshotOut,
   type SnapshotPendencyOut,
+  type SyntheticPremiumOut,
   type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
@@ -140,6 +141,7 @@ export default function SnapshotDetail() {
   const [assets, setAssets] = useState<AssetOut[]>([])
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   const [distributions, setDistributions] = useState<DistributionOut[]>([])
+  const [syntheticPremiums, setSyntheticPremiums] = useState<SyntheticPremiumOut[]>([])
   const [allSnaps, setAllSnaps] = useState<SnapshotOut[]>([])
   const [prevItems, setPrevItems] = useState<SnapshotItemOut[]>([])
   const [loading, setLoading] = useState(true)
@@ -177,6 +179,7 @@ export default function SnapshotDetail() {
             from: `${ym}-01`,
             to: match.period_end_date,
             page_size: 200,
+            include_synthetic: true,
           }),
           api.listSnapshotDrift(match.id).catch(() => []),
         ])
@@ -186,6 +189,7 @@ export default function SnapshotDetail() {
         setAssets(as)
         setInstitutions(fis)
         setDistributions(distPage.items)
+        setSyntheticPremiums(distPage.synthetic_premiums ?? [])
         setDrift(drifts)
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Erro'))
@@ -326,10 +330,16 @@ export default function SnapshotDetail() {
   // was stamped with its own PTAX, so this captures cambial drift.
   const momDeltaUSD = prevTotalUSD != null ? totalUSD - prevTotalUSD : null
 
-  const proventosBRL = distributions.reduce(
+  const proventosRealBRL = distributions.reduce(
     (s, d) => s + Number(d.net_amount) * Number(d.fx_rate || 1),
     0,
   )
+  const proventosSintBRL = syntheticPremiums.reduce(
+    (s, p) => s + Number(p.net_amount) * Number(p.fx_rate || 1),
+    0,
+  )
+  const proventosBRL = proventosRealBRL + proventosSintBRL
+  const proventosCount = distributions.length + syntheticPremiums.length
   const yieldPct = totalBRL > 0 ? proventosBRL / totalBRL : 0
 
   const byClass = useMemo(() => {
@@ -349,8 +359,56 @@ export default function SnapshotDetail() {
       const k = d.type
       acc[k] = (acc[k] || 0) + Number(d.net_amount) * Number(d.fx_rate || 1)
     }
+    for (const p of syntheticPremiums) {
+      acc.OPTION_PREMIUM =
+        (acc.OPTION_PREMIUM || 0) + Number(p.net_amount) * Number(p.fx_rate || 1)
+    }
     return acc
-  }, [distributions])
+  }, [distributions, syntheticPremiums])
+
+  // Linhas normalizadas pra tabela "Eventos do mês" — Distribution real +
+  // OPTION_PREMIUM sintético derivado de AssetMovement SELL_OPEN/BUY_TO_CLOSE.
+  interface EventRow {
+    id: string
+    event_date: string
+    label_primary: string   // ticker
+    label_secondary: string | null
+    type: string
+    gross_amount: number
+    tax: number | null
+    net_amount: number
+    currency: 'BRL' | 'USD'
+  }
+  const eventRows = useMemo<EventRow[]>(() => {
+    const rows: EventRow[] = []
+    for (const d of distributions) {
+      rows.push({
+        id: d.id,
+        event_date: d.event_date,
+        label_primary: d.asset_ticker ?? d.asset_name ?? '—',
+        label_secondary: d.asset_ticker ? d.asset_name : null,
+        type: d.type,
+        gross_amount: d.gross_amount,
+        tax: d.tax,
+        net_amount: d.net_amount,
+        currency: d.currency,
+      })
+    }
+    for (const p of syntheticPremiums) {
+      rows.push({
+        id: p.id,
+        event_date: p.event_date,
+        label_primary: p.option_ticker ?? p.underlying_ticker ?? '—',
+        label_secondary: p.side === 'SELL_OPEN' ? 'Venda pra abrir' : 'Compra pra fechar',
+        type: 'OPTION_PREMIUM',
+        gross_amount: p.gross_amount,
+        tax: null,
+        net_amount: p.net_amount,
+        currency: p.currency,
+      })
+    }
+    return rows.sort((a, b) => a.event_date.localeCompare(b.event_date))
+  }, [distributions, syntheticPremiums])
 
   // Top movers (Spec 45 fix 2026-05-30) — use UNIT PRICE change, not
   // market-value change. Market value mistura 3 efeitos: variação de
@@ -613,8 +671,8 @@ export default function SnapshotDetail() {
                 value={fmtBRL(proventosBRL, { compact: true })}
                 sub={
                   fxRate
-                    ? `${fmtUSD(proventosBRL / fxRate, { compact: true })} · ${distributions.length} evento${distributions.length === 1 ? '' : 's'}`
-                    : `${distributions.length} evento${distributions.length === 1 ? '' : 's'}`
+                    ? `${fmtUSD(proventosBRL / fxRate, { compact: true })} · ${proventosCount} evento${proventosCount === 1 ? '' : 's'}`
+                    : `${proventosCount} evento${proventosCount === 1 ? '' : 's'}`
                 }
               />
               <KpiTile
@@ -669,13 +727,13 @@ export default function SnapshotDetail() {
                 <SectionTitle
                   action={
                     <span className="text-[10px] text-gray-500 uppercase">
-                      {distributions.length} eventos
+                      {proventosCount} eventos
                     </span>
                   }
                 >
                   Proventos do mês
                 </SectionTitle>
-                {distributions.length === 0 ? (
+                {proventosCount === 0 ? (
                   <div className="text-[12px] text-gray-500 italic py-4 text-center">
                     Sem proventos neste mês
                   </div>
@@ -709,11 +767,11 @@ export default function SnapshotDetail() {
             </div>
 
             {/* ── 4b. Eventos do mês (Spec 45) ────────────────────────── */}
-            {distributions.length > 0 && (
+            {proventosCount > 0 && (
               <Card padding="p-3">
                 <div className="px-2 pt-2 pb-3">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Eventos do mês · {distributions.length} provento{distributions.length === 1 ? '' : 's'}
+                    Eventos do mês · {proventosCount} provento{proventosCount === 1 ? '' : 's'}
                   </h3>
                 </div>
                 <div className="overflow-x-auto -mx-1">
@@ -729,49 +787,47 @@ export default function SnapshotDetail() {
                       </tr>
                     </thead>
                     <tbody>
-                      {[...distributions]
-                        .sort((a, b) => a.event_date.localeCompare(b.event_date))
-                        .map(d => {
-                          const meta = TYPE_META[d.type] ?? { label: d.type_label, color: '#94a3b8' }
-                          return (
-                            <tr
-                              key={d.id}
-                              className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
-                            >
-                              <td className="px-3 py-2 tnum text-gray-500">
-                                {fmtDateBR(d.event_date).slice(0, 5)}
-                              </td>
-                              <td className="px-3">
-                                <div className="font-mono font-medium text-[12px]">
-                                  {d.asset_ticker ?? d.asset_name ?? '—'}
+                      {eventRows.map(r => {
+                        const meta = TYPE_META[r.type] ?? { label: r.type, color: '#94a3b8' }
+                        return (
+                          <tr
+                            key={r.id}
+                            className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
+                          >
+                            <td className="px-3 py-2 tnum text-gray-500">
+                              {fmtDateBR(r.event_date).slice(0, 5)}
+                            </td>
+                            <td className="px-3">
+                              <div className="font-mono font-medium text-[12px]">
+                                {r.label_primary}
+                              </div>
+                              {r.label_secondary && (
+                                <div className="text-[10px] text-gray-500 truncate max-w-[200px]">
+                                  {r.label_secondary}
                                 </div>
-                                {d.asset_name && d.asset_ticker && (
-                                  <div className="text-[10px] text-gray-500 truncate max-w-[200px]">
-                                    {d.asset_name}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-3">
-                                <div className="inline-flex items-center gap-1.5 text-[11px]">
-                                  <span
-                                    className="w-1.5 h-1.5 rounded-full"
-                                    style={{ background: meta.color }}
-                                  />
-                                  <span className="text-gray-700 dark:text-gray-300">{meta.label}</span>
-                                </div>
-                              </td>
-                              <td className="px-3 text-right tnum text-gray-500">
-                                {fmtMoney(d.gross_amount, d.currency)}
-                              </td>
-                              <td className="px-3 text-right tnum text-gray-500">
-                                {d.tax != null && d.tax > 0 ? fmtMoney(d.tax, d.currency) : '—'}
-                              </td>
-                              <td className="px-3 text-right tnum font-medium text-emerald-700 dark:text-emerald-300">
-                                {fmtMoney(d.net_amount, d.currency)}
-                              </td>
-                            </tr>
-                          )
-                        })}
+                              )}
+                            </td>
+                            <td className="px-3">
+                              <div className="inline-flex items-center gap-1.5 text-[11px]">
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full"
+                                  style={{ background: meta.color }}
+                                />
+                                <span className="text-gray-700 dark:text-gray-300">{meta.label}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 text-right tnum text-gray-500">
+                              {fmtMoney(r.gross_amount, r.currency)}
+                            </td>
+                            <td className="px-3 text-right tnum text-gray-500">
+                              {r.tax != null && r.tax > 0 ? fmtMoney(r.tax, r.currency) : '—'}
+                            </td>
+                            <td className="px-3 text-right tnum font-medium text-emerald-700 dark:text-emerald-300">
+                              {fmtMoney(r.net_amount, r.currency)}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>

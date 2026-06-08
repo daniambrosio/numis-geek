@@ -364,8 +364,29 @@ export interface DistributionOut {
   updated_at: string
 }
 
+export interface SyntheticPremiumOut {
+  id: string                    // 'synthetic:<movement_id>'
+  movement_id: string
+  workspace_id: string
+  financial_institution_id: string | null
+  financial_institution_name: string | null
+  asset_id: string | null       // underlying do option (não o option em si)
+  underlying_ticker: string | null
+  option_asset_id: string
+  option_ticker: string | null
+  type: 'OPTION_PREMIUM'
+  type_label: string            // 'Prêmio sintético'
+  side: 'SELL_OPEN' | 'BUY_TO_CLOSE'
+  event_date: string
+  gross_amount: number
+  net_amount: number
+  currency: 'BRL' | 'USD'
+  fx_rate: number
+}
+
 export interface DistributionListPage {
   items: DistributionOut[]
+  synthetic_premiums?: SyntheticPremiumOut[]
   total: number
   page: number
   page_size: number
@@ -762,6 +783,7 @@ export const api = {
     from?: string
     to?: string
     include_inactive?: boolean
+    include_synthetic?: boolean
     page?: number
     page_size?: number
     workspace_id?: string
@@ -773,6 +795,7 @@ export const api = {
     if (params?.from) qs.set('from', params.from)
     if (params?.to) qs.set('to', params.to)
     if (params?.include_inactive) qs.set('include_inactive', 'true')
+    if (params?.include_synthetic) qs.set('include_synthetic', 'true')
     if (params?.page) qs.set('page', String(params.page))
     if (params?.page_size) qs.set('page_size', String(params.page_size))
     if (params?.workspace_id) qs.set('workspace_id', params.workspace_id)

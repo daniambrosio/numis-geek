@@ -1505,15 +1505,35 @@ def _classify_bulk_option_events(
             side=side_str,
             gross_amount=float(gross),
         )
-        existing = (
-            db.query(AssetMovement)
-            .filter(
-                AssetMovement.workspace_id == job.workspace_id,
-                AssetMovement.external_source == ExternalSource.MANUAL_CSV,
-                AssetMovement.external_id == ext_id,
+        # Dedup em 2 camadas:
+        # 1) external_id MANUAL_CSV — catches re-upload do mesmo extrato.
+        # 2) (asset, type, date, gross) — catches lançamento manual feito
+        #    antes do upload (sem external_id). Sem isso, o extrato
+        #    duplicaria movements que o user já registrou na mão.
+        existing = None
+        if asset is not None:
+            existing = (
+                db.query(AssetMovement)
+                .filter(
+                    AssetMovement.workspace_id == job.workspace_id,
+                    AssetMovement.asset_id == asset.id,
+                    AssetMovement.type == side_enum,
+                    AssetMovement.event_date == event_d,
+                    AssetMovement.gross_amount == Decimal(str(gross)),
+                    AssetMovement.is_active.is_(True),
+                )
+                .first()
             )
-            .first()
-        )
+        if existing is None:
+            existing = (
+                db.query(AssetMovement)
+                .filter(
+                    AssetMovement.workspace_id == job.workspace_id,
+                    AssetMovement.external_source == ExternalSource.MANUAL_CSV,
+                    AssetMovement.external_id == ext_id,
+                )
+                .first()
+            )
 
         row = {
             "external_id": ext_id,
