@@ -296,9 +296,6 @@ export interface AssetMovementOut {
   external_id: string | null
   external_source: ExternalSource | null
   nota_negociacao_number: string | null
-  notion_sync_status: NotionSyncStatus
-  notion_sync_error: string | null
-  notion_last_synced_at: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -534,7 +531,7 @@ export interface CustodianGroupOut {
 }
 
 // ── Integration Credentials (sysadmin) ──────────────────────────────────────
-export type IntegrationProvider = 'BCB' | 'BRAPI' | 'FINNHUB' | 'YFINANCE' | 'NOTION'
+export type IntegrationProvider = 'BCB' | 'BRAPI' | 'FINNHUB' | 'YFINANCE'
 export type CredentialTestResult = 'UNTESTED' | 'SUCCESS' | 'FAILED'
 
 export interface IntegrationCredentialOut {
@@ -978,21 +975,6 @@ export const api = {
     request<SnapshotPendencyOut>(`/snapshots/pendencies/${pendency_id}/retry-api`, {
       method: 'POST',
     }),
-
-  // ── Notion sync (spec 16) ────────────────────────────────────────────────
-  notionPending: () => request<PendingCountsOut>('/notion-sync/pending'),
-  notionPushAsset: (id: string, force = false) =>
-    request<SyncOut>(`/notion-sync/asset/${id}${force ? '?force=true' : ''}`, { method: 'POST' }),
-  notionPushMovement: (id: string, force = false) =>
-    request<SyncOut>(`/notion-sync/asset-movement/${id}${force ? '?force=true' : ''}`, { method: 'POST' }),
-  notionPushSnapshot: (id: string, force = false) =>
-    request<SyncOut>(`/notion-sync/snapshot/${id}${force ? '?force=true' : ''}`, { method: 'POST' }),
-  notionPushCorporateAction: (id: string, force = false) =>
-    request<SyncOut>(`/notion-sync/corporate-action/${id}${force ? '?force=true' : ''}`, { method: 'POST' }),
-  notionBulk: (entity: NotionEntity) =>
-    request<BulkSyncOut>(`/notion-sync/${entity}/bulk`, { method: 'POST' }),
-  notionResolve: (entity: NotionEntity, id: string, action: 'force_push' | 'abort') =>
-    request<SyncOut>(`/notion-sync/${entity}/${id}/resolve?action=${action}`, { method: 'POST' }),
 
   // ── Options (spec 17) ────────────────────────────────────────────────────
   parseOption: (ticker: string, underlying_price?: number) => {
@@ -1448,36 +1430,6 @@ export interface RefreshSummaryOut {
   skipped: number
   errors: RefreshError[]
   ran_at: string
-}
-
-// ── Notion sync (spec 16) ────────────────────────────────────────────────────
-
-export type NotionSyncStatus = 'PENDING' | 'SYNCED' | 'CONFLICT' | 'ERROR'
-export type NotionEntity = 'asset' | 'asset-movement' | 'snapshot' | 'corporate-action'
-
-export interface SyncOut {
-  status: NotionSyncStatus
-  entity_id: string
-  notion_page_id: string | null
-  notion_url: string | null
-  error: string | null
-  conflict_remote_edited_at?: string | null
-}
-
-export interface BulkSyncOut {
-  entity: string
-  total: number
-  synced: number
-  conflicts: number
-  errors: number
-  results: SyncOut[]
-}
-
-export interface PendingCountsOut {
-  assets: number
-  asset_movements: number
-  snapshots: number
-  corporate_actions: number
 }
 
 // ── Options (spec 17) ────────────────────────────────────────────────────────

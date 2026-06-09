@@ -123,6 +123,8 @@ export default function SnapshotDetail() {
   const [error, setError] = useState('')
   const [addAssetOpen, setAddAssetOpen] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [reopening, setReopening] = useState(false)
   const [syncToast, setSyncToast] = useState<{
     text: string; tone: 'success' | 'info' | 'error'
   } | null>(null)
@@ -301,28 +303,46 @@ export default function SnapshotDetail() {
   }
 
   async function handleConfirm() {
-    if (!snap) return
+    if (!snap || confirming) return
+    setConfirming(true); setSyncToast(null)
     try {
       const updated = await api.confirmSnapshot(snap.id)
       setSnap(updated)
+      window.dispatchEvent(new CustomEvent('snapshot-status-changed'))
+      setSyncToast({ text: 'Fechamento confirmado.', tone: 'success' })
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Erro')
+      setSyncToast({
+        text: e instanceof Error ? e.message : 'Erro ao confirmar fechamento',
+        tone: 'error',
+      })
+    } finally {
+      setConfirming(false)
     }
   }
 
   async function handleReopen() {
-    if (!snap) return
+    if (!snap || reopening) return
     const reason = window.prompt('Motivo da reabertura:')
     if (!reason) return
+    setReopening(true); setSyncToast(null)
     try {
       const updated = await api.reopenSnapshot(snap.id, reason)
       setSnap(updated)
-      const pens = await api.listSnapshotPendencies(snap.id)
+      const [pens, its] = await Promise.all([
+        api.listSnapshotPendencies(snap.id),
+        api.listSnapshotItems(snap.id),
+      ])
       setPendencies(pens)
-      const its = await api.listSnapshotItems(snap.id)
       setItems(its)
+      window.dispatchEvent(new CustomEvent('snapshot-status-changed'))
+      setSyncToast({ text: 'Fechamento reaberto.', tone: 'success' })
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Erro')
+      setSyncToast({
+        text: e instanceof Error ? e.message : 'Erro ao reabrir fechamento',
+        tone: 'error',
+      })
+    } finally {
+      setReopening(false)
     }
   }
 
@@ -698,9 +718,12 @@ export default function SnapshotDetail() {
             {snap && !isPending && (
               <button
                 onClick={handleReopen}
-                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                disabled={reopening}
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-60 disabled:cursor-wait"
               >
-                <RotateCcw className="w-3.5 h-3.5" /> Reabrir
+                {reopening
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reabrindo…</>
+                  : <><RotateCcw className="w-3.5 h-3.5" /> Reabrir</>}
               </button>
             )}
           </div>
@@ -742,6 +765,7 @@ export default function SnapshotDetail() {
                 periodEndDate={snap.period_end_date}
                 onResolved={refreshPendencies}
                 onConfirm={handleConfirm}
+                confirming={confirming}
                 onEditPendency={(p) => {
                   const it = items.find(i => i.asset_id === p.asset_id)
                   if (it) setEditingItem(it)

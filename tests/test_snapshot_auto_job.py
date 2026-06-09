@@ -124,7 +124,7 @@ def test_cron_skips_when_user_has_in_review_snapshot(db):
         total_value_brl=Decimal("100000"), total_value_usd=Decimal("19000"),
         total_invested_brl=Decimal("90000"), total_received_brl=Decimal("0"),
         source=SnapshotSource.AUTOMATED, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING", auto_run_at=datetime.now(timezone.utc),
+        auto_run_at=datetime.now(timezone.utc),
     )
     db.add(snap)
     db.flush()

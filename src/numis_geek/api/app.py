@@ -24,7 +24,6 @@ from numis_geek.api.routes import (
     extractions,
     financial_institutions,
     integrations,
-    notion_sync,
     options,
     portfolio,
     prices,
@@ -81,7 +80,6 @@ app.include_router(ptax.router, prefix="/api")
 app.include_router(ptax.workspace_router, prefix="/api")
 app.include_router(corporate_actions.router, prefix="/api")
 app.include_router(snapshots.router, prefix="/api")
-app.include_router(notion_sync.router, prefix="/api")
 app.include_router(options.router, prefix="/api")
 app.include_router(attachments.router, prefix="/api")
 app.include_router(portfolio.router, prefix="/api")

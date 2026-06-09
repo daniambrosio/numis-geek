@@ -17,7 +17,6 @@ import {
   type DistributionOut,
   type FinancialInstitutionOut,
   type PositionOut,
-  type SyncOut,
   type UserOut,
 } from '../lib/api'
 import { SOURCE_LABEL, TIER_COLOR, formatRelative } from '../lib/price'
@@ -335,22 +334,6 @@ export default function AssetDetail() {
       })))
     } catch {
       setEditingAttachments([])
-    }
-  }
-
-  function handleMovementSyncUpdated(out: SyncOut) {
-    setMovements(prev => prev.map(x => x.id === out.entity_id ? {
-      ...x,
-      notion_sync_status: out.status,
-      notion_sync_error: out.error,
-      notion_last_synced_at: out.status === 'SYNCED' ? new Date().toISOString() : x.notion_last_synced_at,
-    } : x))
-    if (selectedMovement?.id === out.entity_id) {
-      setSelectedMovement(prev => prev ? {
-        ...prev,
-        notion_sync_status: out.status,
-        notion_sync_error: out.error,
-      } : prev)
     }
   }
 
@@ -947,7 +930,6 @@ export default function AssetDetail() {
           onClose={() => setSelectedMovement(null)}
           onEdit={() => { void openMovementEdit(selectedMovement) }}
           onDeactivate={() => setConfirmDeactivate(selectedMovement)}
-          onSyncUpdated={handleMovementSyncUpdated}
           onCheckImpact={() => void handleMovementCheckImpact(selectedMovement)}
         />
       )}

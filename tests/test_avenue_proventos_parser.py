@@ -335,7 +335,6 @@ def test_e2e_avenue_proventos_creates_distributions(tmp_path, monkeypatch):
         total_value_brl=_D("0"), total_value_usd=_D("0"),
         total_invested_brl=_D("0"), total_received_brl=_D("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     s.add_all([user, fi, acc, wmt, snap])
     s.flush()

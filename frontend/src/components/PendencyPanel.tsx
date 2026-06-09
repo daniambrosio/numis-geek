@@ -9,7 +9,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle, ChevronDown, Edit2, Lock, RefreshCw, RotateCcw, Upload,
+  AlertTriangle, ChevronDown, Edit2, Loader2, Lock, RefreshCw, RotateCcw,
+  Upload,
 } from 'lucide-react'
 
 import {
@@ -96,6 +97,7 @@ interface Props {
   periodEndDate: string
   onResolved: () => void
   onConfirm?: () => void
+  confirming?: boolean
   /** Caller abre o SnapshotItemEditModal pra essa pendência (mesmo modal
    *  do clique na Posições Congeladas). Default: prompt nativo (legacy). */
   onEditPendency?: (pendency: SnapshotPendencyOut) => void
@@ -106,7 +108,7 @@ export default function PendencyPanel({
   pendencies, assetById,
   pendingTotal, totalAssetsCount, resolvedAssets,
   periodEndDate,
-  onResolved, onConfirm, onEditPendency,
+  onResolved, onConfirm, confirming, onEditPendency,
 }: Props) {
   const groups = useMemo(
     () => groupPendenciesByFI(pendencies),
@@ -165,16 +167,26 @@ export default function PendencyPanel({
         {onConfirm && (
           <button
             onClick={onConfirm}
-            disabled={pendingTotal > 0}
-            title={pendingTotal > 0 ? `Faltam ${pendingTotal} ativos` : 'Tudo pronto'}
+            disabled={pendingTotal > 0 || !!confirming}
+            title={
+              confirming
+                ? 'Fechando…'
+                : pendingTotal > 0
+                  ? `Faltam ${pendingTotal} ativos`
+                  : 'Tudo pronto'
+            }
             className={`h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
               pendingTotal > 0
                 ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
-                : 'bg-emerald-500 text-white hover:bg-emerald-400'
+                : confirming
+                  ? 'bg-emerald-500/70 text-white cursor-wait'
+                  : 'bg-emerald-500 text-white hover:bg-emerald-400'
             }`}
           >
-            <Lock className="w-3.5 h-3.5" />
-            Confirmar fechamento
+            {confirming
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Lock className="w-3.5 h-3.5" />}
+            {confirming ? 'Fechando…' : 'Confirmar fechamento'}
           </button>
         )}
       </div>

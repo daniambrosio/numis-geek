@@ -104,8 +104,6 @@ const movement: AssetMovementOut = {
   currency: 'USD', fx_rate: 5.0,
   notes: null, external_id: null, external_source: null,
   nota_negociacao_number: null,
-  notion_sync_status: 'PENDING', notion_sync_error: null,
-  notion_last_synced_at: null,
   is_active: true,
   created_at: '2026-01-10T00:00:00Z', updated_at: '2026-01-10T00:00:00Z',
 }

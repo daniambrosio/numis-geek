@@ -343,14 +343,16 @@ export default function AppLayout({ user, children }: Props) {
               onClick={() => setComfort(toggleComfort())}
               title={comfort ? 'Conforto: ligado' : 'Conforto: desligado'}
               aria-pressed={comfort}
-              className={`h-8 px-2 inline-flex items-end justify-center rounded-lg transition-colors gap-0.5 leading-none ${
+              className={`h-8 px-2 inline-flex items-center justify-center rounded-lg transition-colors leading-none ${
                 comfort
                   ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/25'
                   : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'
               }`}
             >
-              <span className="text-[10px] font-bold leading-none">A</span>
-              <span className={`font-bold leading-none ${comfort ? 'text-[15px]' : 'text-[12px]'}`}>A</span>
+              <span className="inline-flex items-baseline gap-0.5">
+                <span className="text-[10px] font-bold leading-none">A</span>
+                <span className={`font-bold leading-none ${comfort ? 'text-[15px]' : 'text-[12px]'}`}>A</span>
+              </span>
             </button>
 
             {/* Privacy */}

@@ -17,7 +17,6 @@ const PROVIDER_COLOR: Record<IntegrationProvider, string> = {
   BRAPI: 'bg-yellow-500',
   FINNHUB: 'bg-indigo-500',
   YFINANCE: 'bg-purple-500',
-  NOTION: 'bg-gray-700',
 }
 
 interface ModalProps {

@@ -164,7 +164,6 @@ def _world(db) -> dict:
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
 
     db.add_all([user, fi_xp, fi_av, acc_xp, acc_av, petr, itub, aapl, vale, snap])
@@ -252,7 +251,6 @@ def test_bulk_apply_matches_by_name_when_no_ticker(db):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add_all([user, fi, acc, fund, snap])
     db.flush()
@@ -319,7 +317,6 @@ def test_bulk_apply_matches_by_substring_in_name(db):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add_all([user, fi, acc, fund, snap])
     db.flush()
@@ -686,7 +683,6 @@ def test_bulk_apply_total_mode_for_fund_divides_by_quantity(db):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add_all([user, fi, acc, fund, snap])
     db.flush()
@@ -827,7 +823,6 @@ def test_resolve_pendency_auto_total_mode_for_fixed_income(db):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add(snap)
     db.flush()
@@ -1028,7 +1023,6 @@ def test_bulk_apply_skips_auto_priced_assets(db):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add_all([user, fi, acc, aapl, snap])
     db.flush()
@@ -1142,7 +1136,6 @@ def _make_minimal_world(db, fund_name: str, fund_ticker: str):
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
     db.add_all([user, fi, acc, fund, snap])
     db.flush()

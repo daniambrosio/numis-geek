@@ -126,7 +126,6 @@ def seed():
         total_value_brl=Decimal("0"), total_value_usd=Decimal("0"),
         total_invested_brl=Decimal("0"), total_received_brl=Decimal("0"),
         source=SnapshotSource.MANUAL, status=SnapshotStatus.IN_REVIEW,
-        notion_sync_status="PENDING",
     )
 
     db.add_all([user, fi, acc, petr, itub, snap])

@@ -982,9 +982,9 @@ def list_asset_movements(
 ):
     """Retorna o mesmo shape de `/asset-movements` (full AssetMovementOut)
     pra que o front possa usar o mesmo `LancamentoDetailPanel` na página
-    do ativo sem campos undefined (`notion_sync_status`, `asset_name`).
-    Antes esse endpoint devolvia um AssetMovementLite reduzido e o panel
-    explodia com `Cannot read properties of undefined (reading 'cls')`."""
+    do ativo sem campos undefined (`asset_name`). Antes esse endpoint
+    devolvia um AssetMovementLite reduzido e o panel explodia com
+    `Cannot read properties of undefined (reading 'cls')`."""
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
     q = db.query(AssetMovement).filter(AssetMovement.asset_id == asset_id)

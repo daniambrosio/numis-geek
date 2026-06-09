@@ -9,7 +9,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from numis_geek.db.base import Base
 from numis_geek.models.account import Currency  # noqa: F401 — reused enum
 from numis_geek.models.external import ExternalSource
-from numis_geek.models.notion_sync import NotionSyncStatus
 
 
 class AssetClass(str, enum.Enum):
@@ -82,12 +81,6 @@ class Asset(Base):
     external_source: Mapped[ExternalSource | None] = mapped_column(
         Enum(ExternalSource), nullable=True
     )
-    notion_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    notion_remote_last_edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    notion_sync_status: Mapped[NotionSyncStatus] = mapped_column(
-        Enum(NotionSyncStatus), nullable=False, default=NotionSyncStatus.PENDING
-    )
-    notion_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
