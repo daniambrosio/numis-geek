@@ -45,6 +45,7 @@ from numis_geek.models.user import User
 from numis_geek.services import attachment_storage
 from numis_geek.services.audit import AuditService
 from numis_geek.services.extraction_templates import Template, template_for
+from numis_geek.services.fx import resolve_fx_rate
 from numis_geek.integrations.llm import (
     DEFAULT_MODEL, LLMClient, get_llm_client, parse_json_block,
 )
@@ -1607,6 +1608,13 @@ def _apply_bulk_income_to_snapshot(
     fi_id = job.institution_id
     now = datetime.now(timezone.utc)
     for item in apply_plan:
+        # Convenção Distribution: fx_rate é MULTIPLICADOR pra BRL.
+        # BRL native → 1.0; USD native → PTAX da event_date.
+        # Hardcode antigo de 1.0 fazia $X net virar R$ X na KPI (sub-conta ~5x).
+        is_usd = item["_currency_enum"] == Currency.USD
+        dist_fx = (
+            resolve_fx_rate(db, item["_event_d"]) if is_usd else Decimal("1.0")
+        )
         dist = Distribution(
             id=str(uuid.uuid4()),
             workspace_id=job.workspace_id,
@@ -1618,7 +1626,7 @@ def _apply_bulk_income_to_snapshot(
             tax=item["_tax"],
             net_amount=item["_net"],
             currency=item["_currency_enum"],
-            fx_rate=Decimal("1.0"),
+            fx_rate=dist_fx,
             notes=f"avenue proventos (job {job.id})",
             is_active=True,
             external_id=item["external_id"],
@@ -1646,6 +1654,11 @@ def _apply_bulk_income_to_snapshot(
     # Option premium events → AssetMovement SELL_OPEN / BUY_TO_CLOSE.
     for item in opt_plan:
         asset: Asset = item["_asset"]
+        # Convenção AssetMovement (multicurrency_fx_rate_design): fx_rate
+        # armazena PTAX do dia SEMPRE (BRL e USD). Consumer normaliza pra
+        # multiplicador na hora de exibir (services/proventos.py:273,
+        # _build_synthetic_premiums em distributions.py).
+        mov_fx = resolve_fx_rate(db, item["_event_d"])
         mov = AssetMovement(
             id=str(uuid.uuid4()),
             workspace_id=job.workspace_id,
@@ -1658,7 +1671,7 @@ def _apply_bulk_income_to_snapshot(
             fee=item["_fee"],
             net_amount=item["_net"],
             currency=item["_currency_enum"],
-            fx_rate=Decimal("1.0"),
+            fx_rate=mov_fx,
             notes=f"{job.institution_id and 'XP' or ''} proventos opção (job {job.id})",
             is_active=True,
             external_id=item["external_id"],
