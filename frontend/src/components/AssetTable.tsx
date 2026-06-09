@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { type AssetOut, type FinancialInstitutionOut, type PositionOut } from '../lib/api'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
+import { fmtMoney as fmtMoneyBase } from '../lib/money'
 import { ClassBadge, FILogo } from './ui'
 import PriceCell from './PriceCell'
 
@@ -31,8 +32,8 @@ function fmtNum(n: number | null | undefined, digits = 2) {
 
 function fmtMoney(n: number | null | undefined, currency: string, opts: { compact?: boolean } = {}) {
   if (n == null) return '—'
-  if (opts.compact && Math.abs(n) >= 1000) {
-    return n.toLocaleString('pt-BR', { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 })
+  if (currency === 'BRL' || currency === 'USD') {
+    return fmtMoneyBase(n, currency, { compact: opts.compact })
   }
   return n.toLocaleString('pt-BR', { style: 'currency', currency })
 }

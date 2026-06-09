@@ -34,19 +34,35 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true",
                         help="Escreve no DB (default: dry-run)")
+    parser.add_argument(
+        "--source", default="MANUAL_CSV",
+        help="external_source a filtrar (default MANUAL_CSV pra restringir "
+             "ao bug do extract apply; passar 'ALL' pra varrer tudo USD)",
+    )
     args = parser.parse_args()
 
     db = SessionLocal()
     try:
-        rows = (
+        from numis_geek.models.external import ExternalSource
+        query = (
             db.query(Distribution)
             .filter(
                 Distribution.currency == Currency.USD,
                 Distribution.fx_rate == Decimal("1"),
                 Distribution.is_active.is_(True),
             )
-            .all()
         )
+        if args.source.upper() != "ALL":
+            try:
+                src_enum = ExternalSource(args.source.upper())
+            except ValueError:
+                print(f"external_source inválida: {args.source!r}")
+                return 1
+            query = query.filter(Distribution.external_source == src_enum)
+            print(f"Filtro: external_source = {src_enum.value}")
+        else:
+            print("Filtro: TODOS os USD com fx_rate=1 (cuidado)")
+        rows = query.all()
         print(f"Candidatos: {len(rows)} distribution USD com fx_rate=1")
         if not rows:
             print("Nada pra fazer.")

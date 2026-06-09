@@ -10,6 +10,8 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+
+import { fmtBRL, fmtMoney, fmtUSD } from '../lib/money'
 import {
   ArrowLeft, ArrowRight, ChevronRight, Download, Loader2, Plus, RotateCcw,
 } from 'lucide-react'
@@ -63,36 +65,7 @@ function dayOfWeekPT(iso: string): string {
   const d = new Date(iso + 'T00:00:00')
   return WEEKDAYS[d.getDay()]
 }
-function fmtBRL(n: number, opts: { compact?: boolean; decimals?: number } = {}) {
-  if (opts.compact && Math.abs(n) >= 1000) {
-    return n.toLocaleString('pt-BR', {
-      style: 'currency', currency: 'BRL',
-      notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  const dp = opts.decimals ?? 0
-  return n.toLocaleString('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    minimumFractionDigits: dp, maximumFractionDigits: dp,
-  })
-}
-function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
-  if (opts.compact && Math.abs(n) >= 1000) {
-    return n.toLocaleString('pt-BR', {
-      style: 'currency', currency: 'USD',
-      notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return n.toLocaleString('pt-BR', {
-    style: 'currency', currency: 'USD',
-    maximumFractionDigits: 0,
-  })
-}
-function fmtMoney(n: number, currency: 'BRL' | 'USD') {
-  return n.toLocaleString(currency === 'USD' ? 'en-US' : 'pt-BR', {
-    style: 'currency', currency,
-  })
-}
+// Formatters centralizados em lib/money — M/k em vez de mi/mil.
 
 // ── reason → bucket counts for the Origem card ──────────────────────────────
 function bucketCounts(

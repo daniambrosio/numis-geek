@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palpites Copa do Mundo 2026</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:#07090f;
+  color:#dde1ea;
+  padding:24px 16px 56px;
+  min-height:100vh;
+}
+
+/* ── HEADER ── */
+.site-header{text-align:center;margin-bottom:32px}
+.site-header h1{
+  font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;
+  color:#f0b429;text-shadow:0 0 40px rgba(240,180,41,.35);
+}
+.site-header .sub{margin-top:5px;font-size:.82rem;color:#7a8fa8}
+.meta-row{margin-top:10px;display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
+.meta-pill{
+  background:#0e1525;border:1px solid #1a2236;border-radius:20px;
+  padding:3px 11px;font-size:.72rem;color:#8090a8;
+}
+.meta-pill b{color:#c0cce0}
+
+/* ── LEGEND ── */
+.legend{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin-bottom:26px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:.75rem;color:#8090a8}
+.score-demo{padding:1px 6px;border-radius:3px;font-size:.7rem;font-weight:700}
+.s-hw{background:#14532d;color:#4ade80}
+.s-aw{background:#450a0a;color:#f87171}
+.s-dr{background:#1f2937;color:#94a3b8}
+
+/* ── GRID ── */
+.groups-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(360px,1fr));
+  gap:18px;
+  max-width:1400px;
+  margin:0 auto;
+}
+
+/* ── CARD ── */
+.group-card{
+  background:#0e1525;border:1px solid #1a2236;
+  border-radius:14px;overflow:hidden;display:flex;flex-direction:column;
+}
+.group-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:9px 15px;font-weight:800;font-size:.9rem;letter-spacing:.8px;
+  border-bottom:2px solid var(--gc);
+  background:color-mix(in srgb,var(--gc) 10%,transparent);
+}
+.group-header .lbl{color:var(--gc)}
+.group-header .tag{
+  font-size:.6rem;font-weight:600;padding:2px 7px;border-radius:10px;
+  background:color-mix(in srgb,var(--gc) 18%,transparent);color:var(--gc);
+  text-transform:uppercase;letter-spacing:.5px;
+}
+
+/* ── TEAMS ── */
+.teams-section{padding:10px 14px 8px;border-bottom:1px solid #111827}
+.team-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.85rem}
+.pos{
+  min-width:24px;text-align:center;font-size:.65rem;
+  font-weight:700;padding:2px 4px;border-radius:4px;flex-shrink:0;
+}
+.pos-1{background:#78350f;color:#fde68a}
+.pos-2{background:#1e3a5f;color:#93c5fd}
+.pos-3{background:#1c2230;color:#5a6a84}
+.pos-4{background:#151a26;color:#3d4d62}
+.t-flag{font-size:1.1rem;flex-shrink:0}
+.t-name{flex:1;color:#8898b4}          /* eliminado: legível mas discreto */
+.t-name.adv{font-weight:700;color:#f1f5f9} /* passa: branco */
+.host-tag{
+  font-size:.6rem;color:#4ade80;background:#052e16;
+  padding:1px 6px;border-radius:3px;font-weight:700;text-transform:uppercase;
+}
+.fifa{font-size:.7rem;color:#4a5a72;margin-left:auto;flex-shrink:0}
+
+/* ── MATCHES ── */
+.matches-section{padding:6px 14px 12px;flex:1}
+.round-label{
+  font-size:.68rem;font-weight:700;letter-spacing:.8px;
+  color:#7a90a8;text-transform:uppercase;
+  padding:7px 0 4px;border-top:1px solid #151f30;
+  margin-top:2px;
+}
+.round-label:first-child{border-top:none;padding-top:3px}
+
+/* each match = two lines */
+.match-row{
+  display:flex;flex-direction:column;
+  padding:6px 0;
+  border-bottom:1px solid #101828;
+}
+.match-row:last-child{border-bottom:none}
+
+/* line 1: date · time · city */
+.m-meta{
+  display:flex;align-items:center;gap:6px;
+  margin-bottom:4px;
+}
+.m-dt{font-size:.74rem;font-weight:700;color:#8aa0be}
+.m-tm{font-size:.74rem;color:#6a80a0}
+.m-city{font-size:.7rem;color:#5a7090;margin-left:auto;font-style:italic}
+
+/* line 2: home · score · away */
+.m-teams{
+  display:flex;align-items:center;gap:6px;
+}
+.m-home{
+  flex:1;display:flex;align-items:center;
+  justify-content:flex-end;gap:5px;overflow:hidden;
+}
+.m-away{
+  flex:1;display:flex;align-items:center;
+  justify-content:flex-start;gap:5px;overflow:hidden;
+}
+.m-home.w .mname,.m-away.w .mname{font-weight:700;color:#e8edf5}
+.m-home.l .mname,.m-away.l .mname{color:#7a8fa8}   /* perde: cinza-azul mas legível */
+.m-home.d .mname,.m-away.d .mname{color:#b8c8dc}   /* empate: quase branco */
+.mflag{font-size:1.05rem;flex-shrink:0}
+.mname{font-size:.84rem;white-space:nowrap}
+.m-home .mname{text-align:right}
+.m-away .mname{text-align:left}
+
+.m-score{
+  text-align:center;font-weight:800;font-size:.85rem;
+  padding:4px 9px;border-radius:6px;flex-shrink:0;
+  min-width:48px;letter-spacing:.5px;
+}
+
+/* simultaneous badge */
+.sim-tag{
+  font-size:.68rem;color:#3a9060;
+  text-align:center;padding:4px 0 1px;
+  letter-spacing:.3px;
+}
+
+/* ── ADVANCE BAR ── */
+.advance-bar{
+  display:flex;gap:8px;padding:10px 14px;
+  background:#070c18;border-top:1px solid #111827;
+}
+.adv{
+  display:flex;align-items:center;gap:6px;
+  padding:4px 12px;border-radius:20px;font-size:.78rem;font-weight:700;
+}
+.adv-1{background:#78350f30;color:#fde68a;border:1px solid #78350f60}
+.adv-2{background:#1e3a5f30;color:#93c5fd;border:1px solid #1e3a5f60}
+
+/* ── NOTE ── */
+.group-note{
+  padding:7px 14px 10px;font-size:.74rem;color:#7a90a8;
+  border-top:1px solid #0a1020;line-height:1.5;
+  background:#070c18;
+}
+
+/* ── CHAMPION SECTION ── */
+.champ-wrap{max-width:900px;margin:44px auto 0}
+.champ-wrap h2{
+  text-align:center;font-size:1.2rem;color:#f0b429;
+  margin-bottom:18px;letter-spacing:-.3px;
+}
+.champ-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+  gap:12px;
+}
+.champ-card{
+  background:#0e1525;border:1px solid #1a2236;
+  border-radius:12px;padding:15px;text-align:center;
+}
+.champ-card.top{border-color:#b45309;background:#160f02}
+.champ-card.fin{border-color:#1e40af;background:#02071a}
+.champ-pos{font-size:.6rem;text-transform:uppercase;letter-spacing:.8px;color:#2d3f58;margin-bottom:5px}
+.champ-flag{font-size:2rem;margin-bottom:5px}
+.champ-name{font-size:.85rem;font-weight:700;color:#e2e8f0}
+.champ-note{font-size:.66rem;color:#3a4f6a;margin-top:4px;line-height:1.4}
+
+/* ── METHODOLOGY ── */
+.method-note{
+  max-width:700px;margin:32px auto 0;
+  background:#0e1525;border:1px solid #1a2236;border-radius:10px;
+  padding:14px 18px;font-size:.72rem;color:#3a4f6a;line-height:1.6;
+}
+.method-note b{color:#8aa0bc}
+.footer{text-align:center;margin-top:28px;font-size:.7rem;color:#5a7090}
+
+@media(max-width:600px){
+  .groups-grid{grid-template-columns:1fr}
+}
+@media print{
+  body{background:#fff;color:#000;padding:0}
+  .group-card{break-inside:avoid;border:1px solid #ccc;background:#fff!important;margin-bottom:12px}
+  .group-header{background:#f0f0f0!important;-webkit-print-color-adjust:exact!important}
+  .advance-bar,.group-note{background:#f9f9f9!important}
+  .m-score,.pos{-webkit-print-color-adjust:exact!important}
+  .site-header,.legend{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <h1>🏆 Palpites Copa do Mundo 2026</h1>
+  <p class="sub">EUA · Canadá · México &nbsp;|&nbsp; 11 jun – 19 jul 2026</p>
+  <div class="meta-row">
+    <span class="meta-pill">48 seleções · <b>12 grupos</b></span>
+    <span class="meta-pill">Grupos: <b>11–27 jun</b></span>
+    <span class="meta-pill">Avançam top-2 + <b>8 melhores 3ºs</b></span>
+    <span class="meta-pill">Horários em <b>BRT (Brasília)</b></span>
+    <span class="meta-pill">Gerado em <b>07/06/2026</b></span>
+  </div>
+</header>
+
+<div class="legend">
+  <span class="legend-item"><span class="score-demo s-hw">2–0</span> Vitória mandante</span>
+  <span class="legend-item"><span class="score-demo s-aw">0–2</span> Vitória visitante</span>
+  <span class="legend-item"><span class="score-demo s-dr">1–1</span> Empate</span>
+  <span class="legend-item" style="color:#fde68a80">● 1º classificado</span>
+  <span class="legend-item" style="color:#93c5fd80">● 2º classificado</span>
+</div>
+
+<div class="groups-grid" id="groups"></div>
+
+<div class="champ-wrap">
+  <h2>🏆 Previsão do Torneio</h2>
+  <div class="champ-grid" id="champ"></div>
+</div>
+
+<div class="method-note">
+  <b>Metodologia:</b> palpites baseados em ranking FIFA (nov/2025) + análise de elenco + análise de mercados preditivos pré-torneio. Vantagem de sede considerada para México, Canadá e EUA. Horários em BRT (UTC−3). Esta tabela será atualizada com resultados reais conforme os jogos acontecerem, incorporando suspensões por cartões e performance dos times.
+</div>
+
+<div class="footer">
+  Dados: Trivela · Sky Sports · ESPN · FIFA.com &nbsp;·&nbsp; Gerado com Claude Code · 07/06/2026
+</div>
+
+<script>
+// ─── helpers ───────────────────────────────────────────────────
+const T = (name, flag, rank, host) => ({name, flag, rank, host:!!host});
+const M = (dt, tm, h, a, hg, ag, city, sim) => ({dt, tm, h, a, hg, ag, city, sim:!!sim});
+const ROUNDS = ['Rodada 1','Rodada 2','Rodada 3'];
+
+// ─── group data ────────────────────────────────────────────────
+// matches: in date order (2 per round)
+// advance: [idx_1st, idx_2nd] — indices into teams[]
+
+const GROUPS = [
+  {
+    id:'A', color:'#4ade80', tag:'Acessível',
+    teams:[
+      T('México',       '🇲🇽',15,true),
+      T('Coreia do Sul','🇰🇷',23),
+      T('Tchéquia',     '🇨🇿',37),
+      T('África do Sul','🇿🇦',63),
+    ],
+    matches:[
+      // Rodada 1
+      M('11/jun','16:00', 0,3, 2,0, 'Cd. do México'),
+      M('11/jun','23:00', 1,2, 1,1, 'Guadalajara'),
+      // Rodada 2
+      M('18/jun','13:00', 2,3, 1,0, 'Atlanta'),
+      M('18/jun','22:00', 0,1, 1,0, 'Guadalajara'),
+      // Rodada 3 (simultâneos)
+      M('24/jun','22:00', 2,0, 0,2, 'Cd. do México', true),
+      M('24/jun','22:00', 3,1, 0,2, 'Monterrey',     true),
+    ],
+    advance:[0,1],
+    note:'México decide em casa — Som + Lee Kang-in garantem a 2ª vaga para a Coreia.',
+  },
+  {
+    id:'B', color:'#60a5fa', tag:'Moderado',
+    teams:[
+      T('Canadá',       '🇨🇦',40,true),
+      T('Suíça',        '🇨🇭',13),
+      T('Bósnia-Herzeg.','🇧🇦',60),
+      T('Catar',        '🇶🇦',57),
+    ],
+    matches:[
+      M('12/jun','16:00', 0,2, 2,0, 'Toronto'),
+      M('13/jun','16:00', 3,1, 0,2, 'San Francisco'),
+      M('18/jun','16:00', 1,2, 1,0, 'Los Angeles'),
+      M('18/jun','19:00', 0,3, 3,0, 'Vancouver'),
+      M('24/jun','16:00', 1,0, 2,1, 'Vancouver',    true),
+      M('24/jun','16:00', 2,3, 1,0, 'Seattle',      true),
+    ],
+    advance:[1,0],
+    note:'Suíça (#13) vence o grupo; Canadá garante 2ª vaga com apoio da torcida em Toronto.',
+  },
+  {
+    id:'C', color:'#fb923c', tag:'Desequilibrado',
+    teams:[
+      T('Brasil',   '🇧🇷', 5),
+      T('Marrocos', '🇲🇦',14),
+      T('Escócia',  '🏴󠁧󠁢󠁳󠁣󠁴󠁿',31),
+      T('Haiti',    '🇭🇹',82),
+    ],
+    matches:[
+      M('13/jun','19:00', 0,1, 2,1, 'Nova York/NJ'),
+      M('13/jun','22:00', 3,2, 0,2, 'Boston'),
+      M('19/jun','19:00', 2,1, 0,2, 'Boston'),
+      M('19/jun','21:30', 0,3, 5,0, 'Filadélfia'),
+      M('24/jun','19:00', 2,0, 0,3, 'Miami',   true),
+      M('24/jun','19:00', 1,3, 4,0, 'Atlanta', true),
+    ],
+    advance:[0,1],
+    note:'Brasil domina — Marrocos (semi 2022) confirma a 2ª vaga com tranquilidade.',
+  },
+  {
+    id:'D', color:'#a78bfa', tag:'Moderado',
+    teams:[
+      T('EUA',      '🇺🇸',12,true),
+      T('Türkiye',  '🇹🇷',29),
+      T('Austrália','🇦🇺',24),
+      T('Paraguai', '🇵🇾',62),
+    ],
+    matches:[
+      M('12/jun','22:00', 0,3, 2,0, 'Los Angeles'),
+      M('13/jun','01:00', 2,1, 0,1, 'Vancouver'),
+      M('19/jun','01:00', 1,3, 1,0, 'San Francisco'),
+      M('19/jun','16:00', 0,2, 2,0, 'Seattle'),
+      M('25/jun','23:00', 1,0, 0,1, 'Los Angeles',   true),
+      M('25/jun','23:00', 3,2, 1,2, 'San Francisco', true),
+    ],
+    advance:[0,1],
+    note:'EUA com apoio maciço do país inteiro; Türkiye sela 2ª vaga ao bater Austrália no last jogo.',
+  },
+  {
+    id:'E', color:'#f87171', tag:'Alemanha lidera',
+    teams:[
+      T('Alemanha',       '🇩🇪', 9),
+      T('Equador',        '🇪🇨',44),
+      T('Costa do Marfim','🇨🇮',50),
+      T('Curaçao',        '🇨🇼',93),
+    ],
+    matches:[
+      M('14/jun','14:00', 0,3, 5,0, 'Houston'),
+      M('14/jun','20:00', 2,1, 1,1, 'Filadélfia'),
+      M('20/jun','17:00', 0,2, 3,0, 'Toronto'),
+      M('20/jun','21:00', 1,3, 3,0, 'Kansas City'),
+      M('25/jun','17:00', 3,2, 0,3, 'Filadélfia', true),
+      M('25/jun','17:00', 1,0, 0,2, 'Nova York/NJ',true),
+    ],
+    advance:[0,1],
+    note:'Alemanha passeia — Equador passa Marfim por saldo de gols no empate direto.',
+  },
+  {
+    id:'F', color:'#e879f9', tag:'Competitivo',
+    teams:[
+      T('Holanda', '🇳🇱', 7),
+      T('Suécia',  '🇸🇪',17),
+      T('Japão',   '🇯🇵',19),
+      T('Tunísia', '🇹🇳',33),
+    ],
+    matches:[
+      M('14/jun','17:00', 0,2, 2,1, 'Dallas'),
+      M('14/jun','23:00', 1,3, 2,0, 'Monterrey'),
+      M('20/jun','01:00', 3,2, 0,2, 'Monterrey'),
+      M('20/jun','14:00', 0,1, 1,0, 'Houston'),
+      M('25/jun','20:00', 2,1, 1,2, 'Dallas',      true),
+      M('25/jun','20:00', 3,0, 0,2, 'Kansas City', true),
+    ],
+    advance:[0,1],
+    note:'Holanda 1ª; Suécia (Gyökeres + Isak) supera Japão na rodada decisiva.',
+  },
+  {
+    id:'G', color:'#2dd4bf', tag:'Bélgica domina',
+    teams:[
+      T('Bélgica',       '🇧🇪', 8),
+      T('Irã',           '🇮🇷',22),
+      T('Egito',         '🇪🇬',45),
+      T('Nova Zelândia', '🇳🇿',75),
+    ],
+    matches:[
+      M('15/jun','16:00', 0,2, 2,1, 'Seattle'),
+      M('15/jun','22:00', 1,3, 3,0, 'Los Angeles'),
+      M('21/jun','16:00', 0,1, 2,0, 'Los Angeles'),
+      M('21/jun','22:00', 3,2, 0,3, 'Vancouver'),
+      M('27/jun','00:00', 2,1, 0,1, 'Seattle',   true),
+      M('27/jun','00:00', 3,0, 0,4, 'Vancouver', true),
+    ],
+    advance:[0,1],
+    note:'Bélgica tranquila — Irã (#22) supera Egito no coletivo, apesar de Salah.',
+  },
+  {
+    id:'H', color:'#fbbf24', tag:'Espanha passeia',
+    teams:[
+      T('Espanha',        '🇪🇸', 1),
+      T('Uruguai',        '🇺🇾',21),
+      T('Arábia Saudita', '🇸🇦',56),
+      T('Cabo Verde',     '🇨🇻',70),
+    ],
+    matches:[
+      M('15/jun','13:00', 0,3, 4,0, 'Atlanta'),
+      M('15/jun','19:00', 2,1, 0,2, 'Miami'),
+      M('21/jun','13:00', 0,2, 3,0, 'Atlanta'),
+      M('21/jun','19:00', 1,3, 2,0, 'Miami'),
+      M('26/jun','21:00', 3,2, 0,2, 'Houston',    true),
+      M('26/jun','21:00', 1,0, 1,2, 'Guadalajara',true),
+    ],
+    advance:[0,1],
+    note:'Espanha (#1 FIFA) lidera com sobras — Uruguai 2ª com Núñez + Valverde.',
+  },
+  {
+    id:'I', color:'#86efac', tag:'França favorita',
+    teams:[
+      T('França',  '🇫🇷', 3),
+      T('Senegal', '🇸🇳',20),
+      T('Noruega', '🇳🇴',36),
+      T('Iraque',  '🇮🇶',63),
+    ],
+    matches:[
+      M('16/jun','16:00', 0,1, 2,0, 'Nova York/NJ'),
+      M('16/jun','19:00', 3,2, 0,2, 'Boston'),
+      M('22/jun','18:00', 0,3, 3,0, 'Filadélfia'),
+      M('22/jun','21:00', 2,1, 1,2, 'Nova York/NJ'),
+      M('26/jun','16:00', 2,0, 1,2, 'Boston',  true),
+      M('26/jun','16:00', 1,3, 2,0, 'Toronto', true),
+    ],
+    advance:[0,1],
+    note:'França com Mbappé capitão — Senegal vira 2ª ao bater Noruega de Haaland na última.',
+  },
+  {
+    id:'J', color:'#fca5a5', tag:'Argentina domina',
+    teams:[
+      T('Argentina','🇦🇷', 2),
+      T('Áustria',  '🇦🇹',22),
+      T('Argélia',  '🇩🇿',53),
+      T('Jordânia', '🇯🇴',71),
+    ],
+    matches:[
+      M('16/jun','01:00', 1,3, 3,0, 'San Francisco'),
+      M('16/jun','22:00', 0,2, 3,0, 'Kansas City'),
+      M('22/jun','00:00', 3,2, 0,2, 'San Francisco'),
+      M('22/jun','14:00', 0,1, 2,0, 'Dallas'),
+      M('27/jun','23:00', 2,1, 0,1, 'Kansas City', true),
+      M('27/jun','23:00', 3,0, 0,4, 'Dallas',      true),
+    ],
+    advance:[0,1],
+    note:'Argentina bicampeã favorita absoluta — Áustria segura a 2ª vaga com solidez.',
+  },
+  {
+    id:'K', color:'#fde68a', tag:'Melhor duelo',
+    teams:[
+      T('Portugal',     '🇵🇹', 6),
+      T('Colômbia',     '🇨🇴',18),
+      T('RD Congo',     '🇨🇩',59),
+      T('Uzbequistão',  '🇺🇿',74),
+    ],
+    matches:[
+      M('17/jun','14:00', 0,2, 3,0, 'Houston'),
+      M('17/jun','23:00', 3,1, 0,3, 'Guadalajara'),
+      M('23/jun','14:00', 0,3, 4,0, 'Houston'),
+      M('23/jun','23:00', 1,2, 2,0, 'Guadalajara'),
+      M('27/jun','20:30', 1,0, 1,1, 'Miami',   true),
+      M('27/jun','20:30', 2,3, 1,1, 'Atlanta', true),
+    ],
+    advance:[0,1],
+    note:'Portugal 1º por saldo de gols no empate direto com Colômbia — melhor jogo do grupo.',
+  },
+  {
+    id:'L', color:'#93c5fd', tag:'Inglaterra lidera',
+    teams:[
+      T('Inglaterra','🏴󠁧󠁢󠁥󠁮󠁧󠁿', 4),
+      T('Croácia',   '🇭🇷',15),
+      T('Gana',      '🇬🇭',63),
+      T('Panamá',    '🇵🇦',73),
+    ],
+    matches:[
+      M('17/jun','17:00', 0,1, 2,0, 'Dallas'),
+      M('17/jun','20:00', 2,3, 1,1, 'Toronto'),
+      M('23/jun','17:00', 0,2, 2,0, 'Boston'),
+      M('23/jun','20:00', 3,1, 0,2, 'Toronto'),
+      M('27/jun','18:00', 3,0, 0,3, 'Nova York/NJ', true),
+      M('27/jun','18:00', 1,2, 2,0, 'Filadélfia',   true),
+    ],
+    advance:[0,1],
+    note:'Inglaterra sem sustos — Croácia jovem pós-era-Modrić confirma a 2ª vaga.',
+  },
+];
+
+// ─── championship predictions ──────────────────────────────────
+const CHAMP = [
+  {pos:'Campeão',    flag:'🇫🇷', name:'França',    note:'Mbappé capitão · geração de ouro · profundidade de elenco imbatível', cls:'top'},
+  {pos:'Finalista',  flag:'🇪🇸', name:'Espanha',   note:'#1 FIFA · sucessora da geração Euro 2024 · tiki-taka evoluído',       cls:'fin'},
+  {pos:'Semifinal',  flag:'🇦🇷', name:'Argentina', note:'Bicampeã · mata-mata como sistema nervoso',                           cls:''},
+  {pos:'Semifinal',  flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', name:'Inglaterra',note:'Geração mais forte desde 1966 · Kane + Bellingham',                cls:''},
+  {pos:'Dark horse', flag:'🇩🇪', name:'Alemanha',  note:'Grupo fácil · geração nova motivada · semi provável',                cls:''},
+  {pos:'Dark horse', flag:'🇲🇦', name:'Marrocos',  note:'Melhor africana · semi 2022 · defesa visceral',                       cls:''},
+];
+
+// ─── rendering ─────────────────────────────────────────────────
+function scoreClass(hg, ag) {
+  return hg > ag ? 's-hw' : ag > hg ? 's-aw' : 's-dr';
+}
+
+function renderGroup(g) {
+  // teams with predicted positions
+  const posOf = (i) => {
+    const a = g.advance;
+    if (a[0]===i) return 0; // 1st
+    if (a[1]===i) return 1; // 2nd
+    return 2; // eliminated
+  };
+  const posClass = (p) => ['pos-1','pos-2','pos-3','pos-4'][p] || 'pos-4';
+  const posLabel = (p) => ['1º','2º','3º','4º'][p] || '–';
+
+  const teamsHtml = g.teams.map((t,i) => {
+    const p = posOf(i);
+    return `
+      <div class="team-row">
+        <span class="pos ${posClass(p)}">${posLabel(p)}</span>
+        <span class="t-flag">${t.flag}</span>
+        <span class="t-name${p<2?' adv':''}">${t.name}${t.host?` <span class="host-tag">host</span>`:''}</span>
+        <span class="fifa">#${t.rank}</span>
+      </div>`;
+  }).join('');
+
+  let matchesHtml = '';
+  g.matches.forEach((m, idx) => {
+    // round separator every 2 matches
+    if (idx % 2 === 0) {
+      matchesHtml += `<div class="round-label">${ROUNDS[idx/2]}</div>`;
+    }
+    const ht = g.teams[m.h];
+    const at = g.teams[m.a];
+    const sc = scoreClass(m.hg, m.ag);
+    const hw = m.hg > m.ag, aw = m.ag > m.hg, dr = m.hg === m.ag;
+    const hcls = hw ? 'w' : dr ? 'd' : 'l';
+    const acls = aw ? 'w' : dr ? 'd' : 'l';
+    matchesHtml += `
+      <div class="match-row">
+        <div class="m-meta">
+          <span class="m-dt">${m.dt}</span>
+          <span class="m-tm">${m.tm} BRT</span>
+          <span class="m-city">${m.city}</span>
+        </div>
+        <div class="m-teams">
+          <div class="m-home ${hcls}">
+            <span class="mname">${ht.name}</span>
+            <span class="mflag">${ht.flag}</span>
+          </div>
+          <span class="m-score ${sc}">${m.hg}–${m.ag}</span>
+          <div class="m-away ${acls}">
+            <span class="mflag">${at.flag}</span>
+            <span class="mname">${at.name}</span>
+          </div>
+        </div>
+        ${m.sim ? `<div class="sim-tag">⚡ simultâneo com o outro jogo do grupo</div>` : ''}
+      </div>`;
+  });
+
+  const adv1 = g.teams[g.advance[0]];
+  const adv2 = g.teams[g.advance[1]];
+
+  return `
+    <div class="group-card">
+      <div class="group-header" style="--gc:${g.color}">
+        <span class="lbl">GRUPO ${g.id}</span>
+        <span class="tag">${g.tag}</span>
+      </div>
+      <div class="teams-section">${teamsHtml}</div>
+      <div class="matches-section">${matchesHtml}</div>
+      <div class="advance-bar">
+        <span class="adv adv-1">${adv1.flag} ${adv1.name}</span>
+        <span class="adv adv-2">${adv2.flag} ${adv2.name}</span>
+      </div>
+      <div class="group-note">${g.note}</div>
+    </div>`;
+}
+
+document.getElementById('groups').innerHTML = GROUPS.map(renderGroup).join('');
+
+document.getElementById('champ').innerHTML = CHAMP.map(c => `
+  <div class="champ-card ${c.cls}">
+    <div class="champ-pos">${c.pos}</div>
+    <div class="champ-flag">${c.flag}</div>
+    <div class="champ-name">${c.name}</div>
+    <div class="champ-note">${c.note}</div>
+  </div>`).join('');
+</script>
+</body>
+</html>

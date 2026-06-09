@@ -19,6 +19,7 @@ import DistributionTotalsLine from '../components/DistributionTotalsLine'
 import ProventosByTypeCard from '../components/ProventosByTypeCard'
 import ProventosChart from '../components/ProventosChart'
 import { useEscapeKey } from '../lib/useEscapeKey'
+import { fmtBRL as fmtBRLBase } from '../lib/money'
 import {
   Card, FilterGroup, GroupingToggle, MultiChips, PageHeader, SearchInput,
 } from '../components/ui'
@@ -54,13 +55,7 @@ const MONTH_NAMES = [
 function fmtBRL(n: number, opts: { sign?: boolean; compact?: boolean } = {}) {
   const v = opts.sign ? Math.abs(n) : n
   const sign = opts.sign && n > 0 ? '+ ' : opts.sign && n < 0 ? '− ' : ''
-  if (opts.compact && Math.abs(v) >= 1000) {
-    return sign + v.toLocaleString('pt-BR', {
-      style: 'currency', currency: 'BRL',
-      notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return sign + v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+  return sign + fmtBRLBase(v, { compact: opts.compact })
 }
 
 function fmtMoney(n: number, ccy: string, opts: { sign?: boolean } = {}) {

@@ -8,6 +8,7 @@ import AppLayout from '../components/AppLayout'
 import ProventosChart from '../components/ProventosChart'
 import ProventosTypeList from '../components/ProventosTypeList'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
+import { fmtBRL, fmtMoney, fmtUSD } from '../lib/money'
 import { AlertTriangle } from 'lucide-react'
 import { Card, SectionTitle, FILogo } from '../components/ui'
 import { DonutChart, HBar } from '../components/charts'
@@ -15,27 +16,7 @@ import { KLASS, collapsedOf, fiTokenFor } from '../lib/tokens'
 
 const OUTROS_COLOR = '#9ca3af'
 
-function fmtBRL(n: number, opts: { compact?: boolean } = {}) {
-  if (opts.compact && Math.abs(n) >= 1000) {
-    return n.toLocaleString('pt-BR', {
-      style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-}
-
-function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
-  if (opts.compact && Math.abs(n) >= 1000) {
-    return n.toLocaleString('en-US', {
-      style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
-
-function fmtMoney(n: number, currency: string) {
-  return n.toLocaleString('pt-BR', { style: 'currency', currency })
-}
+// Formatters em lib/money — M/k em vez de mi/mil.
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -517,7 +498,7 @@ function SnapshotSeries({ snapshots, currentBrl }: { snapshots: SnapshotOut[]; c
     <div className="mt-4">
       <div className="flex items-baseline gap-2">
         <div className="text-2xl font-semibold tnum money text-gray-900 dark:text-white">
-          {last.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 })}
+          {fmtBRL(last, { compact: true })}
         </div>
         <span className={`text-[12px] tnum ${delta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
           {delta >= 0 ? '+' : ''}{pct.toFixed(1)}%

@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react'
 
 import type { DistributionOut } from '../lib/api'
 import { Card, SectionTitle } from './ui'
+import { fmtBRL as fmtBRLBase, fmtUSD as fmtUSDBase } from '../lib/money'
 
 interface Props {
   distributions: DistributionOut[]
@@ -25,21 +26,11 @@ const PAD_BOTTOM = 28
 const WINDOW_MONTHS = 24
 
 function fmtBRL(n: number, compact = false): string {
-  return n.toLocaleString('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    minimumFractionDigits: compact ? 0 : 2,
-    maximumFractionDigits: compact ? 0 : 2,
-    notation: compact ? 'compact' : 'standard',
-  })
+  return fmtBRLBase(n, { compact, decimals: compact ? 0 : 2 })
 }
 
 function fmtUSD(n: number, compact = false): string {
-  return n.toLocaleString('en-US', {
-    style: 'currency', currency: 'USD',
-    minimumFractionDigits: compact ? 0 : 2,
-    maximumFractionDigits: compact ? 0 : 2,
-    notation: compact ? 'compact' : 'standard',
-  })
+  return fmtUSDBase(n, { compact, decimals: compact ? 0 : 2 })
 }
 
 function ymPlus(ym: string, months: number): string {

@@ -37,6 +37,7 @@ COPY src/ src/
 RUN uv sync --frozen --no-dev --extra llm
 COPY alembic/ alembic/
 COPY alembic.ini ./
+COPY scripts/ scripts/
 
 # Built frontend
 COPY --from=frontend-builder /frontend/dist frontend/dist/

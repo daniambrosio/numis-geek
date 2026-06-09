@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, ChevronRight, Plus } from 'lucide-react'
 
 import { api, type SnapshotOut, type UserOut } from '../lib/api'
+import { fmtBRL, fmtUSD } from '../lib/money'
 import AppLayout from '../components/AppLayout'
 import StatusPill from '../components/StatusPill'
 import Sparkline from '../components/Sparkline'
@@ -13,14 +14,6 @@ const MONTH_NAMES = [
   'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
 ]
-
-function fmtBRL(n: number, opts: { compact?: boolean } = {}) {
-  return n.toLocaleString('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    notation: opts.compact ? 'compact' : 'standard',
-    maximumFractionDigits: opts.compact ? 1 : 0,
-  })
-}
 
 function ymLabel(ym: string): string {
   const [y, m] = ym.split('-')
@@ -257,10 +250,7 @@ export default function Snapshots() {
                             {fmtBRL(Number(s.total_value_brl), { compact: true })}
                           </div>
                           <div className="tnum money text-[10px] text-gray-500 dark:text-gray-600">
-                            {Number(s.total_value_usd).toLocaleString('en-US', {
-                              style: 'currency', currency: 'USD',
-                              notation: 'compact', maximumFractionDigits: 1,
-                            })}
+                            {fmtUSD(Number(s.total_value_usd), { compact: true })}
                           </div>
                         </td>
                         <td className="px-2 text-right tnum text-gray-500">{s.items_count}</td>
