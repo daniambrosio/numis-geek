@@ -30,6 +30,14 @@ function fmtBRL(s: string | null): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
+function fmtBRLCompact(n: number): string {
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}R$ ${(abs / 1_000_000).toFixed(1).replace('.', ',')}M`
+  if (abs >= 1_000) return `${sign}R$ ${(abs / 1_000).toFixed(1).replace('.', ',')}k`
+  return `${sign}R$ ${abs.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
+}
+
 function fmtQty(s: string): string {
   const n = Number(s)
   if (!Number.isFinite(n)) return s
@@ -179,9 +187,8 @@ export default function AffectedSnapshotsModal({
                   </th>
                   <th className="text-left py-2 px-2">Período</th>
                   <th className="text-left py-2 px-2">Status</th>
-                  <th className="text-right py-2 px-2">Qtd ativo antes → depois</th>
+                  <th className="text-right py-2 px-2">Qtd antes → depois</th>
                   <th className="text-right py-2 px-2">Valor ativo (BRL)</th>
-                  <th className="text-right py-2 px-2">Patrimônio total do mês</th>
                 </tr>
               </thead>
               <tbody>
@@ -190,12 +197,6 @@ export default function AffectedSnapshotsModal({
                   const oldMv = a.old_market_value_brl
                   const newMv = a.new_market_value_brl
                   const mvChanged = oldMv !== newMv
-                  // Patrimônio total do mês antes/depois — soma do item
-                  // delta no header total. Frontend calcula (backend
-                  // só envia "antes"; "depois" sai aqui).
-                  const totalBefore = Number(a.snapshot_total_value_brl)
-                  const delta = (Number(newMv ?? 0)) - (Number(oldMv ?? 0))
-                  const totalAfter = totalBefore + delta
                   return (
                     <tr
                       key={a.snapshot_id}
@@ -234,23 +235,49 @@ export default function AffectedSnapshotsModal({
                           {fmtBRL(newMv)}
                         </span>
                       </td>
-                      <td className="px-2 py-2 text-right tnum text-[11px]">
-                        <div className="text-gray-500">{fmtBRL(String(totalBefore))}</div>
-                        <div className={`font-semibold ${delta > 0 ? 'text-emerald-500 dark:text-emerald-400' : delta < 0 ? 'text-red-500 dark:text-red-400' : 'text-gray-500'}`}>
-                          → {fmtBRL(String(totalAfter))}
-                          {delta !== 0 && (
-                            <span className="ml-1 text-[10px]">
-                              ({delta > 0 ? '+' : ''}{fmtBRL(String(delta))})
-                            </span>
-                          )}
-                        </div>
-                      </td>
                     </tr>
                   )
                 })}
               </tbody>
             </table>
           </div>
+
+          {/* Resumo do impacto cumulativo nos fechamentos selecionados. */}
+          {phase === 'choose' && selected.size > 0 && (() => {
+            const rows = affected.filter(a => selected.has(a.snapshot_id))
+            // Linha "Mai/26: R$ 13,1M → R$ 13,1M (+R$ 7,4k)" por snapshot.
+            return (
+              <div className="rounded-lg bg-indigo-500/5 border border-indigo-500/15 px-3 py-2 text-[11px] space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-indigo-500/70 dark:text-indigo-400/70 font-semibold">
+                  Patrimônio total se atualizar
+                </div>
+                {rows.map(a => {
+                  const totalBefore = Number(a.snapshot_total_value_brl)
+                  const delta = Number(a.new_market_value_brl ?? 0) - Number(a.old_market_value_brl ?? 0)
+                  const totalAfter = totalBefore + delta
+                  const tone = delta > 0
+                    ? 'text-emerald-500 dark:text-emerald-400'
+                    : delta < 0 ? 'text-red-500 dark:text-red-400'
+                    : 'text-gray-500'
+                  return (
+                    <div key={a.snapshot_id} className="flex items-center justify-between gap-3">
+                      <span className="text-gray-700 dark:text-gray-300 font-medium">{fmtYm(a.ym)}</span>
+                      <span className="tnum text-gray-500 dark:text-gray-400">
+                        {fmtBRLCompact(totalBefore)}
+                        <span className="mx-1 text-gray-400">→</span>
+                        <span className={`font-semibold ${tone}`}>{fmtBRLCompact(totalAfter)}</span>
+                        {delta !== 0 && (
+                          <span className={`ml-1.5 text-[10px] ${tone}`}>
+                            ({delta > 0 ? '+' : ''}{fmtBRLCompact(delta)})
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
 
           {phase === 'skipReason' && (
             <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10 p-3 space-y-2">
