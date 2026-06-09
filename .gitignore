@@ -22,6 +22,20 @@ venv/
 env/
 ENV/
 
+# Frontend deps (Vite/Node)
+node_modules/
+frontend/node_modules/
+
+# Claude harness / session state
+.claude/
+
+# Side projects (não-numis)
+bolao-copa-2026/
+
+# SQLite hot files
+numis_geek.db-shm
+numis_geek.db-wal
+
 # Environment variables
 .env
 .env.*
