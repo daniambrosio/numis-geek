@@ -19,6 +19,11 @@ interface Props {
   /** Spec 51 — segunda chance: roda o preview de impacto em fechamentos
    *  pra este lançamento e abre o AffectedSnapshotsModal se houver. */
   onCheckImpact?: () => void
+  /** period_end_date (YYYY-MM-DD) do último snapshot fechado. Quando
+   *  passado, o botão "Verificar impacto" só aparece se o event_date
+   *  do lançamento for <= esse cutoff. Lançamentos posteriores ao
+   *  último fechamento nunca podem impactar snapshot CLOSED. */
+  lastClosedPeriodEnd?: string | null
   /** Optional: caller can supply an "Updated" hook so the parent list
    *  shows fresh notes / attachments after edits made inside the panel. */
   onUpdated?: (m: AssetMovementOut) => void
@@ -37,8 +42,12 @@ function fmtNum(n: number | null | undefined, digits = 8) {
 }
 
 export default function LancamentoDetailPanel({
-  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onCheckImpact, onUpdated,
+  lancamento: l, asset, fi, onClose, onEdit, onDeactivate, onCheckImpact,
+  lastClosedPeriodEnd, onUpdated,
 }: Props) {
+  // Esconde "Verificar impacto" quando o lançamento é posterior ao
+  // último snapshot fechado — não pode impactar nenhum CLOSED.
+  const mayImpactClosed = !lastClosedPeriodEnd || l.event_date <= lastClosedPeriodEnd
   const [attachments, setAttachments] = useState<AttachmentOut[]>([])
   const [notes, setNotes] = useState<string>(l.notes ?? '')
 
@@ -182,7 +191,7 @@ export default function LancamentoDetailPanel({
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between gap-2">
-          {onCheckImpact ? (
+          {onCheckImpact && mayImpactClosed ? (
             <button
               onClick={onCheckImpact}
               title="Spec 51 — verifica fechamentos passados que estariam desincronizados com esse lançamento"

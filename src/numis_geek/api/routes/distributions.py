@@ -87,8 +87,6 @@ class DistributionRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "DistributionRequest":
-        if self.event_date > date.today():
-            raise ValueError("event_date cannot be in the future.")
         if self.gross_amount <= 0:
             raise ValueError("gross_amount must be > 0.")
         if self.tax is not None and self.tax < 0:

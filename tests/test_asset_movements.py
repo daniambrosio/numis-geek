@@ -292,7 +292,8 @@ def test_bonificacao_forbids_unit_price(client, seed):
     assert r.status_code == 422
 
 
-def test_event_date_no_future(client, seed):
+def test_event_date_future_is_allowed(client, seed):
+    """2026-06-09 — user pediu pra remover a validação de data futura."""
     future = (date.today() + timedelta(days=1)).isoformat()
     r = client.post("/api/asset-movements", json={
         "asset_id": seed["asset_a"],
@@ -301,7 +302,7 @@ def test_event_date_no_future(client, seed):
         "quantity": 1,
         "unit_price": 1.0,
     }, headers=auth(seed["admin_token_a"]))
-    assert r.status_code == 422
+    assert r.status_code == 201
 
 
 def test_come_cotas_requires_tax(client, seed):

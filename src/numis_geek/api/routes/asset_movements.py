@@ -79,9 +79,6 @@ class AssetMovementRequest(BaseModel):
     def _validate(self) -> "AssetMovementRequest":
         t = self.type
 
-        if self.event_date > date.today():
-            raise ValueError("event_date cannot be in the future.")
-
         # Quantity rules
         if t == AssetMovementType.BONUS:
             if self.quantity is None or self.quantity <= 0:

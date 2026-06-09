@@ -83,6 +83,7 @@ export default function AssetMovements() {
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
   const [selected, setSelected] = useState<AssetMovementOut | null>(null)
+  const [lastClosedPeriodEnd, setLastClosedPeriodEnd] = useState<string | null>(null)
   // Spec 51 — Retroactive Event Reconciliation
   const [reconciliation, setReconciliation] = useState<{
     affected: AffectedSnapshotOut[]
@@ -105,6 +106,22 @@ export default function AssetMovements() {
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
+
+  // Carrega só o último period_end_date CLOSED — usado pra esconder o
+  // botão "Verificar impacto" em lançamentos posteriores ao último
+  // fechamento (não podem afetar nenhum snapshot CLOSED).
+  useEffect(() => {
+    if (!me) return
+    api.listSnapshots()
+      .then(list => {
+        const closed = list
+          .filter(s => s.status === 'CLOSED')
+          .map(s => s.period_end_date)
+          .sort()
+        setLastClosedPeriodEnd(closed.length > 0 ? closed[closed.length - 1] : null)
+      })
+      .catch(() => { /* silent */ })
+  }, [me])
 
   // Open MovementComposer when launched via "Novo → Lançamento" from the top bar.
   // Open OptionModal when launched via "Novo → Opção" (Spec 36).
@@ -460,6 +477,7 @@ export default function AssetMovements() {
           onEdit={() => { void openEdit(selected) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
           onCheckImpact={() => void handleCheckImpact(selected)}
+          lastClosedPeriodEnd={lastClosedPeriodEnd}
         />
       )}
 

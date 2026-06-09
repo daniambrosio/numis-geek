@@ -239,7 +239,8 @@ def test_currency_must_match_asset(client, seed):
     assert "currency" in r.json()["detail"].lower()
 
 
-def test_event_date_not_future(client, seed):
+def test_event_date_future_is_allowed(client, seed):
+    """2026-06-09 — user pediu pra remover a validação de data futura."""
     from datetime import timedelta
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     r = client.post("/api/distributions", json={
@@ -250,7 +251,7 @@ def test_event_date_not_future(client, seed):
         "gross_amount": 10.00,
         "currency": "BRL",
     }, headers=auth(seed["admin_token"]))
-    assert r.status_code == 422
+    assert r.status_code == 201
 
 
 def test_update_distribution(client, seed):

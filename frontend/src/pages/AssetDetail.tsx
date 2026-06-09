@@ -222,6 +222,7 @@ export default function AssetDetail() {
   const [movementComposerOpen, setMovementComposerOpen] = useState(false)
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
+  const [lastClosedPeriodEnd, setLastClosedPeriodEnd] = useState<string | null>(null)
   const [reconciliation, setReconciliation] = useState<{
     affected: AffectedSnapshotOut[]
     assetId: string
@@ -383,6 +384,20 @@ export default function AssetDetail() {
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
+
+  // Carrega o último period_end_date CLOSED — gate do "Verificar impacto".
+  useEffect(() => {
+    if (!me) return
+    api.listSnapshots()
+      .then(list => {
+        const closed = list
+          .filter(s => s.status === 'CLOSED')
+          .map(s => s.period_end_date)
+          .sort()
+        setLastClosedPeriodEnd(closed.length > 0 ? closed[closed.length - 1] : null)
+      })
+      .catch(() => { /* silent */ })
+  }, [me])
 
   useEffect(() => {
     if (!me || !id) return
@@ -953,6 +968,7 @@ export default function AssetDetail() {
           onEdit={() => { void openMovementEdit(selectedMovement) }}
           onDeactivate={() => setConfirmDeactivate(selectedMovement)}
           onCheckImpact={() => void handleMovementCheckImpact(selectedMovement)}
+          lastClosedPeriodEnd={lastClosedPeriodEnd}
         />
       )}
 
