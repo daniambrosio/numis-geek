@@ -86,10 +86,16 @@ fi
 
 # ── 3. Check for pending migrations (against the NEW image) ───────────────────
 # Compare DB current revision against the heads known to the (now rebuilt) image.
+# Parses the alembic output by skipping INFO/blank lines and grabbing the first
+# token of the first remaining line (the revision ID, optionally followed by
+# " (head)"). Earlier this used a `[a-f0-9]{12}` regex that silently skipped
+# textual revision IDs like `notion_removal`, leaving migrations un-applied.
 CURRENT_REV=$(docker compose -f "$CF" run --rm -T numis-geek \
-  uv run alembic current 2>/dev/null | grep -oE '[a-f0-9]{12}' | head -1 || true)
+  uv run alembic current 2>/dev/null \
+  | grep -vE '^(INFO|$)' | awk '{print $1; exit}' || true)
 HEAD_REV=$(docker compose -f "$CF" run --rm -T numis-geek \
-  uv run alembic heads 2>/dev/null | grep -oE '[a-f0-9]{12}' | head -1 || true)
+  uv run alembic heads 2>/dev/null \
+  | grep -vE '^(INFO|$)' | awk '{print $1; exit}' || true)
 
 log "schema: current=$CURRENT_REV head=$HEAD_REV"
 
