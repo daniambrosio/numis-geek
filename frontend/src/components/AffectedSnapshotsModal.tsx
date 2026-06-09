@@ -179,8 +179,9 @@ export default function AffectedSnapshotsModal({
                   </th>
                   <th className="text-left py-2 px-2">Período</th>
                   <th className="text-left py-2 px-2">Status</th>
-                  <th className="text-right py-2 px-2">Qtd antes → depois</th>
-                  <th className="text-right py-2 px-2">Valor total (BRL) antes → depois</th>
+                  <th className="text-right py-2 px-2">Qtd ativo antes → depois</th>
+                  <th className="text-right py-2 px-2">Valor ativo (BRL)</th>
+                  <th className="text-right py-2 px-2">Patrimônio total do mês</th>
                 </tr>
               </thead>
               <tbody>
@@ -189,6 +190,12 @@ export default function AffectedSnapshotsModal({
                   const oldMv = a.old_market_value_brl
                   const newMv = a.new_market_value_brl
                   const mvChanged = oldMv !== newMv
+                  // Patrimônio total do mês antes/depois — soma do item
+                  // delta no header total. Frontend calcula (backend
+                  // só envia "antes"; "depois" sai aqui).
+                  const totalBefore = Number(a.snapshot_total_value_brl)
+                  const delta = (Number(newMv ?? 0)) - (Number(oldMv ?? 0))
+                  const totalAfter = totalBefore + delta
                   return (
                     <tr
                       key={a.snapshot_id}
@@ -227,6 +234,17 @@ export default function AffectedSnapshotsModal({
                           {fmtBRL(newMv)}
                         </span>
                       </td>
+                      <td className="px-2 py-2 text-right tnum text-[11px]">
+                        <div className="text-gray-500">{fmtBRL(String(totalBefore))}</div>
+                        <div className={`font-semibold ${delta > 0 ? 'text-emerald-500 dark:text-emerald-400' : delta < 0 ? 'text-red-500 dark:text-red-400' : 'text-gray-500'}`}>
+                          → {fmtBRL(String(totalAfter))}
+                          {delta !== 0 && (
+                            <span className="ml-1 text-[10px]">
+                              ({delta > 0 ? '+' : ''}{fmtBRL(String(delta))})
+                            </span>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   )
                 })}
@@ -237,10 +255,10 @@ export default function AffectedSnapshotsModal({
           {phase === 'skipReason' && (
             <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10 p-3 space-y-2">
               <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
-                Confirmar "Manter divergência"
+                Confirmar "Não atualizar fechamento"
               </div>
               <div className="text-[11px] text-amber-700 dark:text-amber-400">
-                Os {targetCount} fechamento{targetCount === 1 ? '' : 's'} marcado{targetCount === 1 ? '' : 's'} ficarão divergentes da realidade atual. A nota fica registrada no audit log.
+                {targetCount === 1 ? 'O fechamento marcado' : `Os ${targetCount} fechamentos marcados`} fica{targetCount === 1 ? '' : 'm'} congelado{targetCount === 1 ? '' : 's'} — patrimônio total não muda. A nota fica registrada no audit log.
               </div>
               <textarea
                 value={skipReason}
@@ -278,18 +296,22 @@ export default function AffectedSnapshotsModal({
                 <button
                   onClick={() => setPhase('skipReason')}
                   disabled={selected.size === 0}
-                  className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
+                  title="Snapshot fica congelado como está — totals NÃO são recalculados. Útil pra fechamentos já reportados ao IR."
+                  className="h-8 px-3 inline-flex flex-col items-center justify-center gap-0 rounded-lg border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
                   data-testid="affected-snapshots-skip"
                 >
-                  Manter divergência
+                  <span className="text-[12px] leading-none">Não atualizar fechamento</span>
+                  <span className="text-[9px] leading-none mt-0.5 opacity-80">snapshot fica congelado</span>
                 </button>
                 <button
                   onClick={() => void handleApply()}
                   disabled={selected.size === 0}
-                  className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+                  title="Recomputa o item e atualiza o patrimônio total do snapshot."
+                  className="h-9 px-4 inline-flex flex-col items-center justify-center gap-0 rounded-lg font-medium bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
                   data-testid="affected-snapshots-apply"
                 >
-                  Aplicar nos {selected.size}
+                  <span className="text-[13px] leading-none">Atualizar fechamento{selected.size > 1 ? ` (${selected.size})` : ''}</span>
+                  <span className="text-[9px] leading-none mt-0.5 opacity-80">totals serão recalculados</span>
                 </button>
               </>
             )}

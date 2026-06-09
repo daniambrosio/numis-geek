@@ -63,6 +63,9 @@ class AffectedSnapshot:
     new_market_value_brl: Decimal | None
     old_total_invested_brl: Decimal | None
     new_total_invested_brl: Decimal | None
+    # 2026-06-09: patrimônio total atual do snapshot, pra UI calcular
+    # "antes → depois" do fechamento inteiro (não só do item).
+    snapshot_total_value_brl: Decimal = Decimal("0")
 
 
 # ── Pendency detection ──────────────────────────────────────────────────────
@@ -1228,6 +1231,7 @@ def find_affected_snapshots(
             new_market_value_brl=new_mv_brl,
             old_total_invested_brl=old_inv,
             new_total_invested_brl=new_inv,
+            snapshot_total_value_brl=snap.total_value_brl or Decimal("0"),
         ))
 
     return out

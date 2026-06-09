@@ -495,6 +495,7 @@ export interface AffectedSnapshotOut {
   new_market_value_brl: string | null
   old_total_invested_brl: string | null
   new_total_invested_brl: string | null
+  snapshot_total_value_brl: string
 }
 
 export interface PositionOut {

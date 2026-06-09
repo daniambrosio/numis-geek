@@ -546,6 +546,7 @@ class AffectedSnapshotOut(BaseModel):
     new_market_value_brl: str | None
     old_total_invested_brl: str | None
     new_total_invested_brl: str | None
+    snapshot_total_value_brl: str
 
 
 class RecomputeRequest(BaseModel):
@@ -655,6 +656,7 @@ def _aff_out(a) -> AffectedSnapshotOut:
         new_market_value_brl=s(a.new_market_value_brl),
         old_total_invested_brl=s(a.old_total_invested_brl),
         new_total_invested_brl=s(a.new_total_invested_brl),
+        snapshot_total_value_brl=str(a.snapshot_total_value_brl),
     )
 
 
