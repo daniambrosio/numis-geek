@@ -26,13 +26,15 @@ ENV BUILD_DATE=$BUILD_DATE
 RUN pip install --no-cache-dir uv
 
 # Install dependencies first (layer cached; --no-install-project skips building
-# the package itself so we don't need src/ yet)
+# the package itself so we don't need src/ yet). --extra llm pulls anthropic,
+# Pillow, openpyxl — sem isso, o serviço de extração quebra em runtime com
+# "anthropic SDK not installed".
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --extra llm
 
 # Application source (needed to install the numis-geek package itself)
 COPY src/ src/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra llm
 COPY alembic/ alembic/
 COPY alembic.ini ./
 
