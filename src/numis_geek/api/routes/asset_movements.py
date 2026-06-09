@@ -278,8 +278,11 @@ def _audit(
     diff: dict | None = None,
 ) -> None:
     actor = db.get(User, current_user.user_id)
+    asset = db.get(Asset, m.asset_id)
     details: dict = {
         "asset_id": m.asset_id,
+        "asset_name": asset.name if asset else None,
+        "asset_ticker": asset.ticker if asset else None,
         "type": m.type.value,
         "event_date": m.event_date.isoformat(),
     }

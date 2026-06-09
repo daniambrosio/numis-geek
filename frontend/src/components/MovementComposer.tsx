@@ -38,7 +38,7 @@ interface TypeCfg {
 const TYPE_CFG: Record<string, TypeCfg> = {
   BUY:             { label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
   SELL:            { label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
-  BONUS:           { label: 'Bonificação',   hint: 'ações grátis · sem custo',      qty: true,  price: false, fee: false, tax: false },
+  BONUS:           { label: 'Bonificação',   hint: 'unidades grátis · bonificação, rewards, airdrop',      qty: true,  price: false, fee: false, tax: false },
   SUBSCRIPTION:    { label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
   COME_COTAS:      { label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
   FULL_REDEMPTION: { label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
@@ -227,12 +227,16 @@ export default function MovementComposer({
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const isValid = !!selectedAsset
-    && (cfg.qty && !useValueOnly ? qN > 0 : true)
-    && (cfg.price && !useValueOnly ? pN > 0 : true)
-    && (type === 'COME_COTAS' ? tN > 0 : true)
-    && (useValueOnly ? gN > 0 : true)
-    && (!assetInactive || confirmInactive)
+  // Coleta os campos pendentes pra dar feedback visual quando Salvar
+  // estiver desabilitado. Antes só o botão ficava cinza sem dica.
+  const missingFields: string[] = []
+  if (!selectedAsset) missingFields.push('Ativo')
+  if (cfg.qty && !useValueOnly && !(qN > 0)) missingFields.push('Quantidade')
+  if (cfg.price && !useValueOnly && !(pN > 0)) missingFields.push('Preço unitário')
+  if (type === 'COME_COTAS' && !(tN > 0)) missingFields.push('Imposto retido')
+  if (useValueOnly && !(gN > 0)) missingFields.push('Valor total')
+  if (assetInactive && !confirmInactive) missingFields.push('Confirmar ativo inativo')
+  const isValid = missingFields.length === 0
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -380,7 +384,6 @@ export default function MovementComposer({
                 value={eventDate}
                 onChange={e => setEventDate(e.target.value)}
                 required
-                max={new Date().toISOString().slice(0, 10)}
                 className={inputCls}
               />
             </Field>
@@ -573,13 +576,20 @@ export default function MovementComposer({
         </form>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between">
-          <span className="text-[11px] text-gray-500 dark:text-gray-500">
-            <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-[10px] font-mono">⌘↵</kbd> salvar
-            {' · '}
-            <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-[10px] font-mono">esc</kbd> fechar
-          </span>
-          <div className="flex gap-2">
+        <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className="text-[11px] text-gray-500 dark:text-gray-500">
+              <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-[10px] font-mono">⌘↵</kbd> salvar
+              {' · '}
+              <kbd className="px-1.5 py-0.5 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-[10px] font-mono">esc</kbd> fechar
+            </span>
+            {missingFields.length > 0 && (
+              <span className="text-[11px] text-amber-600 dark:text-amber-400 truncate" title={missingFields.join(', ')}>
+                Faltam: {missingFields.join(', ')}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2 shrink-0">
             <button
               type="button"
               onClick={onClose}
@@ -591,6 +601,7 @@ export default function MovementComposer({
               type="submit"
               form="movement-form"
               disabled={!isValid || saving}
+              title={!isValid ? `Faltam: ${missingFields.join(', ')}` : undefined}
               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {saving ? 'Salvando…' : (initial ? '✓ Salvar alterações' : '✓ Salvar')}

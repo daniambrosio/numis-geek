@@ -1,4 +1,5 @@
 import math
+from datetime import timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -31,6 +32,12 @@ class AuditLogOut(BaseModel):
 
     @classmethod
     def from_orm(cls, a: AuditLog) -> "AuditLogOut":
+        # Backend grava sempre em UTC (datetime.now(timezone.utc)) mas o
+        # SQLite armazena naive. Reaplica UTC antes de serializar pra que
+        # o browser converta corretamente pro fuso local (ex: BRT = UTC-3).
+        ts = a.created_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
         return cls(
             id=a.id,
             workspace_id=a.workspace_id,
@@ -40,7 +47,7 @@ class AuditLogOut(BaseModel):
             resource_type=a.resource_type,
             resource_id=a.resource_id,
             details=a.details,
-            created_at=a.created_at.isoformat(),
+            created_at=ts.isoformat(),
         )
 
 

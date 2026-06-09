@@ -285,40 +285,48 @@ function describeRaw(p: ParsedAudit): AuditDescription {
     }
 
     // ───────── Asset movements
-    case 'asset_movement.created':
+    case 'asset_movement.created': {
+      const assetLabel = str(d.asset_ticker) ?? str(d.asset_name) ?? '—'
       return {
         actionLabel: 'Lançamento criado',
         actionTone: 'movement',
-        resourceLabel: `${str(d.type) ?? 'Lançamento'} · ${str(d.event_date) ?? '—'}`,
-        summary: `Criou lançamento ${str(d.type) ?? '—'} em ${str(d.event_date) ?? '—'}.`,
+        resourceLabel: `${str(d.type) ?? 'Lançamento'} · ${assetLabel} · ${str(d.event_date) ?? '—'}`,
+        summary: `Criou lançamento ${str(d.type) ?? '—'} de ${assetLabel} em ${str(d.event_date) ?? '—'}.`,
         link: str(d.asset_id) ? { to: `/assets/${str(d.asset_id)}`, label: 'Abrir ativo' } : undefined,
       }
-    case 'asset_movement.updated':
+    }
+    case 'asset_movement.updated': {
+      const assetLabel = str(d.asset_ticker) ?? str(d.asset_name) ?? '—'
       return {
         actionLabel: 'Lançamento atualizado',
         actionTone: 'movement',
-        resourceLabel: `${str(d.type) ?? 'Lançamento'} · ${str(d.event_date) ?? '—'}`,
-        summary: `Atualizou lançamento ${str(d.type) ?? '—'} em ${str(d.event_date) ?? '—'}.`,
+        resourceLabel: `${str(d.type) ?? 'Lançamento'} · ${assetLabel} · ${str(d.event_date) ?? '—'}`,
+        summary: `Atualizou lançamento ${str(d.type) ?? '—'} de ${assetLabel} em ${str(d.event_date) ?? '—'}.`,
         link: str(d.asset_id) ? { to: `/assets/${str(d.asset_id)}`, label: 'Abrir ativo' } : undefined,
       }
+    }
 
     // ───────── Distributions
-    case 'distribution.created':
+    case 'distribution.created': {
+      const assetLabel = str(d.asset_ticker) ?? str(d.asset_name) ?? '—'
       return {
         actionLabel: 'Provento criado',
         actionTone: 'distribution',
-        resourceLabel: `${str(d.type) ?? 'Provento'} · ${str(d.event_date) ?? '—'}`,
-        summary: `Registrou provento ${str(d.type) ?? '—'} em ${str(d.event_date) ?? '—'}.`,
+        resourceLabel: `${str(d.type) ?? 'Provento'} · ${assetLabel} · ${str(d.event_date) ?? '—'}`,
+        summary: `Registrou provento ${str(d.type) ?? '—'} de ${assetLabel} em ${str(d.event_date) ?? '—'}.`,
         link: str(d.asset_id) ? { to: `/assets/${str(d.asset_id)}`, label: 'Abrir ativo' } : undefined,
       }
-    case 'distribution.updated':
+    }
+    case 'distribution.updated': {
+      const assetLabel = str(d.asset_ticker) ?? str(d.asset_name) ?? '—'
       return {
         actionLabel: 'Provento atualizado',
         actionTone: 'distribution',
-        resourceLabel: `${str(d.type) ?? 'Provento'} · ${str(d.event_date) ?? '—'}`,
-        summary: `Atualizou provento ${str(d.type) ?? '—'} em ${str(d.event_date) ?? '—'}.`,
+        resourceLabel: `${str(d.type) ?? 'Provento'} · ${assetLabel} · ${str(d.event_date) ?? '—'}`,
+        summary: `Atualizou provento ${str(d.type) ?? '—'} de ${assetLabel} em ${str(d.event_date) ?? '—'}.`,
         link: str(d.asset_id) ? { to: `/assets/${str(d.asset_id)}`, label: 'Abrir ativo' } : undefined,
       }
+    }
 
     // ───────── Attachments
     case 'attachment.uploaded':
