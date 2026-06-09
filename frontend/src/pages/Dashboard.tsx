@@ -414,7 +414,11 @@ export default function Dashboard() {
                 {movers.map(m => {
                   const klass = collapsedOf(m.asset.asset_class)
                   return (
-                    <div key={m.asset.id} className="flex items-center gap-3 px-2 py-1.5 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 transition-colors">
+                    <Link
+                      key={m.asset.id}
+                      to={`/assets/${m.asset.id}`}
+                      className="flex items-center gap-3 px-2 py-1.5 -mx-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 transition-colors"
+                    >
                       <span className="w-1.5 h-7 rounded-full shrink-0" style={{ background: KLASS[klass].color }} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
@@ -432,7 +436,7 @@ export default function Dashboard() {
                           {(m.variation >= 0 ? '+' : '') + (m.variation * 100).toFixed(2)}%
                         </div>
                       </div>
-                    </div>
+                    </Link>
                   )
                 })}
               </div>
