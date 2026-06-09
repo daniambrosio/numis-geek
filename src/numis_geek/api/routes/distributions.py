@@ -351,6 +351,13 @@ def _build_synthetic_premiums(
         if opt.underlying_id and opt.underlying_id not in underlying_cache:
             underlying_cache[opt.underlying_id] = db.get(Asset, opt.underlying_id)
         underlying = underlying_cache.get(opt.underlying_id) if opt.underlying_id else None
+        # AssetMovement.fx_rate armazena PTAX do dia mesmo pra movements BRL
+        # (convenção [[multicurrency_fx_rate_design]]). Distribution/aggregator
+        # esperam fx_rate como MULTIPLICADOR pra BRL: 1.0 quando nativo já é
+        # BRL, PTAX quando nativo é USD. Sem essa normalização, a KPI multi-
+        # plicava 90 BRL × 4.988 = R$ 449 — inflando ~5x. Espelha o pattern
+        # do services/proventos.py:273 (eff_fx = 1 if BRL else fx_rate).
+        eff_fx = float(m.fx_rate) if m.currency.value == "USD" else 1.0
         out.append(SyntheticPremiumOut(
             id=f"synthetic:{m.id}",
             movement_id=m.id,
@@ -368,7 +375,7 @@ def _build_synthetic_premiums(
             gross_amount=float(m.net_amount),  # mesma convenção do services/proventos
             net_amount=float(m.net_amount),
             currency=m.currency.value,
-            fx_rate=float(m.fx_rate),
+            fx_rate=eff_fx,
         ))
     return out
 
