@@ -377,6 +377,42 @@ def test_reopen_moves_to_in_review_and_redetects(db):
     assert len(new_pens) >= 1
 
 
+def test_reopen_preserves_resolved_pendencies(db):
+    """2026-06-09 regression — reopen anterior apagava TODAS as
+    pendencies, inclusive resolvidas. Lançamento retroativo auto-reopen
+    fazia o user perder o status 'resolvido' de dezenas de ativos."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+
+    # Resolve TODAS as pendencies + confirm.
+    pens_before = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all()
+    for pen in pens_before:
+        resolve_pendency(
+            db, pendency_id=pen.id, user_id="alice",
+            new_price=Decimal("100"),
+        )
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+    resolved_count_before = len(pens_before)
+    assert resolved_count_before >= 2  # sanity
+
+    # Reopen — não pode apagar as resolvidas.
+    reopen_snapshot(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+        reason="retroactive movement",
+    )
+
+    pens_after = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.resolved_at.isnot(None),
+    ).all()
+    assert len(pens_after) == resolved_count_before, (
+        f"reopen apagou pendencies resolvidas: "
+        f"{resolved_count_before} antes → {len(pens_after)} depois"
+    )
+
+
 # ── resolve ────────────────────────────────────────────────────────────────
 
 

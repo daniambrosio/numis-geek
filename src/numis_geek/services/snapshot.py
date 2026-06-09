@@ -476,9 +476,18 @@ def reopen_snapshot(
 
     now = now or datetime.now(timezone.utc)
 
-    # Drop existing pendencies (we'll re-detect fresh state).
+    # 2026-06-09 incident: o reopen anterior apagava TODAS as pendencies,
+    # inclusive as resolvidas (= trabalho manual do user). Quando um
+    # lançamento retroativo dispara auto-reopen pra recomputar UM item,
+    # o usuário perdia o status "resolvido" de dezenas de outros ativos.
+    #
+    # Comportamento atual: preservar pendencies resolvidas (resolved_at
+    # IS NOT NULL). Só dropar as não-resolvidas pra re-detectar. O loop
+    # de re-detect abaixo já pula assets com pendency existente
+    # (resolvida ou não), então não duplica.
     db.query(SnapshotPendency).filter(
-        SnapshotPendency.snapshot_id == snap.id
+        SnapshotPendency.snapshot_id == snap.id,
+        SnapshotPendency.resolved_at.is_(None),
     ).delete()
 
     # Spec 49 hotfix #12 — add items for assets that should be in the
