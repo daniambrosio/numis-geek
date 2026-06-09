@@ -1381,6 +1381,29 @@ def apply_recompute_to_snapshot(
         "total_invested_brl": str(existing.total_invested_brl) if existing.total_invested_brl is not None else None,
     }
 
+    # 2026-06-09 — auto-close depois do recompute quando não sobrou
+    # nenhuma pendency aberta. Antes o snapshot ficava em IN_REVIEW
+    # mesmo sem nada pra resolver, forçando o user a clicar "Confirmar"
+    # toda vez que digitava um lançamento retroativo. Esse re-confirm
+    # silencioso só vale quando o reopen foi automático nesta mesma
+    # call — não interfere com o reopen manual (user explicit).
+    auto_reclosed = False
+    if auto_reopened:
+        open_pendencies = (
+            db.query(SnapshotPendency)
+            .filter(
+                SnapshotPendency.snapshot_id == snapshot_id,
+                SnapshotPendency.resolved_at.is_(None),
+            )
+            .count()
+        )
+        if open_pendencies == 0:
+            snap.status = SnapshotStatus.CLOSED
+            snap.closed_at = now
+            snap.closed_by = user_id
+            db.flush()
+            auto_reclosed = True
+
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
         action="snapshot.item.recompute",
@@ -1395,6 +1418,7 @@ def apply_recompute_to_snapshot(
             "trigger_event_type": trigger_event_type,
             "trigger_event_id": trigger_event_id,
             "auto_reopened": auto_reopened,
+            "auto_reclosed": auto_reclosed,
             "before": before,
             "after": after,
         },

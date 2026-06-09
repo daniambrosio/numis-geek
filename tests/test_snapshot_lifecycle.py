@@ -935,7 +935,9 @@ def test_find_affected_snapshots_handles_value_mode(db):
 
 def test_apply_recompute_auto_reopens_closed(db):
     """Snapshot CLOSED deve ser reaberto automaticamente com reason
-    rastreável ao trigger event."""
+    rastreável ao trigger event. Quando todas as pendencies anteriores
+    estavam resolvidas, o recompute também fecha de volta (sem deixar
+    o user com 'EM REVISÃO' alarmante sem necessidade)."""
     w = _seed(db)
     r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
     # Resolve tudo + close.
@@ -961,15 +963,24 @@ def test_apply_recompute_auto_reopens_closed(db):
         user_id="alice",
     )
     snap = db.get(PortfolioSnapshot, r.snapshot_id)
-    assert snap.status == SnapshotStatus.IN_REVIEW
+    # 2026-06-09 — todas as pendencies estavam resolvidas + recompute
+    # tocou só esse asset → auto-reclose pra evitar "EM REVISÃO"
+    # alarmante. Audit do recompute marca auto_reopened + auto_reclosed.
+    assert snap.status == SnapshotStatus.CLOSED
 
-    # Audit log do reopen menciona o trigger event.
+    # Audit log do reopen ainda menciona o trigger event.
     reopen_audit = db.query(AuditLog).filter(
         AuditLog.action == "snapshot.reopen",
         AuditLog.resource_id == r.snapshot_id,
     ).first()
     assert reopen_audit is not None
     assert mov_id in (reopen_audit.details or "")
+
+    recompute_audit = db.query(AuditLog).filter(
+        AuditLog.action == "snapshot.item.recompute",
+    ).order_by(AuditLog.created_at.desc()).first()
+    assert recompute_audit is not None
+    assert '"auto_reclosed": true' in (recompute_audit.details or "")
 
 
 def test_apply_recompute_uses_snapshot_fx_rate(db):
