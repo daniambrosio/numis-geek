@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { MoreHorizontal, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import {
   api,
   type AssetOut,
@@ -418,7 +418,6 @@ export default function AssetMovements() {
                     <th className="text-right font-medium px-2 py-2">Preço unit.</th>
                     <th className="text-right font-medium px-2 py-2">Net</th>
                     <th className="text-right font-medium px-2 py-2" title="PTAX USD/BRL do dia do evento — usado para visualização dolarizada">PTAX</th>
-                    <th className="px-2"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -519,17 +518,20 @@ export default function AssetMovements() {
       {confirmDeactivate && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar lançamento?</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Apagar lançamento?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
               <strong>{confirmDeactivate.type_label}</strong> de{' '}
-              <strong>{confirmDeactivate.asset_name}</strong> será desativado.
+              <strong>{confirmDeactivate.asset_name}</strong> será apagado.
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
+              Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
                 Cancelar
               </button>
               <button onClick={() => handleDeactivate(confirmDeactivate)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">
-                Desativar
+                Apagar
               </button>
             </div>
           </div>
@@ -599,9 +601,6 @@ function Row({
         {l.fx_rate && Number(l.fx_rate) !== 1
           ? `R$ ${Number(l.fx_rate).toFixed(4)}`
           : '—'}
-      </td>
-      <td className="px-2 text-gray-500">
-        <MoreHorizontal className="w-4 h-4" />
       </td>
     </tr>
   )

@@ -223,13 +223,13 @@ export default function DistributionEditModal({
           <div className="flex items-center gap-2">
             {confirmDelete ? (
               <>
-                <span className="text-[11px] text-red-600 dark:text-red-400">Desativar provento?</span>
+                <span className="text-[11px] text-red-600 dark:text-red-400">Apagar provento?</span>
                 <button
                   onClick={() => void handleDelete()}
                   disabled={busy}
                   className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-red-600 hover:bg-red-500 text-white disabled:opacity-50"
                 >
-                  {busy ? 'Removendo…' : 'Sim, remover'}
+                  {busy ? 'Apagando…' : 'Sim, apagar'}
                 </button>
                 <button
                   onClick={() => setConfirmDelete(false)}
@@ -243,7 +243,7 @@ export default function DistributionEditModal({
               <button
                 onClick={() => setConfirmDelete(true)}
                 disabled={busy}
-                title="Desativar este provento (soft delete)"
+                title="Apagar este provento (fica restaurável em Incluir inativos)"
                 className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-gray-500 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" />

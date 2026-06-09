@@ -195,9 +195,10 @@ export default function DistributionDetailPanel({
           {d.is_active && (
             <button
               onClick={onDeactivate}
+              title="Soft delete — fica oculto, mas pode ser restaurado em Incluir inativos"
               className="h-8 px-3 inline-flex items-center rounded-lg text-[12px] border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
             >
-              Desativar
+              Apagar
             </button>
           )}
           <button

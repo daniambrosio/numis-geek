@@ -546,11 +546,14 @@ export default function Distributions() {
       {confirmDeactivate && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar provento?</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Apagar provento?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
               <strong>{confirmDeactivate.type_label}</strong>
               {confirmDeactivate.asset_ticker ? <> de <strong>{confirmDeactivate.asset_ticker}</strong></> : null}
-              {' '}será desativado.
+              {' '}será apagado.
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
+              Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
             </p>
             <div className="flex justify-end gap-3">
               <button
@@ -563,7 +566,7 @@ export default function Distributions() {
                 onClick={() => handleDeactivate(confirmDeactivate)}
                 className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors"
               >
-                Desativar
+                Apagar
               </button>
             </div>
           </div>

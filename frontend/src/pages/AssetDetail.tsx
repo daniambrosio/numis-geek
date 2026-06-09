@@ -990,14 +990,17 @@ export default function AssetDetail() {
       {confirmDeactivate && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar lançamento?</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Apagar lançamento?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
               <strong>{confirmDeactivate.type_label}</strong> de{' '}
-              <strong>{confirmDeactivate.asset_name}</strong> será desativado.
+              <strong>{confirmDeactivate.asset_name}</strong> será apagado.
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
+              Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
-              <button onClick={() => handleMovementDeactivate(confirmDeactivate)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Desativar</button>
+              <button onClick={() => handleMovementDeactivate(confirmDeactivate)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Apagar</button>
             </div>
           </div>
         </div>
