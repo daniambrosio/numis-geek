@@ -526,6 +526,14 @@ def reopen_snapshot(
         )
         if already is not None:
             continue
+        # 2026-06-09 incident 2: items que JÁ TÊM preço/valor frozen estão
+        # implicitamente resolvidos — não importa de onde veio (manual
+        # entry, NOTION_BACKFILL, recompute). detect_pendencies só olha
+        # pra asset.price_source (que sempre é MANUAL pra fundo/imóvel/
+        # previdência), e reabrir um snapshot backfilleado criava
+        # dezenas de pendencies fantasmas que o user precisava redigitar.
+        if it.unit_price is not None or it.market_value_brl is not None:
+            continue
         det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
         if det is None:
             continue
@@ -1090,6 +1098,10 @@ def sync_snapshot_items(
                 .first()
             )
             if existing is not None:
+                continue
+            # Mesmo gate de reopen: item com preço/valor frozen está
+            # implicitamente resolvido — não criar pendency fantasma.
+            if it.unit_price is not None or it.market_value_brl is not None:
                 continue
             det = detect_pendencies(db, asset, period_end=snap.period_end_date, now=now)
             if det is None:

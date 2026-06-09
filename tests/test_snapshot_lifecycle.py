@@ -377,6 +377,43 @@ def test_reopen_moves_to_in_review_and_redetects(db):
     assert len(new_pens) >= 1
 
 
+def test_reopen_skips_pendency_when_item_has_frozen_price(db):
+    """2026-06-09 incident 2 — reopen de snapshot que veio do NOTION_BACKFILL
+    (CLOSED com items mas sem pendencies históricas) recriava 59
+    pendencies fantasmas porque detect_pendencies só olha pra
+    asset.price_source (sempre MANUAL pra fundos/imóveis/previdência).
+    Items que já têm unit_price/market_value frozen são implicitamente
+    resolvidos — não criar pendency."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(db, pendency_id=pen.id, user_id="alice",
+                         new_price=Decimal("100"))
+    confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+
+    # Simula um snapshot vindo do backfill: items COM preço, ZERO
+    # pendencies. Deleto todas pra repetir esse cenário.
+    db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).delete()
+    db.flush()
+
+    reopen_snapshot(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+        reason="lançamento retroativo",
+    )
+
+    # Nenhuma pendency fantasma — todos os items tinham unit_price.
+    new_pens = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+    ).count()
+    assert new_pens == 0, (
+        f"reopen criou {new_pens} pendencies fantasmas em items com preço frozen"
+    )
+
+
 def test_reopen_preserves_resolved_pendencies(db):
     """2026-06-09 regression — reopen anterior apagava TODAS as
     pendencies, inclusive resolvidas. Lançamento retroativo auto-reopen
