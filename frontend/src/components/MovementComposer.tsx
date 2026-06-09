@@ -202,12 +202,20 @@ export default function MovementComposer({
   else if (type === 'FULL_REDEMPTION')            net = grossN - feeN - tN
   else if (type === 'COME_COTAS')                 net = -tN
   else if (type === 'BONUS')                      net = 0
-  // Direction for visual cue: BUY/SUBSCRIPTION are cash-out (saída),
-  // SELL/FULL_REDEMPTION are cash-in (entrada).
-  const netDirection: 'out' | 'in' | 'none' =
-    type === 'BUY' || type === 'SUBSCRIPTION' || type === 'COME_COTAS' ? 'out'
-    : type === 'SELL' || type === 'FULL_REDEMPTION' ? 'in'
-    : 'none'
+  // 2026-06-09: trocado de "saída/entrada" + cor de cashflow pra label
+  // semântico (Investido / Recebido / Imposto retido / Sem custo).
+  // Cor verde quando representa ganho de patrimônio (cota ou caixa),
+  // vermelho só pra perda real (come-cotas), neutro pra BONUS.
+  const netLabel: string =
+    type === 'BUY' || type === 'SUBSCRIPTION' ? 'Investido'
+    : type === 'SELL' || type === 'FULL_REDEMPTION' ? 'Recebido'
+    : type === 'COME_COTAS' ? 'Imposto retido'
+    : type === 'BONUS' ? 'Sem custo'
+    : 'Net'
+  const netTone: 'positive' | 'negative' | 'neutral' =
+    type === 'COME_COTAS' ? 'negative'
+    : type === 'BONUS' ? 'neutral'
+    : 'positive'
 
   // Position delta (illustrative — server is source of truth).
   const positionDelta = (type === 'BUY' || type === 'BONUS' || type === 'SUBSCRIPTION') ? qN
@@ -533,11 +541,13 @@ export default function MovementComposer({
               )}
               <div className="flex items-center justify-between">
                 <span className="text-[12px] text-gray-500 dark:text-gray-400">
-                  Net{netDirection === 'out' ? <span className="ml-1.5 text-[10px] text-red-500 dark:text-red-400">· saída</span>
-                     : netDirection === 'in' ? <span className="ml-1.5 text-[10px] text-emerald-500 dark:text-emerald-400">· entrada</span>
-                     : null}
+                  {netLabel}
                 </span>
-                <span className={`tnum text-base font-semibold ${netDirection === 'out' ? 'text-red-500 dark:text-red-400' : netDirection === 'in' ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
+                <span className={`tnum text-base font-semibold ${
+                  netTone === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
+                  : netTone === 'negative' ? 'text-red-500 dark:text-red-400'
+                  : 'text-gray-500 dark:text-gray-400'
+                }`}>
                   {fmtMoney(Math.abs(net), ccy)}
                 </span>
               </div>
