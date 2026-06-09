@@ -67,6 +67,10 @@ export default function AffectedSnapshotsModal({
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(affected.map(a => a.snapshot_id)),
   )
+  // Quando só 1 fechamento é afetado, esconde checkboxes — sempre age
+  // nele, e o botão menciona o período direto ("Atualizar Mai/26").
+  const isSingle = affected.length === 1
+  const singleYm = isSingle ? affected[0].ym : null
   const [phase, setPhase] = useState<'choose' | 'skipReason' | 'busy'>('choose')
   const [skipReason, setSkipReason] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -177,14 +181,16 @@ export default function AffectedSnapshotsModal({
             <table className="w-full text-[12px]" data-testid="affected-snapshots-table">
               <thead>
                 <tr className="text-[10px] uppercase tracking-wider text-gray-500 border-b border-gray-200 dark:border-gray-800">
-                  <th className="text-left py-2 px-2 w-8">
-                    <input
-                      type="checkbox"
-                      checked={selected.size === affected.length}
-                      onChange={toggleAll}
-                      disabled={phase !== 'choose'}
-                    />
-                  </th>
+                  {!isSingle && (
+                    <th className="text-left py-2 px-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={selected.size === affected.length}
+                        onChange={toggleAll}
+                        disabled={phase !== 'choose'}
+                      />
+                    </th>
+                  )}
                   <th className="text-left py-2 px-2">Período</th>
                   <th className="text-left py-2 px-2">Status</th>
                   <th className="text-right py-2 px-2">Qtd antes → depois</th>
@@ -202,15 +208,17 @@ export default function AffectedSnapshotsModal({
                       key={a.snapshot_id}
                       className="border-b border-gray-100 dark:border-gray-800/60"
                     >
-                      <td className="px-2 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(a.snapshot_id)}
-                          onChange={() => toggle(a.snapshot_id)}
-                          disabled={phase !== 'choose'}
-                          data-testid={`affected-snapshot-check-${a.ym}`}
-                        />
-                      </td>
+                      {!isSingle && (
+                        <td className="px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(a.snapshot_id)}
+                            onChange={() => toggle(a.snapshot_id)}
+                            disabled={phase !== 'choose'}
+                            data-testid={`affected-snapshot-check-${a.ym}`}
+                          />
+                        </td>
+                      )}
                       <td className="px-2 py-2 font-medium">{fmtYm(a.ym)}</td>
                       <td className="px-2 py-2">
                         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
@@ -327,7 +335,9 @@ export default function AffectedSnapshotsModal({
                   className="h-8 px-3 inline-flex flex-col items-center justify-center gap-0 rounded-lg border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
                   data-testid="affected-snapshots-skip"
                 >
-                  <span className="text-[12px] leading-none">Não atualizar fechamento</span>
+                  <span className="text-[12px] leading-none">
+                    {isSingle ? `Não atualizar ${fmtYm(singleYm!)}` : 'Não atualizar fechamento'}
+                  </span>
                   <span className="text-[9px] leading-none mt-0.5 opacity-80">snapshot fica congelado</span>
                 </button>
                 <button
@@ -337,7 +347,11 @@ export default function AffectedSnapshotsModal({
                   className="h-9 px-4 inline-flex flex-col items-center justify-center gap-0 rounded-lg font-medium bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white"
                   data-testid="affected-snapshots-apply"
                 >
-                  <span className="text-[13px] leading-none">Atualizar fechamento{selected.size > 1 ? ` (${selected.size})` : ''}</span>
+                  <span className="text-[13px] leading-none">
+                    {isSingle
+                      ? `Atualizar ${fmtYm(singleYm!)}`
+                      : `Atualizar fechamento${selected.size > 1 ? ` (${selected.size})` : ''}`}
+                  </span>
                   <span className="text-[9px] leading-none mt-0.5 opacity-80">totals serão recalculados</span>
                 </button>
               </>
