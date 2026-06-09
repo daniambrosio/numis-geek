@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Download, Trash2, Paperclip, FileText, Image as ImageIcon, FileSpreadsheet, File as FileIcon, Loader2 } from 'lucide-react'
 
 import { api, type AttachmentOut, type AttachmentSourceType, getToken } from '../lib/api'
+import { filesFromClipboard, usePasteFiles } from '../lib/usePasteFiles'
 
 const ALLOWED_MIME = new Set([
   'image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/csv',
@@ -135,33 +136,6 @@ export default function NotesAttachmentsCard({
     if (debounceRef.current) clearTimeout(debounceRef.current)
   }, [])
 
-  /** Extract Files from a ClipboardEvent. Modern Chrome puts pasted
-   *  screenshots in `items[].getAsFile()`; Safari sometimes uses `files`.
-   *  We try both and de-dupe. */
-  function filesFromClipboard(cb: DataTransfer | null): File[] {
-    if (!cb) return []
-    const out: File[] = []
-    const seen = new Set<string>()
-    if (cb.files && cb.files.length) {
-      for (const f of Array.from(cb.files)) {
-        const key = `${f.name}:${f.size}:${f.lastModified}`
-        if (!seen.has(key)) { seen.add(key); out.push(f) }
-      }
-    }
-    if (cb.items && cb.items.length) {
-      for (const it of Array.from(cb.items)) {
-        if (it.kind === 'file') {
-          const f = it.getAsFile()
-          if (f) {
-            const key = `${f.name}:${f.size}:${f.lastModified}`
-            if (!seen.has(key)) { seen.add(key); out.push(f) }
-          }
-        }
-      }
-    }
-    return out
-  }
-
   /** Cheap content hash so two identical pastes in a row are caught.
    *  Clipboard pastes from the OS stamp `lastModified = now()` every
    *  time, so we deliberately exclude it — same screenshot pasted
@@ -248,31 +222,10 @@ export default function NotesAttachmentsCard({
     void uploadFiles(files)
   }
 
-  // Listen for pastes anywhere on the page while this card is mounted, so
-  // ⌘V works even when the textarea doesn't have focus. We only consume
-  // the paste when it carries files — text pastes fall through normally.
-  useEffect(() => {
-    function onWindowPaste(e: ClipboardEvent) {
-      // If the user is pasting inside an input/textarea outside our card
-      // (e.g. the search bar), don't steal the paste.
-      const target = e.target as Element | null
-      if (
-        target &&
-        rootRef.current &&
-        !rootRef.current.contains(target) &&
-        (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target as HTMLElement).isContentEditable)
-      ) {
-        return
-      }
-      const files = filesFromClipboard(e.clipboardData)
-      if (files.length === 0) return
-      e.preventDefault()
-      void uploadFiles(files)
-    }
-    window.addEventListener('paste', onWindowPaste)
-    return () => window.removeEventListener('paste', onWindowPaste)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, sourceType])
+  // CMD-V só responde se o cursor está sobre o card. Padrão system-wide
+  // via usePasteFiles. O handlePaste local no textarea continua sendo a
+  // primeira linha de defesa (preventDefault interno impede o hook).
+  usePasteFiles(rootRef, files => void uploadFiles(files))
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault(); e.stopPropagation()

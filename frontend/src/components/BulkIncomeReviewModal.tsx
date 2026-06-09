@@ -104,10 +104,11 @@ export default function BulkIncomeReviewModal({
     }
   }
 
-  async function handleCancel() {
-    try { await api.rejectExtraction(job.id, 'descartado pelo usuário') }
-    catch { /* best-effort */ }
+  function handleCancel() {
+    // Fecha otimisticamente; reject vai em fire-and-forget.
     onClose()
+    void api.rejectExtraction(job.id, 'descartado pelo usuário')
+      .catch(() => { /* best-effort */ })
   }
 
   const rows = preview?.applied ?? []

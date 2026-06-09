@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Paperclip, Trash2, FileText, Image as ImageIcon, FileSpreadsheet, File as FileIcon } from 'lucide-react'
+import { filesFromClipboard, usePasteFiles } from '../lib/usePasteFiles'
 
 // Mirrors the storage whitelist on the backend (services/attachment_storage.py).
 // Keep these in sync — sending a MIME outside this set returns 415.
@@ -93,37 +94,6 @@ export default function NotesAttachmentsField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /** Extract Files from a ClipboardEvent — see NotesAttachmentsCard for
-   *  the rationale (items vs files across browsers).
-   *
-   *  Bug 7 regression fix (2026-06-09): keying by `name:size:lastModified`
-   *  failed to dedupe quando o browser populava cb.files E cb.items com
-   *  timestamps de microssegundos diferentes — resultado: 2 cópias do
-   *  mesmo screenshot. Dedup agora por (name, size) só, e priorizamos
-   *  cb.files se presente (fonte única). */
-  function filesFromClipboard(cb: DataTransfer | null): File[] {
-    if (!cb) return []
-    const out: File[] = []
-    const seen = new Set<string>()
-    const push = (f: File) => {
-      const key = `${f.name}:${f.size}`
-      if (!seen.has(key)) { seen.add(key); out.push(f) }
-    }
-    if (cb.files && cb.files.length) {
-      for (const f of Array.from(cb.files)) push(f)
-      return out
-    }
-    if (cb.items && cb.items.length) {
-      for (const it of Array.from(cb.items)) {
-        if (it.kind === 'file') {
-          const f = it.getAsFile()
-          if (f) push(f)
-        }
-      }
-    }
-    return out
-  }
-
   function validateAndAdd(rawFiles: FileList | File[]): void {
     const accepted: AttachmentDraft[] = []
     const rejected: string[] = []
@@ -159,30 +129,11 @@ export default function NotesAttachmentsField({
     validateAndAdd(files)
   }
 
-  // Catch ⌘V even when the textarea isn't focused. Skip when the paste
-  // landed inside our own textarea (handlePaste already consumed it) or
-  // inside another editable element elsewhere on the page.
-  useEffect(() => {
-    function onWindowPaste(e: ClipboardEvent) {
-      const target = e.target as Element | null
-      if (target && rootRef.current?.contains(target)) {
-        return
-      }
-      if (
-        target &&
-        (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target as HTMLElement).isContentEditable)
-      ) {
-        return
-      }
-      const files = filesFromClipboard(e.clipboardData)
-      if (files.length === 0) return
-      e.preventDefault()
-      validateAndAdd(files)
-    }
-    window.addEventListener('paste', onWindowPaste)
-    return () => window.removeEventListener('paste', onWindowPaste)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // CMD-V só responde quando o cursor está sobre o card. Padrão
+  // system-wide via usePasteFiles. O handlePaste local do textarea
+  // continua sendo a primeira linha de defesa (preventDefault interno
+  // impede esse hook de ver o evento).
+  usePasteFiles(rootRef, validateAndAdd)
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault()

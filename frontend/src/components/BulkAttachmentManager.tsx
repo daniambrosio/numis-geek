@@ -24,6 +24,7 @@ import {
 } from '../lib/api'
 import BulkExtractReviewModal from './BulkExtractReviewModal'
 import BulkIncomeReviewModal from './BulkIncomeReviewModal'
+import { usePasteFiles } from '../lib/usePasteFiles'
 
 interface Props {
   snapshotId: string
@@ -70,7 +71,12 @@ export default function BulkAttachmentManager({
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  // Track local: anexos subidos NESTE slot durante a sessão atual. Sem
+  // isso, o filtro de visibleAttachments (que exige um job) esconde
+  // anexos que ainda não foram extraídos.
+  const [uploadedHere, setUploadedHere] = useState<Set<string>>(new Set())
   const fileRef = useRef<HTMLInputElement>(null)
+  const dropzoneRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -108,64 +114,55 @@ export default function BulkAttachmentManager({
 
   // Spec 58 — only show attachments with a job at this FI when scoped.
   // Otherwise per-FI groups would all show the same global attachment list.
+  // 2026-06-09: também mostra anexos uploaded nesta sessão neste slot,
+  // já que o upload não dispara mais auto-extract.
   // Legacy unscoped mode (institutionId=null) shows everything.
   const visibleAttachments = useMemo(() => {
     if (!institutionId) return attachments
-    return attachments.filter(att => jobByAttachmentId.has(att.id))
-  }, [attachments, jobByAttachmentId, institutionId])
+    return attachments.filter(
+      att => jobByAttachmentId.has(att.id) || uploadedHere.has(att.id),
+    )
+  }, [attachments, jobByAttachmentId, institutionId, uploadedHere])
 
   const handleFile = useCallback(async (file: File) => {
     setError(null)
     setUploading(true)
     try {
       const att = await api.uploadAttachment('snapshot', snapshotId, file)
+      // 2026-06-09: NÃO dispara extração automática mais. Antes o
+      // upload com institutionId implicava "extrair via LLM" na hora,
+      // o que gastava tokens à toa pra anexos puramente informacionais
+      // (print de extrato pra documentação). User clica "Extrair" no
+      // anexo quando quiser processar.
+      setUploadedHere(prev => {
+        const next = new Set(prev)
+        next.add(att.id)
+        return next
+      })
       await refresh()
-      // Spec 58 — when scoped to a FI, the upload point also implies
-      // "extract under this FI". Auto-trigger so the user lands in the
-      // review modal in one step instead of two clicks.
-      if (institutionId) {
-        setExtractingId(att.id)
-        try {
-          const job = isIncome
-            ? await api.createBulkIncomeForFI(snapshotId, institutionId, att.id)
-            : await api.createBulkExtractForFI(snapshotId, institutionId, att.id)
-          await refresh()
-          if (job.status === 'EXTRACTED') setReviewJob(job)
-          else if (job.status === 'FAILED') {
-            setError(job.error_message ?? 'Extração falhou.')
-          }
-        } finally {
-          setExtractingId(null)
-        }
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro no upload')
     } finally {
       setUploading(false)
     }
-  }, [snapshotId, refresh, institutionId, isIncome])
+  }, [snapshotId, refresh])
 
-  // cmd+V paste handler.
-  useEffect(() => {
-    function onPaste(e: ClipboardEvent) {
-      if (uploading || extractingId) return
-      const items = e.clipboardData?.items
-      if (!items) return
-      for (const item of items) {
-        if (item.kind !== 'file') continue
-        const file = item.getAsFile()
-        if (!file) continue
-        e.preventDefault()
-        const named = file.name && file.name !== 'image.png'
-          ? file
-          : new File([file], `extrato-${Date.now()}.png`, { type: file.type || 'image/png' })
-        void handleFile(named)
-        return
-      }
-    }
-    document.addEventListener('paste', onPaste)
-    return () => document.removeEventListener('paste', onPaste)
-  }, [handleFile, uploading, extractingId])
+  // CMD-V só responde quando o cursor está sobre o dropzone deste
+  // manager (hook compartilhado usePasteFiles). Sem isso, todos os
+  // BulkAttachmentManagers montados (Posições + Proventos × FI)
+  // disparavam o mesmo paste em paralelo.
+  usePasteFiles(
+    dropzoneRef,
+    files => {
+      const f = files[0]
+      if (!f) return
+      const named = f.name && f.name !== 'image.png'
+        ? f
+        : new File([f], `extrato-${Date.now()}.png`, { type: f.type || 'image/png' })
+      void handleFile(named)
+    },
+    { enabled: !uploading && !extractingId },
+  )
 
   async function handleExtract(attachmentId: string) {
     setError(null)
@@ -275,6 +272,7 @@ export default function BulkAttachmentManager({
       </div>
 
       <div
+        ref={dropzoneRef}
         onDragOver={e => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}

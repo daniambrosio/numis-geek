@@ -201,10 +201,13 @@ export default function BulkExtractReviewModal({
     }
   }
 
-  async function handleCancel() {
-    try { await api.rejectExtraction(job.id, 'descartado pelo usuário') }
-    catch { /* best-effort */ }
+  function handleCancel() {
+    // 2026-06-09: fecha o modal otimisticamente. O reject é
+    // fire-and-forget — user reportou que o Cancelar "demorava muito",
+    // travando a tela enquanto o request HTTP em vôo terminava.
     onClose()
+    void api.rejectExtraction(job.id, 'descartado pelo usuário')
+      .catch(() => { /* best-effort */ })
   }
 
   return (
