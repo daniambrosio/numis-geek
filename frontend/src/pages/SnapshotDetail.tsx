@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { fmtBRL, fmtMoney, fmtUSD } from '../lib/money'
+import { downloadCsv, fmtCsvDecimal } from '../lib/csv'
 import {
   ArrowLeft, ArrowRight, ChevronRight, Download, Loader2, Plus, RotateCcw,
 } from 'lucide-react'
@@ -30,12 +31,13 @@ import {
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import AddSnapshotAssetModal from '../components/AddSnapshotAssetModal'
+import DistributionEditModal from '../components/DistributionEditModal'
 import AssetFilterBar from '../components/AssetFilterBar'
 import PendencyPanel from '../components/PendencyPanel'
 import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
-import { Card, ClassBadge, FILogo, SectionTitle } from '../components/ui'
+import { Card, ClassBadge, FILogo, MultiChips, SearchInput, SectionTitle } from '../components/ui'
 import { KLASS, collapsedOf, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
 
 const MONTH_NAMES_LONG = [
@@ -124,6 +126,14 @@ export default function SnapshotDetail() {
   const [syncToast, setSyncToast] = useState<{
     text: string; tone: 'success' | 'info' | 'error'
   } | null>(null)
+  const [editingDistribution, setEditingDistribution] = useState<DistributionOut | null>(null)
+  // Filtros + sort da tabela "Eventos do mês" (#3).
+  const [eventsSearch, setEventsSearch] = useState('')
+  const [eventsTypeSel, setEventsTypeSel] = useState<string[]>([])
+  type EventsSortKey = 'event_date' | 'label_primary' | 'type' | 'gross_brl' | 'net_native'
+  const [eventsSort, setEventsSort] = useState<{ key: EventsSortKey; dir: 'asc' | 'desc' }>(
+    { key: 'event_date', dir: 'asc' },
+  )
   // Spec 51 Bloco 3 — entradas de "divergência aceita" do audit log.
   const [drift, setDrift] = useState<DriftEntryOut[]>([])
 
@@ -203,19 +213,91 @@ export default function SnapshotDetail() {
 
   async function refreshPendencies() {
     if (!snap) return
-    // Spec 49 hotfix #7 — também refazer items + assets, senão a tabela
-    // "Posições Congeladas" fica com array velho após Apply (asset com
-    // valor recém-aplicado aparece como R$ 0 + fora da ordem por mais
-    // recente).
-    const [pens, fresh, its, as_] = await Promise.all([
+    // Refazer items + assets + distributions + sintéticos após Apply.
+    // Spec 49 hotfix #7 fixou items; agora #2 (auto-refresh) garante que
+    // proventos novos do extrato (Distribution + OPTION_PREMIUM sintético
+    // via SELL_OPEN) também aparecem sem refresh manual.
+    const ymStr = snap.period_end_date.slice(0, 7)
+    const [pens, fresh, its, as_, distPage] = await Promise.all([
       api.listSnapshotPendencies(snap.id),
       api.listSnapshots(),
       api.listSnapshotItems(snap.id),
       api.listAssets({ include_inactive: true }),
+      api.listDistributions({
+        from: `${ymStr}-01`,
+        to: snap.period_end_date,
+        page_size: 200,
+        include_synthetic: true,
+      }),
     ])
     setPendencies(pens); setAllSnaps(fresh)
     setSnap(fresh.find(s => s.id === snap.id) ?? snap)
     setItems(its); setAssets(as_)
+    setDistributions(distPage.items)
+    setSyntheticPremiums(distPage.synthetic_premiums ?? [])
+  }
+
+  function exportEventosCsv() {
+    if (!snap) return
+    const ymStr = snap.period_end_date.slice(0, 7)
+    const header = [
+      'Data', 'Ativo', 'Tipo', 'Moeda Nativa',
+      'Bruto (BRL)', 'Bruto (USD)', 'IRRF (Nativo)', 'Líquido (Nativo)',
+      'Custodiante',
+    ]
+    const lines: (string | number | null)[][] = [header]
+    for (const r of eventRows) {
+      const fiName = r.id.startsWith('synthetic:')
+        ? (syntheticPremiums.find(p => p.id === r.id)?.financial_institution_name ?? '')
+        : (distributions.find(d => d.id === r.id)?.financial_institution_name ?? '')
+      const typeLabel = TYPE_META[r.type]?.label ?? r.type
+      lines.push([
+        r.event_date,
+        r.label_primary + (r.label_secondary ? ` (${r.label_secondary})` : ''),
+        typeLabel,
+        r.currency,
+        fmtCsvDecimal(r.gross_brl),
+        fmtCsvDecimal(r.gross_usd, 2),
+        fmtCsvDecimal(r.tax_native),
+        fmtCsvDecimal(r.net_native),
+        fiName,
+      ])
+    }
+    downloadCsv(`proventos-${ymStr}.csv`, lines)
+  }
+
+  function exportPositionsCsv() {
+    if (!snap) return
+    const ymStr = snap.period_end_date.slice(0, 7)
+    const header = [
+      'Ativo', 'Nome', 'Classe', 'Custodiante', 'Moeda Nativa',
+      'Quantidade', 'Preço Unitário', 'Valor Total (BRL)', 'Valor Total (USD)',
+      '% Portfólio',
+    ]
+    const lines: (string | number | null)[][] = [header]
+    for (const it of filteredPositions) {
+      const a = assetById.get(it.asset_id)
+      if (!a) continue
+      const fi = fiById.get(a.financial_institution_id)
+      const valueBRL = it.market_value_brl != null ? Number(it.market_value_brl) : null
+      const valueUSD = it.market_value_usd != null
+        ? Number(it.market_value_usd)
+        : (valueBRL != null && fxRate && fxRate > 0 ? valueBRL / fxRate : null)
+      const pct = valueBRL != null && totalBRL > 0 ? (valueBRL / totalBRL) * 100 : null
+      lines.push([
+        a.ticker ?? a.name,
+        a.name,
+        collapsedOf(a.asset_class),
+        fi?.short_name ?? a.financial_institution_name ?? '',
+        a.currency,
+        fmtCsvDecimal(Number(it.quantity), 4),
+        fmtCsvDecimal(it.unit_price != null ? Number(it.unit_price) : null, 4),
+        fmtCsvDecimal(valueBRL),
+        fmtCsvDecimal(valueUSD),
+        fmtCsvDecimal(pct),
+      ])
+    }
+    downloadCsv(`posicoes-${ymStr}.csv`, lines)
   }
 
   async function handleConfirm() {
@@ -347,41 +429,87 @@ export default function SnapshotDetail() {
     label_primary: string   // ticker
     label_secondary: string | null
     type: string
-    gross_amount: number
-    tax: number | null
-    net_amount: number
-    currency: 'BRL' | 'USD'
+    gross_brl: number       // bruto convertido em BRL
+    gross_usd: number       // bruto convertido em USD
+    tax_native: number | null
+    net_native: number
+    currency: 'BRL' | 'USD' // moeda nativa do evento (pra IRRF/Líquido)
   }
   const eventRows = useMemo<EventRow[]>(() => {
     const rows: EventRow[] = []
+    const ptaxFallback = fxRate && fxRate > 0 ? fxRate : 0
+    const toBRL = (amount: number, currency: 'BRL' | 'USD', rowFx: number) => {
+      if (currency === 'BRL') return amount
+      const fx = rowFx || ptaxFallback
+      return fx > 0 ? amount * fx : amount
+    }
+    const toUSD = (amount: number, currency: 'BRL' | 'USD', rowFx: number) => {
+      if (currency === 'USD') return amount
+      const fx = rowFx || ptaxFallback
+      return fx > 0 ? amount / fx : 0
+    }
     for (const d of distributions) {
+      const fx = Number(d.fx_rate || 1)
       rows.push({
         id: d.id,
         event_date: d.event_date,
         label_primary: d.asset_ticker ?? d.asset_name ?? '—',
         label_secondary: d.asset_ticker ? d.asset_name : null,
         type: d.type,
-        gross_amount: d.gross_amount,
-        tax: d.tax,
-        net_amount: d.net_amount,
+        gross_brl: toBRL(d.gross_amount, d.currency, fx),
+        gross_usd: toUSD(d.gross_amount, d.currency, fx),
+        tax_native: d.tax,
+        net_native: d.net_amount,
         currency: d.currency,
       })
     }
     for (const p of syntheticPremiums) {
+      const fx = Number(p.fx_rate || 1)
       rows.push({
         id: p.id,
         event_date: p.event_date,
         label_primary: p.option_ticker ?? p.underlying_ticker ?? '—',
         label_secondary: p.side === 'SELL_OPEN' ? 'Venda pra abrir' : 'Compra pra fechar',
         type: 'OPTION_PREMIUM',
-        gross_amount: p.gross_amount,
-        tax: null,
-        net_amount: p.net_amount,
+        gross_brl: toBRL(p.gross_amount, p.currency, fx),
+        gross_usd: toUSD(p.gross_amount, p.currency, fx),
+        tax_native: null,
+        net_native: p.net_amount,
         currency: p.currency,
       })
     }
     return rows.sort((a, b) => a.event_date.localeCompare(b.event_date))
-  }, [distributions, syntheticPremiums])
+  }, [distributions, syntheticPremiums, fxRate])
+
+  const filteredEventRows = useMemo(() => {
+    const q = eventsSearch.trim().toLowerCase()
+    const filtered = eventRows.filter(r => {
+      if (eventsTypeSel.length > 0 && !eventsTypeSel.includes(r.type)) return false
+      if (q) {
+        const hay = (
+          r.label_primary + ' ' + (r.label_secondary ?? '') + ' ' + r.type
+        ).toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+    const { key, dir } = eventsSort
+    const sign = dir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      const av = a[key] as string | number
+      const bv = b[key] as string | number
+      if (typeof av === 'number' && typeof bv === 'number') return sign * (av - bv)
+      return sign * String(av).localeCompare(String(bv))
+    })
+  }, [eventRows, eventsSearch, eventsTypeSel, eventsSort])
+
+  function toggleEventsSort(key: EventsSortKey) {
+    setEventsSort(prev =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: 'asc' },
+    )
+  }
 
   // Top movers (Spec 45 fix 2026-05-30) — use UNIT PRICE change, not
   // market-value change. Market value mistura 3 efeitos: variação de
@@ -409,6 +537,11 @@ export default function SnapshotDetail() {
       // noise from rounding + stable-price assets that would otherwise
       // dilute the top-5.
       if (Math.abs(pct) < 0.001) continue
+      // Sanity guardrail: |pct| > 70% num único mês é quase certo erro de
+      // unit basis (ex.: BTC stored como BRL num mês e USD no outro, ou
+      // PRIO3-problem onde unit_price reseta após FULL_REDEMPTION). Filtra
+      // até a gente corrigir os dados.
+      if (Math.abs(pct) > 0.7) continue
       const valueBRL = Number(it.market_value_brl ?? 0)
       rows.push({ asset: a, valueBRL, pct })
     }
@@ -742,30 +875,75 @@ export default function SnapshotDetail() {
             {/* ── 4b. Eventos do mês (Spec 45) ────────────────────────── */}
             {proventosCount > 0 && (
               <Card padding="p-3">
-                <div className="px-2 pt-2 pb-3">
+                <div className="px-2 pt-2 pb-3 flex items-center justify-between gap-3 flex-wrap">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Eventos do mês · {proventosCount} provento{proventosCount === 1 ? '' : 's'}
+                    Eventos do mês · {filteredEventRows.length === proventosCount
+                      ? `${proventosCount} provento${proventosCount === 1 ? '' : 's'}`
+                      : `${filteredEventRows.length} de ${proventosCount}`}
                   </h3>
+                  <button
+                    onClick={() => exportEventosCsv()}
+                    title="Exportar proventos do mês em CSV"
+                    className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                    data-testid="eventos-csv"
+                  >
+                    <Download className="w-3 h-3" /> CSV
+                  </button>
+                </div>
+                <div className="px-2 pb-3 flex items-center gap-3 flex-wrap">
+                  <div className="w-full max-w-xs">
+                    <SearchInput
+                      value={eventsSearch}
+                      onChange={setEventsSearch}
+                      placeholder="Buscar por ativo ou tipo…"
+                    />
+                  </div>
+                  <MultiChips
+                    options={[
+                      { id: 'DIVIDEND', label: 'Dividendo', color: '#22c55e' },
+                      { id: 'JCP', label: 'JCP', color: '#f59e0b' },
+                      { id: 'INTEREST', label: 'Juros / Cupom', color: '#3b82f6' },
+                      { id: 'SECURITIES_LENDING', label: 'Aluguel', color: '#8b5cf6' },
+                      { id: 'OPTION_PREMIUM', label: 'Prêmio sintético', color: '#a855f7' },
+                    ]}
+                    selected={eventsTypeSel}
+                    onChange={setEventsTypeSel}
+                  />
                 </div>
                 <div className="overflow-x-auto -mx-1">
                   <table className="w-full text-[12px]" data-testid="distributions-table">
                     <thead>
                       <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                        <th className="text-left font-medium px-3 py-2">Data</th>
-                        <th className="text-left font-medium px-3 py-2">Ativo</th>
-                        <th className="text-left font-medium px-3 py-2">Tipo</th>
-                        <th className="text-right font-medium px-3 py-2">Bruto</th>
+                        <SortHeader label="Data" col="event_date" sort={eventsSort} onToggle={toggleEventsSort} />
+                        <SortHeader label="Ativo" col="label_primary" sort={eventsSort} onToggle={toggleEventsSort} />
+                        <SortHeader label="Tipo" col="type" sort={eventsSort} onToggle={toggleEventsSort} />
+                        <SortHeader label="Bruto (BRL)" col="gross_brl" sort={eventsSort} onToggle={toggleEventsSort} align="right" />
+                        <th className="text-right font-medium px-3 py-2">Bruto (USD)</th>
                         <th className="text-right font-medium px-3 py-2">IRRF</th>
-                        <th className="text-right font-medium px-3 py-2">Líquido</th>
+                        <SortHeader label="Líquido" col="net_native" sort={eventsSort} onToggle={toggleEventsSort} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {eventRows.map(r => {
+                      {filteredEventRows.map(r => {
                         const meta = TYPE_META[r.type] ?? { label: r.type, color: '#94a3b8' }
+                        // Sintéticos (id começa com 'synthetic:') vêm de
+                        // AssetMovement — não editáveis aqui; clique vira no-op.
+                        const isSynthetic = r.id.startsWith('synthetic:')
+                        const realDist = !isSynthetic
+                          ? distributions.find(d => d.id === r.id)
+                          : null
                         return (
                           <tr
                             key={r.id}
-                            className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
+                            onClick={realDist ? () => setEditingDistribution(realDist) : undefined}
+                            title={isSynthetic
+                              ? 'Prêmio sintético derivado de movement — edite o lançamento de SELL_OPEN'
+                              : 'Clique pra editar'}
+                            className={`border-t border-gray-100 dark:border-gray-800 transition-colors ${
+                              realDist
+                                ? 'hover:bg-gray-50 dark:hover:bg-gray-800/30 cursor-pointer'
+                                : 'hover:bg-gray-50/40 dark:hover:bg-gray-800/10 cursor-default'
+                            }`}
                           >
                             <td className="px-3 py-2 tnum text-gray-500">
                               {fmtDateBR(r.event_date).slice(0, 5)}
@@ -790,13 +968,16 @@ export default function SnapshotDetail() {
                               </div>
                             </td>
                             <td className="px-3 text-right tnum text-gray-500">
-                              {fmtMoney(r.gross_amount, r.currency)}
+                              {r.gross_brl > 0 ? fmtBRL(r.gross_brl) : '—'}
                             </td>
                             <td className="px-3 text-right tnum text-gray-500">
-                              {r.tax != null && r.tax > 0 ? fmtMoney(r.tax, r.currency) : '—'}
+                              {r.gross_usd > 0 ? fmtUSD(r.gross_usd) : '—'}
+                            </td>
+                            <td className="px-3 text-right tnum text-gray-500">
+                              {r.tax_native != null && r.tax_native > 0 ? fmtMoney(r.tax_native, r.currency) : '—'}
                             </td>
                             <td className="px-3 text-right tnum font-medium text-emerald-700 dark:text-emerald-300">
-                              {fmtMoney(r.net_amount, r.currency)}
+                              {fmtMoney(r.net_native, r.currency)}
                             </td>
                           </tr>
                         )
@@ -810,7 +991,9 @@ export default function SnapshotDetail() {
             {/* ── 5. Top movers (prototype 7250) ───────────────────────── */}
             <div className="grid grid-cols-12 gap-4" data-testid="movers-row">
               <Card className="col-span-12 md:col-span-6">
-                <SectionTitle>Maiores altas · MoM</SectionTitle>
+                <SectionTitle>
+                  Maiores altas{prevYm ? ` · vs ${ymLabelShort(prevYm)}` : ' · MoM'}
+                </SectionTitle>
                 {topUp.length === 0 ? (
                   <div className="text-[12px] text-gray-500 italic py-4 text-center">
                     {prevSnap ? 'Sem deltas significativos' : 'Sem snapshot anterior'}
@@ -842,7 +1025,9 @@ export default function SnapshotDetail() {
                 )}
               </Card>
               <Card className="col-span-12 md:col-span-6">
-                <SectionTitle>Maiores quedas · MoM</SectionTitle>
+                <SectionTitle>
+                  Maiores quedas{prevYm ? ` · vs ${ymLabelShort(prevYm)}` : ' · MoM'}
+                </SectionTitle>
                 {topDown.length === 0 ? (
                   <div className="text-[12px] text-gray-500 italic py-4 text-center">
                     {prevSnap ? 'Sem deltas significativos' : 'Sem snapshot anterior'}
@@ -908,6 +1093,13 @@ export default function SnapshotDetail() {
                   hint="extrato / nota"
                   bg="bg-amber-500/10" border="border-amber-500/20"
                   text="text-amber-700 dark:text-amber-400"
+                  title={
+                    'Pendências com reason=UPLOAD_REQUIRED — o sistema marca '
+                    + 'um ativo precisa de extrato/nota porque a fonte do preço '
+                    + 'depende de upload manual (ex: fundo sem ticker público). '
+                    + 'Conte = quantos ativos esperam upload. Não é "esperado N '
+                    + 'arquivos"; é "N ativos esperam algum arquivo".'
+                  }
                 />
               </div>
             </Card>
@@ -930,9 +1122,10 @@ export default function SnapshotDetail() {
                     : `${filteredPositions.length} de ${items.length} ativos`}
                 </h3>
                 <button
-                  disabled
-                  title="Em breve"
-                  className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed"
+                  onClick={() => exportPositionsCsv()}
+                  title="Exportar posições congeladas em CSV"
+                  className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  data-testid="positions-csv"
                 >
                   <Download className="w-3 h-3" /> CSV
                 </button>
@@ -1102,6 +1295,20 @@ export default function SnapshotDetail() {
           />
         )
       })()}
+      {editingDistribution && (
+        <DistributionEditModal
+          distribution={editingDistribution}
+          onSaved={(updated) => {
+            setEditingDistribution(null)
+            setDistributions(prev => prev.map(d => d.id === updated.id ? updated : d))
+          }}
+          onDeleted={(deletedId) => {
+            setEditingDistribution(null)
+            setDistributions(prev => prev.filter(d => d.id !== deletedId))
+          }}
+          onClose={() => setEditingDistribution(null)}
+        />
+      )}
       {addAssetOpen && snap && (
         <AddSnapshotAssetModal
           snapshotId={snap.id}
@@ -1146,14 +1353,35 @@ function KpiTile({
   )
 }
 
+function SortHeader<K extends string>({
+  label, col, sort, onToggle, align = 'left',
+}: {
+  label: string; col: K; sort: { key: K; dir: 'asc' | 'desc' };
+  onToggle: (key: K) => void; align?: 'left' | 'right';
+}) {
+  const active = sort.key === col
+  const arrow = active ? (sort.dir === 'asc' ? '↑' : '↓') : ''
+  return (
+    <th
+      onClick={() => onToggle(col)}
+      className={`font-medium px-3 py-2 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-300 ${
+        align === 'right' ? 'text-right' : 'text-left'
+      } ${active ? 'text-gray-700 dark:text-gray-300' : ''}`}
+    >
+      {label}{active ? ` ${arrow}` : ''}
+    </th>
+  )
+}
+
 function SourceCard({
-  label, value, hint, bg, border, text,
+  label, value, hint, bg, border, text, title,
 }: {
   label: string; value: number; hint: string;
   bg: string; border: string; text: string;
+  title?: string;
 }) {
   return (
-    <div className={`px-3 py-3 rounded-lg ${bg} border ${border}`}>
+    <div className={`px-3 py-3 rounded-lg ${bg} border ${border}`} title={title}>
       <div className={`text-[10px] uppercase tracking-wider font-semibold ${text}`}>
         {label}
       </div>
