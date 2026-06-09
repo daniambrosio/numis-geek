@@ -315,6 +315,36 @@ def test_confirm_succeeds_after_resolving_all(db):
     assert snap.closed_by == "alice"
 
 
+def test_confirm_recomputes_total_invested_brl_from_items(db):
+    """Bug 4 regression — header total_invested_brl ficava stale quando
+    items eram editados/sincronizados após create_snapshot. confirm deve
+    re-agregar dos items pra garantir consistência."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    for pen in db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id
+    ).all():
+        resolve_pendency(
+            db, pendency_id=pen.id, user_id="alice",
+            new_price=Decimal("99.99"),
+        )
+
+    # Suja o header artificialmente — simula divergência criada por
+    # patches/syncs após create_snapshot.
+    snap_before = db.query(PortfolioSnapshot).get(r.snapshot_id)
+    snap_before.total_invested_brl = Decimal("999999999.99")
+    db.flush()
+
+    snap = confirm_snapshot(db, snapshot_id=r.snapshot_id, user_id="alice")
+    items_sum = sum(
+        (i.total_invested_brl or Decimal("0"))
+        for i in db.query(PortfolioSnapshotItem).filter(
+            PortfolioSnapshotItem.snapshot_id == snap.id
+        )
+    )
+    assert snap.total_invested_brl == items_sum
+
+
 def test_reopen_moves_to_in_review_and_redetects(db):
     """Confirm then reopen — new pendencies recreated from current state."""
     w = _seed(db)

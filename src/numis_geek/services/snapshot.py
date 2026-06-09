@@ -415,7 +415,8 @@ def confirm_snapshot(
             f"Cannot confirm: {open_pendencies} open pendency(ies)"
         )
 
-    # Recompute totals from items (prices may have changed via resolution).
+    # Recompute totals from items (prices/items may have changed via
+    # resolution/sync/edit since create_snapshot).
     items = (
         db.query(PortfolioSnapshotItem)
         .filter(PortfolioSnapshotItem.snapshot_id == snap.id)
@@ -423,8 +424,16 @@ def confirm_snapshot(
     )
     total_brl = sum((i.market_value_brl or Decimal("0") for i in items), Decimal("0"))
     total_usd = sum((i.market_value_usd or Decimal("0") for i in items), Decimal("0"))
+    # Bug 4 fix (2026-06-09): total_invested_brl ficava stale no header se
+    # items eram adicionados/removidos/editados depois do create_snapshot —
+    # rendendo Ganho/Perda absurdo no Dashboard. Recompute aqui pra
+    # garantir consistência items ↔ header.
+    total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in items), Decimal("0")
+    )
     snap.total_value_brl = total_brl
     snap.total_value_usd = total_usd
+    snap.total_invested_brl = total_invested_brl
 
     now = datetime.now(timezone.utc)
     snap.status = SnapshotStatus.CLOSED

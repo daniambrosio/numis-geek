@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, Sparkles } from 'lucide-react'
 import {
   api,
@@ -131,6 +131,15 @@ export default function MovementComposer({
   const [error, setError] = useState('')
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDraft[]>([])
   const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // Bug 8 fix (2026-06-09): no 2º+ abrir, o foco ficava no botão "Novo
+  // Lançamento" da página, e o browser não dispara `paste` em elementos
+  // não-editáveis. Forçar foco no wrapper (tabIndex=-1) garante que
+  // ⌘V dispare o paste event que o NotesAttachmentsField escuta.
+  useEffect(() => {
+    wrapperRef.current?.focus()
+  }, [])
 
   const selectedAsset = assets.find(a => a.id === assetId) ?? preselectedAsset
 
@@ -179,21 +188,26 @@ export default function MovementComposer({
   useEffect(() => { setConfirmInactive(false) }, [assetId])
 
   // Live preview: Net + position transition.
+  // Bug 6 fix (2026-06-09): preview seguia convenção de cashflow assinado
+  // (BUY negativo) enquanto o backend grava `net_amount` como valor
+  // absoluto da operação (gross+fee+tax pra BUY; gross-fee-tax pra SELL).
+  // Resultado: tela mostrava "-R$ X,XX" vermelho mas o DB recebia
+  // "R$ X,XX" positivo. Aqui matchamos a math do backend
+  // (_compute_net_amount em api/routes/asset_movements.py:241).
   const qN = num(quantity), pN = num(unitPrice), feeN = num(fee), tN = num(tax), gN = num(grossAmount)
+  const grossN = useValueOnly ? gN : qN * pN
   let net = 0
-  if (useValueOnly) {
-    // Non-cotado: gross + optional fee/tax. Fee adds to cost on buy/sub,
-    // subtracts from proceeds on sell/redemption. Tax only applies on
-    // FULL_REDEMPTION (IR retido na fonte em resgate de fundo/RF).
-    if (type === 'BUY' || type === 'SUBSCRIPTION') net = -(gN + feeN)
-    else if (type === 'FULL_REDEMPTION')           net = gN - feeN - tN
-    else                                            net = gN - feeN
-  } else if (type === 'BUY')             net = -(qN * pN + feeN)
-  else if (type === 'SELL')              net = qN * pN - feeN
-  else if (type === 'BONUS')             net = 0
-  else if (type === 'SUBSCRIPTION')      net = -(qN * pN + feeN)
-  else if (type === 'COME_COTAS')        net = -tN
-  else if (type === 'FULL_REDEMPTION')   net = qN * pN - tN
+  if (type === 'BUY' || type === 'SUBSCRIPTION') net = grossN + feeN + tN
+  else if (type === 'SELL')                       net = grossN - feeN - tN
+  else if (type === 'FULL_REDEMPTION')            net = grossN - feeN - tN
+  else if (type === 'COME_COTAS')                 net = -tN
+  else if (type === 'BONUS')                      net = 0
+  // Direction for visual cue: BUY/SUBSCRIPTION are cash-out (saída),
+  // SELL/FULL_REDEMPTION are cash-in (entrada).
+  const netDirection: 'out' | 'in' | 'none' =
+    type === 'BUY' || type === 'SUBSCRIPTION' || type === 'COME_COTAS' ? 'out'
+    : type === 'SELL' || type === 'FULL_REDEMPTION' ? 'in'
+    : 'none'
 
   // Position delta (illustrative — server is source of truth).
   const positionDelta = (type === 'BUY' || type === 'BONUS' || type === 'SUBSCRIPTION') ? qN
@@ -300,7 +314,11 @@ export default function MovementComposer({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl max-h-[90vh] bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col">
+      <div
+        ref={wrapperRef}
+        tabIndex={-1}
+        className="w-full max-w-2xl max-h-[90vh] bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col outline-none"
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-start justify-between">
           <div>
@@ -511,9 +529,13 @@ export default function MovementComposer({
                 </div>
               )}
               <div className="flex items-center justify-between">
-                <span className="text-[12px] text-gray-500 dark:text-gray-400">Net</span>
-                <span className={`tnum text-base font-semibold ${net < 0 ? 'text-red-500 dark:text-red-400' : net > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
-                  {fmtMoney(net, ccy, { sign: true })}
+                <span className="text-[12px] text-gray-500 dark:text-gray-400">
+                  Net{netDirection === 'out' ? <span className="ml-1.5 text-[10px] text-red-500 dark:text-red-400">· saída</span>
+                     : netDirection === 'in' ? <span className="ml-1.5 text-[10px] text-emerald-500 dark:text-emerald-400">· entrada</span>
+                     : null}
+                </span>
+                <span className={`tnum text-base font-semibold ${netDirection === 'out' ? 'text-red-500 dark:text-red-400' : netDirection === 'in' ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
+                  {fmtMoney(Math.abs(net), ccy)}
                 </span>
               </div>
               {cfg.qty && (

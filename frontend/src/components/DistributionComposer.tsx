@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sparkles, X } from 'lucide-react'
 import {
   type AssetOut,
@@ -63,6 +63,13 @@ export default function DistributionComposer({
   const [error, setError] = useState('')
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDraft[]>([])
   const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // Bug 8 fix (2026-06-09): garante que ⌘V dispare o paste event mesmo
+  // sem clicar no modal primeiro. Espelha o MovementComposer.
+  useEffect(() => {
+    wrapperRef.current?.focus()
+  }, [])
 
   const cfg = TYPE_CFG[type]
   const selectedAsset = assets.find(a => a.id === assetId)
@@ -153,7 +160,11 @@ export default function DistributionComposer({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl max-h-[90vh] bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col">
+      <div
+        ref={wrapperRef}
+        tabIndex={-1}
+        className="w-full max-w-2xl max-h-[90vh] bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col outline-none"
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-start justify-between">
           <div>

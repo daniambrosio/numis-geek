@@ -227,6 +227,9 @@ export default function Dashboard() {
                   {totalReceived === 0 && <span className="ml-1 text-gray-400">— ativa após spec 08 (Distribution)</span>}
                 </span>
               </div>
+              <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-600">
+                Investido = custo das posições atuais · Ganho/perda = patrimônio − investido · Proventos = todo o histórico recebido
+              </div>
             </div>
             <div className="col-span-12 lg:col-span-5 p-6 lg:p-8 border-t lg:border-t-0 lg:border-l border-gray-200 dark:border-gray-800 bg-gradient-to-br from-indigo-500/5 to-transparent">
               <div className="flex items-center justify-between">
@@ -479,7 +482,8 @@ function SnapshotReviewBanner() {
   )
 }
 
-function SnapshotSeries({ snapshots, currentBrl }: { snapshots: SnapshotOut[]; currentBrl: number }) {
+function SnapshotSeries({ snapshots }: { snapshots: SnapshotOut[]; currentBrl: number }) {
+  const [hover, setHover] = useState<number | null>(null)
   // Order chronologically; show min(12, count) most recent
   const sorted = [...snapshots]
     .sort((a, b) => a.period_end_date.localeCompare(b.period_end_date))
@@ -488,42 +492,74 @@ function SnapshotSeries({ snapshots, currentBrl }: { snapshots: SnapshotOut[]; c
   if (sorted.length === 0) return null
 
   const values = sorted.map(s => Number(s.total_value_brl))
-  const max = Math.max(...values, currentBrl)
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  // Use a small floor so a flattish series still has visible variation.
+  const floor = Math.max(0, min - (max - min) * 0.2)
+  const range = Math.max(1, max - floor)
+
   const last = values[values.length - 1]
   const first = values[0]
   const delta = last - first
   const pct = first > 0 ? (delta / first) * 100 : 0
 
+  // Month short labels in PT-BR; show year suffix on Jan and on the first bar.
+  function labelOf(ym: string, index: number): string {
+    const [y, m] = ym.split('-')
+    const month = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m) - 1]
+    const showYear = index === 0 || m === '01'
+    return showYear ? `${month}/${y.slice(2)}` : month
+  }
+
+  const hovered = hover != null ? sorted[hover] : null
+
   return (
     <div className="mt-4">
       <div className="flex items-baseline gap-2">
         <div className="text-2xl font-semibold tnum money text-gray-900 dark:text-white">
-          {fmtBRL(last, { compact: true })}
+          {fmtBRL(hovered ? Number(hovered.total_value_brl) : last, { compact: true })}
         </div>
         <span className={`text-[12px] tnum ${delta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
           {delta >= 0 ? '+' : ''}{pct.toFixed(1)}%
         </span>
       </div>
       <div className="mt-2 text-[10px] text-gray-400">
-        último snapshot · {new Date(sorted[sorted.length - 1].period_end_date).toLocaleDateString('pt-BR')}
+        {hovered
+          ? <>{new Date(hovered.period_end_date).toLocaleDateString('pt-BR')}</>
+          : <>último snapshot · {new Date(sorted[sorted.length - 1].period_end_date).toLocaleDateString('pt-BR')}</>}
       </div>
-      {/* Sparkline */}
-      <svg viewBox="0 0 200 60" className="mt-3 w-full h-16" preserveAspectRatio="none">
-        <polyline
-          fill="none"
-          stroke="rgb(99 102 241)"
-          strokeWidth="2"
-          points={values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 200},${60 - (v / max) * 55}`).join(' ')}
-        />
-        <polyline
-          fill="rgb(99 102 241 / 0.1)"
-          stroke="none"
-          points={`0,60 ${values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 200},${60 - (v / max) * 55}`).join(' ')} 200,60`}
-        />
-      </svg>
-      <div className="mt-1 flex justify-between text-[10px] text-gray-400">
-        <span>{new Date(sorted[0].period_end_date).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</span>
-        <span>{new Date(sorted[sorted.length - 1].period_end_date).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</span>
+      {/* Column chart with per-month x-axis */}
+      <div className="mt-3 flex items-end gap-1 h-20" onMouseLeave={() => setHover(null)}>
+        {values.map((v, i) => {
+          const h = ((v - floor) / range) * 100
+          const active = hover === i
+          return (
+            <button
+              key={sorted[i].period_end_date}
+              type="button"
+              onMouseEnter={() => setHover(i)}
+              onFocus={() => setHover(i)}
+              className="flex-1 flex flex-col justify-end h-full group focus:outline-none"
+              aria-label={`${sorted[i].period_end_date} · ${fmtBRL(v, { compact: true })}`}
+            >
+              <div
+                className={`w-full rounded-t transition-colors ${
+                  active
+                    ? 'bg-indigo-500'
+                    : 'bg-indigo-500/60 group-hover:bg-indigo-500'
+                }`}
+                style={{ height: `${Math.max(2, h)}%` }}
+              />
+            </button>
+          )
+        })}
+      </div>
+      <div className="mt-1 flex gap-1 text-[10px] text-gray-400 dark:text-gray-600">
+        {sorted.map((s, i) => (
+          <span key={s.period_end_date} className="flex-1 text-center tnum">
+            {labelOf(s.period_end_date.slice(0, 7), i)}
+          </span>
+        ))}
       </div>
     </div>
   )

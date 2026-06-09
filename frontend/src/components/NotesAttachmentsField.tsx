@@ -94,25 +94,30 @@ export default function NotesAttachmentsField({
   }, [])
 
   /** Extract Files from a ClipboardEvent — see NotesAttachmentsCard for
-   *  the rationale (items vs files across browsers). */
+   *  the rationale (items vs files across browsers).
+   *
+   *  Bug 7 regression fix (2026-06-09): keying by `name:size:lastModified`
+   *  failed to dedupe quando o browser populava cb.files E cb.items com
+   *  timestamps de microssegundos diferentes — resultado: 2 cópias do
+   *  mesmo screenshot. Dedup agora por (name, size) só, e priorizamos
+   *  cb.files se presente (fonte única). */
   function filesFromClipboard(cb: DataTransfer | null): File[] {
     if (!cb) return []
     const out: File[] = []
     const seen = new Set<string>()
+    const push = (f: File) => {
+      const key = `${f.name}:${f.size}`
+      if (!seen.has(key)) { seen.add(key); out.push(f) }
+    }
     if (cb.files && cb.files.length) {
-      for (const f of Array.from(cb.files)) {
-        const key = `${f.name}:${f.size}:${f.lastModified}`
-        if (!seen.has(key)) { seen.add(key); out.push(f) }
-      }
+      for (const f of Array.from(cb.files)) push(f)
+      return out
     }
     if (cb.items && cb.items.length) {
       for (const it of Array.from(cb.items)) {
         if (it.kind === 'file') {
           const f = it.getAsFile()
-          if (f) {
-            const key = `${f.name}:${f.size}:${f.lastModified}`
-            if (!seen.has(key)) { seen.add(key); out.push(f) }
-          }
+          if (f) push(f)
         }
       }
     }

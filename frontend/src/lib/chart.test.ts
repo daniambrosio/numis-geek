@@ -23,8 +23,8 @@ describe('fmtChart', () => {
     expect(fmtChart(100, 'USD')).toBe('US$ 100')
   })
   it('compact mode abbreviates thousands and millions', () => {
-    expect(fmtChart(5200, 'BRL', true)).toMatch(/mil/)
-    expect(fmtChart(1_500_000, 'BRL', true)).toMatch(/mi/)
+    expect(fmtChart(5200, 'BRL', true)).toBe('R$ 5,2k')
+    expect(fmtChart(1_500_000, 'BRL', true)).toBe('R$ 1,5M')
   })
   it('non-compact rounds to no decimals with pt-BR separators', () => {
     expect(fmtChart(5231, 'BRL')).toBe('R$ 5.231')
@@ -86,6 +86,20 @@ describe('computeKpis', () => {
       { ym: '2026-04', total: 100 },
     ]), today)
     expect(kpis.momPct).toBeNull()
+  })
+
+  it('ignores the current (in-progress) month for lastMonthTotal/MoM', () => {
+    // Bug 2 regression: em junho/2026 o dashboard mostrava "último mês R$ 0
+    // MoM -100%" porque pegava a barra de junho (ainda sem proventos).
+    // Comportamento correto: último mês = maio (último fechado).
+    const todayJun = new Date('2026-06-09T00:00:00Z')
+    const kpis = computeKpis(makeData([
+      { ym: '2026-04', total: 200 },
+      { ym: '2026-05', total: 300 },
+      { ym: '2026-06', total: 0 },
+    ]), todayJun)
+    expect(kpis.lastMonthTotal).toBe(300)
+    expect(kpis.momPct).toBeCloseTo(0.5, 4)
   })
 
   it('YTD sums only buckets within the current year up to today', () => {

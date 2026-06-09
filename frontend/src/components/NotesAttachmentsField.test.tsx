@@ -82,6 +82,21 @@ describe('NotesAttachmentsField', () => {
     expect(drafts[0]).toHaveTextContent('note.pdf')
   })
 
+  it('dedupes the same image when cb.files and cb.items both carry it', () => {
+    // Bug 7 regression — Chrome popula tanto `files` quanto `items` para
+    // pastes de screenshot, com lastModified ligeiramente diferentes.
+    // Sem dedup robusta, a imagem entra 2x.
+    render(<Harness />)
+    const ta = screen.getByPlaceholderText(/tese, motivo/)
+    const png1 = new File(['png'], 'image.png', { type: 'image/png' })
+    const png2 = new File(['png'], 'image.png', { type: 'image/png' })
+    const items = [
+      { kind: 'file', getAsFile: () => png2 },
+    ]
+    fireEvent.paste(ta, { clipboardData: { files: [png1], items } })
+    expect(screen.getAllByTestId('notes-attachments-draft')).toHaveLength(1)
+  })
+
   it('removes a draft when the X button is clicked', async () => {
     render(<Harness />)
     const input = screen.getByTestId('notes-attachments-input') as HTMLInputElement

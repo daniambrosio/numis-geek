@@ -5,29 +5,8 @@ import AppLayout from '../components/AppLayout'
 import { Card, ClassBadge, FILogo, SectionTitle } from '../components/ui'
 import { DonutChart, HBar, type DonutDatum } from '../components/charts'
 import Sparkline from '../components/Sparkline'
+import { fmtBRL, fmtUSD } from '../lib/money'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
-
-function fmtBRL(n: number, opts: { compact?: boolean } = {}) {
-  const v = Math.abs(n)
-  if (opts.compact && v >= 1000) {
-    return n.toLocaleString('pt-BR', {
-      style: 'currency', currency: 'BRL',
-      notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-}
-
-function fmtUSD(n: number, opts: { compact?: boolean } = {}) {
-  const v = Math.abs(n)
-  if (opts.compact && v >= 1000) {
-    return n.toLocaleString('en-US', {
-      style: 'currency', currency: 'USD',
-      notation: 'compact', maximumFractionDigits: 1,
-    })
-  }
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
 
 function fmtPct(n: number, digits = 1) {
   return (n * 100).toFixed(digits) + '%'

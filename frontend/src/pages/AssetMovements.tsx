@@ -45,8 +45,12 @@ function fmtMoney(n: number | null | undefined, currency: string, opts: { sign?:
   if (n == null) return '—'
   const v = opts.sign ? Math.abs(n) : n
   const sign = opts.sign && n > 0 ? '+ ' : opts.sign && n < 0 ? '− ' : ''
+  const symbol = currency === 'USD' ? 'US$' : 'R$'
+  if (opts.compact && Math.abs(v) >= 1_000_000) {
+    return sign + `${symbol} ${(v / 1_000_000).toFixed(1).replace('.', ',')}M`
+  }
   if (opts.compact && Math.abs(v) >= 1000) {
-    return sign + v.toLocaleString('pt-BR', { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 })
+    return sign + `${symbol} ${(v / 1000).toFixed(1).replace('.', ',')}k`
   }
   return sign + v.toLocaleString('pt-BR', { style: 'currency', currency })
 }

@@ -48,16 +48,33 @@ import { KLASS, collapsedOf } from '../lib/tokens'
 
 // ── Formatters (match prototype) ─────────────────────────────────────────────
 
+// Compact suffix system-wide: "k" e "M" (lib/money.ts). pt-BR usa "mil"/"mi"
+// no Intl.NumberFormat com notation:'compact' — proibido.
+function compactSuffix(abs: number): { value: string; suffix: string } | null {
+  if (abs >= 1_000_000) {
+    return { value: (abs / 1_000_000).toFixed(1).replace('.', ','), suffix: 'M' }
+  }
+  if (abs >= 1_000) {
+    return { value: (abs / 1_000).toFixed(1).replace('.', ','), suffix: 'k' }
+  }
+  return null
+}
+
 function fmtBRL(n: number | null | undefined, opts: { compact?: boolean; sign?: boolean } = {}) {
   if (n == null) return '—'
   const { compact = false, sign = false } = opts
-  const formatter = new Intl.NumberFormat('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    minimumFractionDigits: compact ? 0 : 2,
-    maximumFractionDigits: compact ? 0 : 2,
-    notation: compact ? 'compact' : 'standard',
-  })
-  const out = formatter.format(Math.abs(n))
+  const abs = Math.abs(n)
+  const c = compact ? compactSuffix(abs) : null
+  let out: string
+  if (c) {
+    out = `R$ ${c.value}${c.suffix}`
+  } else {
+    out = new Intl.NumberFormat('pt-BR', {
+      style: 'currency', currency: 'BRL',
+      minimumFractionDigits: compact ? 0 : 2,
+      maximumFractionDigits: compact ? 0 : 2,
+    }).format(abs)
+  }
   if (sign) return (n >= 0 ? '+' : '−') + out.replace('R$', 'R$ ')
   return n < 0 ? '−' + out : out
 }
@@ -65,13 +82,18 @@ function fmtBRL(n: number | null | undefined, opts: { compact?: boolean; sign?: 
 function fmtUSD(n: number | null | undefined, opts: { compact?: boolean; sign?: boolean } = {}) {
   if (n == null) return '—'
   const { compact = false, sign = false } = opts
-  const formatter = new Intl.NumberFormat('en-US', {
-    style: 'currency', currency: 'USD',
-    minimumFractionDigits: compact ? 0 : 2,
-    maximumFractionDigits: compact ? 0 : 2,
-    notation: compact ? 'compact' : 'standard',
-  })
-  const out = formatter.format(Math.abs(n))
+  const abs = Math.abs(n)
+  const c = compact ? compactSuffix(abs) : null
+  let out: string
+  if (c) {
+    out = `US$ ${c.value}${c.suffix}`
+  } else {
+    out = new Intl.NumberFormat('en-US', {
+      style: 'currency', currency: 'USD',
+      minimumFractionDigits: compact ? 0 : 2,
+      maximumFractionDigits: compact ? 0 : 2,
+    }).format(abs)
+  }
   if (sign) return (n >= 0 ? '+' : '−') + out
   return n < 0 ? '−' + out : out
 }
