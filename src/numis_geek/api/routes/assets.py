@@ -628,7 +628,7 @@ class PositionOut(BaseModel):
     average_cost_brl: float
     total_invested_brl: float
     total_received_brl: float
-    ttm_dividends_brl: float
+    ttm_dividends_native: float
     currency: str
     current_price: float | None = None
     current_value: float | None = None
@@ -812,7 +812,7 @@ def get_asset_position(
         average_cost_brl=float(pos["average_cost_brl"]),
         total_invested_brl=float(pos["total_invested_brl"]),
         total_received_brl=float(pos["total_received_brl"]),
-        ttm_dividends_brl=float(pos["ttm_dividends_brl"]),
+        ttm_dividends_native=float(pos["ttm_dividends_native"]),
         currency=pos["currency"],
         current_price=_f("current_price"),
         current_value=_f("current_value"),

@@ -522,8 +522,9 @@ def test_ttm_dividends_window(client, seed):
     pos = r.json()
     # total_received_brl = 30 + 50 = 80 (all-time)
     assert pos["total_received_brl"] == 80.0
-    # ttm_dividends_brl = 50 (só o de 100d atrás cai na janela)
-    assert pos["ttm_dividends_brl"] == 50.0
+    # ttm_dividends_native = 50 (só o de 100d atrás cai na janela)
+    # asset BRL, então nativo == BRL
+    assert pos["ttm_dividends_native"] == 50.0
 
 
 def test_dy_and_yoc_calculation(client, seed):
@@ -579,6 +580,64 @@ def test_dy_none_when_no_current_price(client, seed):
     assert pos["yield_on_cost"] == pytest.approx(0.025)
 
 
+def test_dy_yoc_use_native_currency_for_usd_asset(client, seed):
+    """USD asset: DY/YoC dividem por valor/custo em USD, ignorando o câmbio.
+
+    Replica o cenário do VNQI: comprou com dólar alto, dólar caiu, papel subiu.
+    Em BRL DY > YoC (câmbio cobre o ganho do papel); em nativo USD YoC > DY
+    (papel subiu, então invested USD < value USD).
+    """
+    today = date.today()
+    db = TestSession()
+    account = db.query(Account).first()
+    now = datetime.now(timezone.utc)
+    from numis_geek.models.asset import PriceSource
+    asset_usd = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        account_id=account.id,
+        asset_class=AssetClass.STOCK,
+        country="US",
+        name="Vanguard ex-US REIT",
+        ticker=f"VNQ{uuid.uuid4().hex[:3].upper()}",
+        currency=Currency.USD,
+        current_price=Decimal("45.70"),
+        price_source=PriceSource.MANUAL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(asset_usd); db.commit(); db.refresh(asset_usd)
+    asset_id = asset_usd.id
+    db.close()
+
+    # Compra: 100 @ $42.83 (custo USD = 4283)
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
+        "event_date": (today - timedelta(days=200)).isoformat(),
+        "quantity": 100, "unit_price": 42.83,
+        "currency": "USD", "fx_rate": 5.6729,
+    }, headers=auth(seed["admin_token"]))
+    # Dividend recente em USD: $30.20 com PTAX 5.0
+    client.post("/api/distributions", json={
+        "financial_institution_id": seed["fi_id"],
+        "asset_id": asset_id, "type": "DIVIDEND",
+        "event_date": (today - timedelta(days=30)).isoformat(),
+        "gross_amount": 30.20, "currency": "USD", "fx_rate": 5.0,
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    # TTM nativo = $30.20 (não convertido pra BRL)
+    assert pos["ttm_dividends_native"] == pytest.approx(30.20)
+    # DY = 30.20 / (100 * 45.70) = 30.20 / 4570 ≈ 0.006608
+    assert pos["dividend_yield"] == pytest.approx(30.20 / 4570, rel=1e-4)
+    # YoC = 30.20 / (100 * 42.83) = 30.20 / 4283 ≈ 0.007051
+    assert pos["yield_on_cost"] == pytest.approx(30.20 / 4283, rel=1e-4)
+    # papel subiu → YoC > DY na moeda nativa
+    assert pos["yield_on_cost"] > pos["dividend_yield"]
+
+
 def test_dy_yoc_none_without_dividends(client, seed):
     """Sem proventos → ambos None (não 0)."""
     asset_id = _seed_dy_asset(seed, current_price=15.0)
@@ -589,6 +648,6 @@ def test_dy_yoc_none_without_dividends(client, seed):
     }, headers=auth(seed["admin_token"]))
     r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
     pos = r.json()
-    assert pos["ttm_dividends_brl"] == 0.0
+    assert pos["ttm_dividends_native"] == 0.0
     assert pos["dividend_yield"] is None
     assert pos["yield_on_cost"] is None

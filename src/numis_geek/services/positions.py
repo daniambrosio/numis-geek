@@ -45,15 +45,15 @@ class Position(TypedDict):
     average_cost_brl: Decimal
     total_invested_brl: Decimal
     total_received_brl: Decimal
-    ttm_dividends_brl: Decimal       # Σ Distribution net_amount × fx nos últimos 365d
+    ttm_dividends_native: Decimal    # Σ Distribution net_amount nos últimos 365d, moeda do asset
     currency: str
     current_price: Decimal | None
     current_value: Decimal | None
     current_value_brl: Decimal | None
     variation: Decimal | None        # (current - avg) / avg, native currency
     rentabilidade: Decimal | None    # (gain + distributions) / cost, BRL terms
-    dividend_yield: Decimal | None   # ttm / current_value_brl
-    yield_on_cost: Decimal | None    # ttm / total_invested_brl
+    dividend_yield: Decimal | None   # ttm_native / current_value (native)
+    yield_on_cost: Decimal | None    # ttm_native / total_invested (native)
 
 
 _BASIS_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION}
@@ -228,17 +228,18 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         dq = dq.filter(Distribution.event_date <= as_of)
     ttm_cutoff = (as_of or date.today()) - timedelta(days=365)
     total_received_brl = Decimal("0")
-    ttm_dividends_brl = Decimal("0")
+    ttm_dividends_native = Decimal("0")
     for d in dq.all():
         net = d.net_amount or Decimal("0")
         # Spec 56 — só USD distributions convertem via PTAX. Hoje BRL dist
         # sempre tem fx=1 (notion sync filtra), mas defesa contra futuro.
         dist_ccy = d.currency.value if hasattr(d.currency, "value") else d.currency
         eff_fx = (d.fx_rate or Decimal("1")) if dist_ccy == "USD" else Decimal("1")
-        amount_brl = net * eff_fx
-        total_received_brl += amount_brl
+        total_received_brl += net * eff_fx
+        # DY/YoC ficam na moeda do asset (Distribution.currency == Asset.currency
+        # é invariante checado no endpoint), então TTM acumula net direto.
         if d.event_date >= ttm_cutoff:
-            ttm_dividends_brl += amount_brl
+            ttm_dividends_native += net
 
     # ── Derived figures from current_price (when set) ─────────────────────
     current_price = asset.current_price if asset and asset.current_price is not None else None
@@ -262,14 +263,23 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
             paper_gain_brl = current_value_brl - total_invested_brl
             rentabilidade = (paper_gain_brl + total_received_brl) / total_invested_brl
 
-    # ── DY / YoC (TTM-based) ──────────────────────────────────────────────
+    # ── DY / YoC (TTM-based, moeda nativa do asset) ───────────────────────
+    # Isola câmbio: DY/YoC refletem o ativo, não a variação do dólar.
+    # Em modo cotado: total_invested_native = qty * avg_cost (USD ou BRL).
+    # Em modo valor (FIM/Previdência/CDB): asset é sempre BRL, então usa
+    # non_cotado_basis_brl (== invested em nativo, BRL).
     dividend_yield: Decimal | None = None
     yield_on_cost: Decimal | None = None
-    if ttm_dividends_brl > 0:
-        if current_value_brl is not None and current_value_brl > 0:
-            dividend_yield = ttm_dividends_brl / current_value_brl
-        if total_invested_brl > 0:
-            yield_on_cost = ttm_dividends_brl / total_invested_brl
+    if ttm_dividends_native > 0:
+        if current_value is not None and current_value > 0:
+            dividend_yield = ttm_dividends_native / current_value
+        invested_native: Decimal | None = None
+        if running_qty != 0 and average_cost > 0:
+            invested_native = running_qty * average_cost
+        elif non_cotado_basis_brl > 0:
+            invested_native = non_cotado_basis_brl
+        if invested_native is not None and invested_native > 0:
+            yield_on_cost = ttm_dividends_native / invested_native
 
     return Position(
         quantity_held=running_qty,
@@ -277,7 +287,7 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         average_cost_brl=average_cost_brl,
         total_invested_brl=total_invested_brl,
         total_received_brl=total_received_brl,
-        ttm_dividends_brl=ttm_dividends_brl,
+        ttm_dividends_native=ttm_dividends_native,
         currency=currency,
         current_price=current_price,
         current_value=current_value,

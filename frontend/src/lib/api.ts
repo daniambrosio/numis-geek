@@ -505,7 +505,7 @@ export interface PositionOut {
   average_cost_brl: number
   total_invested_brl: number
   total_received_brl: number
-  ttm_dividends_brl: number
+  ttm_dividends_native: number
   currency: string
   current_price: number | null
   current_value: number | null
