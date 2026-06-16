@@ -26,7 +26,7 @@ Returned shape — see `compute_position`:
 - total_received_brl: Decimal — sum of Distribution net_amount × fx_rate
 - currency: str — asset's native currency
 """
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TypedDict
 
@@ -45,12 +45,15 @@ class Position(TypedDict):
     average_cost_brl: Decimal
     total_invested_brl: Decimal
     total_received_brl: Decimal
+    ttm_dividends_brl: Decimal       # Σ Distribution net_amount × fx nos últimos 365d
     currency: str
     current_price: Decimal | None
     current_value: Decimal | None
     current_value_brl: Decimal | None
-    variation: Decimal | None       # (current - avg) / avg, native currency
-    rentabilidade: Decimal | None   # (gain + distributions) / cost, BRL terms
+    variation: Decimal | None        # (current - avg) / avg, native currency
+    rentabilidade: Decimal | None    # (gain + distributions) / cost, BRL terms
+    dividend_yield: Decimal | None   # ttm / current_value_brl
+    yield_on_cost: Decimal | None    # ttm / total_invested_brl
 
 
 _BASIS_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION}
@@ -223,14 +226,19 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     )
     if as_of is not None:
         dq = dq.filter(Distribution.event_date <= as_of)
+    ttm_cutoff = (as_of or date.today()) - timedelta(days=365)
     total_received_brl = Decimal("0")
+    ttm_dividends_brl = Decimal("0")
     for d in dq.all():
         net = d.net_amount or Decimal("0")
         # Spec 56 — só USD distributions convertem via PTAX. Hoje BRL dist
         # sempre tem fx=1 (notion sync filtra), mas defesa contra futuro.
         dist_ccy = d.currency.value if hasattr(d.currency, "value") else d.currency
         eff_fx = (d.fx_rate or Decimal("1")) if dist_ccy == "USD" else Decimal("1")
-        total_received_brl += net * eff_fx
+        amount_brl = net * eff_fx
+        total_received_brl += amount_brl
+        if d.event_date >= ttm_cutoff:
+            ttm_dividends_brl += amount_brl
 
     # ── Derived figures from current_price (when set) ─────────────────────
     current_price = asset.current_price if asset and asset.current_price is not None else None
@@ -254,16 +262,28 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
             paper_gain_brl = current_value_brl - total_invested_brl
             rentabilidade = (paper_gain_brl + total_received_brl) / total_invested_brl
 
+    # ── DY / YoC (TTM-based) ──────────────────────────────────────────────
+    dividend_yield: Decimal | None = None
+    yield_on_cost: Decimal | None = None
+    if ttm_dividends_brl > 0:
+        if current_value_brl is not None and current_value_brl > 0:
+            dividend_yield = ttm_dividends_brl / current_value_brl
+        if total_invested_brl > 0:
+            yield_on_cost = ttm_dividends_brl / total_invested_brl
+
     return Position(
         quantity_held=running_qty,
         average_cost=average_cost,
         average_cost_brl=average_cost_brl,
         total_invested_brl=total_invested_brl,
         total_received_brl=total_received_brl,
+        ttm_dividends_brl=ttm_dividends_brl,
         currency=currency,
         current_price=current_price,
         current_value=current_value,
         current_value_brl=current_value_brl,
         variation=variation,
         rentabilidade=rentabilidade,
+        dividend_yield=dividend_yield,
+        yield_on_cost=yield_on_cost,
     )

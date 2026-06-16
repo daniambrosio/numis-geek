@@ -628,12 +628,15 @@ class PositionOut(BaseModel):
     average_cost_brl: float
     total_invested_brl: float
     total_received_brl: float
+    ttm_dividends_brl: float
     currency: str
     current_price: float | None = None
     current_value: float | None = None
     current_value_brl: float | None = None
     variation: float | None = None
     rentabilidade: float | None = None
+    dividend_yield: float | None = None
+    yield_on_cost: float | None = None
 
 
 class PriceRefreshOut(BaseModel):
@@ -809,12 +812,15 @@ def get_asset_position(
         average_cost_brl=float(pos["average_cost_brl"]),
         total_invested_brl=float(pos["total_invested_brl"]),
         total_received_brl=float(pos["total_received_brl"]),
+        ttm_dividends_brl=float(pos["ttm_dividends_brl"]),
         currency=pos["currency"],
         current_price=_f("current_price"),
         current_value=_f("current_value"),
         current_value_brl=_f("current_value_brl"),
         variation=_f("variation"),
         rentabilidade=_f("rentabilidade"),
+        dividend_yield=_f("dividend_yield"),
+        yield_on_cost=_f("yield_on_cost"),
     )
 
 

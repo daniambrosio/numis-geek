@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ChevronRight, ChevronDown } from 'lucide-react'
+import { ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react'
 import { type AssetOut, type FinancialInstitutionOut, type PositionOut } from '../lib/api'
 import { KLASS, collapsedOf, type CollapsedClassCode } from '../lib/tokens'
 import { fmtMoney as fmtMoneyBase } from '../lib/money'
@@ -25,6 +25,17 @@ interface Group {
   items: AssetOut[]
 }
 
+export type SortKey =
+  | 'ticker' | 'klass' | 'fi' | 'qty' | 'avg' | 'current_price'
+  | 'current_value' | 'variation' | 'rentabilidade'
+  | 'dividend_yield' | 'yield_on_cost' | 'updated'
+export type SortDir = 'asc' | 'desc' | null
+
+interface SortState {
+  key: SortKey | null
+  dir: SortDir
+}
+
 function fmtNum(n: number | null | undefined, digits = 2) {
   if (n == null) return '—'
   return n.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -38,9 +49,74 @@ function fmtMoney(n: number | null | undefined, currency: string, opts: { compac
   return n.toLocaleString('pt-BR', { style: 'currency', currency })
 }
 
+function fmtPct(n: number | null | undefined) {
+  if (n == null) return '—'
+  return `${(n * 100).toFixed(2)}%`
+}
+
+function sortValue(
+  asset: AssetOut,
+  position: PositionOut | null,
+  fi: FinancialInstitutionOut | null,
+  key: SortKey,
+): number | string | null {
+  switch (key) {
+    case 'ticker': return (asset.ticker || asset.name || '').toLowerCase()
+    case 'klass': return KLASS[collapsedOf(asset.asset_class)].label.toLowerCase()
+    case 'fi': return (fi?.short_name || '').toLowerCase()
+    case 'qty': return position?.quantity_held ?? null
+    case 'avg': return position?.average_cost ?? null
+    case 'current_price': return position?.current_price ?? null
+    case 'current_value': return position?.current_value_brl ?? position?.current_value ?? null
+    case 'variation': return position?.variation ?? null
+    case 'rentabilidade': return position?.rentabilidade ?? null
+    case 'dividend_yield': return position?.dividend_yield ?? null
+    case 'yield_on_cost': return position?.yield_on_cost ?? null
+    case 'updated': return asset.price_updated_at ?? null
+  }
+}
+
+function sortAssets(
+  items: AssetOut[],
+  positions: Map<string, PositionOut | null>,
+  fiById: Map<string, FinancialInstitutionOut>,
+  sort: SortState,
+): AssetOut[] {
+  if (!sort.key || !sort.dir) return items
+  const { key, dir } = sort
+  const mult = dir === 'asc' ? 1 : -1
+  const decorated = items.map((a, i) => ({
+    a, i,
+    v: sortValue(a, positions.get(a.id) ?? null, fiById.get(a.financial_institution_id) ?? null, key),
+  }))
+  decorated.sort((x, y) => {
+    // nulls/empties always last, regardless of direction
+    const xn = x.v == null || x.v === ''
+    const yn = y.v == null || y.v === ''
+    if (xn && yn) return x.i - y.i
+    if (xn) return 1
+    if (yn) return -1
+    if (typeof x.v === 'number' && typeof y.v === 'number') {
+      return (x.v - y.v) * mult
+    }
+    return String(x.v).localeCompare(String(y.v), 'pt-BR') * mult
+  })
+  return decorated.map(d => d.a)
+}
+
+function nextSort(current: SortState, key: SortKey): SortState {
+  if (current.key !== key) return { key, dir: 'asc' }
+  if (current.dir === 'asc') return { key, dir: 'desc' }
+  if (current.dir === 'desc') return { key: null, dir: null }
+  return { key, dir: 'asc' }
+}
+
 export default function AssetTable({
   assets, positions, institutions, grouping, showWorkspaceColumn, onRowClick, onAssetUpdated,
 }: Props) {
+  const [sort, setSort] = useState<SortState>({ key: null, dir: null })
+  const onSort = (key: SortKey) => setSort(prev => nextSort(prev, key))
+
   const fiById = useMemo(() => {
     const m = new Map<string, FinancialInstitutionOut>()
     for (const fi of institutions) m.set(fi.id, fi)
@@ -84,13 +160,16 @@ export default function AssetTable({
   }, [assets, grouping, fiById])
 
   if (grouping === 'none') {
+    const sorted = sortAssets(assets, positions, fiById, sort)
     return (
       <Card>
         <Table
-          assets={assets}
+          assets={sorted}
           positions={positions}
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
+          sort={sort}
+          onSort={onSort}
           onRowClick={onRowClick}
           onAssetUpdated={onAssetUpdated}
         />
@@ -103,10 +182,12 @@ export default function AssetTable({
       {groups.map(g => (
         <GroupCard
           key={g.key}
-          group={g}
+          group={{ ...g, items: sortAssets(g.items, positions, fiById, sort) }}
           positions={positions}
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
+          sort={sort}
+          onSort={onSort}
           onRowClick={onRowClick}
           onAssetUpdated={onAssetUpdated}
         />
@@ -124,12 +205,14 @@ function Card({ children }: { children: React.ReactNode }) {
 }
 
 function GroupCard({
-  group, positions, fiById, showWorkspaceColumn, onRowClick, onAssetUpdated,
+  group, positions, fiById, showWorkspaceColumn, sort, onSort, onRowClick, onAssetUpdated,
 }: {
   group: Group
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
   showWorkspaceColumn?: boolean
+  sort: SortState
+  onSort: (key: SortKey) => void
   onRowClick: (a: AssetOut) => void
   onAssetUpdated?: (updated: AssetOut) => void
 }) {
@@ -152,6 +235,8 @@ function GroupCard({
           positions={positions}
           fiById={fiById}
           showWorkspaceColumn={showWorkspaceColumn}
+          sort={sort}
+          onSort={onSort}
           onRowClick={onRowClick}
           onAssetUpdated={onAssetUpdated}
         />
@@ -160,13 +245,49 @@ function GroupCard({
   )
 }
 
+function SortHeader({
+  colKey, label, align = 'left', title, sort, onSort,
+}: {
+  colKey: SortKey
+  label: string
+  align?: 'left' | 'right'
+  title?: string
+  sort: SortState
+  onSort: (k: SortKey) => void
+}) {
+  const active = sort.key === colKey && sort.dir !== null
+  const dir = active ? sort.dir : null
+  const justify = align === 'right' ? 'justify-end' : 'justify-start'
+  return (
+    <th
+      className={`text-${align} font-medium px-2 py-2 select-none`}
+      title={title}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(colKey)}
+        className={`inline-flex items-center gap-1 ${justify} w-full hover:text-gray-700 dark:hover:text-gray-200 transition-colors ${
+          active ? 'text-indigo-500 dark:text-indigo-400' : ''
+        }`}
+      >
+        <span>{label}</span>
+        {dir === 'asc' && <ChevronUp className="w-3 h-3" />}
+        {dir === 'desc' && <ChevronDown className="w-3 h-3" />}
+        {!dir && <ChevronsUpDown className="w-3 h-3 opacity-30" />}
+      </button>
+    </th>
+  )
+}
+
 function Table({
-  assets, positions, fiById, showWorkspaceColumn, onRowClick, onAssetUpdated,
+  assets, positions, fiById, showWorkspaceColumn, sort, onSort, onRowClick, onAssetUpdated,
 }: {
   assets: AssetOut[]
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
   showWorkspaceColumn?: boolean
+  sort: SortState
+  onSort: (k: SortKey) => void
   onRowClick: (a: AssetOut) => void
   onAssetUpdated?: (updated: AssetOut) => void
 }) {
@@ -183,16 +304,18 @@ function Table({
         <thead>
           <tr className="text-[10px] uppercase tracking-wider text-gray-500">
             {showWorkspaceColumn && <th className="text-left font-medium px-2 py-2">Workspace</th>}
-            <th className="text-left font-medium px-2 py-2">Ativo</th>
-            <th className="text-left font-medium px-2 py-2">Classe</th>
-            <th className="text-left font-medium px-2 py-2">Custodiante</th>
-            <th className="text-right font-medium px-2 py-2">Qtd</th>
-            <th className="text-right font-medium px-2 py-2">Preço médio</th>
-            <th className="text-right font-medium px-2 py-2">Atual</th>
-            <th className="text-right font-medium px-2 py-2">Valor</th>
-            <th className="text-right font-medium px-2 py-2" title="Variação no preço do papel">Variação</th>
-            <th className="text-right font-medium px-2 py-2" title="Variação + proventos recebidos">Rentab.</th>
-            <th className="text-left font-medium px-2 py-2">Atualizado</th>
+            <SortHeader colKey="ticker" label="Ativo" align="left" sort={sort} onSort={onSort} />
+            <SortHeader colKey="klass" label="Classe" align="left" sort={sort} onSort={onSort} />
+            <SortHeader colKey="fi" label="Custodiante" align="left" sort={sort} onSort={onSort} />
+            <SortHeader colKey="qty" label="Qtd" align="right" sort={sort} onSort={onSort} />
+            <SortHeader colKey="avg" label="Preço médio" align="right" sort={sort} onSort={onSort} />
+            <SortHeader colKey="current_price" label="Atual" align="right" sort={sort} onSort={onSort} />
+            <SortHeader colKey="current_value" label="Valor" align="right" sort={sort} onSort={onSort} />
+            <SortHeader colKey="variation" label="Variação" align="right" title="Variação no preço do papel" sort={sort} onSort={onSort} />
+            <SortHeader colKey="rentabilidade" label="Rentab." align="right" title="Variação + proventos recebidos" sort={sort} onSort={onSort} />
+            <SortHeader colKey="dividend_yield" label="DY" align="right" title="Dividend Yield — Σ proventos últimos 12 meses / valor atual" sort={sort} onSort={onSort} />
+            <SortHeader colKey="yield_on_cost" label="YoC" align="right" title="Yield on Cost — Σ proventos últimos 12 meses / custo investido" sort={sort} onSort={onSort} />
+            <SortHeader colKey="updated" label="Atualizado" align="left" sort={sort} onSort={onSort} />
             <th className="px-2"></th>
           </tr>
         </thead>
@@ -302,6 +425,20 @@ function Row({
         {position?.rentabilidade == null
           ? '—'
           : `${position.rentabilidade >= 0 ? '+' : ''}${(position.rentabilidade * 100).toFixed(2)}%`}
+      </td>
+      <td className={`px-2 text-right tnum font-medium ${
+        position?.dividend_yield == null
+          ? 'text-gray-300 dark:text-gray-700'
+          : 'text-gray-700 dark:text-gray-300'
+      }`}>
+        {fmtPct(position?.dividend_yield)}
+      </td>
+      <td className={`px-2 text-right tnum font-medium ${
+        position?.yield_on_cost == null
+          ? 'text-gray-300 dark:text-gray-700'
+          : 'text-gray-700 dark:text-gray-300'
+      }`}>
+        {fmtPct(position?.yield_on_cost)}
       </td>
       <td className="px-2">
         <PriceCell asset={asset} onUpdated={onAssetUpdated} />

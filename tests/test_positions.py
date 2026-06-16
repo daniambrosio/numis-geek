@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import bcrypt
@@ -460,3 +460,135 @@ def test_non_cotado_position_runs_basis_only(client, seed):
     assert pos["average_cost"] == 0.0
     # But the standalone basis is 5000.
     assert pos["total_invested_brl"] == 5000.0
+
+
+# ── DY / YoC (TTM-based) ──────────────────────────────────────────────────
+
+
+def _seed_dy_asset(seed, *, current_price: float | None = None) -> str:
+    """Cria um asset BRL fresco com current_price (manual) já setado."""
+    db = TestSession()
+    account = db.query(Account).first()
+    now = datetime.now(timezone.utc)
+    from numis_geek.models.asset import PriceSource
+    a = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        account_id=account.id,
+        asset_class=AssetClass.STOCK,
+        country="BR",
+        name="DY Tester",
+        ticker=f"DYT{uuid.uuid4().hex[:4].upper()}",
+        currency=Currency.BRL,
+        current_price=Decimal(str(current_price)) if current_price is not None else None,
+        price_source=PriceSource.MANUAL if current_price is not None else None,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(a); db.commit(); db.refresh(a)
+    asset_id = a.id
+    db.close()
+    return asset_id
+
+
+def test_ttm_dividends_window(client, seed):
+    """Distribuição dentro de 365d soma ao TTM; mais antiga só ao total."""
+    today = date.today()
+    asset_id = _seed_dy_asset(seed, current_price=12.0)
+    # BUY pra criar invested
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
+        "event_date": (today - timedelta(days=400)).isoformat(),
+        "quantity": 100, "unit_price": 10.00,
+    }, headers=auth(seed["admin_token"]))
+    # Dividend antigo: 400 dias atrás (fora da janela TTM)
+    client.post("/api/distributions", json={
+        "financial_institution_id": seed["fi_id"],
+        "asset_id": asset_id, "type": "DIVIDEND",
+        "event_date": (today - timedelta(days=400)).isoformat(),
+        "gross_amount": 30.00, "currency": "BRL",
+    }, headers=auth(seed["admin_token"]))
+    # Dividend recente: 100 dias atrás (dentro da janela)
+    client.post("/api/distributions", json={
+        "financial_institution_id": seed["fi_id"],
+        "asset_id": asset_id, "type": "DIVIDEND",
+        "event_date": (today - timedelta(days=100)).isoformat(),
+        "gross_amount": 50.00, "currency": "BRL",
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    assert r.status_code == 200, r.text
+    pos = r.json()
+    # total_received_brl = 30 + 50 = 80 (all-time)
+    assert pos["total_received_brl"] == 80.0
+    # ttm_dividends_brl = 50 (só o de 100d atrás cai na janela)
+    assert pos["ttm_dividends_brl"] == 50.0
+
+
+def test_dy_and_yoc_calculation(client, seed):
+    """DY = TTM / current_value_brl; YoC = TTM / total_invested_brl."""
+    today = date.today()
+    # Asset com preço atual = 12, comprou 100 @ 10 → invested 1000, current_value = 1200
+    asset_id = _seed_dy_asset(seed, current_price=12.0)
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
+        "event_date": (today - timedelta(days=200)).isoformat(),
+        "quantity": 100, "unit_price": 10.00,
+    }, headers=auth(seed["admin_token"]))
+    # 60 BRL em dividendos nos últimos 12 meses
+    client.post("/api/distributions", json={
+        "financial_institution_id": seed["fi_id"],
+        "asset_id": asset_id, "type": "DIVIDEND",
+        "event_date": (today - timedelta(days=30)).isoformat(),
+        "gross_amount": 60.00, "currency": "BRL",
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    # invested = 100 * 10 = 1000
+    assert pos["total_invested_brl"] == 1000.0
+    # current_value = 100 * 12 = 1200 BRL
+    assert pos["current_value_brl"] == 1200.0
+    # YoC = 60 / 1000 = 0.06
+    assert pos["yield_on_cost"] == pytest.approx(0.06)
+    # DY = 60 / 1200 = 0.05
+    assert pos["dividend_yield"] == pytest.approx(0.05)
+
+
+def test_dy_none_when_no_current_price(client, seed):
+    """Sem current_price → current_value_brl None → DY None; YoC ainda funciona."""
+    today = date.today()
+    asset_id = _seed_dy_asset(seed, current_price=None)
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
+        "event_date": (today - timedelta(days=50)).isoformat(),
+        "quantity": 50, "unit_price": 20.00,
+    }, headers=auth(seed["admin_token"]))
+    client.post("/api/distributions", json={
+        "financial_institution_id": seed["fi_id"],
+        "asset_id": asset_id, "type": "DIVIDEND",
+        "event_date": (today - timedelta(days=10)).isoformat(),
+        "gross_amount": 25.00, "currency": "BRL",
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    assert pos["dividend_yield"] is None         # sem current_price
+    # invested 50 * 20 = 1000; YoC = 25 / 1000 = 0.025
+    assert pos["yield_on_cost"] == pytest.approx(0.025)
+
+
+def test_dy_yoc_none_without_dividends(client, seed):
+    """Sem proventos → ambos None (não 0)."""
+    asset_id = _seed_dy_asset(seed, current_price=15.0)
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id, "type": "BUY",
+        "event_date": _today_iso(),
+        "quantity": 10, "unit_price": 15.00,
+    }, headers=auth(seed["admin_token"]))
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    pos = r.json()
+    assert pos["ttm_dividends_brl"] == 0.0
+    assert pos["dividend_yield"] is None
+    assert pos["yield_on_cost"] is None
