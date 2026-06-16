@@ -78,10 +78,11 @@ function mockBoringDeps() {
   vi.spyOn(api, 'getAssetPosition').mockResolvedValue({
     asset_id: 'a1', quantity_held: 30, average_cost: 108.20,
     average_cost_brl: 108.20 * 5.5, total_invested_brl: 17000,
-    total_received_brl: 97, currency: 'USD',
+    total_received_brl: 97, ttm_dividends_brl: 0, currency: 'USD',
     current_price: 85, current_value: 30 * 85,
     current_value_brl: 30 * 85 * 5.5, variation: -0.21,
     rentabilidade: -0.19,
+    dividend_yield: null, yield_on_cost: null,
   })
   vi.spyOn(api, 'listAssetMovementsForAsset').mockResolvedValue({
     items: [], total: 0, page: 1, page_size: 200,
