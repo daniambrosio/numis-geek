@@ -17,6 +17,7 @@ from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.option_lifecycle import (
     OptionLifecycleError,
+    auto_settle_expired_options,
     compute_open_options,
     exercise_option,
     expire_option,
@@ -229,3 +230,128 @@ def test_exercise_already_closed_raises(db):
     exercise_option(db, opt.id, date(2026, 6, 19))
     with pytest.raises(OptionLifecycleError):
         exercise_option(db, opt.id, date(2026, 6, 19))
+
+
+# ── Auto-settlement ──────────────────────────────────────────────────────────
+
+
+def _today():
+    return date(2026, 6, 22)
+
+
+def test_auto_settle_put_out_of_money_expires(db):
+    """ITUB4 = 39.87, strike PUT 36.40 → OTM → vira pó."""
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("39.87")
+    opt = _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert len(results) == 1
+    r = results[0]
+    assert r.option_id == opt.id
+    assert r.decision == "expired"
+    db.refresh(opt)
+    assert opt.is_active is False
+    # Movement EXPIRED criado com event_date = expiration_date
+    expired_mv = db.query(AssetMovement).filter(
+        AssetMovement.asset_id == opt.id,
+        AssetMovement.type == AssetMovementType.EXPIRED,
+    ).one()
+    assert expired_mv.event_date == date(2026, 6, 19)
+    assert expired_mv.quantity == Decimal("1000")
+
+
+def test_auto_settle_put_in_the_money_exercises(db):
+    """ITUB4 = 35.00, strike PUT 36.40 → ITM → exercida (assignment)."""
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("35.00")
+    opt = _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert len(results) == 1
+    assert results[0].decision == "exercised"
+    db.refresh(opt)
+    assert opt.is_active is False
+    # Underlying ganhou BUY @ strike - prêmio
+    buy = db.query(AssetMovement).filter(
+        AssetMovement.asset_id == world["itub4"].id,
+        AssetMovement.type == AssetMovementType.BUY,
+    ).one()
+    assert buy.unit_price == Decimal("36.31")
+
+
+def test_auto_settle_call_in_the_money_exercises(db):
+    """ITUB4 = 50.00, strike CALL 47.50 → ITM → exercida (vende)."""
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("50.00")
+    opt = _seed_option(
+        db, world, ticker="ITUBF475", opt_type=OptionType.CALL,
+        strike=Decimal("47.50"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.34"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert results[0].decision == "exercised"
+    sell = db.query(AssetMovement).filter(
+        AssetMovement.asset_id == world["itub4"].id,
+        AssetMovement.type == AssetMovementType.SELL,
+    ).one()
+    assert sell.unit_price == Decimal("47.84")
+
+
+def test_auto_settle_at_the_money_expires(db):
+    """Convenção: equal vira pó (PCO B3)."""
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("36.40")
+    _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert results[0].decision == "expired"
+
+
+def test_auto_settle_skips_when_underlying_has_no_price(db):
+    world = _seed_world(db)
+    world["itub4"].current_price = None
+    _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert results[0].decision == "skipped"
+    assert "sem current_price" in results[0].reason
+
+
+def test_auto_settle_ignores_not_yet_expired(db):
+    """Opção com expiration_date >= today nem entra na query."""
+    world = _seed_world(db)
+    # _seed_option fixa expiration_date = 2026-06-19; today = 2026-06-19 (mesmo dia)
+    _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=date(2026, 6, 19))
+    assert results == []
+
+
+def test_auto_settle_ignores_already_closed_option(db):
+    """Opção já com is_active=False não é tocada."""
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("39.87")
+    opt = _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    expire_option(db, opt.id, date(2026, 6, 19))
+    results = auto_settle_expired_options(db, today=_today())
+    assert results == []

@@ -34,6 +34,7 @@ from numis_geek.jobs.snapshot_auto import (
 from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.backup import create_backup, rotate_backups
+from numis_geek.services.option_lifecycle import auto_settle_expired_options
 from numis_geek.services.price_update import refresh_all_automated
 from numis_geek.services.ptax_sync import sync_ptax
 
@@ -52,6 +53,8 @@ PTAX_CATCHUP_JOB_ID = "ptax_sync_startup_catchup"
 
 BACKUP_JOB_ID = "backup_daily"
 BACKUP_DIR = Path("data/backups")
+
+OPTION_SETTLE_JOB_ID = "option_auto_settle_daily"
 
 
 def run_daily_price_refresh() -> None:
@@ -119,6 +122,43 @@ def run_daily_ptax_sync() -> None:
     except Exception:
         db.rollback()
         logger.exception("cron ptax sync failed")
+    finally:
+        db.close()
+
+
+def run_option_auto_settle() -> None:
+    """Detecta opções vencidas e marca como EXPIRED (pó) ou EXERCISED
+    (atribuídas) usando o current_price do underlying.
+
+    Roda logo após o price_refresh_daily (18:00 SP) pra usar current_price
+    fresh. Opções sem preço disponível ficam como pendência (logged warning)
+    e o user resolve manualmente.
+    """
+    db = SessionLocal()
+    try:
+        results = auto_settle_expired_options(
+            db, created_by=CRON_USER_EMAIL,
+        )
+        if not results:
+            logger.info("cron option auto-settle: nenhuma opção vencida ativa")
+            db.commit()
+            return
+        expired = sum(1 for r in results if r.decision == "expired")
+        exercised = sum(1 for r in results if r.decision == "exercised")
+        skipped = sum(1 for r in results if r.decision == "skipped")
+        for r in results:
+            logger.info(
+                "cron option auto-settle %s: %s (%s)",
+                r.decision, r.ticker or r.option_id, r.reason,
+            )
+        db.commit()
+        logger.info(
+            "cron option auto-settle: expired=%d exercised=%d skipped=%d total=%d",
+            expired, exercised, skipped, len(results),
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("cron option auto-settle failed")
     finally:
         db.close()
 
@@ -211,6 +251,18 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # Auto-settlement de opções vencidas. Roda às 18:05 SP, 5 min após o
+    # price_refresh_daily (18:00 SP) — assim current_price reflete o
+    # fechamento do dia útil. PUT in-the-money exerce, CALL in-the-money
+    # exerce, fora-do-dinheiro vira pó. Sem preço → skip (log warning).
+    sched.add_job(
+        run_option_auto_settle,
+        CronTrigger(hour=18, minute=5),
+        id=OPTION_SETTLE_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     # Spec 44 follow-up — one-shot PTAX catchup right after start. The
     # 20h SP cron is missed whenever ./dev.sh isn't running at 20h
     # (laptop closed, weekend, etc.). DateTrigger(now) fires once as
@@ -228,10 +280,12 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
     next_snap = sched.get_job(SNAPSHOT_JOB_ID).next_run_time
     next_ptax = sched.get_job(PTAX_JOB_ID).next_run_time
     next_backup = sched.get_job(BACKUP_JOB_ID).next_run_time
+    next_settle = sched.get_job(OPTION_SETTLE_JOB_ID).next_run_time
     logger.info(
-        "scheduler started: %s next=%s; %s next=%s; %s next=%s; %s next=%s",
+        "scheduler started: %s next=%s; %s next=%s; %s next=%s; %s next=%s; %s next=%s",
         CRON_JOB_ID, next_price, SNAPSHOT_JOB_ID, next_snap,
         PTAX_JOB_ID, next_ptax, BACKUP_JOB_ID, next_backup,
+        OPTION_SETTLE_JOB_ID, next_settle,
     )
     app.state.scheduler = sched
     return sched

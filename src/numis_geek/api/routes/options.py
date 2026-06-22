@@ -19,7 +19,9 @@ from numis_geek.models.workspace import Workspace
 from numis_geek.services.auth import UserContext
 from numis_geek.services.fx import resolve_fx_rate
 from numis_geek.services.option_lifecycle import (
+    AutoSettleResult,
     OptionLifecycleError,
+    auto_settle_expired_options,
     compute_open_options,
     exercise_option,
     expire_option,
@@ -384,3 +386,55 @@ def close_manual(
     db.flush()
     underlying = db.get(Asset, opt.underlying_id) if opt.underlying_id else None
     return OptionOut.from_orm(opt, underlying)
+
+
+# ── Auto-settle (catchup admin endpoint) ───────────────────────────────────
+
+
+class AutoSettleResultOut(BaseModel):
+    option_id: str
+    ticker: str | None
+    decision: Literal["expired", "exercised", "skipped"]
+    underlying_ticker: str | None
+    underlying_price: float | None
+    strike_price: float | None
+    option_type: OptionType | None
+    reason: str
+
+
+class AutoSettleResponse(BaseModel):
+    expired: int
+    exercised: int
+    skipped: int
+    results: list[AutoSettleResultOut]
+
+
+def _to_out(r: AutoSettleResult) -> AutoSettleResultOut:
+    return AutoSettleResultOut(
+        option_id=r.option_id,
+        ticker=r.ticker,
+        decision=r.decision,
+        underlying_ticker=r.underlying_ticker,
+        underlying_price=float(r.underlying_price) if r.underlying_price is not None else None,
+        strike_price=float(r.strike_price) if r.strike_price is not None else None,
+        option_type=r.option_type,
+        reason=r.reason,
+    )
+
+
+@router.post("/auto-settle", response_model=AutoSettleResponse)
+def auto_settle(
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Catchup manual: detecta opções vencidas e aplica EXPIRED ou EXERCISED
+    com base no current_price do underlying. Mesma lógica que o job diário."""
+    if current_user.role not in (UserRole.admin, UserRole.sysadmin):
+        raise HTTPException(403, "Apenas admin/sysadmin pode rodar auto-settle.")
+    results = auto_settle_expired_options(db, created_by=current_user.user_id)
+    return AutoSettleResponse(
+        expired=sum(1 for r in results if r.decision == "expired"),
+        exercised=sum(1 for r in results if r.decision == "exercised"),
+        skipped=sum(1 for r in results if r.decision == "skipped"),
+        results=[_to_out(r) for r in results],
+    )

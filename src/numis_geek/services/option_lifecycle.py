@@ -366,3 +366,148 @@ def expire_option(
     opt.updated_at = now
     db.flush()
     return expired
+
+
+# ── Auto-settlement (job diário) ──────────────────────────────────────────────
+
+
+SettleDecision = Literal["expired", "exercised", "skipped"]
+
+
+@dataclass(frozen=True)
+class AutoSettleResult:
+    option_id: str
+    ticker: str | None
+    decision: SettleDecision
+    underlying_ticker: str | None
+    underlying_price: Decimal | None
+    strike_price: Decimal | None
+    option_type: OptionType | None
+    reason: str  # razão da decisão (ou do skip)
+
+
+def auto_settle_expired_options(
+    db: Session,
+    *,
+    today: date | None = None,
+    created_by: str | None = None,
+) -> list[AutoSettleResult]:
+    """Detecta opções vencidas e dispara expire_option / exercise_option.
+
+    Regra de decisão (B3, americanas, ATM convenciona como pó):
+      - PUT:  underlying_price < strike  → EXERCISED
+      - CALL: underlying_price > strike  → EXERCISED
+      - else                              → EXPIRED (pó)
+
+    Skip quando o preço do underlying não está disponível ou está stale —
+    auditável e o user resolve manualmente. event_date do movement criado
+    é a expiration_date (vencimento), não today.
+
+    Idempotente: se a opção já foi fechada (is_active=False ou qty_open=0),
+    fica de fora da query inicial.
+    """
+    ref_today = today or date.today()
+    candidates = (
+        db.query(Asset)
+        .filter(
+            Asset.asset_class == AssetClass.OPTION,
+            Asset.is_active.is_(True),
+            Asset.expiration_date.isnot(None),
+            Asset.expiration_date < ref_today,
+        )
+        .all()
+    )
+
+    results: list[AutoSettleResult] = []
+    for opt in candidates:
+        try:
+            qty_open, _is_short, _prem = _sum_open_qty(db, opt.id)
+        except Exception as e:
+            results.append(AutoSettleResult(
+                option_id=opt.id, ticker=opt.ticker,
+                decision="skipped",
+                underlying_ticker=None, underlying_price=None,
+                strike_price=opt.strike_price, option_type=opt.option_type,
+                reason=f"_sum_open_qty falhou: {e}",
+            ))
+            continue
+        if qty_open == 0:
+            continue  # já fechada via outros movements; nada a fazer
+
+        underlying = db.get(Asset, opt.underlying_id) if opt.underlying_id else None
+        if underlying is None:
+            results.append(AutoSettleResult(
+                option_id=opt.id, ticker=opt.ticker,
+                decision="skipped",
+                underlying_ticker=None, underlying_price=None,
+                strike_price=opt.strike_price, option_type=opt.option_type,
+                reason="underlying não encontrado",
+            ))
+            continue
+
+        underlying_price = underlying.current_price
+        if underlying_price is None or underlying_price <= 0:
+            results.append(AutoSettleResult(
+                option_id=opt.id, ticker=opt.ticker,
+                decision="skipped",
+                underlying_ticker=underlying.ticker, underlying_price=None,
+                strike_price=opt.strike_price, option_type=opt.option_type,
+                reason=f"underlying {underlying.ticker} sem current_price",
+            ))
+            continue
+
+        if opt.strike_price is None or opt.option_type is None:
+            results.append(AutoSettleResult(
+                option_id=opt.id, ticker=opt.ticker,
+                decision="skipped",
+                underlying_ticker=underlying.ticker,
+                underlying_price=underlying_price,
+                strike_price=opt.strike_price, option_type=opt.option_type,
+                reason="opção sem strike_price ou option_type",
+            ))
+            continue
+
+        # Decisão
+        in_the_money = (
+            (opt.option_type == OptionType.PUT and underlying_price < opt.strike_price)
+            or
+            (opt.option_type == OptionType.CALL and underlying_price > opt.strike_price)
+        )
+        try:
+            if in_the_money:
+                exercise_option(db, opt.id, opt.expiration_date, created_by=created_by)
+                decision: SettleDecision = "exercised"
+                reason = (
+                    f"{opt.option_type.value} in-the-money: "
+                    f"{underlying.ticker} {underlying_price} "
+                    f"{'<' if opt.option_type == OptionType.PUT else '>'} "
+                    f"strike {opt.strike_price}"
+                )
+            else:
+                expire_option(db, opt.id, opt.expiration_date, created_by=created_by)
+                decision = "expired"
+                reason = (
+                    f"{opt.option_type.value} out-of-the-money: "
+                    f"{underlying.ticker} {underlying_price} vs strike {opt.strike_price}"
+                )
+        except OptionLifecycleError as e:
+            results.append(AutoSettleResult(
+                option_id=opt.id, ticker=opt.ticker,
+                decision="skipped",
+                underlying_ticker=underlying.ticker,
+                underlying_price=underlying_price,
+                strike_price=opt.strike_price, option_type=opt.option_type,
+                reason=f"lifecycle error: {e}",
+            ))
+            continue
+
+        results.append(AutoSettleResult(
+            option_id=opt.id, ticker=opt.ticker,
+            decision=decision,
+            underlying_ticker=underlying.ticker,
+            underlying_price=underlying_price,
+            strike_price=opt.strike_price, option_type=opt.option_type,
+            reason=reason,
+        ))
+
+    return results
