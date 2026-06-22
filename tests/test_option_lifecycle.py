@@ -239,10 +239,29 @@ def _today():
     return date(2026, 6, 22)
 
 
-def test_auto_settle_put_out_of_money_expires(db):
-    """ITUB4 = 39.87, strike PUT 36.40 → OTM → vira pó."""
+def _stub_historical_price(monkeypatch, price: Decimal | None):
+    """Substitui fetch_price_on dentro do option_lifecycle por um stub.
+
+    Se price=None, simula HistoricalPriceNotFound.
+    Caso contrário devolve um HistoricalPrice com source='stub'.
+    """
+    from numis_geek.services import option_lifecycle as ol
+    from numis_geek.services.historical_price import (
+        HistoricalPrice, HistoricalPriceNotFound,
+    )
+
+    def _fake(_db, _asset, target):
+        if price is None:
+            raise HistoricalPriceNotFound("stub: sem preço")
+        return HistoricalPrice(price=price, source="stub", effective_date=target)
+
+    monkeypatch.setattr(ol, "fetch_price_on", _fake)
+
+
+def test_auto_settle_put_out_of_money_expires(db, monkeypatch):
+    """ITUB4 = 39.87 em 19/06, strike PUT 36.40 → OTM → vira pó."""
     world = _seed_world(db)
-    world["itub4"].current_price = Decimal("39.87")
+    _stub_historical_price(monkeypatch, Decimal("39.87"))
     opt = _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),
@@ -253,9 +272,10 @@ def test_auto_settle_put_out_of_money_expires(db):
     r = results[0]
     assert r.option_id == opt.id
     assert r.decision == "expired"
+    assert r.underlying_price == Decimal("39.87")
+    assert r.price_source == "stub"
     db.refresh(opt)
     assert opt.is_active is False
-    # Movement EXPIRED criado com event_date = expiration_date
     expired_mv = db.query(AssetMovement).filter(
         AssetMovement.asset_id == opt.id,
         AssetMovement.type == AssetMovementType.EXPIRED,
@@ -264,10 +284,10 @@ def test_auto_settle_put_out_of_money_expires(db):
     assert expired_mv.quantity == Decimal("1000")
 
 
-def test_auto_settle_put_in_the_money_exercises(db):
-    """ITUB4 = 35.00, strike PUT 36.40 → ITM → exercida (assignment)."""
+def test_auto_settle_put_in_the_money_exercises(db, monkeypatch):
+    """ITUB4 = 35.00 em 19/06, strike PUT 36.40 → ITM → exercida."""
     world = _seed_world(db)
-    world["itub4"].current_price = Decimal("35.00")
+    _stub_historical_price(monkeypatch, Decimal("35.00"))
     opt = _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),
@@ -278,7 +298,6 @@ def test_auto_settle_put_in_the_money_exercises(db):
     assert results[0].decision == "exercised"
     db.refresh(opt)
     assert opt.is_active is False
-    # Underlying ganhou BUY @ strike - prêmio
     buy = db.query(AssetMovement).filter(
         AssetMovement.asset_id == world["itub4"].id,
         AssetMovement.type == AssetMovementType.BUY,
@@ -286,10 +305,10 @@ def test_auto_settle_put_in_the_money_exercises(db):
     assert buy.unit_price == Decimal("36.31")
 
 
-def test_auto_settle_call_in_the_money_exercises(db):
-    """ITUB4 = 50.00, strike CALL 47.50 → ITM → exercida (vende)."""
+def test_auto_settle_call_in_the_money_exercises(db, monkeypatch):
+    """ITUB4 = 50.00 em 19/06, strike CALL 47.50 → ITM → exercida (vende)."""
     world = _seed_world(db)
-    world["itub4"].current_price = Decimal("50.00")
+    _stub_historical_price(monkeypatch, Decimal("50.00"))
     opt = _seed_option(
         db, world, ticker="ITUBF475", opt_type=OptionType.CALL,
         strike=Decimal("47.50"), qty=Decimal("1000"),
@@ -304,10 +323,10 @@ def test_auto_settle_call_in_the_money_exercises(db):
     assert sell.unit_price == Decimal("47.84")
 
 
-def test_auto_settle_at_the_money_expires(db):
+def test_auto_settle_at_the_money_expires(db, monkeypatch):
     """Convenção: equal vira pó (PCO B3)."""
     world = _seed_world(db)
-    world["itub4"].current_price = Decimal("36.40")
+    _stub_historical_price(monkeypatch, Decimal("36.40"))
     _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),
@@ -317,9 +336,10 @@ def test_auto_settle_at_the_money_expires(db):
     assert results[0].decision == "expired"
 
 
-def test_auto_settle_skips_when_underlying_has_no_price(db):
+def test_auto_settle_skips_when_historical_price_unavailable(db, monkeypatch):
+    """Sem preço histórico do underlying → skip (sem decisão errada)."""
     world = _seed_world(db)
-    world["itub4"].current_price = None
+    _stub_historical_price(monkeypatch, None)
     _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),
@@ -327,13 +347,46 @@ def test_auto_settle_skips_when_underlying_has_no_price(db):
     )
     results = auto_settle_expired_options(db, today=_today())
     assert results[0].decision == "skipped"
-    assert "sem current_price" in results[0].reason
+    assert "stub: sem preço" in results[0].reason
 
 
-def test_auto_settle_ignores_not_yet_expired(db):
+def test_auto_settle_uses_expiration_date_price_not_today(db, monkeypatch):
+    """Preço cobrado é o da DATA DE VENCIMENTO, não 'hoje'.
+
+    Cenário: opção venceu 19/06 com underlying a R$ 35 (ITM, deveria exercer).
+    Em 22/06 (hoje) underlying já está a R$ 45. Se o sistema usasse o preço
+    de hoje, decidiria 'pó' errado. Stub recebe a target_date e devolve o
+    preço CERTO do dia 19/06.
+    """
+    world = _seed_world(db)
+    world["itub4"].current_price = Decimal("45.00")  # preço "de hoje"
+    captured: list[date] = []
+
+    from numis_geek.services import option_lifecycle as ol
+    from numis_geek.services.historical_price import HistoricalPrice
+
+    def _fake(_db, _asset, target):
+        captured.append(target)
+        return HistoricalPrice(
+            price=Decimal("35.00"),  # preço REAL do dia 19/06
+            source="stub", effective_date=target,
+        )
+
+    monkeypatch.setattr(ol, "fetch_price_on", _fake)
+    _seed_option(
+        db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
+        strike=Decimal("36.40"), qty=Decimal("1000"),
+        premium_per_share=Decimal("0.09"),
+    )
+    results = auto_settle_expired_options(db, today=_today())
+    assert captured == [date(2026, 6, 19)]  # pediu o preço da expiração
+    assert results[0].decision == "exercised"  # decidiu pelo preço CERTO
+
+
+def test_auto_settle_ignores_not_yet_expired(db, monkeypatch):
     """Opção com expiration_date >= today nem entra na query."""
     world = _seed_world(db)
-    # _seed_option fixa expiration_date = 2026-06-19; today = 2026-06-19 (mesmo dia)
+    _stub_historical_price(monkeypatch, Decimal("39.87"))
     _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),
@@ -343,10 +396,10 @@ def test_auto_settle_ignores_not_yet_expired(db):
     assert results == []
 
 
-def test_auto_settle_ignores_already_closed_option(db):
+def test_auto_settle_ignores_already_closed_option(db, monkeypatch):
     """Opção já com is_active=False não é tocada."""
     world = _seed_world(db)
-    world["itub4"].current_price = Decimal("39.87")
+    _stub_historical_price(monkeypatch, Decimal("39.87"))
     opt = _seed_option(
         db, world, ticker="ITUBR364", opt_type=OptionType.PUT,
         strike=Decimal("36.40"), qty=Decimal("1000"),

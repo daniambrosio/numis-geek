@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 from numis_geek.models.asset import Asset, AssetClass, OptionType
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.services.fx import resolve_fx_rate
+from numis_geek.services.historical_price import (
+    HistoricalPriceNotFound, fetch_price_on,
+)
 
 
 # ── BR ticker parser ─────────────────────────────────────────────────────────
@@ -381,6 +384,8 @@ class AutoSettleResult:
     decision: SettleDecision
     underlying_ticker: str | None
     underlying_price: Decimal | None
+    price_source: str | None        # 'brapi' | 'snapshot' | 'current_price'
+    price_effective_date: date | None  # data do preço (walkback se necessário)
     strike_price: Decimal | None
     option_type: OptionType | None
     reason: str  # razão da decisão (ou do skip)
@@ -418,94 +423,86 @@ def auto_settle_expired_options(
         .all()
     )
 
+    def _skip(opt, ut, up, src, eff, reason):
+        return AutoSettleResult(
+            option_id=opt.id, ticker=opt.ticker,
+            decision="skipped",
+            underlying_ticker=ut, underlying_price=up,
+            price_source=src, price_effective_date=eff,
+            strike_price=opt.strike_price, option_type=opt.option_type,
+            reason=reason,
+        )
+
     results: list[AutoSettleResult] = []
     for opt in candidates:
         try:
             qty_open, _is_short, _prem = _sum_open_qty(db, opt.id)
         except Exception as e:
-            results.append(AutoSettleResult(
-                option_id=opt.id, ticker=opt.ticker,
-                decision="skipped",
-                underlying_ticker=None, underlying_price=None,
-                strike_price=opt.strike_price, option_type=opt.option_type,
-                reason=f"_sum_open_qty falhou: {e}",
-            ))
+            results.append(_skip(opt, None, None, None, None,
+                                f"_sum_open_qty falhou: {e}"))
             continue
         if qty_open == 0:
             continue  # já fechada via outros movements; nada a fazer
 
         underlying = db.get(Asset, opt.underlying_id) if opt.underlying_id else None
         if underlying is None:
-            results.append(AutoSettleResult(
-                option_id=opt.id, ticker=opt.ticker,
-                decision="skipped",
-                underlying_ticker=None, underlying_price=None,
-                strike_price=opt.strike_price, option_type=opt.option_type,
-                reason="underlying não encontrado",
-            ))
-            continue
-
-        underlying_price = underlying.current_price
-        if underlying_price is None or underlying_price <= 0:
-            results.append(AutoSettleResult(
-                option_id=opt.id, ticker=opt.ticker,
-                decision="skipped",
-                underlying_ticker=underlying.ticker, underlying_price=None,
-                strike_price=opt.strike_price, option_type=opt.option_type,
-                reason=f"underlying {underlying.ticker} sem current_price",
-            ))
+            results.append(_skip(opt, None, None, None, None,
+                                "underlying não encontrado"))
             continue
 
         if opt.strike_price is None or opt.option_type is None:
-            results.append(AutoSettleResult(
-                option_id=opt.id, ticker=opt.ticker,
-                decision="skipped",
-                underlying_ticker=underlying.ticker,
-                underlying_price=underlying_price,
-                strike_price=opt.strike_price, option_type=opt.option_type,
-                reason="opção sem strike_price ou option_type",
-            ))
+            results.append(_skip(opt, underlying.ticker, None, None, None,
+                                "opção sem strike_price ou option_type"))
             continue
 
-        # Decisão
+        # Preço do underlying NA DATA DE VENCIMENTO (não "agora").
+        try:
+            hp = fetch_price_on(db, underlying, opt.expiration_date)
+        except HistoricalPriceNotFound as e:
+            results.append(_skip(opt, underlying.ticker, None, None, None, str(e)))
+            continue
+        if hp.price <= 0:
+            results.append(_skip(opt, underlying.ticker, hp.price,
+                                hp.source, hp.effective_date,
+                                f"preço inválido ({hp.price})"))
+            continue
+
         in_the_money = (
-            (opt.option_type == OptionType.PUT and underlying_price < opt.strike_price)
+            (opt.option_type == OptionType.PUT and hp.price < opt.strike_price)
             or
-            (opt.option_type == OptionType.CALL and underlying_price > opt.strike_price)
+            (opt.option_type == OptionType.CALL and hp.price > opt.strike_price)
         )
         try:
             if in_the_money:
                 exercise_option(db, opt.id, opt.expiration_date, created_by=created_by)
                 decision: SettleDecision = "exercised"
                 reason = (
-                    f"{opt.option_type.value} in-the-money: "
-                    f"{underlying.ticker} {underlying_price} "
+                    f"{opt.option_type.value} in-the-money em {hp.effective_date}: "
+                    f"{underlying.ticker} {hp.price} "
                     f"{'<' if opt.option_type == OptionType.PUT else '>'} "
-                    f"strike {opt.strike_price}"
+                    f"strike {opt.strike_price} (fonte: {hp.source})"
                 )
             else:
                 expire_option(db, opt.id, opt.expiration_date, created_by=created_by)
                 decision = "expired"
                 reason = (
-                    f"{opt.option_type.value} out-of-the-money: "
-                    f"{underlying.ticker} {underlying_price} vs strike {opt.strike_price}"
+                    f"{opt.option_type.value} out-of-the-money em {hp.effective_date}: "
+                    f"{underlying.ticker} {hp.price} vs strike {opt.strike_price} "
+                    f"(fonte: {hp.source})"
                 )
         except OptionLifecycleError as e:
-            results.append(AutoSettleResult(
-                option_id=opt.id, ticker=opt.ticker,
-                decision="skipped",
-                underlying_ticker=underlying.ticker,
-                underlying_price=underlying_price,
-                strike_price=opt.strike_price, option_type=opt.option_type,
-                reason=f"lifecycle error: {e}",
-            ))
+            results.append(_skip(opt, underlying.ticker, hp.price,
+                                hp.source, hp.effective_date,
+                                f"lifecycle error: {e}"))
             continue
 
         results.append(AutoSettleResult(
             option_id=opt.id, ticker=opt.ticker,
             decision=decision,
             underlying_ticker=underlying.ticker,
-            underlying_price=underlying_price,
+            underlying_price=hp.price,
+            price_source=hp.source,
+            price_effective_date=hp.effective_date,
             strike_price=opt.strike_price, option_type=opt.option_type,
             reason=reason,
         ))

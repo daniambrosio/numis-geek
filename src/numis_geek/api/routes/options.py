@@ -397,6 +397,8 @@ class AutoSettleResultOut(BaseModel):
     decision: Literal["expired", "exercised", "skipped"]
     underlying_ticker: str | None
     underlying_price: float | None
+    price_source: str | None
+    price_effective_date: str | None
     strike_price: float | None
     option_type: OptionType | None
     reason: str
@@ -416,6 +418,8 @@ def _to_out(r: AutoSettleResult) -> AutoSettleResultOut:
         decision=r.decision,
         underlying_ticker=r.underlying_ticker,
         underlying_price=float(r.underlying_price) if r.underlying_price is not None else None,
+        price_source=r.price_source,
+        price_effective_date=r.price_effective_date.isoformat() if r.price_effective_date else None,
         strike_price=float(r.strike_price) if r.strike_price is not None else None,
         option_type=r.option_type,
         reason=r.reason,
