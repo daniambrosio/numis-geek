@@ -21,9 +21,9 @@ import { useEscapeKey } from '../lib/useEscapeKey'
 import type { AffectedSnapshotOut } from '../lib/api'
 import {
   Card, PageHeader, SearchInput, ToggleSwitch, MultiChips, FilterGroup,
-  QuickAddBar, TypeBadge,
+  QuickAddBar, TypeBadge, FILogo,
 } from '../components/ui'
-import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
+import { KLASS, collapsedOf, lanTypeColor, fiTokenFor } from '../lib/tokens'
 
 const TYPE_ORDER: AssetMovementType[] = [
   'BUY', 'SELL', 'SELL_OPEN', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS',
@@ -99,6 +99,7 @@ export default function AssetMovements() {
   // Filters
   const [search, setSearch] = useState('')
   const [typesSel, setTypesSel] = useState<string[]>([])
+  const [fiSel, setFiSel] = useState<string[]>([])
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [includeInactive, setIncludeInactive] = useState(false)
@@ -190,10 +191,16 @@ export default function AssetMovements() {
     return m
   }, [institutions])
 
-  // Client-side filters: multi-type, search.
+  // Client-side filters: multi-type, FI, search.
   const filtered = useMemo(() => {
     let xs = items
     if (typesSel.length > 1) xs = xs.filter(x => typesSel.includes(x.type))
+    if (fiSel.length) {
+      xs = xs.filter(l => {
+        const a = assetById.get(l.asset_id)
+        return a ? fiSel.includes(a.financial_institution_id) : false
+      })
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       xs = xs.filter(l => {
@@ -202,7 +209,23 @@ export default function AssetMovements() {
       })
     }
     return xs
-  }, [items, typesSel, search, assetById])
+  }, [items, typesSel, fiSel, search, assetById])
+
+  // FI options — só os que têm pelo menos um lançamento na lista atual.
+  const fiOpts = useMemo(() => {
+    const present = new Set<string>()
+    for (const l of items) {
+      const a = assetById.get(l.asset_id)
+      if (a) present.add(a.financial_institution_id)
+    }
+    return institutions
+      .filter(fi => present.has(fi.id))
+      .map(fi => ({
+        id: fi.id,
+        label: fi.short_name,
+        color: fiTokenFor(fi.logo_slug, fi.short_name).color,
+      }))
+  }, [items, institutions, assetById])
 
   const sorted = useMemo(
     () => [...filtered].sort((a, b) => b.event_date.localeCompare(a.event_date)),
@@ -397,6 +420,9 @@ export default function AssetMovements() {
             <FilterGroup label="Tipo">
               <MultiChips options={TYPE_OPTS} selected={typesSel} onChange={setTypesSel} />
             </FilterGroup>
+            <FilterGroup label="Custodiante">
+              <MultiChips options={fiOpts} selected={fiSel} onChange={setFiSel} />
+            </FilterGroup>
           </div>
           <div className="flex items-center gap-3 pt-3 border-t border-gray-200 dark:border-gray-800 text-[11px] text-gray-500 dark:text-gray-400">
             <span><span className="tnum">{stats.count}</span> lançamentos</span>
@@ -431,6 +457,7 @@ export default function AssetMovements() {
                     <th className="text-left font-medium px-2 py-2">Data</th>
                     <th className="text-left font-medium px-2 py-2">Tipo</th>
                     <th className="text-left font-medium px-2 py-2">Ativo</th>
+                    <th className="text-left font-medium px-2 py-2">Custodiante</th>
                     <th className="text-right font-medium px-2 py-2">Qtd</th>
                     <th className="text-right font-medium px-2 py-2">Preço unit.</th>
                     <th className="text-right font-medium px-2 py-2">Net</th>
@@ -445,14 +472,18 @@ export default function AssetMovements() {
                           <MonthHeader ym={g.ym} first={gi === 0} />
                         </td>
                       </tr>
-                      {g.items.map(l => (
-                        <Row
-                          key={l.id}
-                          lan={l}
-                          asset={assetById.get(l.asset_id) ?? null}
-                          onClick={() => setSelected(l)}
-                        />
-                      ))}
+                      {g.items.map(l => {
+                        const a = assetById.get(l.asset_id) ?? null
+                        return (
+                          <Row
+                            key={l.id}
+                            lan={l}
+                            asset={a}
+                            fi={a ? fiById.get(a.financial_institution_id) ?? null : null}
+                            onClick={() => setSelected(l)}
+                          />
+                        )
+                      })}
                     </Fragment>
                   ))}
                 </tbody>
@@ -572,10 +603,11 @@ function MonthHeader({ ym, first }: { ym: string; first?: boolean }) {
 }
 
 function Row({
-  lan: l, asset, onClick,
+  lan: l, asset, fi, onClick,
 }: {
   lan: AssetMovementOut
   asset: AssetOut | null
+  fi: FinancialInstitutionOut | null
   onClick: () => void
 }) {
   const klass = asset ? collapsedOf(asset.asset_class) : null
@@ -607,6 +639,16 @@ function Row({
             )}
           </div>
         </div>
+      </td>
+      <td className="px-2">
+        {fi ? (
+          <div className="flex items-center gap-1.5">
+            <FILogo slug={fi.logo_slug} shortName={fi.short_name} size="sm" />
+            <span className="text-[11px] text-gray-500 dark:text-gray-400">{fi.short_name}</span>
+          </div>
+        ) : (
+          <span className="text-[11px] text-gray-300 dark:text-gray-700">—</span>
+        )}
       </td>
       <td className="px-2 text-right tnum">{fmtNum(l.quantity)}</td>
       <td className="px-2 text-right tnum money text-gray-400">
