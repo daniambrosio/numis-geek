@@ -7,17 +7,18 @@ import {
   type AssetMovementOut,
   type AssetMovementRequest,
   type AssetMovementType,
+  type OptionType,
 } from '../lib/api'
 import { parseDecimal } from '../lib/parseDecimal'
 import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
 
-// 6 normal types for non-OPTION assets; the 4 lifecycle closers
-// (SELL_TO_CLOSE, BUY_TO_CLOSE, EXERCISED, EXPIRED) appear when the
-// selected asset is an OPTION (Spec 36 §3). Openers (SELL_OPEN /
-// BUY_TO_OPEN) still go through `OptionModal` because they create the
-// Asset row at the same time as the movement.
+// Unified composer (Spec 36 follow-up 2026-06-24): TODAS as operações de
+// movimento entram aqui — incluindo abertura, fechamento, exercício e
+// vencimento de opções. Os 4 OPENs (SELL_OPEN/BUY_TO_OPEN) ainda criam
+// um Asset row server-side via POST /api/options; os 4 CLOSEs/exits
+// roteiam pra endpoints específicos (close/exercise/expire).
 interface TypeCfg {
   label: string
   hint: string
@@ -25,6 +26,10 @@ interface TypeCfg {
   price: boolean
   fee: boolean
   tax: boolean
+  /** 'normal' = onSave padrão; 'option-open' = cria Asset+Movement via
+   *  /api/options; 'option-close' = POST /api/options/{id}/close;
+   *  'option-exercise' = /exercise; 'option-expire' = /expire. */
+  mode: 'normal' | 'option-open' | 'option-close' | 'option-exercise' | 'option-expire'
 }
 
 // SELL.tax=false is deliberate (deferred): IRRF on sales (Tesouro/FII/
@@ -36,28 +41,31 @@ interface TypeCfg {
 // separate Transaction in the cash flow instead. Revisit per
 // [[tax_engine_deferred]] memory.
 const TYPE_CFG: Record<string, TypeCfg> = {
-  BUY:             { label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
-  SELL:            { label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
-  BONUS:           { label: 'Bonificação',   hint: 'unidades grátis · bonificação, rewards, airdrop',      qty: true,  price: false, fee: false, tax: false },
-  SUBSCRIPTION:    { label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
-  COME_COTAS:      { label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
-  FULL_REDEMPTION: { label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
+  // Posição direta
+  BUY:             { mode: 'normal',          label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
+  SELL:            { mode: 'normal',          label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
+  BONUS:           { mode: 'normal',          label: 'Bonificação',   hint: 'unidades grátis · bonificação, rewards, airdrop', qty: true, price: false, fee: false, tax: false },
+  SUBSCRIPTION:    { mode: 'normal',          label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
+  COME_COTAS:      { mode: 'normal',          label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
+  FULL_REDEMPTION: { mode: 'normal',          label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
+  // Opções — abrir (cria o Asset)
+  SELL_OPEN:       { mode: 'option-open',     label: 'Vender opção',  hint: 'cash-secured put / covered call — recebe prêmio', qty: true, price: true, fee: true, tax: false },
+  BUY_TO_OPEN:     { mode: 'option-open',     label: 'Comprar opção', hint: 'long put / long call — paga prêmio',              qty: true, price: true, fee: true, tax: false },
+  // Opções — encerrar (Asset existente)
+  BUY_TO_CLOSE:    { mode: 'option-close',    label: 'Fechar venda',  hint: 'recompra opção vendida',        qty: true,  price: true,  fee: true,  tax: false },
+  SELL_TO_CLOSE:   { mode: 'option-close',    label: 'Fechar compra', hint: 'vende opção comprada',          qty: true,  price: true,  fee: true,  tax: false },
+  EXERCISED:       { mode: 'option-exercise', label: 'Exercer',       hint: 'strike atingido · gera BUY/SELL no ativo', qty: false, price: false, fee: false, tax: false },
+  EXPIRED:         { mode: 'option-expire',   label: 'Vencer (pó)',   hint: 'vencimento OTM · prêmio fica',  qty: false, price: false, fee: false, tax: false },
 }
 
-const TYPE_ORDER: AssetMovementType[] = ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION']
+const TYPE_GROUPS: { title: string; types: AssetMovementType[] }[] = [
+  { title: 'Posição', types: ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION'] },
+  { title: 'Opções · abrir',    types: ['SELL_OPEN', 'BUY_TO_OPEN'] },
+  { title: 'Opções · encerrar', types: ['BUY_TO_CLOSE', 'SELL_TO_CLOSE', 'EXERCISED', 'EXPIRED'] },
+]
 
-// Option lifecycle types (Spec 36 §3.3). When the selected asset is an
-// OPTION, the type picker replaces the normal 3×2 grid with these 4.
-// SELL_TO_CLOSE/BUY_TO_CLOSE behave like SELL/BUY for cash; EXERCISED
-// transfers shares to the underlying; EXPIRED zeroes the position.
-const OPTION_LIFECYCLE_TYPES: Record<string, TypeCfg> = {
-  SELL_TO_CLOSE: { label: 'Vender / Encerrar', hint: 'Recompra a opção vendida',           qty: true,  price: true,  fee: true,  tax: false },
-  BUY_TO_CLOSE:  { label: 'Comprar / Encerrar',hint: 'Encerra opção que estava comprada', qty: true,  price: true,  fee: true,  tax: false },
-  EXERCISED:     { label: 'Exercida',          hint: 'Strike atingido · transfere shares', qty: true,  price: false, fee: false, tax: false },
-  EXPIRED:       { label: 'Virou pó',          hint: 'Vencimento sem exercício · cash 0',  qty: false, price: false, fee: false, tax: false },
-}
-
-const OPTION_LIFECYCLE_ORDER: AssetMovementType[] = ['SELL_TO_CLOSE', 'BUY_TO_CLOSE', 'EXERCISED', 'EXPIRED']
+// Classes válidas como underlying de opção (Spec 36 §2.2).
+const OPTION_UNDERLYING_CLASSES = new Set<AssetClass>(['STOCK', 'REIT', 'ETF'])
 
 // Non-cotado classes — for BUY/SELL/SUBSCRIPTION/FULL_REDEMPTION, show a
 // single "Valor" (gross_amount) input instead of qty × unit_price.
@@ -73,6 +81,9 @@ interface Props {
   initial?: AssetMovementOut
   /** Pre-selected asset (used when opening from /assets detail). */
   preselectedAsset?: AssetOut
+  /** Pre-selected tile. Usado por entrypoints alternativos
+   *  (ex: ?compose=option pré-seleciona SELL_OPEN). */
+  initialType?: AssetMovementType
   assets: AssetOut[]
   /**
    * Save the movement payload and return the saved entity (so the composer
@@ -106,15 +117,12 @@ const fmtNum = (n: number, digits = 2) =>
   n.toLocaleString('pt-BR', { maximumFractionDigits: digits })
 
 export default function MovementComposer({
-  initial, preselectedAsset, assets, onSave, onOptionLifecycleSaved, onClose,
+  initial, preselectedAsset, initialType, assets, onSave, onOptionLifecycleSaved, onClose,
   persistedAttachments, onUploadDrafts, onRemovePersistedAttachment,
 }: Props) {
-  // Asset selector lists ALL assets (incl. OPTION) — same as the prototype's
-  // MovementComposer (`index.html:4312-4316`). Option lifecycle types
-  // (SELL_OPEN/BUY_TO_OPEN/EXERCISED/EXPIRED) are NOT exposed here; the
-  // composer uses the 6 normal types and the backend interprets them
-  // according to the asset class.
-  const [type, setType] = useState<AssetMovementType>(initial?.type ?? 'BUY')
+  const [type, setType] = useState<AssetMovementType>(
+    initial?.type ?? initialType ?? 'BUY',
+  )
   const [assetId, setAssetId] = useState<string>(
     initial?.asset_id ?? preselectedAsset?.id ?? assets[0]?.id ?? '',
   )
@@ -133,6 +141,18 @@ export default function MovementComposer({
   const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
+  // ── Estado específico de OPENs (SELL_OPEN / BUY_TO_OPEN) ─────────────────
+  // Esses cria Asset+Movement em uma chamada (POST /api/options). Os campos
+  // abaixo só existem visualmente quando mode === 'option-open'.
+  const [optTicker, setOptTicker] = useState('')
+  const [optUnderlyingId, setOptUnderlyingId] = useState('')
+  const [optType, setOptType] = useState<OptionType>('PUT')
+  const [optStrike, setOptStrike] = useState('')
+  const [optExpiration, setOptExpiration] = useState('')
+  const [optContractSize, setOptContractSize] = useState('100')
+  const [optParsing, setOptParsing] = useState(false)
+  const [optParsedHint, setOptParsedHint] = useState<string | null>(null)
+
   // Bug 8 fix (2026-06-09): no 2º+ abrir, o foco ficava no botão "Novo
   // Lançamento" da página, e o browser não dispara `paste` em elementos
   // não-editáveis. Forçar foco no wrapper (tabIndex=-1) garante que
@@ -141,7 +161,25 @@ export default function MovementComposer({
     wrapperRef.current?.focus()
   }, [])
 
-  const selectedAsset = assets.find(a => a.id === assetId) ?? preselectedAsset
+  const cfg = TYPE_CFG[type] ?? TYPE_CFG.BUY
+  const mode = cfg.mode
+
+  // Underlying picker (só pra OPENs).
+  const underlyingOptions = useMemo(() => {
+    return assets
+      .filter(a => OPTION_UNDERLYING_CLASSES.has(a.asset_class) && a.is_active !== false)
+      .sort((a, b) => (a.ticker ?? a.name).localeCompare(b.ticker ?? b.name, 'pt-BR'))
+  }, [assets])
+  const selectedUnderlying = mode === 'option-open'
+    ? underlyingOptions.find(a => a.id === optUnderlyingId)
+    : undefined
+
+  // Lista de opções abertas (pra CLOSE/EXERCISE/EXPIRE).
+  const openOptions = useMemo(() => {
+    return assets
+      .filter(a => a.asset_class === 'OPTION' && a.is_active !== false)
+      .sort((a, b) => (a.ticker ?? a.name).localeCompare(b.ticker ?? b.name, 'pt-BR'))
+  }, [assets])
 
   // Sort by ticker (fallback to name) so native-select type-ahead lands
   // on the ticker the user types — e.g. typing "W" jumps to WEGE3, not
@@ -152,37 +190,71 @@ export default function MovementComposer({
   const keepInactiveId = initial?.asset_id ?? preselectedAsset?.id ?? null
   const sortedAssets = useMemo(() => {
     const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
-    return assets
+    // Pra modo normal: esconde OPTIONs (esses têm fluxo dedicado nos tiles
+    // de opção). Pra modo option-close/exercise/expire: filtra só OPTIONs.
+    const pool = mode === 'normal'
+      ? assets.filter(a => a.asset_class !== 'OPTION')
+      : mode === 'option-open'
+        ? []  // não usado
+        : openOptions  // close/exercise/expire
+    return pool
       .filter(a => a.is_active !== false || a.id === keepInactiveId)
       .sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
-  }, [assets, keepInactiveId])
-  const isOptionAsset = selectedAsset?.asset_class === 'OPTION'
-  // OPTION assets get the lifecycle config; everything else uses TYPE_CFG.
-  // When the asset switches to OPTION mid-edit (rare), force the type back
-  // into the valid lifecycle set.
-  useEffect(() => {
-    if (isOptionAsset && !OPTION_LIFECYCLE_ORDER.includes(type)) {
-      setType('SELL_TO_CLOSE')
-    } else if (!isOptionAsset && OPTION_LIFECYCLE_ORDER.includes(type)) {
-      setType('BUY')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOptionAsset])
+  }, [assets, keepInactiveId, mode, openOptions])
 
-  const cfg = isOptionAsset ? OPTION_LIFECYCLE_TYPES[type] ?? OPTION_LIFECYCLE_TYPES.SELL_TO_CLOSE : TYPE_CFG[type]
-  const ccy: 'BRL' | 'USD' = selectedAsset?.currency ?? 'BRL'
-  const isNonCotado = !isOptionAsset && !!selectedAsset && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
+  // Quando muda pra/de option-close, garante que o asset selecionado seja
+  // do tipo certo. Se o asset atual sumiu do pool, escolhe o primeiro.
+  useEffect(() => {
+    if (mode === 'option-open' || initial || preselectedAsset) return
+    const ok = sortedAssets.some(a => a.id === assetId)
+    if (!ok) setAssetId(sortedAssets[0]?.id ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, sortedAssets])
+
+  const selectedAsset = (mode === 'option-open')
+    ? undefined
+    : (assets.find(a => a.id === assetId) ?? preselectedAsset)
+  // No modo OPEN, a "moeda" da operação vem do underlying (e o BRAPI
+  // dropdown só tem ativos BR — então default BRL é seguro mesmo se o
+  // user ainda não escolheu).
+  const ccy: 'BRL' | 'USD' = (mode === 'option-open'
+    ? (selectedUnderlying?.currency ?? 'BRL')
+    : (selectedAsset?.currency ?? 'BRL'))
+
+  const isNonCotado = mode === 'normal' && !!selectedAsset
+    && NON_COTADO_CLASSES.includes(selectedAsset.asset_class)
   const isCotadoOrValueType = ['BUY', 'SELL', 'SUBSCRIPTION', 'FULL_REDEMPTION'].includes(type)
   const useValueOnly = isNonCotado && isCotadoOrValueType
   const showQuantity = cfg.qty && !useValueOnly
   const showUnitPrice = cfg.price && !useValueOnly
-  // Fee applies to non-cotado too (Tesouro Direto charges custody fee,
-  // broker fee, IR retido na fonte — user wants to track these apart
-  // from the gross value).
   const showFee = cfg.fee
   const showTax = cfg.tax
-  const showNotaNegociacao = NOTA_NEGOCIACAO_TYPES.includes(type)
+  const showNotaNegociacao = mode === 'normal' && NOTA_NEGOCIACAO_TYPES.includes(type)
   const assetInactive = !!selectedAsset && selectedAsset.is_active === false
+
+  // Parser BRAPI do ticker de opção (só popula type + suggestion de strike
+  // como hint visual; strike NÃO é auto-preenchido depois do ajuste
+  // corporativo deixar o número do ticker fora de sincronia com o strike
+  // real — user sempre digita strike à mão).
+  useEffect(() => {
+    if (mode !== 'option-open') return
+    const t = optTicker.trim().toUpperCase()
+    if (t.length < 5) {
+      setOptParsedHint(null)
+      return
+    }
+    setOptParsing(true)
+    api.parseOption(t, selectedUnderlying?.current_price ?? undefined)
+      .then(p => {
+        if (!p) { setOptParsedHint(null); return }
+        setOptType(p.option_type)
+        setOptParsedHint(
+          `${p.option_type} · mês ${p.month} · strike sugerido R$ ${p.strike_suggested} (digite o strike real à mão)`,
+        )
+      })
+      .catch(() => setOptParsedHint(null))
+      .finally(() => setOptParsing(false))
+  }, [optTicker, mode, selectedUnderlying?.current_price])
 
   // Reset asset-related state when asset changes.
   useEffect(() => { setConfirmInactive(false) }, [assetId])
@@ -238,9 +310,18 @@ export default function MovementComposer({
   // Coleta os campos pendentes pra dar feedback visual quando Salvar
   // estiver desabilitado. Antes só o botão ficava cinza sem dica.
   const missingFields: string[] = []
-  if (!selectedAsset) missingFields.push('Ativo')
+  if (mode === 'option-open') {
+    if (!optTicker.trim()) missingFields.push('Ticker da opção')
+    if (!selectedUnderlying) missingFields.push('Underlying')
+    if (!(num(optStrike) > 0)) missingFields.push('Strike')
+    if (!optExpiration) missingFields.push('Vencimento')
+  } else if (!selectedAsset) {
+    missingFields.push(mode === 'normal' ? 'Ativo' : 'Opção')
+  }
   if (cfg.qty && !useValueOnly && !(qN > 0)) missingFields.push('Quantidade')
-  if (cfg.price && !useValueOnly && !(pN > 0)) missingFields.push('Preço unitário')
+  if (cfg.price && !useValueOnly && !(pN > 0)) {
+    missingFields.push(mode === 'option-open' || mode === 'option-close' ? 'Prêmio/ação' : 'Preço unitário')
+  }
   if (type === 'COME_COTAS' && !(tN > 0)) missingFields.push('Imposto retido')
   if (useValueOnly && !(gN > 0)) missingFields.push('Valor total')
   if (assetInactive && !confirmInactive) missingFields.push('Confirmar ativo inativo')
@@ -252,41 +333,38 @@ export default function MovementComposer({
     setError('')
     setSaving(true)
     try {
-      const payload: AssetMovementRequest = {
-        asset_id: assetId,
-        type,
-        event_date: eventDate,
-        settlement_date: null,
-        currency: ccy,
-        // fx_rate omitted on purpose — backend auto-fills PTAX of event_date
-        // (services/fx.resolve_fx_rate). Applies to BRL AND USD per the
-        // bimoneda design (CLAUDE.md feature #3 "Dolarized portfolio view").
-        notes: notes.trim() || null,
-      }
-      if (showQuantity && quantity) payload.quantity = num(quantity)
-      if (showUnitPrice && unitPrice) payload.unit_price = num(unitPrice)
-      if (useValueOnly || grossAmount) payload.gross_amount = num(grossAmount)
-      if (showFee && fee) payload.fee = num(fee)
-      if (showTax && tax) payload.tax = num(tax)
-      if (showNotaNegociacao && notaNegociacao.trim()) payload.nota_negociacao_number = notaNegociacao.trim()
-      if (useValueOnly) {
-        payload.quantity = null
-        payload.unit_price = null
-      }
-
-      // OPTION lifecycle routes through dedicated backend endpoints (Spec 36
-      // §4). The composer skips the parent's onSave because those endpoints
-      // build the AssetMovement(s) server-side. The parent uses
-      // `onOptionLifecycleSaved` to refresh its list.
       let saved: AssetMovementOut | void
-      if (isOptionAsset && !initial && OPTION_LIFECYCLE_ORDER.includes(type)) {
+
+      // ── Branch 1: criar opção (Asset + Movement de abertura) ──────────
+      if (mode === 'option-open' && !initial) {
+        await api.createOption({
+          ticker: optTicker.trim().toUpperCase(),
+          underlying_id: selectedUnderlying!.id,
+          account_id: selectedUnderlying!.account_id,
+          option_type: optType,
+          strike_price: num(optStrike),
+          expiration_date: optExpiration,
+          contract_size: Number(optContractSize) || 100,
+          movement_type: type === 'SELL_OPEN' ? 'SELL_OPEN' : 'BUY_TO_OPEN',
+          movement_date: eventDate,
+          quantity: num(quantity),
+          price_per_share: num(unitPrice),
+          fee: fee ? num(fee) : 0,
+          notes: notes.trim() || undefined,
+        })
+        saved = undefined
+        // Refresh — assets ganhou um novo OPTION; movements ganhou abertura.
+        if (onOptionLifecycleSaved) await onOptionLifecycleSaved()
+      }
+      // ── Branch 2: lifecycle (close / exercise / expire) ─────────────────
+      else if (mode !== 'normal' && !initial) {
         const optId = selectedAsset!.id
-        if (type === 'EXPIRED') {
+        if (mode === 'option-expire') {
           await api.expireOption(optId, eventDate)
-        } else if (type === 'EXERCISED') {
+        } else if (mode === 'option-exercise') {
           await api.exerciseOption(optId, eventDate)
         } else {
-          // SELL_TO_CLOSE / BUY_TO_CLOSE
+          // option-close: BUY_TO_CLOSE ou SELL_TO_CLOSE
           await api.closeOption(optId, {
             close_date: eventDate,
             quantity: num(quantity),
@@ -298,7 +376,30 @@ export default function MovementComposer({
         }
         saved = undefined
         if (onOptionLifecycleSaved) await onOptionLifecycleSaved()
-      } else {
+      }
+      // ── Branch 3: movement normal (BUY/SELL/BONUS/...) ──────────────────
+      else {
+        const payload: AssetMovementRequest = {
+          asset_id: assetId,
+          type,
+          event_date: eventDate,
+          settlement_date: null,
+          currency: ccy,
+          // fx_rate omitted on purpose — backend auto-fills PTAX of event_date
+          // (services/fx.resolve_fx_rate). Applies to BRL AND USD per the
+          // bimoneda design (CLAUDE.md feature #3 "Dolarized portfolio view").
+          notes: notes.trim() || null,
+        }
+        if (showQuantity && quantity) payload.quantity = num(quantity)
+        if (showUnitPrice && unitPrice) payload.unit_price = num(unitPrice)
+        if (useValueOnly || grossAmount) payload.gross_amount = num(grossAmount)
+        if (showFee && fee) payload.fee = num(fee)
+        if (showTax && tax) payload.tax = num(tax)
+        if (showNotaNegociacao && notaNegociacao.trim()) payload.nota_negociacao_number = notaNegociacao.trim()
+        if (useValueOnly) {
+          payload.quantity = null
+          payload.unit_price = null
+        }
         saved = await onSave(payload)
       }
 
@@ -352,39 +453,45 @@ export default function MovementComposer({
 
         {/* Body */}
         <form id="movement-form" onSubmit={handleSubmit} className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin space-y-5">
-          {/* Type picker — 3×2 grid for normal assets, 2×2 for OPTION assets (Spec 36 §3.2). */}
-          <div>
+          {/* Type picker — grupos visuais: Posição / Opções abrir / Opções encerrar. */}
+          <div data-testid="movement-type-grid">
             <FieldLabel>Tipo</FieldLabel>
-            <div
-              className={`grid gap-2 mt-1.5 ${isOptionAsset ? 'grid-cols-2' : 'grid-cols-3'}`}
-              data-testid="movement-type-grid"
-            >
-              {(isOptionAsset ? OPTION_LIFECYCLE_ORDER : TYPE_ORDER).map(id => {
-                const c = isOptionAsset ? OPTION_LIFECYCLE_TYPES[id] : TYPE_CFG[id]
-                const active = type === id
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setType(id)}
-                    disabled={!!initial}
-                    className={`px-3 py-2.5 rounded-lg text-left border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                      active
-                        ? 'bg-indigo-500/10 border-indigo-500'
-                        : 'bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700'
-                    }`}
-                  >
-                    <div className={`text-[12px] font-semibold ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300'}`}>
-                      {c.label}
-                    </div>
-                    <div className="text-[10px] text-gray-500 mt-0.5">{c.hint}</div>
-                  </button>
-                )
-              })}
+            <div className="mt-1.5 space-y-3">
+              {TYPE_GROUPS.map(group => (
+                <div key={group.title}>
+                  <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">
+                    {group.title}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {group.types.map(id => {
+                      const c = TYPE_CFG[id]
+                      const active = type === id
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setType(id)}
+                          disabled={!!initial}
+                          className={`px-3 py-2.5 rounded-lg text-left border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                            active
+                              ? 'bg-indigo-500/10 border-indigo-500'
+                              : 'bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700'
+                          }`}
+                        >
+                          <div className={`text-[12px] font-semibold ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300'}`}>
+                            {c.label}
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-0.5">{c.hint}</div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Date + Asset */}
+          {/* Date + Asset (ou inputs inline pra OPEN) */}
           <div className="grid grid-cols-2 gap-4">
             <Field label="Data do evento">
               <input
@@ -395,23 +502,107 @@ export default function MovementComposer({
                 className={inputCls}
               />
             </Field>
-            <Field label="Ativo">
-              <select
-                value={assetId}
-                onChange={e => setAssetId(e.target.value)}
-                disabled={!!initial || !!preselectedAsset}
-                required
-                className={inputCls}
-              >
-                {sortedAssets.length === 0 && <option value="">Nenhum ativo</option>}
-                {sortedAssets.map(a => (
-                  <option key={a.id} value={a.id}>
-                    {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            {mode === 'option-open' ? (
+              <Field label="Underlying (ação · ETF · REIT)">
+                <select
+                  value={optUnderlyingId}
+                  onChange={e => setOptUnderlyingId(e.target.value)}
+                  required
+                  className={inputCls}
+                  data-testid="option-underlying-picker"
+                >
+                  <option value="">Selecione…</option>
+                  {underlyingOptions.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {(a.ticker || a.name)}{a.current_price != null ? ` · ${a.currency} ${a.current_price.toFixed(2)}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label={mode === 'normal' ? 'Ativo' : 'Opção aberta'}>
+                <select
+                  value={assetId}
+                  onChange={e => setAssetId(e.target.value)}
+                  disabled={!!initial || !!preselectedAsset}
+                  required
+                  className={inputCls}
+                >
+                  {sortedAssets.length === 0 && (
+                    <option value="">
+                      {mode === 'normal' ? 'Nenhum ativo' : 'Nenhuma opção aberta'}
+                    </option>
+                  )}
+                  {sortedAssets.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
           </div>
+
+          {/* Campos de criação de opção (só no modo OPEN) */}
+          {mode === 'option-open' && (
+            <div className="space-y-3 rounded-lg border border-indigo-500/20 bg-indigo-500/[0.03] p-3">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-indigo-500 dark:text-indigo-400">
+                Definição da opção
+              </div>
+              <Field label="Ticker B3" hint="ex: ITUBR364 (auto-detecta tipo + mês)">
+                <input
+                  type="text"
+                  value={optTicker}
+                  onChange={e => setOptTicker(e.target.value.toUpperCase())}
+                  placeholder="ITUBR364"
+                  className={`${inputCls} font-mono`}
+                  data-testid="option-ticker-input"
+                />
+                {optParsing && <div className="text-[10px] text-gray-400 mt-1">Parseando…</div>}
+                {optParsedHint && (
+                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">{optParsedHint}</div>
+                )}
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Tipo">
+                  <select
+                    value={optType}
+                    onChange={e => setOptType(e.target.value as OptionType)}
+                    className={inputCls}
+                  >
+                    <option value="PUT">PUT</option>
+                    <option value="CALL">CALL</option>
+                  </select>
+                </Field>
+                <Field label="Strike · R$">
+                  <input
+                    type="number" step="0.01" value={optStrike}
+                    onChange={e => setOptStrike(e.target.value)}
+                    placeholder="ex: 36,40"
+                    className={inputCls}
+                    data-testid="option-strike-input"
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Vencimento">
+                  <input
+                    type="date" value={optExpiration}
+                    onChange={e => setOptExpiration(e.target.value)}
+                    className={inputCls}
+                    data-testid="option-expiration-input"
+                  />
+                </Field>
+                <Field label="Contract size" hint="default 100">
+                  <input
+                    type="number" value={optContractSize}
+                    onChange={e => setOptContractSize(e.target.value)}
+                    className={inputCls}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
 
           {/* Numeric fields (conditional per type) */}
           <div className="grid grid-cols-2 gap-4">

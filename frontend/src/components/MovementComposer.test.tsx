@@ -41,8 +41,8 @@ beforeEach(() => {
   globalThis.URL.revokeObjectURL = vi.fn()
 })
 
-describe('MovementComposer dynamic type picker (Spec 36 §3)', () => {
-  it('shows the 6 normal types in a 3-col grid for a STOCK asset', () => {
+describe('MovementComposer unified type picker (2026-06-24)', () => {
+  it('mostra todos os 12 tipos em 3 grupos (Posição / Opções abrir / Opções encerrar)', () => {
     render(
       <MovementComposer
         assets={[makeAsset()]}
@@ -51,31 +51,51 @@ describe('MovementComposer dynamic type picker (Spec 36 §3)', () => {
       />,
     )
     const grid = screen.getByTestId('movement-type-grid')
-    expect(grid.className).toMatch(/grid-cols-3/)
+    // Grupo Posição
     expect(within(grid).getByText('Compra')).toBeInTheDocument()
+    expect(within(grid).getByText('Venda')).toBeInTheDocument()
     expect(within(grid).getByText('Bonificação')).toBeInTheDocument()
-    expect(within(grid).queryByText('Vender / Encerrar')).toBeNull()
+    expect(within(grid).getByText('Resgate Total')).toBeInTheDocument()
+    // Grupo Opções · abrir
+    expect(within(grid).getByText('Vender opção')).toBeInTheDocument()
+    expect(within(grid).getByText('Comprar opção')).toBeInTheDocument()
+    // Grupo Opções · encerrar
+    expect(within(grid).getByText('Fechar venda')).toBeInTheDocument()
+    expect(within(grid).getByText('Fechar compra')).toBeInTheDocument()
+    expect(within(grid).getByText('Exercer')).toBeInTheDocument()
+    expect(within(grid).getByText('Vencer (pó)')).toBeInTheDocument()
   })
 
-  it('switches to the 4 lifecycle types in a 2-col grid for an OPTION asset', async () => {
-    const opt = makeAsset({ id: 'a-opt', ticker: 'ITUBR364', asset_class: 'OPTION', name: 'ITUB4 06 PUT 34' })
+  it('initialType pré-seleciona o tile (compose=option → Vender opção)', () => {
     render(
       <MovementComposer
-        assets={[opt]}
+        assets={[makeAsset()]}
+        initialType="SELL_OPEN"
         onSave={async () => {}}
         onClose={() => {}}
       />,
     )
     const grid = screen.getByTestId('movement-type-grid')
-    expect(grid.className).toMatch(/grid-cols-2/)
-    expect(within(grid).getByText('Vender / Encerrar')).toBeInTheDocument()
-    expect(within(grid).getByText('Comprar / Encerrar')).toBeInTheDocument()
-    expect(within(grid).getByText('Exercida')).toBeInTheDocument()
-    expect(within(grid).getByText('Virou pó')).toBeInTheDocument()
-    expect(within(grid).queryByText('Compra')).toBeNull()
+    const tile = within(grid).getByText('Vender opção').closest('button')
+    expect(tile).toHaveClass(/indigo-500/)
   })
 
-  it('EXPIRED submits to api.expireOption and skips the standard movements POST', async () => {
+  it('OPEN: mostra inputs inline (ticker/strike/vencimento) e esconde dropdown de Ativo', async () => {
+    render(
+      <MovementComposer
+        assets={[makeAsset()]}
+        initialType="SELL_OPEN"
+        onSave={async () => {}}
+        onClose={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('option-ticker-input')).toBeInTheDocument()
+    expect(screen.getByTestId('option-strike-input')).toBeInTheDocument()
+    expect(screen.getByTestId('option-expiration-input')).toBeInTheDocument()
+    expect(screen.getByTestId('option-underlying-picker')).toBeInTheDocument()
+  })
+
+  it('Vencer (pó) → POST /options/{id}/expire e bypassa onSave', async () => {
     const opt = makeAsset({ id: 'a-opt', ticker: 'ITUBR364', asset_class: 'OPTION' })
     const expireSpy = vi.spyOn(api, 'expireOption').mockResolvedValue({
       id: 'a-opt', ticker: 'ITUBR364', name: 'foo',
@@ -96,12 +116,11 @@ describe('MovementComposer dynamic type picker (Spec 36 §3)', () => {
       />,
     )
 
-    await userEvent.click(screen.getByText('Virou pó'))
-    // EXPIRED requires no qty/price; the submit button should already be enabled.
+    await userEvent.click(screen.getByText('Vencer (pó)'))
     await userEvent.click(screen.getByRole('button', { name: /Salvar/ }))
 
     expect(expireSpy).toHaveBeenCalled()
-    expect(onSave).not.toHaveBeenCalled()  // bypassed for lifecycle
+    expect(onSave).not.toHaveBeenCalled()
     expect(onLifecycle).toHaveBeenCalled()
   })
 })

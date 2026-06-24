@@ -15,7 +15,6 @@ import AppLayout from '../components/AppLayout'
 import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import MovementComposer from '../components/MovementComposer'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
-import OptionModal from '../components/OptionModal'
 import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import type { AffectedSnapshotOut } from '../lib/api'
@@ -78,7 +77,7 @@ export default function AssetMovements() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
-  const [optionModalOpen, setOptionModalOpen] = useState(false)
+  const [composerInitialType, setComposerInitialType] = useState<AssetMovementType | undefined>(undefined)
   const [editing, setEditing] = useState<AssetMovementOut | undefined>(undefined)
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
@@ -125,17 +124,14 @@ export default function AssetMovements() {
   }, [me])
 
   // Open MovementComposer when launched via "Novo → Lançamento" from the top bar.
-  // Open OptionModal when launched via "Novo → Opção" (Spec 36).
+  // ?compose=option pre-seleciona o tile "Vender opção" (refactor 2026-06-24:
+  // OptionModal foi unificado dentro do MovementComposer).
   useEffect(() => {
     const compose = searchParams.get('compose')
-    if (compose === 'movement') {
+    if (compose === 'movement' || compose === 'option') {
       setEditing(undefined)
+      setComposerInitialType(compose === 'option' ? 'SELL_OPEN' : undefined)
       setModalOpen(true)
-      const next = new URLSearchParams(searchParams)
-      next.delete('compose')
-      setSearchParams(next, { replace: true })
-    } else if (compose === 'option') {
-      setOptionModalOpen(true)
       const next = new URLSearchParams(searchParams)
       next.delete('compose')
       setSearchParams(next, { replace: true })
@@ -528,11 +524,13 @@ export default function AssetMovements() {
       {modalOpen && (
         <MovementComposer
           initial={editing}
+          initialType={composerInitialType}
           assets={assets}
           onSave={handleSave}
           onOptionLifecycleSaved={async () => {
-            // Refresh both assets (some lifecycle ops mark the option
-            // inactive) and movements (server creates the rows for us).
+            // Refresh both assets (option-open cria novo OPTION, exercise/
+            // expire marca inactive) e movements (server cria rows nesses
+            // fluxos sem passar pelo onSave).
             try {
               const [a, m] = await Promise.all([
                 api.listAssets({ include_inactive: false }),
@@ -542,25 +540,13 @@ export default function AssetMovements() {
               setItems(m.items)
             } catch { /* fail-soft */ }
           }}
-          onClose={() => { setModalOpen(false); setEditing(undefined); setEditingAttachments([]) }}
+          onClose={() => {
+            setModalOpen(false); setEditing(undefined); setEditingAttachments([])
+            setComposerInitialType(undefined)
+          }}
           persistedAttachments={editing ? editingAttachments : undefined}
           onUploadDrafts={handleUploadDrafts}
           onRemovePersistedAttachment={handleRemovePersistedAttachment}
-        />
-      )}
-
-      {optionModalOpen && (
-        <OptionModal
-          candidates={assets}
-          onClose={() => setOptionModalOpen(false)}
-          onSaved={() => {
-            // Refresh assets list so the new OPTION appears in the picker,
-            // and refresh movements so the SELL_OPEN/BUY_TO_OPEN shows up.
-            api.listAssets({ include_inactive: false }).then(setAssets).catch(() => {})
-            api.listAssetMovements({ include_inactive: false, page_size: 200 })
-              .then(r => setItems(r.items))
-              .catch(() => {})
-          }}
         />
       )}
 
