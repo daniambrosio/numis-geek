@@ -470,7 +470,7 @@ export default function MovementComposer({
             </div>
           </div>
 
-          {/* Date + Asset (com sentinel "+ Nova opção" pra Compra/Venda) */}
+          {/* Date + Asset (dropdown limpo + botão lateral pra nova opção) */}
           <div className="grid grid-cols-2 gap-4">
             <Field label="Data do evento">
               <input
@@ -482,24 +482,55 @@ export default function MovementComposer({
               />
             </Field>
             <Field label="Ativo">
-              <select
-                value={assetId}
-                onChange={e => setAssetId(e.target.value)}
-                disabled={!!initial || !!preselectedAsset}
-                required
-                className={inputCls}
-                data-testid="movement-asset-picker"
-              >
-                {sortedAssets.length === 0 && <option value="">Nenhum ativo</option>}
-                {sortedAssets.map(a => (
-                  <option key={a.id} value={a.id}>
-                    {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
-                  </option>
-                ))}
-                {tileSupportsOption && !initial && !preselectedAsset && (
-                  <option value={NEW_OPTION_SENTINEL}>✨ Nova opção…</option>
-                )}
-              </select>
+              {mode === 'option-open' ? (
+                // No modo "nova opção", trocamos o select por um placeholder
+                // visual com link pra voltar ao modo "existente". O form
+                // inline da definição (ticker/strike/venc/etc) renderiza
+                // logo abaixo do bloco Date+Asset.
+                <div className="flex items-center gap-2">
+                  <div className={`${inputCls} flex items-center text-indigo-600 dark:text-indigo-400 font-medium gap-1.5`}>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Nova opção
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAssetId(sortedAssets[0]?.id ?? '')}
+                    className="h-9 px-2 text-[11px] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap"
+                    data-testid="movement-pick-existing-asset"
+                  >
+                    ← escolher existente
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={assetId}
+                    onChange={e => setAssetId(e.target.value)}
+                    disabled={!!initial || !!preselectedAsset}
+                    required
+                    className={inputCls}
+                    data-testid="movement-asset-picker"
+                  >
+                    {sortedAssets.length === 0 && <option value="">Nenhum ativo</option>}
+                    {sortedAssets.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {tileSupportsOption && !initial && !preselectedAsset && (
+                    <button
+                      type="button"
+                      onClick={() => setAssetId(NEW_OPTION_SENTINEL)}
+                      title="Nova opção"
+                      className="h-9 w-9 shrink-0 inline-flex items-center justify-center rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-600 dark:text-indigo-400 transition-colors"
+                      data-testid="movement-new-option-btn"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
             </Field>
           </div>
 

@@ -64,7 +64,7 @@ describe('MovementComposer — 6 tiles + opção via dropdown (2026-06-24 v2)', 
     expect(within(grid).queryByText('Exercer')).toBeNull()
   })
 
-  it('dropdown de Ativo tem "+ Nova opção…" quando tile é Compra/Venda', () => {
+  it('botão "Nova opção" aparece ao lado do dropdown quando tile é Compra/Venda', () => {
     render(
       <MovementComposer
         assets={[makeAsset()]}
@@ -72,11 +72,13 @@ describe('MovementComposer — 6 tiles + opção via dropdown (2026-06-24 v2)', 
         onClose={() => {}}
       />,
     )
+    expect(screen.getByTestId('movement-new-option-btn')).toBeInTheDocument()
+    // Dropdown não tem mais entry sentinel — só assets reais.
     const picker = screen.getByTestId('movement-asset-picker') as HTMLSelectElement
-    expect(within(picker).getByText(/Nova opção/)).toBeInTheDocument()
+    expect(within(picker).queryByText(/Nova opção/)).toBeNull()
   })
 
-  it('dropdown de Ativo NÃO tem "+ Nova opção…" pra Bonificação', async () => {
+  it('botão "Nova opção" some pra tiles que não suportam opção (Bonificação)', async () => {
     render(
       <MovementComposer
         assets={[makeAsset()]}
@@ -85,8 +87,24 @@ describe('MovementComposer — 6 tiles + opção via dropdown (2026-06-24 v2)', 
       />,
     )
     await userEvent.click(screen.getByText('Bonificação'))
-    const picker = screen.getByTestId('movement-asset-picker') as HTMLSelectElement
-    expect(within(picker).queryByText(/Nova opção/)).toBeNull()
+    expect(screen.queryByTestId('movement-new-option-btn')).toBeNull()
+  })
+
+  it('clicar no botão "Nova opção" troca dropdown por form inline; "← escolher existente" volta', async () => {
+    render(
+      <MovementComposer
+        assets={[makeAsset()]}
+        onSave={async () => {}}
+        onClose={() => {}}
+      />,
+    )
+    await userEvent.click(screen.getByTestId('movement-new-option-btn'))
+    expect(screen.getByTestId('option-ticker-input')).toBeInTheDocument()
+    expect(screen.queryByTestId('movement-asset-picker')).toBeNull()
+    // Voltar
+    await userEvent.click(screen.getByTestId('movement-pick-existing-asset'))
+    expect(screen.getByTestId('movement-asset-picker')).toBeInTheDocument()
+    expect(screen.queryByTestId('option-ticker-input')).toBeNull()
   })
 
   it('initialNewOption=SELL pré-seleciona Venda + "+ Nova opção" e mostra form inline', () => {
