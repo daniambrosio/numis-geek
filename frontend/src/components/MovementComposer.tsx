@@ -14,11 +14,20 @@ import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
 
-// Unified composer (Spec 36 follow-up 2026-06-24): TODAS as operações de
-// movimento entram aqui — incluindo abertura, fechamento, exercício e
-// vencimento de opções. Os 4 OPENs (SELL_OPEN/BUY_TO_OPEN) ainda criam
-// um Asset row server-side via POST /api/options; os 4 CLOSEs/exits
-// roteiam pra endpoints específicos (close/exercise/expire).
+// Unified composer (Spec 36 follow-up v2 2026-06-24):
+// A grid mantém só os 6 tiles semânticos. Opção deixou de ser tile;
+// passou a ser variante dos tiles Compra/Venda, decidida pelo ATIVO:
+//
+//   Compra + ação ............ BUY
+//   Compra + "+ Nova opção" ... BUY_TO_OPEN  (cria Asset+Movement)
+//   Compra + opção existente . BUY_TO_CLOSE (encerra venda anterior)
+//   Venda  + ação ............ SELL
+//   Venda  + "+ Nova opção" .. SELL_OPEN
+//   Venda  + opção existente . SELL_TO_CLOSE
+//
+// EXERCISED e EXPIRED não cabem na grid (não são decisões livres do
+// user): cron de auto-settle resolve o caso comum; manual fica no
+// OpenOptionsCard da página do underlying.
 interface TypeCfg {
   label: string
   hint: string
@@ -26,10 +35,6 @@ interface TypeCfg {
   price: boolean
   fee: boolean
   tax: boolean
-  /** 'normal' = onSave padrão; 'option-open' = cria Asset+Movement via
-   *  /api/options; 'option-close' = POST /api/options/{id}/close;
-   *  'option-exercise' = /exercise; 'option-expire' = /expire. */
-  mode: 'normal' | 'option-open' | 'option-close' | 'option-exercise' | 'option-expire'
 }
 
 // SELL.tax=false is deliberate (deferred): IRRF on sales (Tesouro/FII/
@@ -41,31 +46,24 @@ interface TypeCfg {
 // separate Transaction in the cash flow instead. Revisit per
 // [[tax_engine_deferred]] memory.
 const TYPE_CFG: Record<string, TypeCfg> = {
-  // Posição direta
-  BUY:             { mode: 'normal',          label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
-  SELL:            { mode: 'normal',          label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
-  BONUS:           { mode: 'normal',          label: 'Bonificação',   hint: 'unidades grátis · bonificação, rewards, airdrop', qty: true, price: false, fee: false, tax: false },
-  SUBSCRIPTION:    { mode: 'normal',          label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
-  COME_COTAS:      { mode: 'normal',          label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
-  FULL_REDEMPTION: { mode: 'normal',          label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
-  // Opções — abrir (cria o Asset)
-  SELL_OPEN:       { mode: 'option-open',     label: 'Vender opção',  hint: 'cash-secured put / covered call — recebe prêmio', qty: true, price: true, fee: true, tax: false },
-  BUY_TO_OPEN:     { mode: 'option-open',     label: 'Comprar opção', hint: 'long put / long call — paga prêmio',              qty: true, price: true, fee: true, tax: false },
-  // Opções — encerrar (Asset existente)
-  BUY_TO_CLOSE:    { mode: 'option-close',    label: 'Fechar venda',  hint: 'recompra opção vendida',        qty: true,  price: true,  fee: true,  tax: false },
-  SELL_TO_CLOSE:   { mode: 'option-close',    label: 'Fechar compra', hint: 'vende opção comprada',          qty: true,  price: true,  fee: true,  tax: false },
-  EXERCISED:       { mode: 'option-exercise', label: 'Exercer',       hint: 'strike atingido · gera BUY/SELL no ativo', qty: false, price: false, fee: false, tax: false },
-  EXPIRED:         { mode: 'option-expire',   label: 'Vencer (pó)',   hint: 'vencimento OTM · prêmio fica',  qty: false, price: false, fee: false, tax: false },
+  BUY:             { label: 'Compra',        hint: 'compra adiciona à posição',     qty: true,  price: true,  fee: true,  tax: false },
+  SELL:            { label: 'Venda',         hint: 'venda reduz a posição',         qty: true,  price: true,  fee: true,  tax: false },
+  BONUS:           { label: 'Bonificação',   hint: 'unidades grátis · bonificação, rewards, airdrop', qty: true, price: false, fee: false, tax: false },
+  SUBSCRIPTION:    { label: 'Subscrição',    hint: 'exercício de subscrição',       qty: true,  price: true,  fee: true,  tax: false },
+  COME_COTAS:      { label: 'Come-cotas',    hint: 'imposto semestral · BR',        qty: false, price: false, fee: false, tax: true  },
+  FULL_REDEMPTION: { label: 'Resgate Total', hint: 'vencimento ou liquidação',      qty: true,  price: true,  fee: true,  tax: true  },
 }
 
-const TYPE_GROUPS: { title: string; types: AssetMovementType[] }[] = [
-  { title: 'Posição', types: ['BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION'] },
-  { title: 'Opções · abrir',    types: ['SELL_OPEN', 'BUY_TO_OPEN'] },
-  { title: 'Opções · encerrar', types: ['BUY_TO_CLOSE', 'SELL_TO_CLOSE', 'EXERCISED', 'EXPIRED'] },
+const TYPE_ORDER: AssetMovementType[] = [
+  'BUY', 'SELL', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS', 'FULL_REDEMPTION',
 ]
 
 // Classes válidas como underlying de opção (Spec 36 §2.2).
 const OPTION_UNDERLYING_CLASSES = new Set<AssetClass>(['STOCK', 'REIT', 'ETF'])
+
+// Sentinel no <select> de Ativo. Quando assetId === NEW_OPTION_SENTINEL,
+// o composer mostra o form inline pra criar a opção.
+const NEW_OPTION_SENTINEL = '__NEW_OPTION__'
 
 // Non-cotado classes — for BUY/SELL/SUBSCRIPTION/FULL_REDEMPTION, show a
 // single "Valor" (gross_amount) input instead of qty × unit_price.
@@ -81,9 +79,9 @@ interface Props {
   initial?: AssetMovementOut
   /** Pre-selected asset (used when opening from /assets detail). */
   preselectedAsset?: AssetOut
-  /** Pre-selected tile. Usado por entrypoints alternativos
-   *  (ex: ?compose=option pré-seleciona SELL_OPEN). */
-  initialType?: AssetMovementType
+  /** Atalho do menu "Nova Opção": abre o composer já no tile Compra ou
+   *  Venda com "+ Nova opção" selecionado no dropdown. */
+  initialNewOption?: 'BUY' | 'SELL'
   assets: AssetOut[]
   /**
    * Save the movement payload and return the saved entity (so the composer
@@ -117,14 +115,16 @@ const fmtNum = (n: number, digits = 2) =>
   n.toLocaleString('pt-BR', { maximumFractionDigits: digits })
 
 export default function MovementComposer({
-  initial, preselectedAsset, initialType, assets, onSave, onOptionLifecycleSaved, onClose,
+  initial, preselectedAsset, initialNewOption, assets, onSave, onOptionLifecycleSaved, onClose,
   persistedAttachments, onUploadDrafts, onRemovePersistedAttachment,
 }: Props) {
   const [type, setType] = useState<AssetMovementType>(
-    initial?.type ?? initialType ?? 'BUY',
+    initial?.type ?? initialNewOption ?? 'BUY',
   )
   const [assetId, setAssetId] = useState<string>(
-    initial?.asset_id ?? preselectedAsset?.id ?? assets[0]?.id ?? '',
+    initial?.asset_id
+      ?? preselectedAsset?.id
+      ?? (initialNewOption ? NEW_OPTION_SENTINEL : (assets[0]?.id ?? '')),
   )
   const [eventDate, setEventDate] = useState(initial?.event_date ?? new Date().toISOString().slice(0, 10))
   const [quantity, setQuantity] = useState(initial?.quantity != null ? String(initial.quantity) : '')
@@ -149,7 +149,9 @@ export default function MovementComposer({
   const [optType, setOptType] = useState<OptionType>('PUT')
   const [optStrike, setOptStrike] = useState('')
   const [optExpiration, setOptExpiration] = useState('')
-  const [optContractSize, setOptContractSize] = useState('100')
+  // contract_size em opções B3 é fixo em 100 — não exponho input (manteria
+  // ruído visual sem ganho real; backend aceita override se algum dia
+  // precisar via API). Default 100 hardcoded no submit.
   const [optParsing, setOptParsing] = useState(false)
   const [optParsedHint, setOptParsedHint] = useState<string | null>(null)
 
@@ -162,9 +164,35 @@ export default function MovementComposer({
   }, [])
 
   const cfg = TYPE_CFG[type] ?? TYPE_CFG.BUY
-  const mode = cfg.mode
 
-  // Underlying picker (só pra OPENs).
+  // Lookup do asset selecionado (incluindo sentinel pra "Nova opção").
+  const selectedAsset = (assetId === NEW_OPTION_SENTINEL)
+    ? undefined
+    : (assets.find(a => a.id === assetId) ?? preselectedAsset)
+
+  // Modo derivado de tile + asset selecionado:
+  //   option-open  → tile Compra/Venda + sentinel "Nova opção"
+  //   option-close → tile Compra/Venda + asset OPTION existente
+  //   normal       → resto
+  const tileSupportsOption = type === 'BUY' || type === 'SELL'
+  const mode: 'normal' | 'option-open' | 'option-close' =
+    tileSupportsOption && assetId === NEW_OPTION_SENTINEL ? 'option-open'
+    : tileSupportsOption && selectedAsset?.asset_class === 'OPTION' ? 'option-close'
+    : 'normal'
+
+  // Quando user troca pra um tile que não suporta opção (Bonificação, etc)
+  // e o asset atual é OPTION ou sentinel, força reset pro primeiro ativo
+  // normal disponível.
+  useEffect(() => {
+    if (tileSupportsOption) return
+    if (assetId === NEW_OPTION_SENTINEL || selectedAsset?.asset_class === 'OPTION') {
+      const firstNormal = assets.find(a => a.asset_class !== 'OPTION' && a.is_active !== false)
+      if (firstNormal) setAssetId(firstNormal.id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tileSupportsOption])
+
+  // Underlying picker (só pra option-open).
   const underlyingOptions = useMemo(() => {
     return assets
       .filter(a => OPTION_UNDERLYING_CLASSES.has(a.asset_class) && a.is_active !== false)
@@ -174,49 +202,16 @@ export default function MovementComposer({
     ? underlyingOptions.find(a => a.id === optUnderlyingId)
     : undefined
 
-  // Lista de opções abertas (pra CLOSE/EXERCISE/EXPIRE).
-  const openOptions = useMemo(() => {
-    return assets
-      .filter(a => a.asset_class === 'OPTION' && a.is_active !== false)
-      .sort((a, b) => (a.ticker ?? a.name).localeCompare(b.ticker ?? b.name, 'pt-BR'))
-  }, [assets])
-
-  // Sort by ticker (fallback to name) so native-select type-ahead lands
-  // on the ticker the user types — e.g. typing "W" jumps to WEGE3, not
-  // to assets whose company name starts with W. Inactive assets are
-  // hidden so users don't accidentally book new movements against a
-  // deactivated asset (e.g. a car they sold). When editing, keep the
-  // referenced asset in the list even if it became inactive.
+  // Pool do dropdown principal: ações + opções com posição aberta. A entry
+  // "+ Nova opção…" é injetada no render direto (não está em `assets`).
   const keepInactiveId = initial?.asset_id ?? preselectedAsset?.id ?? null
   const sortedAssets = useMemo(() => {
     const key = (a: AssetOut) => (a.ticker || a.name).toLocaleLowerCase('pt-BR')
-    // Pra modo normal: esconde OPTIONs (esses têm fluxo dedicado nos tiles
-    // de opção). Pra modo option-close/exercise/expire: filtra só OPTIONs.
-    const pool = mode === 'normal'
-      ? assets.filter(a => a.asset_class !== 'OPTION')
-      : mode === 'option-open'
-        ? []  // não usado
-        : openOptions  // close/exercise/expire
-    return pool
+    return assets
       .filter(a => a.is_active !== false || a.id === keepInactiveId)
       .sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
-  }, [assets, keepInactiveId, mode, openOptions])
+  }, [assets, keepInactiveId])
 
-  // Quando muda pra/de option-close, garante que o asset selecionado seja
-  // do tipo certo. Se o asset atual sumiu do pool, escolhe o primeiro.
-  useEffect(() => {
-    if (mode === 'option-open' || initial || preselectedAsset) return
-    const ok = sortedAssets.some(a => a.id === assetId)
-    if (!ok) setAssetId(sortedAssets[0]?.id ?? '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, sortedAssets])
-
-  const selectedAsset = (mode === 'option-open')
-    ? undefined
-    : (assets.find(a => a.id === assetId) ?? preselectedAsset)
-  // No modo OPEN, a "moeda" da operação vem do underlying (e o BRAPI
-  // dropdown só tem ativos BR — então default BRL é seguro mesmo se o
-  // user ainda não escolheu).
   const ccy: 'BRL' | 'USD' = (mode === 'option-open'
     ? (selectedUnderlying?.currency ?? 'BRL')
     : (selectedAsset?.currency ?? 'BRL'))
@@ -307,8 +302,6 @@ export default function MovementComposer({
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Coleta os campos pendentes pra dar feedback visual quando Salvar
-  // estiver desabilitado. Antes só o botão ficava cinza sem dica.
   const missingFields: string[] = []
   if (mode === 'option-open') {
     if (!optTicker.trim()) missingFields.push('Ticker da opção')
@@ -316,11 +309,11 @@ export default function MovementComposer({
     if (!(num(optStrike) > 0)) missingFields.push('Strike')
     if (!optExpiration) missingFields.push('Vencimento')
   } else if (!selectedAsset) {
-    missingFields.push(mode === 'normal' ? 'Ativo' : 'Opção')
+    missingFields.push('Ativo')
   }
   if (cfg.qty && !useValueOnly && !(qN > 0)) missingFields.push('Quantidade')
   if (cfg.price && !useValueOnly && !(pN > 0)) {
-    missingFields.push(mode === 'option-open' || mode === 'option-close' ? 'Prêmio/ação' : 'Preço unitário')
+    missingFields.push(mode === 'normal' ? 'Preço unitário' : 'Prêmio/ação')
   }
   if (type === 'COME_COTAS' && !(tN > 0)) missingFields.push('Imposto retido')
   if (useValueOnly && !(gN > 0)) missingFields.push('Valor total')
@@ -335,7 +328,7 @@ export default function MovementComposer({
     try {
       let saved: AssetMovementOut | void
 
-      // ── Branch 1: criar opção (Asset + Movement de abertura) ──────────
+      // ── Branch 1: criar opção (Asset + abertura) ──────────────────────
       if (mode === 'option-open' && !initial) {
         await api.createOption({
           ticker: optTicker.trim().toUpperCase(),
@@ -344,8 +337,9 @@ export default function MovementComposer({
           option_type: optType,
           strike_price: num(optStrike),
           expiration_date: optExpiration,
-          contract_size: Number(optContractSize) || 100,
-          movement_type: type === 'SELL_OPEN' ? 'SELL_OPEN' : 'BUY_TO_OPEN',
+          contract_size: 100,
+          // Tile Compra → BUY_TO_OPEN; Tile Venda → SELL_OPEN.
+          movement_type: type === 'BUY' ? 'BUY_TO_OPEN' : 'SELL_OPEN',
           movement_date: eventDate,
           quantity: num(quantity),
           price_per_share: num(unitPrice),
@@ -353,27 +347,20 @@ export default function MovementComposer({
           notes: notes.trim() || undefined,
         })
         saved = undefined
-        // Refresh — assets ganhou um novo OPTION; movements ganhou abertura.
         if (onOptionLifecycleSaved) await onOptionLifecycleSaved()
       }
-      // ── Branch 2: lifecycle (close / exercise / expire) ─────────────────
-      else if (mode !== 'normal' && !initial) {
-        const optId = selectedAsset!.id
-        if (mode === 'option-expire') {
-          await api.expireOption(optId, eventDate)
-        } else if (mode === 'option-exercise') {
-          await api.exerciseOption(optId, eventDate)
-        } else {
-          // option-close: BUY_TO_CLOSE ou SELL_TO_CLOSE
-          await api.closeOption(optId, {
-            close_date: eventDate,
-            quantity: num(quantity),
-            price_per_share: num(unitPrice),
-            movement_type: type as 'SELL_TO_CLOSE' | 'BUY_TO_CLOSE',
-            fee: fee ? num(fee) : 0,
-            notes: notes.trim() || undefined,
-          })
-        }
+      // ── Branch 2: encerrar opção existente (auto-inferido) ─────────────
+      else if (mode === 'option-close' && !initial) {
+        // Tile Compra → BUY_TO_CLOSE (encerra venda anterior);
+        // Tile Venda → SELL_TO_CLOSE (encerra compra anterior).
+        await api.closeOption(selectedAsset!.id, {
+          close_date: eventDate,
+          quantity: num(quantity),
+          price_per_share: num(unitPrice),
+          movement_type: type === 'BUY' ? 'BUY_TO_CLOSE' : 'SELL_TO_CLOSE',
+          fee: fee ? num(fee) : 0,
+          notes: notes.trim() || undefined,
+        })
         saved = undefined
         if (onOptionLifecycleSaved) await onOptionLifecycleSaved()
       }
@@ -453,45 +440,37 @@ export default function MovementComposer({
 
         {/* Body */}
         <form id="movement-form" onSubmit={handleSubmit} className="px-6 py-5 overflow-y-auto flex-1 scrollbar-thin space-y-5">
-          {/* Type picker — grupos visuais: Posição / Opções abrir / Opções encerrar. */}
-          <div data-testid="movement-type-grid">
+          {/* Type picker — 6 tiles em grid 3×2. Opção é variante de Compra/Venda
+             (definida pelo Ativo selecionado), não tile separado. */}
+          <div>
             <FieldLabel>Tipo</FieldLabel>
-            <div className="mt-1.5 space-y-3">
-              {TYPE_GROUPS.map(group => (
-                <div key={group.title}>
-                  <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">
-                    {group.title}
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {group.types.map(id => {
-                      const c = TYPE_CFG[id]
-                      const active = type === id
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => setType(id)}
-                          disabled={!!initial}
-                          className={`px-3 py-2.5 rounded-lg text-left border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                            active
-                              ? 'bg-indigo-500/10 border-indigo-500'
-                              : 'bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700'
-                          }`}
-                        >
-                          <div className={`text-[12px] font-semibold ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300'}`}>
-                            {c.label}
-                          </div>
-                          <div className="text-[10px] text-gray-500 mt-0.5">{c.hint}</div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
+            <div className="grid grid-cols-3 gap-2 mt-1.5" data-testid="movement-type-grid">
+              {TYPE_ORDER.map(id => {
+                const c = TYPE_CFG[id]
+                const active = type === id
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setType(id)}
+                    disabled={!!initial}
+                    className={`px-3 py-2.5 rounded-lg text-left border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                      active
+                        ? 'bg-indigo-500/10 border-indigo-500'
+                        : 'bg-gray-50 dark:bg-gray-800/30 border-gray-200 dark:border-gray-800 hover:border-gray-400 dark:hover:border-gray-700'
+                    }`}
+                  >
+                    <div className={`text-[12px] font-semibold ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300'}`}>
+                      {c.label}
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5">{c.hint}</div>
+                  </button>
+                )
+              })}
             </div>
           </div>
 
-          {/* Date + Asset (ou inputs inline pra OPEN) */}
+          {/* Date + Asset (com sentinel "+ Nova opção" pra Compra/Venda) */}
           <div className="grid grid-cols-2 gap-4">
             <Field label="Data do evento">
               <input
@@ -502,68 +481,74 @@ export default function MovementComposer({
                 className={inputCls}
               />
             </Field>
-            {mode === 'option-open' ? (
-              <Field label="Underlying (ação · ETF · REIT)">
-                <select
-                  value={optUnderlyingId}
-                  onChange={e => setOptUnderlyingId(e.target.value)}
-                  required
-                  className={inputCls}
-                  data-testid="option-underlying-picker"
-                >
-                  <option value="">Selecione…</option>
-                  {underlyingOptions.map(a => (
-                    <option key={a.id} value={a.id}>
-                      {(a.ticker || a.name)}{a.current_price != null ? ` · ${a.currency} ${a.current_price.toFixed(2)}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            ) : (
-              <Field label={mode === 'normal' ? 'Ativo' : 'Opção aberta'}>
-                <select
-                  value={assetId}
-                  onChange={e => setAssetId(e.target.value)}
-                  disabled={!!initial || !!preselectedAsset}
-                  required
-                  className={inputCls}
-                >
-                  {sortedAssets.length === 0 && (
-                    <option value="">
-                      {mode === 'normal' ? 'Nenhum ativo' : 'Nenhuma opção aberta'}
-                    </option>
-                  )}
-                  {sortedAssets.map(a => (
-                    <option key={a.id} value={a.id}>
-                      {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
+            <Field label="Ativo">
+              <select
+                value={assetId}
+                onChange={e => setAssetId(e.target.value)}
+                disabled={!!initial || !!preselectedAsset}
+                required
+                className={inputCls}
+                data-testid="movement-asset-picker"
+              >
+                {sortedAssets.length === 0 && <option value="">Nenhum ativo</option>}
+                {sortedAssets.map(a => (
+                  <option key={a.id} value={a.id}>
+                    {a.ticker ? `${a.ticker} · ` : ''}{a.name}{a.is_active === false ? ' · INATIVO' : ''}
+                  </option>
+                ))}
+                {tileSupportsOption && !initial && !preselectedAsset && (
+                  <option value={NEW_OPTION_SENTINEL}>✨ Nova opção…</option>
+                )}
+              </select>
+            </Field>
           </div>
 
-          {/* Campos de criação de opção (só no modo OPEN) */}
+          {/* Banner pra option-close (auto-inferido) */}
+          {mode === 'option-close' && selectedAsset && (
+            <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/[0.05] px-3 py-2 text-[12px] text-indigo-700 dark:text-indigo-300">
+              Vai encerrar a posição em <strong>{selectedAsset.ticker || selectedAsset.name}</strong>{' '}
+              ({type === 'BUY' ? 'recompra de opção vendida' : 'venda de opção comprada'}).
+            </div>
+          )}
+
+          {/* Form inline da nova opção (só no modo option-open) */}
           {mode === 'option-open' && (
             <div className="space-y-3 rounded-lg border border-indigo-500/20 bg-indigo-500/[0.03] p-3">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-indigo-500 dark:text-indigo-400">
                 Definição da opção
               </div>
-              <Field label="Ticker B3" hint="ex: ITUBR364 (auto-detecta tipo + mês)">
-                <input
-                  type="text"
-                  value={optTicker}
-                  onChange={e => setOptTicker(e.target.value.toUpperCase())}
-                  placeholder="ITUBR364"
-                  className={`${inputCls} font-mono`}
-                  data-testid="option-ticker-input"
-                />
-                {optParsing && <div className="text-[10px] text-gray-400 mt-1">Parseando…</div>}
-                {optParsedHint && (
-                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">{optParsedHint}</div>
-                )}
-              </Field>
               <div className="grid grid-cols-2 gap-4">
+                <Field label="Ticker B3" hint="ex: ITUBR364">
+                  <input
+                    type="text"
+                    value={optTicker}
+                    onChange={e => setOptTicker(e.target.value.toUpperCase())}
+                    placeholder="ITUBR364"
+                    className={`${inputCls} font-mono`}
+                    data-testid="option-ticker-input"
+                  />
+                  {optParsing && <div className="text-[10px] text-gray-400 mt-1">Parseando…</div>}
+                  {optParsedHint && (
+                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">{optParsedHint}</div>
+                  )}
+                </Field>
+                <Field label="Underlying">
+                  <select
+                    value={optUnderlyingId}
+                    onChange={e => setOptUnderlyingId(e.target.value)}
+                    className={inputCls}
+                    data-testid="option-underlying-picker"
+                  >
+                    <option value="">Selecione…</option>
+                    {underlyingOptions.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {(a.ticker || a.name)}{a.current_price != null ? ` · ${a.currency} ${a.current_price.toFixed(2)}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
                 <Field label="Tipo">
                   <select
                     value={optType}
@@ -583,21 +568,12 @@ export default function MovementComposer({
                     data-testid="option-strike-input"
                   />
                 </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
                 <Field label="Vencimento">
                   <input
                     type="date" value={optExpiration}
                     onChange={e => setOptExpiration(e.target.value)}
                     className={inputCls}
                     data-testid="option-expiration-input"
-                  />
-                </Field>
-                <Field label="Contract size" hint="default 100">
-                  <input
-                    type="number" value={optContractSize}
-                    onChange={e => setOptContractSize(e.target.value)}
-                    className={inputCls}
                   />
                 </Field>
               </div>

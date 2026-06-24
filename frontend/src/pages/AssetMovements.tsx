@@ -77,7 +77,7 @@ export default function AssetMovements() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
-  const [composerInitialType, setComposerInitialType] = useState<AssetMovementType | undefined>(undefined)
+  const [composerNewOption, setComposerNewOption] = useState<'BUY' | 'SELL' | undefined>(undefined)
   const [editing, setEditing] = useState<AssetMovementOut | undefined>(undefined)
   const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
   const [confirmDeactivate, setConfirmDeactivate] = useState<AssetMovementOut | null>(null)
@@ -124,13 +124,13 @@ export default function AssetMovements() {
   }, [me])
 
   // Open MovementComposer when launched via "Novo → Lançamento" from the top bar.
-  // ?compose=option pre-seleciona o tile "Vender opção" (refactor 2026-06-24:
-  // OptionModal foi unificado dentro do MovementComposer).
+  // ?compose=option pré-seleciona tile Venda + "+ Nova opção" no dropdown
+  // (refactor 2026-06-24 v2: opção é variante de Compra/Venda, não tile).
   useEffect(() => {
     const compose = searchParams.get('compose')
     if (compose === 'movement' || compose === 'option') {
       setEditing(undefined)
-      setComposerInitialType(compose === 'option' ? 'SELL_OPEN' : undefined)
+      setComposerNewOption(compose === 'option' ? 'SELL' : undefined)
       setModalOpen(true)
       const next = new URLSearchParams(searchParams)
       next.delete('compose')
@@ -524,7 +524,7 @@ export default function AssetMovements() {
       {modalOpen && (
         <MovementComposer
           initial={editing}
-          initialType={composerInitialType}
+          initialNewOption={composerNewOption}
           assets={assets}
           onSave={handleSave}
           onOptionLifecycleSaved={async () => {
@@ -542,7 +542,7 @@ export default function AssetMovements() {
           }}
           onClose={() => {
             setModalOpen(false); setEditing(undefined); setEditingAttachments([])
-            setComposerInitialType(undefined)
+            setComposerNewOption(undefined)
           }}
           persistedAttachments={editing ? editingAttachments : undefined}
           onUploadDrafts={handleUploadDrafts}
