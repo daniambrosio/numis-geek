@@ -43,7 +43,7 @@ const NAV: NavEntry[] = [
 
   { kind: 'section', label: 'Investimentos' },
   { kind: 'item', label: 'Patrimônio', href: '/portfolio', icon: TrendingUp },
-  { kind: 'item', label: 'Decision-support', href: '/decision-support', icon: Compass, placeholder: true },
+  { kind: 'item', label: 'Suporte à Decisão', href: '/decision-support', icon: Compass },
   { kind: 'item', label: 'Ativos', href: '/assets', icon: LineChart },
   { kind: 'item', label: 'Lançamentos', href: '/asset-movements', icon: ArrowDownUp },
   { kind: 'item', label: 'Proventos', href: '/distributions', icon: Coins },

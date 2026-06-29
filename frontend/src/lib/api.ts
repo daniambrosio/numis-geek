@@ -1147,6 +1147,68 @@ export const api = {
     request<FundamentalsOut | null>(`/assets/${assetId}/fundamentals/refresh`, {
       method: 'POST',
     }),
+
+  // Spec 61c — Markowitz portfolio optimizer
+  optimizePortfolio: (body: OptimizeRequest) =>
+    request<OptimizeOut>('/portfolio/optimize', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+}
+
+// ── Spec 61c — Markowitz ───────────────────────────────────────────────
+export interface OptimizeRequest {
+  workspace_id?: string | null
+  class_targets?: Record<string, string> | null
+  asset_cap?: string
+  country_caps?: Record<string, string>
+  min_months?: number
+  ledoit_wolf_alpha?: number
+}
+
+export interface FrontierPointOut {
+  ret: number
+  vol: number
+}
+
+export type TradeAction = 'BUY' | 'SELL' | 'HOLD'
+
+export interface OptimalAllocationOut {
+  asset_id: string
+  ticker: string | null
+  name: string
+  asset_class: string
+  country: string
+  weight: number
+  current_weight: number
+  delta: number
+  target_value_brl: number
+  current_value_brl: number
+  trade_action: TradeAction
+  trade_value_brl: number
+}
+
+export interface ExcludedAssetOut {
+  asset_id: string
+  ticker: string | null
+  name: string
+  asset_class: string
+  reason: string
+  current_value_brl: number
+}
+
+export interface OptimizeOut {
+  as_of: string | null
+  n_assets: number
+  n_excluded: number
+  total_value_brl: number
+  expected_return: number
+  volatility: number
+  frontier: FrontierPointOut[]
+  optimal: OptimalAllocationOut[]
+  excluded: ExcludedAssetOut[]
+  binding_constraints: string[]
+  warnings: string[]
 }
 
 export type TargetDimension = 'CLASS' | 'COUNTRY'

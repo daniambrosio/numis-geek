@@ -26,6 +26,7 @@ from numis_geek.api.routes import (
     integrations,
     options,
     portfolio,
+    portfolio_optimize,
     prices,
     ptax,
     snapshots,
@@ -91,6 +92,7 @@ app.include_router(extractions.router, prefix="/api")
 app.include_router(sysadmin_logs.router, prefix="/api")
 app.include_router(target_allocation.router, prefix="/api")
 app.include_router(valuation.router, prefix="/api")
+app.include_router(portfolio_optimize.router, prefix="/api")
 
 
 @app.get("/health")
