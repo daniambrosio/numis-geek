@@ -32,6 +32,7 @@ from numis_geek.api.routes import (
     sysadmin_logs,
     target_allocation,
     users,
+    valuation,
     workspaces,
 )
 
@@ -89,6 +90,7 @@ app.include_router(backup.router, prefix="/api")
 app.include_router(extractions.router, prefix="/api")
 app.include_router(sysadmin_logs.router, prefix="/api")
 app.include_router(target_allocation.router, prefix="/api")
+app.include_router(valuation.router, prefix="/api")
 
 
 @app.get("/health")

@@ -34,6 +34,7 @@ from numis_geek.jobs.snapshot_auto import (
 from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.backup import create_backup, rotate_backups
+from numis_geek.services.fundamentals_ingest import refresh_workspace_fundamentals
 from numis_geek.services.option_lifecycle import auto_settle_expired_options
 from numis_geek.services.price_update import refresh_all_automated
 from numis_geek.services.ptax_sync import sync_ptax
@@ -55,6 +56,8 @@ BACKUP_JOB_ID = "backup_daily"
 BACKUP_DIR = Path("data/backups")
 
 OPTION_SETTLE_JOB_ID = "option_auto_settle_daily"
+
+FUNDAMENTALS_JOB_ID = "fundamentals_refresh_daily"
 
 
 def run_daily_price_refresh() -> None:
@@ -81,6 +84,31 @@ def run_daily_price_refresh() -> None:
             except Exception:
                 db.rollback()
                 logger.exception("cron price refresh failed for ws=%s", ws_id)
+    finally:
+        db.close()
+
+
+def run_daily_fundamentals_refresh() -> None:
+    """Spec 61b — refresh fundamentals (brapi/Finnhub/yfinance) per workspace.
+
+    Runs 19:00 SP — between price refresh (18:00) and PTAX (20:00). Each
+    workspace gets one pass; per-asset errors are caught inside the
+    ingestion service so a single bad ticker doesn't abort the rest.
+    """
+    db = SessionLocal()
+    try:
+        workspace_ids = [w.id for w in db.query(Workspace).all()]
+        for ws_id in workspace_ids:
+            try:
+                summary = refresh_workspace_fundamentals(db, ws_id)
+                db.commit()
+                logger.info(
+                    "cron fundamentals refresh ws=%s ok=%d failed=%d skipped=%d",
+                    ws_id, summary.ok, summary.failed, summary.skipped,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception("cron fundamentals refresh failed ws=%s", ws_id)
     finally:
         db.close()
 
@@ -247,6 +275,16 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         run_daily_backup,
         CronTrigger(hour=7, minute=0),
         id=BACKUP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Spec 61b — fundamentals refresh 19:00 SP, entre price refresh
+    # (18h) e PTAX sync (20h). Cobre todos os workspaces ativos.
+    sched.add_job(
+        run_daily_fundamentals_refresh,
+        CronTrigger(hour=19, minute=0),
+        id=FUNDAMENTALS_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,

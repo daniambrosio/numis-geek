@@ -53,6 +53,10 @@ from numis_geek.models.target_allocation import (
     TargetAllocation,
     TargetAllocationDimension,
 )
+from numis_geek.models.asset_fundamentals import (
+    AssetFundamentals,
+    FundamentalsSource,
+)
 
 __all__ = [
     "Workspace",
@@ -100,4 +104,6 @@ __all__ = [
     "ExtractionSourceHint",
     "TargetAllocation",
     "TargetAllocationDimension",
+    "AssetFundamentals",
+    "FundamentalsSource",
 ]

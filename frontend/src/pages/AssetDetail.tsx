@@ -33,6 +33,7 @@ import AppLayout from '../components/AppLayout'
 import AssetDistributionsChart from '../components/AssetDistributionsChart'
 import AssetModal from '../components/AssetModal'
 import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
+import ValuationCard from '../components/ValuationCard'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import ManualPriceModal from '../components/ManualPriceModal'
 import MovementComposer from '../components/MovementComposer'
@@ -734,6 +735,9 @@ export default function AssetDetail() {
             <PriceChartAxis points={priceHistory.points} />
           </Card>
         )}
+
+        {/* Spec 61b — Valuation card (fundamentalista por classe) */}
+        <ValuationCard assetId={asset.id} canRefresh={me?.role !== 'member'} />
 
         {/* Spec 50 — Fechamentos por ativo */}
         <AssetSnapshotsCard

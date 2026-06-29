@@ -1135,6 +1135,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ dimension, entries }),
     }),
+
+  // Spec 61b — Valuation Engine
+  getValuation: (assetId: string) =>
+    request<ValuationOut>(`/assets/${assetId}/valuation`),
+
+  getFundamentals: (assetId: string) =>
+    request<FundamentalsOut | null>(`/assets/${assetId}/fundamentals`),
+
+  refreshFundamentals: (assetId: string) =>
+    request<FundamentalsOut | null>(`/assets/${assetId}/fundamentals/refresh`, {
+      method: 'POST',
+    }),
 }
 
 export type TargetDimension = 'CLASS' | 'COUNTRY'
@@ -1160,6 +1172,55 @@ export interface TargetAllocationOut {
   workspace_id: string
   CLASS: TargetDimensionOut
   COUNTRY: TargetDimensionOut
+}
+
+// ── Spec 61b — Valuation ───────────────────────────────────────────────
+export type Verdict = 'BUY' | 'HOLD' | 'SELL' | 'NA'
+
+export interface ValuationMetricOut {
+  name: string
+  value: string | null
+  unit: 'price' | 'ratio' | 'pct' | 'currency'
+  interpretation: 'cheap' | 'fair' | 'expensive' | 'na'
+}
+
+export interface ValuationOut {
+  asset_id: string
+  asset_class: string
+  currency: string
+  verdict: Verdict
+  verdict_reason: string
+  metrics: ValuationMetricOut[]
+  disqualifying: string[]
+  fundamentals_as_of: string | null
+  fundamentals_source: string | null
+  is_stale: boolean
+}
+
+export interface FundamentalsOut {
+  asset_id: string
+  snapshot_date: string
+  source: string
+  pe: string | null
+  pb: string | null
+  eps: string | null
+  bvps: string | null
+  roe: string | null
+  dividend_yield_12m: string | null
+  dps_12m: string | null
+  p_vp: string | null
+  p_ffo: string | null
+  payout_ratio: string | null
+  earnings_growth_5y: string | null
+  debt_ebitda: string | null
+  net_margin: string | null
+  ebitda_margin: string | null
+  vacancy: string | null
+  distribution_coverage: string | null
+  expense_ratio: string | null
+  aum: string | null
+  ytm: string | null
+  duration: string | null
 }
 
 export interface VersionInfo {

@@ -19,6 +19,11 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "holidays>=0.50",
     "httpx>=0.27",
+    # Spec 61b — Valuation Engine (yfinance fundamentals + history fallback US)
+    "yfinance>=0.2",
+    # Spec 61c — Markowitz Optimizer
+    "numpy>=1.26",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
