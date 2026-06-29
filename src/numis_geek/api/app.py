@@ -30,6 +30,7 @@ from numis_geek.api.routes import (
     ptax,
     snapshots,
     sysadmin_logs,
+    target_allocation,
     users,
     workspaces,
 )
@@ -87,6 +88,7 @@ app.include_router(prices.router, prefix="/api")
 app.include_router(backup.router, prefix="/api")
 app.include_router(extractions.router, prefix="/api")
 app.include_router(sysadmin_logs.router, prefix="/api")
+app.include_router(target_allocation.router, prefix="/api")
 
 
 @app.get("/health")

@@ -60,6 +60,7 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Contas', href: '/accounts', icon: Layers },
 
   { kind: 'section', label: 'Admin', roles: ['admin', 'sysadmin'] },
+  { kind: 'item', label: 'Alocação alvo', href: '/admin/target-allocation', icon: Target },
   { kind: 'item', label: 'Auditoria', href: '/admin/audit', icon: ScrollText },
 
   { kind: 'section', label: 'Sistema', roles: ['sysadmin'] },

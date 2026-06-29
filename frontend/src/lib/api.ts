@@ -1121,6 +1121,45 @@ export const api = {
 
   // Spec 54 — público, sem auth. Banner usa pra detectar deploy novo.
   version: () => request<VersionInfo>('/version'),
+
+  // Spec 61a — Target Allocation (Decision Support)
+  getTargetAllocation: (workspaceId: string) =>
+    request<TargetAllocationOut>(`/workspaces/${workspaceId}/target-allocation`),
+
+  putTargetAllocation: (
+    workspaceId: string,
+    dimension: TargetDimension,
+    entries: TargetEntryIn[],
+  ) =>
+    request<TargetAllocationOut>(`/workspaces/${workspaceId}/target-allocation`, {
+      method: 'PUT',
+      body: JSON.stringify({ dimension, entries }),
+    }),
+}
+
+export type TargetDimension = 'CLASS' | 'COUNTRY'
+
+export interface TargetEntryIn {
+  key: string
+  target_pct: string // decimal serialized as string for precision
+}
+
+export interface TargetEntryOut {
+  key: string
+  target_pct: string
+}
+
+export interface TargetDimensionOut {
+  dimension: TargetDimension
+  entries: TargetEntryOut[]
+  total: string
+  is_valid: boolean
+}
+
+export interface TargetAllocationOut {
+  workspace_id: string
+  CLASS: TargetDimensionOut
+  COUNTRY: TargetDimensionOut
 }
 
 export interface VersionInfo {

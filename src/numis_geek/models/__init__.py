@@ -49,6 +49,10 @@ from numis_geek.models.extraction_job import (
     ExtractionStatus,
     ExtractionSourceHint,
 )
+from numis_geek.models.target_allocation import (
+    TargetAllocation,
+    TargetAllocationDimension,
+)
 
 __all__ = [
     "Workspace",
@@ -94,4 +98,6 @@ __all__ = [
     "ExtractionJob",
     "ExtractionStatus",
     "ExtractionSourceHint",
+    "TargetAllocation",
+    "TargetAllocationDimension",
 ]

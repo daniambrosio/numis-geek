@@ -6,6 +6,19 @@
 >
 > Quando bater alinhamento nas decisões em §10, parto pro design das telas.
 
+> **2026-06-26 — Atualizações materiais (ver spec 61 master):**
+> - §9 abaixo rejeitava Markowitz. **Decisão revisada:** Markowitz entra
+>   como peça central do Decision Support v1, com formulação min-variance
+>   + class targets como equality constraints. Detalhe na spec 61c.
+>   Bullet original mantido tachado abaixo pra preservar histórico.
+> - §10 #4 atualizada: APIs integradas desde v1 (brapi + Finnhub +
+>   yfinance fundamentals + history). Detalhe na spec 61b.
+> - §10 #1: TargetAllocation foi implementada via UI de edição manual em
+>   `/admin/target-allocation` (spec 61a, 2026-06-26). Seed do Notion
+>   adiado indefinidamente.
+> - §10 #5: Watchlist confirmada como v1.5+; v1 fica restrita a ativos
+>   owned.
+
 ---
 
 ## 1. Job to be done
@@ -472,8 +485,9 @@ por dia.
 - **Trading automatizado** — fora completamente
 - **Recomendações fundamentadas** ("compre X porque…") — não somos
   research firm
-- **Otimização de portfólio markowitzeana** — complexidade vs benefício
-  ruim pro caso de uso
+- ~~**Otimização de portfólio markowitzeana** — complexidade vs benefício
+  ruim pro caso de uso~~ **(REVERTIDO 2026-06-26: entra como peça
+  central do Decision Support v1 — ver spec master 61 + spec 61c.)**
 - **Live streaming de preços** — EOD é suficiente
 - **Análise técnica** (RSI, MACD, candlestick) — não é o estilo do
   usuário

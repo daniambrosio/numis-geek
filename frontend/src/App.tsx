@@ -5,6 +5,7 @@ import Profile from './pages/Profile'
 import AdminUsers from './pages/admin/Users'
 import AdminAudit from './pages/admin/Audit'
 import AdminAccounts from './pages/admin/Accounts'
+import AdminTargetAllocation from './pages/admin/TargetAllocation'
 import Assets from './pages/admin/Assets'
 import AssetDetail from './pages/AssetDetail'
 import AssetMovements from './pages/AssetMovements'
@@ -70,6 +71,7 @@ export default function App() {
         {/* Admin */}
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />
         <Route path="/admin/audit" element={<PrivateRoute><AdminAudit /></PrivateRoute>} />
+        <Route path="/admin/target-allocation" element={<PrivateRoute><AdminTargetAllocation /></PrivateRoute>} />
 
         {/* Sistema */}
         <Route path="/sysadmin/financial-institutions" element={<PrivateRoute><SysAdminFinancialInstitutions /></PrivateRoute>} />
