@@ -141,4 +141,55 @@ describe('MovementComposer — 6 tiles + opção via dropdown (2026-06-24 v2)', 
     expect(screen.getByText(/Vai encerrar a posição/)).toBeInTheDocument()
     expect(screen.getByText(/recompra de opção vendida/)).toBeInTheDocument()
   })
+
+  // Regressão 2026-06-30: o default do useState pegava `assets[0]?.id`
+  // (sort do servidor por NAME), mas o dropdown sorta por TICKER. Quando os
+  // dois divergem, `<select value={assetId}>` não casa com nenhuma <option>
+  // → browser mostra a primeira opção visível, mas o state interno fica
+  // `''` → `selectedAsset` undefined → missing 'Ativo' → save desabilitado
+  // até o user trocar e voltar. Hoje o useState inicia '' e um effect
+  // sincroniza com sortedAssets[0] assim que ele estiver pronto.
+  it('default assetId vira o primeiro da lista visível (não fica vazio)', async () => {
+    const aapl = makeAsset({ id: 'aapl', ticker: 'AAPL', name: 'Apple' })
+    const abt = makeAsset({ id: 'abt', ticker: 'ABT', name: 'Abbott' })
+    render(
+      <MovementComposer
+        assets={[abt, aapl]}  // ordem do servidor (por name): Abbott antes de Apple
+        onSave={async () => {}}
+        onClose={() => {}}
+      />,
+    )
+    // sortedAssets sorta por ticker → AAPL primeiro. State deve casar com
+    // o que aparece no select, não com o assets[0] cru.
+    const picker = await screen.findByTestId('movement-asset-picker') as HTMLSelectElement
+    expect(picker.value).toBe('aapl')
+  })
+
+  it('edit honra initial.asset_id mesmo quando não é o primeiro do ticker-sort', () => {
+    const aapl = makeAsset({ id: 'aapl', ticker: 'AAPL', name: 'Apple' })
+    const abt = makeAsset({ id: 'abt', ticker: 'ABT', name: 'Abbott' })
+    const initial = {
+      id: 'mov-1', workspace_id: 'ws-1', asset_id: 'abt',
+      asset_name: 'Abbott', asset_ticker: 'ABT',
+      type: 'BUY' as const,
+      type_label: 'Compra', event_date: '2026-06-30', settlement_date: null,
+      quantity: 10, unit_price: 100, gross_amount: 1000, fee: 0, tax: 0,
+      net_amount: 1000, currency: 'USD' as const, fx_rate: 5,
+      notes: null, nota_negociacao_number: null, external_id: null,
+      external_source: null, is_active: true,
+      created_at: '2026-06-30T00:00:00Z', updated_at: '2026-06-30T00:00:00Z',
+    }
+    render(
+      <MovementComposer
+        assets={[abt, aapl]}
+        initial={initial}
+        onSave={async () => {}}
+        onClose={() => {}}
+      />,
+    )
+    // Editar lançamento de ABT deve mostrar ABT no dropdown, mesmo que AAPL
+    // venha primeiro no ticker-sort.
+    const picker = screen.getByTestId('movement-asset-picker') as HTMLSelectElement
+    expect(picker.value).toBe('abt')
+  })
 })

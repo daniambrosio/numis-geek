@@ -121,10 +121,14 @@ export default function MovementComposer({
   const [type, setType] = useState<AssetMovementType>(
     initial?.type ?? initialNewOption ?? 'BUY',
   )
+  // Default deliberately NOT taken from `assets[0]` — the server orders by
+  // name, but the dropdown sorts by ticker, so the two would diverge. The
+  // effect below syncs assetId with the first visible option once
+  // sortedAssets is built (also handles the modal-opens-before-load race).
   const [assetId, setAssetId] = useState<string>(
     initial?.asset_id
       ?? preselectedAsset?.id
-      ?? (initialNewOption ? NEW_OPTION_SENTINEL : (assets[0]?.id ?? '')),
+      ?? (initialNewOption ? NEW_OPTION_SENTINEL : ''),
   )
   const [eventDate, setEventDate] = useState(initial?.event_date ?? new Date().toISOString().slice(0, 10))
   const [quantity, setQuantity] = useState(initial?.quantity != null ? String(initial.quantity) : '')
@@ -211,6 +215,20 @@ export default function MovementComposer({
       .filter(a => a.is_active !== false || a.id === keepInactiveId)
       .sort((a, b) => key(a).localeCompare(key(b), 'pt-BR'))
   }, [assets, keepInactiveId])
+
+  // Keep assetId in sync with what the dropdown actually displays. Fixes:
+  //  - Brand-new movement: useState init left assetId='' (no longer relies
+  //    on assets[0]); pick the first sorted option once it's available so
+  //    Save isn't stuck disabled waiting for the user to "pick something".
+  //  - Edit case where the saved asset isn't in the visible pool (rare —
+  //    asset hard-deleted out of band): falls back so the dropdown doesn't
+  //    silently render the wrong option (ABT/AAPL/whatever is first).
+  useEffect(() => {
+    if (assetId === NEW_OPTION_SENTINEL) return
+    if (sortedAssets.length === 0) return
+    if (sortedAssets.some(a => a.id === assetId)) return
+    setAssetId(sortedAssets[0].id)
+  }, [sortedAssets, assetId])
 
   const ccy: 'BRL' | 'USD' = (mode === 'option-open'
     ? (selectedUnderlying?.currency ?? 'BRL')
