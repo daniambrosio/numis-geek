@@ -17,7 +17,7 @@ import {
   type UserOut,
   type ValuationOut,
 } from '../lib/api'
-import { KLASS, type CollapsedClassCode } from '../lib/tokens'
+import { type CollapsedClassCode } from '../lib/tokens'
 
 interface GapSlice {
   key: string
@@ -27,13 +27,6 @@ interface GapSlice {
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`
-}
-
-function fmtBRL(n: number): string {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    maximumFractionDigits: 0,
-  }).format(n).replace('R$', 'R$ ')
 }
 
 function buildGapSlices(
