@@ -56,7 +56,7 @@ class Asset(Base):
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
     country: Mapped[str] = mapped_column(String(2), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ticker: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cnpj: Mapped[str | None] = mapped_column(String(18), nullable=True)
     currency: Mapped[Currency] = mapped_column(Enum(Currency), nullable=False)
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)

@@ -92,7 +92,7 @@ class AssetRequest(BaseModel):
     country: str = Field(min_length=2, max_length=2)
     name: str = Field(min_length=1, max_length=255)
     currency: Currency
-    ticker: str | None = Field(default=None, max_length=20)
+    ticker: str | None = Field(default=None, max_length=64)
     cnpj: str | None = Field(default=None, max_length=18)
     current_price: Decimal | None = None
     notes: str | None = None

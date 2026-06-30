@@ -35,7 +35,7 @@ router = APIRouter(prefix="/options", tags=["options"])
 
 
 class OptionCreateRequest(BaseModel):
-    ticker: str = Field(min_length=4, max_length=12)
+    ticker: str = Field(min_length=4, max_length=32)
     name: str | None = None
     underlying_id: str
     account_id: str
