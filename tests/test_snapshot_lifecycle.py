@@ -603,6 +603,58 @@ def test_update_snapshot_item_accepts_zero_price(db):
     assert refreshed.market_value_brl == Decimal("0")
 
 
+def test_update_snapshot_item_price_overrides_quantity(db):
+    """2026-07-01 — permitir sobrescrever item.quantity via patch para
+    bater com extrato do custodiante quando o histórico de movements ficou
+    fora de sincronia (bonificação/come-cotas não capturada). O qty
+    fornecido reescreve item.quantity; o market_value é recomputado a
+    partir dele + preço."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    assert item is not None
+    original_qty = item.quantity
+
+    updated = update_snapshot_item_price(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=item.asset_id,
+        user_id="alice",
+        new_price=Decimal("80199"),
+        value_mode="total",
+        new_quantity=Decimal("16040"),
+    )
+    assert updated.quantity == Decimal("16040")
+    assert updated.quantity != original_qty
+    # market_value = new_quantity * (total / new_quantity) = total
+    assert updated.market_value_native == Decimal("80199")
+    # unit_price derivado do total ÷ NOVA qty (não da original)
+    assert updated.unit_price == Decimal("80199") / Decimal("16040")
+
+
+def test_update_snapshot_item_price_keeps_quantity_when_omitted(db):
+    """Regressão: patch sem `new_quantity` mantém o qty existente."""
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    assert item is not None
+    original_qty = item.quantity
+
+    updated = update_snapshot_item_price(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=item.asset_id,
+        user_id="alice",
+        new_price=Decimal("100"),
+        value_mode="unit",
+    )
+    assert updated.quantity == original_qty
+
+
 def test_delete_snapshot_item_removes_item_and_pendency(db):
     """Spec 49 hotfix #11 — deleting an item drops the row, drops any
     pendency for that asset, and refreshes the snapshot's totals."""

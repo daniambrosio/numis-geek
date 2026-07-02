@@ -164,9 +164,16 @@ class SnapshotItemPatchRequest(BaseModel):
                 unit_price)
     - None    : auto-detect from asset_class (matches the per-pendency
                 resolve path).
+
+    `quantity` (opcional) — override do qty do item quando o histórico de
+    movements ficou fora de sincronia com o extrato do custodiante (ex:
+    fundos com bonificação/come-cotas não capturada). Persiste no
+    snapshot_item.quantity; NÃO cria movement nem reescreve a posição
+    calculada. Se omitido, o qty herdado do movement history é mantido.
     """
     price: Decimal = Field(..., ge=0)
     value_mode: str | None = Field(default=None, pattern=r"^(unit|total)$")
+    quantity: Decimal | None = Field(default=None, ge=0)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -480,6 +487,7 @@ def patch_snapshot_item(
             new_price=body.price,
             value_mode=body.value_mode,
             note=body.note,
+            new_quantity=body.quantity,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

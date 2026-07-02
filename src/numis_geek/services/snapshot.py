@@ -750,6 +750,7 @@ def update_snapshot_item_price(
     new_price: Decimal,
     value_mode: str | None = None,
     note: str | None = None,
+    new_quantity: Decimal | None = None,
 ) -> PortfolioSnapshotItem:
     """Spec 49 hotfix #10 — inline edit a snapshot item's price.
 
@@ -760,6 +761,11 @@ def update_snapshot_item_price(
     Applies the same unit-vs-total conversion as `resolve_pendency` so all
     paths stay aligned. Only allowed on IN_REVIEW snapshots — CLOSED ones
     must be reopened first.
+
+    `new_quantity`: override do qty herdado do movement history. Persiste no
+    item.quantity sem tocar em movements — para casos onde o extrato do
+    custodiante mostra qty diferente do calculado (bonificação/come-cotas
+    não capturada em lançamento). Se None, qty existente é preservado.
     """
     snap = db.get(PortfolioSnapshot, snapshot_id)
     if snap is None:
@@ -775,19 +781,23 @@ def update_snapshot_item_price(
     effective_mode = value_mode or _default_value_mode_for(asset)
     stored_price = Decimal(str(new_price))
     if effective_mode == "total":
-        position = compute_position(db, asset_id, as_of=snap.period_end_date)
-        qty = position.get("quantity_held") or Decimal("0")
-        if qty == 0:
-            existing = (
-                db.query(PortfolioSnapshotItem)
-                .filter(
-                    PortfolioSnapshotItem.snapshot_id == snapshot_id,
-                    PortfolioSnapshotItem.asset_id == asset_id,
+        # Use new_quantity se informado, senão herda do movement history.
+        if new_quantity is not None and new_quantity > 0:
+            qty = new_quantity
+        else:
+            position = compute_position(db, asset_id, as_of=snap.period_end_date)
+            qty = position.get("quantity_held") or Decimal("0")
+            if qty == 0:
+                existing = (
+                    db.query(PortfolioSnapshotItem)
+                    .filter(
+                        PortfolioSnapshotItem.snapshot_id == snapshot_id,
+                        PortfolioSnapshotItem.asset_id == asset_id,
+                    )
+                    .first()
                 )
-                .first()
-            )
-            if existing and existing.quantity:
-                qty = existing.quantity
+                if existing and existing.quantity:
+                    qty = existing.quantity
         if qty and qty > 0:
             stored_price = stored_price / qty
 
@@ -816,6 +826,8 @@ def update_snapshot_item_price(
             total_invested_brl=position.get("total_invested_brl"),
         )
         db.add(item)
+    if new_quantity is not None and new_quantity > 0:
+        item.quantity = new_quantity
     item.unit_price = stored_price
     if item.quantity is not None:
         # Mesma regra do resolve_pendency: qty>0 multiplica, qty=0

@@ -44,11 +44,11 @@ export default function SnapshotItemEditModal({
 }: Props) {
   const defaultMode: 'unit' | 'total' =
     asset.asset_class && TOTAL_CLASSES.has(asset.asset_class) ? 'total' : 'unit'
-  const qty = Number(item.quantity)
+  const originalQty = Number(item.quantity)
   const currentUnit = item.unit_price ? Number(item.unit_price) : null
   const currentTotal = item.market_value_native
     ? Number(item.market_value_native)
-    : (currentUnit != null ? currentUnit * qty : null)
+    : (currentUnit != null ? currentUnit * originalQty : null)
 
   const initialValue =
     defaultMode === 'total' && currentTotal != null
@@ -58,6 +58,13 @@ export default function SnapshotItemEditModal({
         : ''
   const [mode, setMode] = useState<'unit' | 'total'>(defaultMode)
   const [raw, setRaw] = useState<string>(initialValue)
+  // Bug 2026-07-01: fundo com bonificação/come-cotas fora do histórico
+  // fica com qty diferente do extrato. Permitir override do qty aqui é
+  // a válvula de escape (bypass do movement history) sem obrigar o user
+  // a criar movement retroativo.
+  const [rawQty, setRawQty] = useState<string>(
+    originalQty.toString().replace('.', ','),
+  )
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -84,12 +91,16 @@ export default function SnapshotItemEditModal({
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [raw, mode, note])
+  }, [raw, rawQty, mode, note])
 
   function parsePrice(s: string): number | null {
     const n = parseDecimal(s)
     return n != null && n >= 0 ? n : null
   }
+
+  const parsedQty = parsePrice(rawQty)
+  const qtyChanged = parsedQty != null && Math.abs(parsedQty - originalQty) > 1e-8
+  const qty = parsedQty != null && parsedQty > 0 ? parsedQty : originalQty
 
   async function submit() {
     if (busy) return
@@ -98,11 +109,16 @@ export default function SnapshotItemEditModal({
       setErr('Informe um número ≥ 0.')
       return
     }
+    if (parsedQty === null) {
+      setErr('Quantidade inválida.')
+      return
+    }
     setBusy(true); setErr(null)
     try {
       const updated = await api.patchSnapshotItem(snapshotId, asset.id, {
         price: value.toFixed(2),
         value_mode: mode,
+        quantity: qtyChanged ? parsedQty.toString() : null,
         note: note.trim() || null,
       })
       onSaved(updated)
@@ -125,7 +141,8 @@ export default function SnapshotItemEditModal({
     }
   }
 
-  // Preview of what will be stored.
+  // Preview of what will be stored — usa a qty EDITADA, não a original,
+  // pra que o valor derivado bata com o que o user vai gravar.
   const parsed = parsePrice(raw)
   let previewUnit: number | null = null
   let previewTotal: number | null = null
@@ -180,12 +197,29 @@ export default function SnapshotItemEditModal({
         <div className="p-5 space-y-4">
           <div className="text-[11px] text-gray-500 grid grid-cols-2 gap-2">
             <div>
-              <div className="uppercase tracking-wider font-semibold">Qtd</div>
-              <div className="tnum text-gray-700 dark:text-gray-300 text-[13px]">{fmtNumber(qty, 4)}</div>
+              <div className="uppercase tracking-wider font-semibold mb-1">Qtd</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={rawQty}
+                onChange={e => { setRawQty(e.target.value); setErr(null) }}
+                className={`w-full h-9 px-2 rounded-lg bg-transparent border text-[13px] tnum outline-none focus:border-indigo-500 ${
+                  qtyChanged
+                    ? 'border-amber-500/60 text-amber-700 dark:text-amber-300'
+                    : 'border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300'
+                }`}
+                data-testid="snapshot-item-qty-input"
+                title="Override do qty herdado do histórico de movements — use para bater com o extrato quando houve bonificação/come-cotas não capturada"
+              />
+              {qtyChanged && (
+                <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                  original: {fmtNumber(originalQty, 4)}
+                </div>
+              )}
             </div>
             <div>
               <div className="uppercase tracking-wider font-semibold">Valor atual</div>
-              <div className="tnum text-gray-700 dark:text-gray-300 text-[13px]">
+              <div className="tnum text-gray-700 dark:text-gray-300 text-[13px] h-9 flex items-center">
                 {currentTotal != null ? `${ccySymbol} ${fmtNumber(currentTotal)}` : '—'}
               </div>
             </div>

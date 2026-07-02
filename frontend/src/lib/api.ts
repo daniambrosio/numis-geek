@@ -921,7 +921,12 @@ export const api = {
   patchSnapshotItem: (
     snapshot_id: string,
     asset_id: string,
-    body: { price: string; value_mode?: 'unit' | 'total' | null; note?: string | null },
+    body: {
+      price: string
+      value_mode?: 'unit' | 'total' | null
+      quantity?: string | null
+      note?: string | null
+    },
   ) =>
     request<SnapshotItemOut>(`/snapshots/${snapshot_id}/items/${asset_id}`, {
       method: 'PATCH', body: JSON.stringify(body),
