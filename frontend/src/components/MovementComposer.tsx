@@ -402,8 +402,14 @@ export default function MovementComposer({
         if (showTax && tax) payload.tax = num(tax)
         if (showNotaNegociacao && notaNegociacao.trim()) payload.nota_negociacao_number = notaNegociacao.trim()
         if (useValueOnly) {
-          payload.quantity = null
-          payload.unit_price = null
+          // Modo valor: qty é informacional, aporte-por-valor. Normalizamos
+          // pra qty=1 + unit_price=gross_amount pra manter o invariante
+          // qty*unit=gross que os snapshots consomem, sem gerar qty
+          // "marretada" (herança do import Notion — ver migration
+          // normalize_valor_qty).
+          const g = num(grossAmount)
+          payload.quantity = 1
+          payload.unit_price = g
         }
         saved = await onSave(payload)
       }
