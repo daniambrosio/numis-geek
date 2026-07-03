@@ -633,20 +633,22 @@ def resolve_pendency(
         # market_value = qty × unit_price = total (correct invariant).
         effective_mode = value_mode or _default_value_mode_for(asset)
         if effective_mode == "total":
-            position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
-            qty = position.get("quantity_held") or Decimal("0")
-            if qty == 0:
-                # Fall back to existing item.quantity (or 1 if neither).
-                existing = (
-                    db.query(PortfolioSnapshotItem)
-                    .filter(
-                        PortfolioSnapshotItem.snapshot_id == pen.snapshot_id,
-                        PortfolioSnapshotItem.asset_id == pen.asset_id,
-                    )
-                    .first()
+            # Mesmo fix da update_snapshot_item_price: preferir item.quantity
+            # (frozen truth) sobre compute_position (que soma qty=1 × N em modo
+            # valor pós-normalize_valor_qty).
+            existing = (
+                db.query(PortfolioSnapshotItem)
+                .filter(
+                    PortfolioSnapshotItem.snapshot_id == pen.snapshot_id,
+                    PortfolioSnapshotItem.asset_id == pen.asset_id,
                 )
-                if existing and existing.quantity:
-                    qty = existing.quantity
+                .first()
+            )
+            if existing and existing.quantity and existing.quantity > 0:
+                qty = existing.quantity
+            else:
+                position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
+                qty = position.get("quantity_held") or Decimal("0")
             if qty and qty > 0:
                 new_price = new_price / qty
         asset.current_price = new_price
@@ -781,23 +783,29 @@ def update_snapshot_item_price(
     effective_mode = value_mode or _default_value_mode_for(asset)
     stored_price = Decimal(str(new_price))
     if effective_mode == "total":
-        # Use new_quantity se informado, senão herda do movement history.
+        # Bug 2026-07-02: pós-normalize_valor_qty todo movement em modo valor
+        # tem qty=1, então compute_position devolve N (número de aportes) em
+        # vez de um qty semântico. Dividir por N esmaga o total (369,22 → 184,61
+        # em Fundo Segurança MP com 2 aportes). Fix: preferir item.quantity,
+        # que é o qty FROZEN do snapshot (=1 pra modo valor, =shares reais pra
+        # cotado). compute_position vira só fallback pra item que ainda não
+        # existe.
         if new_quantity is not None and new_quantity > 0:
             qty = new_quantity
         else:
-            position = compute_position(db, asset_id, as_of=snap.period_end_date)
-            qty = position.get("quantity_held") or Decimal("0")
-            if qty == 0:
-                existing = (
-                    db.query(PortfolioSnapshotItem)
-                    .filter(
-                        PortfolioSnapshotItem.snapshot_id == snapshot_id,
-                        PortfolioSnapshotItem.asset_id == asset_id,
-                    )
-                    .first()
+            existing = (
+                db.query(PortfolioSnapshotItem)
+                .filter(
+                    PortfolioSnapshotItem.snapshot_id == snapshot_id,
+                    PortfolioSnapshotItem.asset_id == asset_id,
                 )
-                if existing and existing.quantity:
-                    qty = existing.quantity
+                .first()
+            )
+            if existing and existing.quantity and existing.quantity > 0:
+                qty = existing.quantity
+            else:
+                position = compute_position(db, asset_id, as_of=snap.period_end_date)
+                qty = position.get("quantity_held") or Decimal("0")
         if qty and qty > 0:
             stored_price = stored_price / qty
 

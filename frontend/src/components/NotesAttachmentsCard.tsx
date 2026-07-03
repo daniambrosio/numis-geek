@@ -56,6 +56,10 @@ interface Props {
   onAttachmentsChanged: () => void | Promise<void>
   /** Default "Notas & documentos · N arquivos" — caller can override. */
   label?: string
+  /** Esconde a textarea de notas — útil quando o caller já tem seu
+   *  próprio campo de nota (ex: SnapshotItemEditModal envia note via
+   *  audit_log em vez de persistir no item). */
+  hideNotes?: boolean
 }
 
 function fmtSize(bytes: number): string {
@@ -87,6 +91,7 @@ export default function NotesAttachmentsCard({
   sourceType, sourceId,
   attachments, onAttachmentsChanged,
   label,
+  hideNotes,
 }: Props) {
   const [localNotes, setLocalNotes] = useState(notes)
   const [savingNotes, setSavingNotes] = useState(false)
@@ -299,14 +304,16 @@ export default function NotesAttachmentsCard({
         {savingNotes && <span className="text-[10px] text-gray-400">salvando…</span>}
       </div>
 
-      <textarea
-        value={localNotes}
-        onChange={e => scheduleNoteSave(e.target.value)}
-        onPaste={handlePaste}
-        placeholder="Adicionar nota… ex: tese do investimento, motivo da compra, link pra notícia, observações pra IR…"
-        rows={Math.max(3, localNotes.split('\n').length + 1)}
-        className="w-full text-[13px] p-3 rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 placeholder:text-gray-500 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors resize-y leading-relaxed"
-      />
+      {!hideNotes && (
+        <textarea
+          value={localNotes}
+          onChange={e => scheduleNoteSave(e.target.value)}
+          onPaste={handlePaste}
+          placeholder="Adicionar nota… ex: tese do investimento, motivo da compra, link pra notícia, observações pra IR…"
+          rows={Math.max(3, localNotes.split('\n').length + 1)}
+          className="w-full text-[13px] p-3 rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 placeholder:text-gray-500 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors resize-y leading-relaxed"
+        />
+      )}
 
       {(attachments.length > 0 || inFlight.length > 0) && (
         <div>

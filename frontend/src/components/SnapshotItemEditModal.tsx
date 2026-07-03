@@ -10,9 +10,11 @@ import { Link } from 'react-router-dom'
 import {
   api,
   type AssetOut,
+  type AttachmentOut,
   type SnapshotItemOut,
 } from '../lib/api'
 import { parseDecimal } from '../lib/parseDecimal'
+import NotesAttachmentsCard from './NotesAttachmentsCard'
 
 interface Props {
   snapshotId: string
@@ -70,11 +72,30 @@ export default function SnapshotItemEditModal({
   const [err, setErr] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Anexos do item (extrato do custodiante, etc). source_type=snapshot_item,
+  // source_id=item.id — a linha existe no DB, upload é imediato via
+  // NotesAttachmentsCard (mesmo padrão do LancamentoDetailPanel).
+  const [attachments, setAttachments] = useState<AttachmentOut[]>([])
 
   useEffect(() => {
     inputRef.current?.focus()
     inputRef.current?.select()
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    api.listAttachments('snapshot_item', item.id)
+      .then(list => { if (!cancelled) setAttachments(list) })
+      .catch(() => { if (!cancelled) setAttachments([]) })
+    return () => { cancelled = true }
+  }, [item.id])
+
+  async function refreshAttachments() {
+    try {
+      const list = await api.listAttachments('snapshot_item', item.id)
+      setAttachments(list)
+    } catch { /* fail-soft */ }
+  }
 
   // ESC cancela, Enter salva. Dentro do textarea de notas Enter mantém
   // o comportamento natural (quebra de linha); ⌘/Ctrl+Enter sempre salva.
@@ -302,6 +323,20 @@ export default function SnapshotItemEditModal({
               className="mt-1 w-full p-2 text-[12px] rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 placeholder:text-gray-500 focus:outline-none focus:border-indigo-500"
             />
           </label>
+
+          {/* Anexos do item (extrato do custodiante que prova o valor).
+             NotesAttachmentsCard.notes fica vazio — quem persiste a nota é
+             o `note` acima, que vai no audit_log via patchSnapshotItem. */}
+          <NotesAttachmentsCard
+            notes=""
+            onNotesSave={async () => {/* handled by the audit note above */}}
+            sourceType="snapshot_item"
+            sourceId={item.id}
+            attachments={attachments}
+            onAttachmentsChanged={refreshAttachments}
+            label={`Anexos${attachments.length > 0 ? ` · ${attachments.length}` : ''}`}
+            hideNotes
+          />
 
           {err && (
             <div className="text-[11px] text-red-600 dark:text-red-400">{err}</div>

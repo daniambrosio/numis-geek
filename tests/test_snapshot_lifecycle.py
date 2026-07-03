@@ -634,6 +634,59 @@ def test_update_snapshot_item_price_overrides_quantity(db):
     assert updated.unit_price == Decimal("80199") / Decimal("16040")
 
 
+def test_update_snapshot_item_price_uses_item_qty_not_movement_sum(db):
+    """Bug 2026-07-02: pós-normalize_valor_qty, movements em modo valor têm
+    quantity=1 cada. compute_position soma N=número de aportes. Se
+    update_snapshot_item_price dividisse por N em vez de item.quantity=1,
+    o total_valor typado saía esmagado (369,22 com 2 aportes virava 184,61).
+    Fix: preferir item.quantity (frozen truth do snapshot)."""
+    w = _seed(db)
+    # 2 aportes no mesmo asset (modo valor, qty=1 cada, normalizado)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id
+    ).first()
+    assert item is not None
+    # Simula estado pós-normalize: item.quantity=1, mas position soma dos
+    # movements pode ser > 1 se houver múltiplos aportes.
+    item.quantity = Decimal("1")
+    db.flush()
+
+    # Adiciona 2º aporte no MESMO asset (BUY qty=1 cada)
+    from numis_geek.models.asset_movement import (
+        AssetMovement, AssetMovementType,
+    )
+    extra = AssetMovement(
+        id="mov-extra",
+        workspace_id=w["ws_id"],
+        asset_id=item.asset_id,
+        type=AssetMovementType.BUY,
+        event_date=PERIOD,
+        quantity=Decimal("1"),
+        unit_price=Decimal("100"),
+        gross_amount=Decimal("100"),
+        net_amount=Decimal("100"),
+        currency="BRL",
+        fx_rate=Decimal("1"),
+        is_active=True,
+    )
+    db.add(extra)
+    db.flush()
+
+    updated = update_snapshot_item_price(
+        db,
+        snapshot_id=r.snapshot_id,
+        asset_id=item.asset_id,
+        user_id="alice",
+        new_price=Decimal("369.22"),
+        value_mode="total",
+    )
+    # item.quantity=1 → divisor=1 → stored_unit_price=369.22 → mv=369.22
+    # (NÃO 369.22/N onde N é sum(movements))
+    assert updated.unit_price == Decimal("369.22")
+    assert updated.market_value_native == Decimal("369.22")
+
+
 def test_update_snapshot_item_price_keeps_quantity_when_omitted(db):
     """Regressão: patch sem `new_quantity` mantém o qty existente."""
     w = _seed(db)

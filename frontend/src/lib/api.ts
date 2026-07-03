@@ -1423,7 +1423,7 @@ export interface BulkExtractionJobSummary {
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────
-export type AttachmentSourceType = 'asset' | 'movement' | 'distribution' | 'snapshot'
+export type AttachmentSourceType = 'asset' | 'movement' | 'distribution' | 'snapshot' | 'snapshot_item'
 export type AttachmentKind = 'image' | 'pdf' | 'csv' | 'other'
 
 export interface AttachmentOut {
@@ -1552,6 +1552,7 @@ export interface SnapshotPendencyOut {
 }
 
 export interface SnapshotItemOut {
+  id: string
   asset_id: string
   quantity: string
   unit_price: string | null

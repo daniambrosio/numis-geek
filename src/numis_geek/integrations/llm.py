@@ -105,14 +105,29 @@ class AnthropicClient:
         for blob, mime in parts:
             if not blob:
                 continue
-            content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime or "image/png",
-                    "data": base64.b64encode(blob).decode("ascii"),
-                },
-            })
+            # PDFs vão como document block (a API rejeita PDF em image block
+            # com "media_type: Input should be image/jpeg|png|gif|webp"). Todo
+            # o resto assume imagem — media_type default image/png se o
+            # caller não informou.
+            m = mime or "image/png"
+            if m == "application/pdf":
+                content.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": m,
+                        "data": base64.b64encode(blob).decode("ascii"),
+                    },
+                })
+            else:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": m,
+                        "data": base64.b64encode(blob).decode("ascii"),
+                    },
+                })
         content.append({"type": "text", "text": user_text})
 
         message = self._sdk.messages.create(

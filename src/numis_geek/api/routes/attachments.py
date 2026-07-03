@@ -73,8 +73,12 @@ _SOURCE_MODEL = {
     # outro módulo) — coloco aqui em vez de import top-level só pra
     # evitar import circular acidental.
 }
-from numis_geek.models.portfolio_snapshot import PortfolioSnapshot as _SnapModel  # noqa: E402
+from numis_geek.models.portfolio_snapshot import (  # noqa: E402
+    PortfolioSnapshot as _SnapModel,
+    PortfolioSnapshotItem as _SnapItemModel,
+)
 _SOURCE_MODEL[AttachmentSourceType.SNAPSHOT] = _SnapModel
+_SOURCE_MODEL[AttachmentSourceType.SNAPSHOT_ITEM] = _SnapItemModel
 
 
 def _parse_source_type(value: str) -> AttachmentSourceType:
@@ -103,7 +107,18 @@ def _verify_source_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{source_type.value} {source_id} not found.",
         )
-    workspace_id = getattr(row, "workspace_id")
+    # PortfolioSnapshotItem não tem workspace_id direto — ele herda do
+    # snapshot pai. Restante das entidades tem workspace_id nativo.
+    if source_type == AttachmentSourceType.SNAPSHOT_ITEM:
+        parent = db.get(_SnapModel, row.snapshot_id)
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"snapshot_item {source_id} not found.",
+            )
+        workspace_id = parent.workspace_id
+    else:
+        workspace_id = getattr(row, "workspace_id")
     if user.role != UserRole.sysadmin and workspace_id != user.workspace_id:
         # Same masking pattern used in other routes — reveal nothing.
         raise HTTPException(

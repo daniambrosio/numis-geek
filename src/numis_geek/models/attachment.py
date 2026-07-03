@@ -25,6 +25,7 @@ class AttachmentSourceType(str, enum.Enum):
     MOVEMENT = "movement"
     DISTRIBUTION = "distribution"
     SNAPSHOT = "snapshot"
+    SNAPSHOT_ITEM = "snapshot_item"
 
 
 class AttachmentKind(str, enum.Enum):

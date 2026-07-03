@@ -63,6 +63,7 @@ router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
 
 class SnapshotItemOut(BaseModel):
+    id: str
     asset_id: str
     quantity: str
     unit_price: str | None
@@ -76,6 +77,7 @@ class SnapshotItemOut(BaseModel):
     @classmethod
     def from_orm(cls, i: PortfolioSnapshotItem) -> "SnapshotItemOut":
         return cls(
+            id=i.id,
             asset_id=i.asset_id,
             quantity=str(i.quantity),
             unit_price=str(i.unit_price) if i.unit_price is not None else None,

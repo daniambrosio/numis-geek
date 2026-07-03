@@ -59,6 +59,7 @@ function asset(id: string, ticker: string): AssetOut {
 
 function item(asset_id: string, value: number, updated_at = '2026-05-31T12:00:00Z'): SnapshotItemOut {
   return {
+    id: `item-${asset_id}`,
     asset_id, quantity: '100',
     unit_price: '30.00',
     market_value_native: String(value),
@@ -180,32 +181,32 @@ describe('SnapshotDetail (Spec 45)', () => {
 
     const TS = '2026-05-31T12:00:00Z'
     const prevItems: SnapshotItemOut[] = [
-      { asset_id: 'aporte', quantity: '100', unit_price: '50.00',
+      { id: 'i-aporte', asset_id: 'aporte', quantity: '100', unit_price: '50.00',
         market_value_native: '5000', market_value_brl: '5000',
         market_value_usd: '1000', average_cost_brl: '4000', total_invested_brl: '4000',
         updated_at: TS },
-      { asset_id: 'rendu', quantity: '100', unit_price: '50.00',
+      { id: 'i-rendu', asset_id: 'rendu', quantity: '100', unit_price: '50.00',
         market_value_native: '5000', market_value_brl: '5000',
         market_value_usd: '1000', average_cost_brl: '4000', total_invested_brl: '4000',
         updated_at: TS },
-      { asset_id: 'saldo', quantity: '1', unit_price: '1000.00',
+      { id: 'i-saldo', asset_id: 'saldo', quantity: '1', unit_price: '1000.00',
         market_value_native: '1000', market_value_brl: '1000',
         market_value_usd: '200', average_cost_brl: '1000', total_invested_brl: '1000',
         updated_at: TS },
     ]
     const items: SnapshotItemOut[] = [
       // APORTE: qty 100 → 200, preço estável → mkt 5k → 10k (+100% mkt, 0% preço)
-      { asset_id: 'aporte', quantity: '200', unit_price: '50.00',
+      { id: 'i-aporte', asset_id: 'aporte', quantity: '200', unit_price: '50.00',
         market_value_native: '10000', market_value_brl: '10000',
         market_value_usd: '2000', average_cost_brl: '8000', total_invested_brl: '8000',
         updated_at: TS },
       // RENDU: qty igual, preço 50 → 55 (+10%)
-      { asset_id: 'rendu', quantity: '100', unit_price: '55.00',
+      { id: 'i-rendu', asset_id: 'rendu', quantity: '100', unit_price: '55.00',
         market_value_native: '5500', market_value_brl: '5500',
         market_value_usd: '1100', average_cost_brl: '4000', total_invested_brl: '4000',
         updated_at: TS },
       // SALDO: balance dobrou — deve ser filtrado por ser CASH
-      { asset_id: 'saldo', quantity: '1', unit_price: '2000.00',
+      { id: 'i-saldo', asset_id: 'saldo', quantity: '1', unit_price: '2000.00',
         market_value_native: '2000', market_value_brl: '2000',
         market_value_usd: '400', average_cost_brl: '2000', total_invested_brl: '2000',
         updated_at: TS },
