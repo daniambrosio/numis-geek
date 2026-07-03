@@ -63,6 +63,7 @@ export const FI_PALETTE: Record<string, FIToken> = {
   mercadopago:  { color: '#00B1EA', initials: 'MP' },
   clear:        { color: '#1FAA59', initials: 'CL' },
   nubank:       { color: '#820AD1', initials: 'NU' },
+  nomad:        { color: '#00E4B6', initials: 'NO' },
   particular:   { color: '#6B7280', initials: 'PA' },
   fix:          { color: '#94a3b8', initials: 'FX' },
 }
