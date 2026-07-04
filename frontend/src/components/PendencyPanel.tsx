@@ -36,8 +36,11 @@ function ymLabelShort(ym: string): string {
   return `${MONTH_NAMES_SHORT[parseInt(m, 10) - 1]}/${y.slice(2)}`
 }
 
-function fmtBRL(n: number): string {
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+function fmtMoney(n: number, currency: 'BRL' | 'USD' | string | null | undefined): string {
+  // Avenue/Coinbase/etc. armazenam preço em USD nativo. Bug 2026-07-04:
+  // fmtBRL era hardcoded aqui, exibindo "R$" pra ativos em USD.
+  const c = currency === 'USD' ? 'USD' : 'BRL'
+  return n.toLocaleString('pt-BR', { style: 'currency', currency: c })
 }
 
 function fmtDateBR(iso: string): string {
@@ -379,7 +382,7 @@ function PendencyRow({
           {hasPrevious && (
             <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
               · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}
-              {fmtBRL(prevPriceNum!)}
+              {fmtMoney(prevPriceNum!, asset?.currency)}
             </span>
           )}
         </div>
@@ -409,7 +412,7 @@ function PendencyRow({
           <button
             onClick={handleRepeatPrevious}
             disabled={busy}
-            title={`Usar preço de ${ymLabelShort(pendency.previous_period_end!.slice(0, 7))}: ${fmtBRL(prevPriceNum!)}`}
+            title={`Usar preço de ${ymLabelShort(pendency.previous_period_end!.slice(0, 7))}: ${fmtMoney(prevPriceNum!, asset?.currency)}`}
             className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50"
             data-testid={`pendency-repeat-${pendency.id}`}
           >
