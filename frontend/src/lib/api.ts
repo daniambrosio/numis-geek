@@ -1357,6 +1357,7 @@ export interface ExtractionJobOut {
   attachment_id: string
   pendency_id: string | null
   snapshot_id: string | null
+  snapshot_period_end_date?: string | null
   asset_id: string | null
   extracted_json: Record<string, unknown> | null
   confidence: number | null

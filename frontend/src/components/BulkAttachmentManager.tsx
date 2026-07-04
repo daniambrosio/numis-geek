@@ -200,6 +200,10 @@ export default function BulkAttachmentManager({
         error_message: full.error_message,
         institution_id: summary?.institution_id ?? null,
         institution_short_name: summary?.institution_short_name ?? null,
+        // 2026-07-04 — passa o period_end pro modal filtrar events fora
+        // do mês (CSVs de proventos vêm com múltiplos meses; sem isso o
+        // filtro do BulkIncomeReviewModal ficava vazio e mostrava tudo).
+        snapshot_period_end_date: full.snapshot_period_end_date ?? null,
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro')
