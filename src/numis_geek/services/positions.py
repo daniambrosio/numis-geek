@@ -247,8 +247,21 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     current_value_brl: Decimal | None = None
     variation: Decimal | None = None
     rentabilidade: Decimal | None = None
-    if current_price is not None and running_qty != 0:
-        current_value = running_qty * current_price
+    # Bug 2026-07-04: pós-normalize_valor_qty (migration 2026-07-02) todo
+    # movement em modo valor tem qty=1, então running_qty = N (número de
+    # aportes). asset.current_price desses ativos é o VALOR TOTAL DO
+    # FUNDO (o que o user digita no fechamento com mode=total, dividido
+    # por item.quantity=1). Multiplicar por N inflava dashboard N vezes
+    # (PGBL Flexprev com 23 aportes virava 23× o real → +R$ 7-8M).
+    # Fix: pra modo valor tratamos qty=1 pro cálculo do current_value,
+    # deixando running_qty como está pra que TTM/DY continuem consistentes.
+    effective_qty = running_qty
+    if asset and asset.asset_class and asset.asset_class.value not in (
+        "STOCK", "REIT", "ETF", "OPTION", "CRYPTO",
+    ):
+        effective_qty = Decimal("1")
+    if current_price is not None and effective_qty != 0:
+        current_value = effective_qty * current_price
         if currency == "BRL":
             current_value_brl = current_value
         elif currency == "USD":

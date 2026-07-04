@@ -83,13 +83,16 @@ def get_portfolio(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
+    # Sysadmin híbrido (workspace_id no user): cai no dele por default;
+    # ?workspace_id= sobrescreve pra ver outro. Sysadmin puro: precisa
+    # do query param, senão 400.
     if current_user.role == UserRole.sysadmin:
-        if workspace_id is None:
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="sysadmin must pass workspace_id.",
             )
-        target_ws = workspace_id
     else:
         target_ws = current_user.workspace_id
         if workspace_id and workspace_id != target_ws:
