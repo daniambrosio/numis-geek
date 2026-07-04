@@ -15,7 +15,12 @@ from decimal import Decimal
 from sqlalchemy import (
     DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from numis_geek.models.portfolio_snapshot import PortfolioSnapshot
 
 from numis_geek.db.base import Base
 
@@ -109,6 +114,10 @@ class ExtractionJob(Base):
 
     # Final applied payload (== extracted_json XOR user edits at confirm time).
     user_edits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    snapshot: Mapped["PortfolioSnapshot | None"] = relationship(
+        "PortfolioSnapshot", lazy="joined", foreign_keys=[snapshot_id],
+    )
 
     __table_args__ = (
         Index("ix_extraction_workspace_status", "workspace_id", "status"),

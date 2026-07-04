@@ -273,6 +273,8 @@ def test_by_custodian_workspace_isolation(client, seed):
     db = TestSession()
     other_ws = WorkspaceService(db).create("Other WS for by-custodian")
     UserService(db).create(other_ws.id, "other_admin@test.com", "otherpass", UserRole.admin)
+    db.commit()  # get_current_user agora relê o user do DB; sem commit,
+                 # a sessão do API não enxerga o user recém-criado.
     other_token = AuthService(db).login("other_admin@test.com", "otherpass")
 
     # Create an investment account in OTHER workspace at the seed FI

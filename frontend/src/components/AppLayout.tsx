@@ -9,7 +9,7 @@ import {
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
 import { getComfort, toggleComfort } from '../lib/comfort'
-import { clearToken, type UserOut } from '../lib/api'
+import { clearToken, jwtMatchesMe, type UserOut } from '../lib/api'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import PriceRefresh from './PriceRefresh'
 import VersionMismatchBanner from './VersionMismatchBanner'
@@ -134,6 +134,18 @@ export default function AppLayout({ user, children }: Props) {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
+
+  // Defesa contra JWT stale: se o payload do token não bate com o /me
+  // (role ou workspace mudou no DB desde o login), forçar re-login. Sem
+  // isso o user vê menu novo mas APIs devolvem 403 usando role antiga.
+  // Redundante ao backend get_current_user (que relê do DB), mas serve
+  // de rede de segurança + normaliza o token pra próximos re-loads.
+  useEffect(() => {
+    if (!jwtMatchesMe(user)) {
+      clearToken()
+      navigate('/login', { replace: true })
+    }
+  }, [user, navigate])
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')

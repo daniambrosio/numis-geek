@@ -66,32 +66,52 @@ export default function BulkIncomeReviewModal({
   const [error, setError] = useState<string | null>(null)
   const scopedFi = job.institution_short_name ?? null
 
+  // Período do fechamento em revisão. Mês do period_end (ex.: "2026-06-30"
+  // → 2026-06-01..2026-06-30). Preview filtra o payload por isso — CSVs
+  // de proventos costumam vir com múltiplos meses; o backend também
+  // descarta o que está fora em `_classify_bulk_income`, então mostrar
+  // fora aqui era enganoso ("Registrar 45" mas só 1 entrava).
+  const periodEndIso = job.snapshot_period_end_date ?? null
+  const [periodStartIso, periodStartLabel, periodEndLabel] = (() => {
+    if (!periodEndIso) return [null, null, null] as const
+    const start = `${periodEndIso.slice(0, 7)}-01`
+    return [start, start, periodEndIso] as const
+  })()
+  const [outOfPeriodCount, setOutOfPeriodCount] = useState(0)
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    // Preview reuses confirmExtraction with no body — but that would
-    // actually apply. Spec 58 doesn't expose a preview endpoint for
-    // income yet; we display the raw extracted_json events and let
-    // the user click Apply to commit.
-    // For now, derive preview from the extracted payload directly.
     const events = (job.extracted_json as { events?: unknown[] } | null)?.events ?? []
-    if (cancelled) return
-    setPreview({
-      applied: events.map(e => ({
-        ...(e as IncomeRow),
+    const inPeriod: IncomeRow[] = []
+    let dropped = 0
+    for (const e of events) {
+      const row = e as IncomeRow
+      const d = row.event_date
+      if (periodStartIso && periodEndIso && (d < periodStartIso || d > periodEndIso)) {
+        dropped++
+        continue
+      }
+      inPeriod.push({
+        ...row,
         external_id: '',
         asset_id: null,
         asset_name: null,
         institution_short_name: scopedFi,
-      })),
+      })
+    }
+    if (cancelled) return
+    setPreview({
+      applied: inPeriod,
       matched_no_pendency: [],
       orphan: [],
       pendency_not_in_extract: [],
       auto_skipped: [],
     })
+    setOutOfPeriodCount(dropped)
     setLoading(false)
     return () => { cancelled = true }
-  }, [job.extracted_json, scopedFi])
+  }, [job.extracted_json, scopedFi, periodStartIso, periodEndIso])
 
   async function handleApply() {
     setApplying(true); setError(null)
@@ -128,7 +148,18 @@ export default function BulkIncomeReviewModal({
               <Sparkles className="w-3 h-3 text-emerald-500" />
               {rows.length} evento{rows.length === 1 ? '' : 's'} pra registrar
               {scopedFi && <span className="ml-1">· {scopedFi}</span>}
+              {periodStartLabel && periodEndLabel && (
+                <span className="ml-1 text-gray-600 dark:text-gray-400">
+                  · período {periodStartLabel} a {periodEndLabel}
+                </span>
+              )}
             </div>
+            {outOfPeriodCount > 0 && (
+              <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                {outOfPeriodCount} evento{outOfPeriodCount === 1 ? '' : 's'} fora do mês
+                {' '}ignorado{outOfPeriodCount === 1 ? '' : 's'}.
+              </div>
+            )}
           </div>
           <button
             onClick={handleCancel}

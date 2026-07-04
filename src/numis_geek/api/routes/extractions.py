@@ -67,6 +67,10 @@ class ExtractionJobOut(BaseModel):
     attachment_id: str
     pendency_id: str | None
     snapshot_id: str | None
+    # ISO date do último dia do mês do snapshot associado. Frontend usa pra
+    # filtrar preview de BROKER_INCOME (CSVs de proventos costumam vir com
+    # múltiplos meses; só interessa o mês do fechamento em revisão).
+    snapshot_period_end_date: str | None
     asset_id: str | None
     extracted_json: dict | None
     confidence: float | None
@@ -84,6 +88,9 @@ class ExtractionJobOut(BaseModel):
 
     @classmethod
     def from_orm(cls, j: ExtractionJob) -> "ExtractionJobOut":
+        snap_period_end: str | None = None
+        if j.snapshot_id and j.snapshot is not None:
+            snap_period_end = j.snapshot.period_end_date.isoformat()
         return cls(
             id=j.id,
             workspace_id=j.workspace_id,
@@ -92,6 +99,7 @@ class ExtractionJobOut(BaseModel):
             attachment_id=j.attachment_id,
             pendency_id=j.pendency_id,
             snapshot_id=j.snapshot_id,
+            snapshot_period_end_date=snap_period_end,
             asset_id=j.asset_id,
             extracted_json=j.extracted_json,
             confidence=float(j.confidence) if j.confidence is not None else None,

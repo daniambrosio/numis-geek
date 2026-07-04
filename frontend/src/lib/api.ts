@@ -19,6 +19,39 @@ export function clearToken() {
   sessionStorage.removeItem('token')
 }
 
+/** Decode do payload do JWT sem validar assinatura — só pra leitura de
+ *  role/workspace_id. NUNCA confia disso pra autorização (backend faz);
+ *  usado só pra detectar quando o token local ficou stale em relação
+ *  ao DB (ex: promoção admin→sysadmin sem re-login). */
+function decodeJwtPayload(token: string): { role?: string; workspace_id?: string | null } | null {
+  try {
+    const [, payload] = token.split('.')
+    if (!payload) return null
+    // base64url → base64
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    return JSON.parse(atob(padded))
+  } catch {
+    return null
+  }
+}
+
+/** Retorna true quando o JWT em cache não bate com o me devolvido pelo
+ *  backend (role ou workspace mudou desde o login). Um `true` significa
+ *  que o caller deve deslogar e forçar login pra emitir JWT novo. */
+export function jwtMatchesMe(me: { role: string; workspace_id: string | null }): boolean {
+  const token = getToken()
+  if (!token) return true  // sem token → nada pra comparar
+  const payload = decodeJwtPayload(token)
+  if (!payload || !payload.role) return true  // formato desconhecido → ignora
+  if (payload.role !== me.role) return false
+  // workspace_id: sysadmin costuma ter None; tratar null == undefined.
+  const jwtWs = payload.workspace_id ?? null
+  const meWs = me.workspace_id ?? null
+  if (jwtWs !== meWs) return false
+  return true
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken()
   let res: Response
@@ -1400,6 +1433,9 @@ export interface BulkExtractJobOut {
   // Spec 58 — present when job was scoped at creation.
   institution_id?: string | null
   institution_short_name?: string | null
+  // 2026-07-04 — usado pra filtrar preview de BROKER_INCOME por período
+  // (CSVs de proventos vêm com múltiplos meses).
+  snapshot_period_end_date?: string | null
 }
 
 export interface BulkExtractionJobSummary {
