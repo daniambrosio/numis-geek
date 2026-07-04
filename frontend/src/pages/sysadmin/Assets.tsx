@@ -54,6 +54,12 @@ export default function SysadminAssets() {
           return
         }
         setMe(u)
+        // Sysadmin híbrido (com workspace_id): default o filtro pro
+        // workspace dele. Sem isso, o botão "Novo ativo" começa
+        // desabilitado ("selecione um workspace"), forçando 2 cliques
+        // pra fazer uma ação óbvia — o user tem só uma workspace no
+        // dia-a-dia. Sysadmin puro (workspace_id=None) mantém o "Todos".
+        if (u.workspace_id) setWorkspaceFilter(u.workspace_id)
       })
       .catch(() => navigate('/login'))
   }, [navigate])
