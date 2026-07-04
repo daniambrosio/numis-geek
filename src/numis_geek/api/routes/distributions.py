@@ -406,8 +406,10 @@ def list_distributions(
         q = q.filter(Distribution.is_active == True)  # noqa: E712
 
     if current_user.role == UserRole.sysadmin:
-        if workspace_id:
-            q = q.filter(Distribution.workspace_id == workspace_id)
+        # Sysadmin híbrido → default no workspace do user.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(Distribution.workspace_id == target_ws)
     else:
         q = q.filter(Distribution.workspace_id == current_user.workspace_id)
 
@@ -479,7 +481,9 @@ def get_distributions_chart(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found."
             )
-        ws = workspace_id  # None = cross-workspace
+        # Sysadmin híbrido: default no do user. Sysadmin puro sem query:
+        # cross-workspace (comportamento anterior preservado).
+        ws = workspace_id or current_user.workspace_id
     else:
         if not current_user.workspace_id:
             raise HTTPException(

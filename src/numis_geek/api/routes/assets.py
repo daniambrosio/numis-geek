@@ -418,8 +418,11 @@ def list_assets(
         q = q.filter(Asset.is_active == True)  # noqa: E712
 
     if current_user.role == UserRole.sysadmin:
-        if workspace_id:
-            q = q.filter(Asset.workspace_id == workspace_id)
+        # Sysadmin híbrido: default pro workspace do user; ?workspace_id=
+        # sobrescreve. Sysadmin puro sem query: vê todos os workspaces.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(Asset.workspace_id == target_ws)
     else:
         q = q.filter(Asset.workspace_id == current_user.workspace_id)
 

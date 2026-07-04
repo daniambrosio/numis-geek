@@ -1,5 +1,5 @@
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -81,12 +81,18 @@ def _get_user_or_404(db: Session, user_id: str) -> User:
 
 @router.get("", response_model=list[UserOut])
 def list_users(
+    workspace_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
     q = db.query(User)
-    if current_user.role != UserRole.sysadmin:
+    if current_user.role == UserRole.sysadmin:
+        # Sysadmin híbrido: default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(User.workspace_id == target_ws)
+    else:
         q = q.filter(User.workspace_id == current_user.workspace_id)
     users = q.all()
     workspace_ids = {u.workspace_id for u in users if u.workspace_id}

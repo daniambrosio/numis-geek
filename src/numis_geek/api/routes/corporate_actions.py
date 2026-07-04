@@ -136,11 +136,17 @@ def _check_workspace(asset: Asset, current_user: UserContext) -> None:
 @router.get("", response_model=list[CorporateActionOut])
 def list_corporate_actions(
     asset_id: str | None = Query(None),
+    workspace_id: str | None = Query(None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(CorporateAction).filter(CorporateAction.is_active == True)  # noqa: E712
-    if current_user.role != UserRole.sysadmin:
+    if current_user.role == UserRole.sysadmin:
+        # Sysadmin híbrido → default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(CorporateAction.workspace_id == target_ws)
+    else:
         q = q.filter(CorporateAction.workspace_id == current_user.workspace_id)
     if asset_id:
         q = q.filter(CorporateAction.asset_id == asset_id)

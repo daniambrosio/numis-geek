@@ -330,8 +330,10 @@ def list_asset_movements(
         q = q.filter(AssetMovement.is_active == True)  # noqa: E712
 
     if current_user.role == UserRole.sysadmin:
-        if workspace_id:
-            q = q.filter(AssetMovement.workspace_id == workspace_id)
+        # Sysadmin híbrido → default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(AssetMovement.workspace_id == target_ws)
     else:
         q = q.filter(AssetMovement.workspace_id == current_user.workspace_id)
 

@@ -55,13 +55,14 @@ class RefreshSummaryOut(BaseModel):
 def _resolve_workspace(
     current_user: UserContext, workspace_id: str | None, db: Session
 ) -> str | None:
-    """Sysadmin gets cross-workspace by default (None) but can target one."""
+    """Sysadmin híbrido: default no do user; ?workspace_id= sobrescreve.
+    Sysadmin puro (workspace_id=None) sem query: cross-workspace (None)."""
     if current_user.role == UserRole.sysadmin:
         if workspace_id and not db.get(Workspace, workspace_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found."
             )
-        return workspace_id
+        return workspace_id or current_user.workspace_id
     if not current_user.workspace_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No workspace bound to user."

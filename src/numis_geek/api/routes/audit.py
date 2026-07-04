@@ -63,6 +63,7 @@ def list_audit(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
     action: str | None = Query(None),
+    workspace_id: str | None = Query(None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
@@ -72,6 +73,11 @@ def list_audit(
     q = db.query(AuditLog)
     if current_user.role == UserRole.admin:
         q = q.filter(AuditLog.workspace_id == current_user.workspace_id)
+    elif current_user.role == UserRole.sysadmin:
+        # Sysadmin híbrido → default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(AuditLog.workspace_id == target_ws)
     if action:
         q = q.filter(AuditLog.action == action)
     q = q.order_by(AuditLog.created_at.desc())

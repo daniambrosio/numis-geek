@@ -81,11 +81,17 @@ def _fi_name(db: Session, fi_id: str) -> str:
 
 @router.get("", response_model=list[AccountOut])
 def list_accounts(
+    workspace_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(Account).filter(Account.is_active == True)  # noqa: E712
-    if current_user.role != UserRole.sysadmin:
+    if current_user.role == UserRole.sysadmin:
+        # Sysadmin híbrido: default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            q = q.filter(Account.workspace_id == target_ws)
+    else:
         q = q.filter(Account.workspace_id == current_user.workspace_id)
     accounts = q.order_by(Account.name).all()
     fi_ids = {a.financial_institution_id for a in accounts}
@@ -137,9 +143,11 @@ def list_by_custodian(
     asset_q = db.query(Asset).filter(Asset.is_active == True)  # noqa: E712
 
     if current_user.role == UserRole.sysadmin:
-        if workspace_id:
-            acc_q = acc_q.filter(Account.workspace_id == workspace_id)
-            asset_q = asset_q.filter(Asset.workspace_id == workspace_id)
+        # Sysadmin híbrido: default no do user; ?workspace_id= sobrescreve.
+        target_ws = workspace_id or current_user.workspace_id
+        if target_ws:
+            acc_q = acc_q.filter(Account.workspace_id == target_ws)
+            asset_q = asset_q.filter(Asset.workspace_id == target_ws)
     else:
         acc_q = acc_q.filter(Account.workspace_id == current_user.workspace_id)
         asset_q = asset_q.filter(Asset.workspace_id == current_user.workspace_id)
