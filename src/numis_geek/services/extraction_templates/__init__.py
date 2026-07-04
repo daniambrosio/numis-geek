@@ -89,7 +89,7 @@ SCREENSHOT_PRICE = Template(
 
 
 BROKER_POSITION = Template(
-    version="v3",
+    version="v4",
     system=(
         "Você é um extrator de extratos de posição de corretora (PDF/imagem/CSV). "
         "Extraia CADA linha visível como uma posição JSON — inclusive fundos, "
@@ -99,6 +99,34 @@ BROKER_POSITION = Template(
         "**Duas posições NUNCA podem ter o mesmo `ticker_raw`.** Se você ia "
         "repetir, adicione vencimento, cupom, ISIN ou qualquer identificador "
         "visível que torne o valor único. Repetição = falha de extração.\n\n"
+        "REGRA DE OURO pra números (v4 — 2026-07-04, adicionado depois de "
+        "erros sistemáticos com Avenue onde qty × unit_price ≠ market_value "
+        "por 10-50%):\n"
+        "1. Extratos costumam ter VÁRIAS colunas de dinheiro por linha: "
+        "custo médio, preço atual, valor de mercado, variação do dia, "
+        "ganho/perda. Você DEVE ler o header pra identificar cada coluna "
+        "e pegar SÓ os valores corretos.\n"
+        "2. **`unit_price`** = preço ATUAL / preço de fechamento / cotação "
+        "de mercado. Rótulos comuns: 'Price', 'Last Price', 'Cotação', "
+        "'Preço atual', 'Preço unit'. NÃO é 'Average Cost', 'Custo médio', "
+        "'PM', 'Cost Basis' — esses são custo histórico e vão pro campo "
+        "notes se relevante.\n"
+        "3. **`market_value`** = coluna 'Market Value', 'Valor de mercado', "
+        "'Total', 'Valor total'. NÃO é 'Total Cost', 'Unrealized Gain'.\n"
+        "4. **INVARIANTE OBRIGATÓRIO**: `quantity × unit_price ≈ market_value` "
+        "(dentro de 1%). Se você extraiu os três e a conta não bate, "
+        "provavelmente pegou uma coluna errada — **releia** e corrija. Se "
+        "mesmo assim não conseguir alinhar, baixe `confidence` pra ≤ 0.5 "
+        "e explique em `notes` (ex.: 'divergência qty×price vs mv: "
+        "confira coluna de custo médio').\n"
+        "5. Pra Treasuries US e bonds cotados como % do valor de face: "
+        "`quantity` = valor de face em USD (ex.: 10000), `unit_price` = "
+        "preço percentual (ex.: 99.943), `market_value` = qty × price / 100. "
+        "Confira que a conta bate.\n"
+        "6. Confidence honesta: 0.95+ SÓ quando os 3 números batem "
+        "matematicamente. Se você tem que chutar unit_price ou o header "
+        "está ambíguo, cai pra 0.7-0.85. Confidence de 0.95 num extrato "
+        "que a conta erra 50% é falha grave de extração.\n\n"
         "Convenções por tipo de ativo:\n"
         "- Ações/FIIs/ETFs com ticker visível (PETR4, BTLG11, IVVB11): "
         "ticker exato\n"
@@ -125,9 +153,12 @@ BROKER_POSITION = Template(
     ),
     user_prefix=(
         "Extraia TODAS as posições visíveis neste extrato (até as que não "
-        "têm ticker de bolsa — use o nome/emissor+vencimento). Lembre: dois "
-        "ticker_raw não podem ser iguais. Não invente; se uma coluna "
-        "estiver ilegível deixe null e diminua a confidence."
+        "têm ticker de bolsa — use o nome/emissor+vencimento). Antes de "
+        "responder, VERIFIQUE: pra cada linha, quantity × unit_price bate "
+        "com market_value? Se não, releia — provavelmente confundiu com a "
+        "coluna de custo médio. Lembre: dois ticker_raw não podem ser "
+        "iguais. Não invente; se uma coluna estiver ilegível deixe null e "
+        "diminua a confidence."
     ),
     output_model=BrokerPositionOutput,
 )

@@ -985,10 +985,39 @@ def _classify_bulk_extract(
             price_overrides.get(ticker_raw_key)
             or price_overrides.get(ticker)
         )
+        # Sanity check qty × unit_price ≈ market_value (2026-07-04). Bug
+        # sistemático em extração Avenue: Claude misturava custo médio com
+        # preço atual, dando erros de 10-50% no total. Quando LLM devolve
+        # os três e a conta não bate, o market_value costuma ser o número
+        # certo (é o mais destacado no extrato) — reescreve unit_price a
+        # partir dele pra preservar o total que o user vê.
+        llm_qty = pos.get("quantity")
+        llm_unit = pos.get("unit_price")
+        llm_mv = pos.get("market_value")
+        if (
+            manual_price is None
+            and llm_qty is not None
+            and llm_unit is not None
+            and llm_mv is not None
+        ):
+            try:
+                computed = float(llm_qty) * float(llm_unit)
+                mv = float(llm_mv)
+                if mv > 0 and abs(computed - mv) / mv > 0.01:
+                    # Divergência >1%: prefere market_value/qty pra
+                    # preservar o total do extrato.
+                    reconciled_unit = mv / float(llm_qty) if float(llm_qty) != 0 else llm_unit
+                    errors.append(
+                        f"{ticker}: qty×price ({computed:.2f}) ≠ mv ({mv:.2f}); "
+                        f"unit_price recomputed from mv/qty = {reconciled_unit:.4f}"
+                    )
+                    llm_unit = reconciled_unit
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
         unit_price_raw = (
             manual_price
-            or pos.get("unit_price")
-            or pos.get("market_value")
+            or llm_unit
+            or llm_mv
         )
         if not ticker:
             errors.append("position with no ticker")

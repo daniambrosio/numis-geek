@@ -1460,7 +1460,7 @@ def test_bulk_extract_uses_avenue_template_when_scoped_to_avenue(db):
         user_id=w["user_id"],
         user_email="generic@test.com",
     )
-    assert legacy_job.prompt_version == "v3"
+    assert legacy_job.prompt_version == "v4"
 
 
 def test_bulk_apply_legacy_path_unscoped_still_works(db):
@@ -1482,3 +1482,30 @@ def test_bulk_apply_legacy_path_unscoped_still_works(db):
     )
     assert result.applied_count == 1
     assert {a["ticker"] for a in result.bulk_detail.applied} == {"PETR4"}
+
+
+def test_bulk_apply_reconciles_when_qty_price_disagrees_with_market_value(db):
+    """2026-07-04 — Claude Avenue: extraía qty × unit_price ≠ market_value
+    por 10-50%. Como o número que o user vê no extrato é o market_value
+    (destacado), o service prefere ele: reescreve unit_price = mv/qty."""
+    w = _world(db)
+    # PETR4 fixture: LLM entrega qty=100, unit_price=30 (custo médio confundido),
+    # market_value=3850 (valor de mercado real). qty×unit=3000, diverge do mv em
+    # 22% — service deve reescrever unit_price = 3850/100 = 38.50.
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 30.00, "market_value": 3850.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    assert any("qty×price" in e and "recomputed" in e for e in result.errors), (
+        f"expected reconciliation error surface, got: {result.errors}"
+    )
+    applied = result.bulk_detail.applied[0]
+    # unit_price aplicado deve ser 3850/100 = 38.50, não o 30 inicial do LLM.
+    assert abs(float(applied["new_price"]) - 38.50) < 0.001
