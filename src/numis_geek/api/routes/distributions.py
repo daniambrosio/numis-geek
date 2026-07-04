@@ -202,15 +202,18 @@ def _check_workspace_access(d: Distribution, current_user: UserContext) -> None:
 
 
 def _resolve_workspace_id(body: DistributionRequest, current_user: UserContext, db: Session) -> str:
+    # Sysadmin híbrido: body.workspace_id opcional, cai no workspace do
+    # próprio sysadmin. Sysadmin puro: obrigatório.
     if current_user.role == UserRole.sysadmin:
-        if not body.workspace_id:
+        target = body.workspace_id or current_user.workspace_id
+        if not target:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="workspace_id is required when creating distributions as sysadmin.",
             )
-        if not db.get(Workspace, body.workspace_id):
+        if not db.get(Workspace, target):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
-        return body.workspace_id
+        return target
     if not current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No workspace bound to user.")
     return current_user.workspace_id

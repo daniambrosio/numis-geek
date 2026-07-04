@@ -281,15 +281,20 @@ def _check_workspace_access(asset: Asset, current_user: UserContext) -> None:
 
 
 def _resolve_workspace_id(body: AssetRequest, current_user: UserContext, db: Session) -> str:
+    # Sysadmin híbrido (com workspace_id): body.workspace_id opcional,
+    # cai no do sysadmin. Sysadmin puro: obrigatório. Ver deps.py
+    # get_current_user pra contexto de por que sysadmin pode ter
+    # workspace_id set.
     if current_user.role == UserRole.sysadmin:
-        if not body.workspace_id:
+        target = body.workspace_id or current_user.workspace_id
+        if not target:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="workspace_id is required when creating assets as sysadmin.",
             )
-        if not db.get(Workspace, body.workspace_id):
+        if not db.get(Workspace, target):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
-        return body.workspace_id
+        return target
     if not current_user.workspace_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No workspace bound to user.")
     return current_user.workspace_id

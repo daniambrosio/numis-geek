@@ -148,13 +148,15 @@ class CloseRequest(BaseModel):
 
 
 def _resolve_workspace_id(body, current_user: UserContext, db: Session) -> str:
+    # Sysadmin híbrido: body.workspace_id opcional, cai no workspace do
+    # próprio sysadmin. Sysadmin puro: obrigatório.
     if current_user.role == UserRole.sysadmin:
-        ws_id = getattr(body, "workspace_id", None)
-        if not ws_id:
+        target = getattr(body, "workspace_id", None) or current_user.workspace_id
+        if not target:
             raise HTTPException(400, "workspace_id is required for sysadmin")
-        if not db.get(Workspace, ws_id):
+        if not db.get(Workspace, target):
             raise HTTPException(404, "Workspace not found")
-        return ws_id
+        return target
     if not current_user.workspace_id:
         raise HTTPException(400, "No workspace bound to user")
     return current_user.workspace_id
