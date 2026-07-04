@@ -60,10 +60,20 @@ export default function Snapshots() {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
 
+  const [loadError, setLoadError] = useState<string | null>(null)
   useEffect(() => {
     if (!me) return
     setLoading(true)
-    api.listSnapshots().then(setSnaps).finally(() => setLoading(false))
+    setLoadError(null)
+    api.listSnapshots()
+      .then(setSnaps)
+      .catch(e => {
+        // Bug 2026-07-04: sem catch, um 400/500 do backend virava
+        // silenciosamente "0 apurações no histórico" — user achava
+        // que perdeu os fechamentos.
+        setLoadError(e instanceof Error ? e.message : 'Erro ao carregar fechamentos.')
+      })
+      .finally(() => setLoading(false))
   }, [me])
 
   const inReview = useMemo(() => snaps.find(s => s.status === 'IN_REVIEW') ?? null, [snaps])
@@ -210,6 +220,10 @@ export default function Snapshots() {
         <Card padding="p-3">
           {loading ? (
             <div className="py-8 text-center text-[12px] text-gray-500">Carregando…</div>
+          ) : loadError ? (
+            <div className="py-8 text-center text-[12px] text-red-500 dark:text-red-400">
+              {loadError}
+            </div>
           ) : snaps.length === 0 ? (
             <div className="py-8 text-center text-[12px] text-gray-500">
               Nenhuma apuração ainda. Clique em "Apurar mês anterior" para criar a primeira.

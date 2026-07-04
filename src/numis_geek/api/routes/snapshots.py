@@ -304,10 +304,15 @@ class SnapshotPendencyOut(BaseModel):
 
 
 def _workspace_id(current_user: UserContext) -> str:
-    if current_user.role == UserRole.sysadmin:
+    # Sysadmin sem workspace_id (o "puro", CLAUDE.md classic) precisa
+    # scoping explícito por query param. Sysadmin COM workspace_id
+    # (padrão híbrido — user promovido mas mantido na workspace de uso
+    # diária) opera na dele por default. Antes ambos batiam 400 e o
+    # front engolia (setSnaps nunca chamado, virava "0 apurações").
+    if current_user.role == UserRole.sysadmin and not current_user.workspace_id:
         raise HTTPException(
             status_code=400,
-            detail="Sysadmin must call CLI with explicit workspace",
+            detail="Sysadmin sem workspace precisa especificar workspace_id.",
         )
     return current_user.workspace_id
 
