@@ -165,6 +165,21 @@ def create_corporate_action(
         raise HTTPException(status_code=404, detail="Asset not found")
     _check_workspace(asset, current_user)
 
+    # Convenção do modelo: SPLIT tem ratio > 1 (2:1, 4:1); GROUPING tem
+    # ratio < 1 (25→1 é ratio=0.04, ver models/corporate_action.py). Bug
+    # herdado do import Notion do BHIA3: gravou GROUPING 25:1 como
+    # ratio=25, inflando qty 25× em todos os fechamentos afetados.
+    if body.event_type == CorporateActionType.SPLIT and body.ratio <= 1:
+        raise HTTPException(
+            status_code=422,
+            detail="SPLIT precisa ratio > 1 (2:1 → 2). Se é agrupamento, use GROUPING com ratio < 1.",
+        )
+    if body.event_type == CorporateActionType.GROUPING and body.ratio >= 1:
+        raise HTTPException(
+            status_code=422,
+            detail="GROUPING precisa ratio < 1 (25→1 → 0.04). Se é desdobramento, use SPLIT com ratio > 1.",
+        )
+
     target: Asset | None = None
     if body.event_type == CorporateActionType.ASSET_CONVERSION:
         if not body.target_asset_id or body.target_ratio is None:
