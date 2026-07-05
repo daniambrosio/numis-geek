@@ -401,6 +401,13 @@ def list_distributions(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
+    # 2026-07-05 audit finding — bloqueia leak em non-sysadmin sem workspace.
+    # Sem esse guard, `Distribution.workspace_id == None` filtra por NULL (a
+    # coluna é NOT NULL → 0 rows, seguro), MAS `_build_synthetic_premiums`
+    # skipa o filtro se ws=None, expondo AssetMovement de outros workspaces.
+    if current_user.role != UserRole.sysadmin and not current_user.workspace_id:
+        raise HTTPException(400, "No workspace bound to user")
+
     q = db.query(Distribution)
     if not include_inactive:
         q = q.filter(Distribution.is_active == True)  # noqa: E712
@@ -443,9 +450,13 @@ def list_distributions(
     ]
     synthetic_premiums: list[SyntheticPremiumOut] = []
     if include_synthetic:
-        ws_filter = current_user.workspace_id
+        # Simétrico com o filtro de Distribution acima (linhas 408-414):
+        # sysadmin híbrido faz fallback pro próprio workspace; sysadmin puro
+        # sem param → None → cross-workspace intencional.
         if current_user.role == UserRole.sysadmin:
-            ws_filter = workspace_id  # None ⇒ cross-workspace pra sysadmin
+            ws_filter = workspace_id or current_user.workspace_id
+        else:
+            ws_filter = current_user.workspace_id
         synthetic_premiums = _build_synthetic_premiums(
             db,
             workspace_id=ws_filter,

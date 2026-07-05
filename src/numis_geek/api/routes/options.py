@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
-from numis_geek.models.account import Account, Currency
+from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass, OptionType
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.user import UserRole
@@ -205,9 +205,27 @@ def create_option(
     underlying = db.get(Asset, body.underlying_id)
     if not underlying:
         raise HTTPException(404, "Underlying asset not found")
+    if underlying.workspace_id != workspace_id:
+        raise HTTPException(400, "Underlying asset belongs to a different workspace")
+    if not underlying.is_active:
+        raise HTTPException(400, "Underlying asset is inactive")
+    # Only STOCK/ETF/REIT trade options on B3/US markets. Blocking CASH/
+    # PRIVATE_PENSION/OPTION-on-OPTION prevents exercise/expire from
+    # generating BUY/SELL rows on nonsensical underlyings.
+    if underlying.asset_class not in (AssetClass.STOCK, AssetClass.ETF, AssetClass.REIT):
+        raise HTTPException(
+            400,
+            f"Underlying asset_class {underlying.asset_class.value} cannot back an option",
+        )
     account = db.get(Account, body.account_id)
     if not account:
         raise HTTPException(404, "Account not found")
+    if account.workspace_id != workspace_id:
+        raise HTTPException(400, "Account belongs to a different workspace")
+    if not account.is_active:
+        raise HTTPException(400, "Account is inactive")
+    if account.account_type != AccountType.investment:
+        raise HTTPException(400, "Option must be linked to an investment account")
 
     now = datetime.now(timezone.utc)
     option = Asset(

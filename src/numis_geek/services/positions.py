@@ -71,6 +71,15 @@ _QTY_SUB_TYPES = {
 
 _TOLERANCE = Decimal("1e-6")
 
+# Classes de ativo cotado (unit-priced). O resto (FUND/PRIVATE_PENSION/
+# FIXED_INCOME/CASH/FGTS/REAL_ESTATE/VEHICLE/OTHER) opera em modo valor,
+# onde item.current_price representa o VALOR TOTAL da posição — não
+# preço unitário. Mesma convenção usada em snapshot._UNIT_PRICE_CLASSES.
+_COTADO_CLASSES = {
+    AssetClass.STOCK, AssetClass.REIT, AssetClass.ETF,
+    AssetClass.OPTION, AssetClass.CRYPTO,
+}
+
 
 def asset_has_position(pos: "Position", asset: Asset | None = None) -> bool:
     """True when an asset still has a tracked position at the given moment.
@@ -256,9 +265,10 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     # Fix: pra modo valor tratamos qty=1 pro cálculo do current_value,
     # deixando running_qty como está pra que TTM/DY continuem consistentes.
     effective_qty = running_qty
-    if asset and asset.asset_class and asset.asset_class.value not in (
-        "STOCK", "REIT", "ETF", "OPTION", "CRYPTO",
-    ):
+    is_value_mode = bool(
+        asset and asset.asset_class and asset.asset_class not in _COTADO_CLASSES
+    )
+    if is_value_mode:
         effective_qty = Decimal("1")
     if current_price is not None and effective_qty != 0:
         current_value = effective_qty * current_price
@@ -270,7 +280,11 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
                 current_value_brl = current_value * fx
             except FxRateNotFound:
                 current_value_brl = None
-        if average_cost > 0:
+        # Em modo valor, average_cost é o preço médio POR APORTE (~R$21k) e
+        # current_price é o VALOR TOTAL DA POSIÇÃO (~R$500k). A razão
+        # (current-avg)/avg dá +2000%+ falso positivo no Top Movers. Só
+        # calcula variação em modo cotado, onde ambos são per-unit.
+        if average_cost > 0 and not is_value_mode:
             variation = (current_price - average_cost) / average_cost
         if total_invested_brl > 0 and current_value_brl is not None:
             paper_gain_brl = current_value_brl - total_invested_brl

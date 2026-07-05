@@ -549,6 +549,25 @@ def reopen_snapshot(
     snap.status = SnapshotStatus.IN_REVIEW
     snap.closed_at = None
     snap.closed_by = None
+
+    # 2026-07-05 audit finding — reopen adiciona items via
+    # _sync_missing_value_mode_items mas antes deixava snap.total_* stale
+    # até o próximo confirm/edit/resolve. Regenera pra manter invariante
+    # header == Σ items durante toda a janela IN_REVIEW.
+    all_items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snap.id)
+        .all()
+    )
+    snap.total_value_brl = sum(
+        (i.market_value_brl or Decimal("0") for i in all_items), Decimal("0"),
+    )
+    snap.total_value_usd = sum(
+        (i.market_value_usd or Decimal("0") for i in all_items), Decimal("0"),
+    )
+    snap.total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in all_items), Decimal("0"),
+    )
     db.flush()
 
     AuditService(db).log(
@@ -721,6 +740,9 @@ def resolve_pendency(
         snap.total_value_usd = sum(
             (i.market_value_usd or Decimal("0") for i in items), Decimal("0")
         )
+        snap.total_invested_brl = sum(
+            (i.total_invested_brl or Decimal("0") for i in items), Decimal("0")
+        )
         db.flush()
 
     AuditService(db).log(
@@ -887,6 +909,9 @@ def update_snapshot_item_price(
     snap.total_value_usd = sum(
         (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
     )
+    snap.total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in items), Decimal("0"),
+    )
     db.flush()
 
     AuditService(db).log(
@@ -996,6 +1021,25 @@ def add_snapshot_item(
                 reason=r, action_type=a, detail=d, created_at=now,
             ))
             db.flush()
+
+    # 2026-07-05 audit finding — regenera snap.total_* pra manter invariante
+    # header == Σ items no IN_REVIEW; um item recém-adicionado carrega
+    # total_invested_brl>0 sempre e mv_brl frozen em today-snapshots.
+    all_items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+    snap.total_value_brl = sum(
+        (i.market_value_brl or Decimal("0") for i in all_items), Decimal("0"),
+    )
+    snap.total_value_usd = sum(
+        (i.market_value_usd or Decimal("0") for i in all_items), Decimal("0"),
+    )
+    snap.total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in all_items), Decimal("0"),
+    )
+    db.flush()
 
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
@@ -1134,6 +1178,26 @@ def sync_snapshot_items(
             )
             db.add(pen)
             pendency_ids.append(pen.id)
+        db.flush()
+
+        # 2026-07-05 audit finding — regenera header pra manter invariante
+        # snap.total_* == Σ items durante IN_REVIEW; um item recém-adicionado
+        # já pode ter market_value_brl frozen (today-snapshot) e deixaria
+        # header stale.
+        all_items = (
+            db.query(PortfolioSnapshotItem)
+            .filter(PortfolioSnapshotItem.snapshot_id == snap.id)
+            .all()
+        )
+        snap.total_value_brl = sum(
+            (i.market_value_brl or Decimal("0") for i in all_items), Decimal("0"),
+        )
+        snap.total_value_usd = sum(
+            (i.market_value_usd or Decimal("0") for i in all_items), Decimal("0"),
+        )
+        snap.total_invested_brl = sum(
+            (i.total_invested_brl or Decimal("0") for i in all_items), Decimal("0"),
+        )
         db.flush()
 
     AuditService(db).log(
@@ -1407,6 +1471,13 @@ def apply_recompute_to_snapshot(
     snap.total_value_usd = sum(
         (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
     )
+    # 2026-07-05 audit finding — recompute do item preservava
+    # snap.total_invested_brl frozen do momento de create_snapshot, que
+    # ficava R$590k+ divergente da soma real após lançamentos retroativos.
+    # Regenera a partir dos items pra garantir invariante header == Σ.
+    snap.total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in items), Decimal("0"),
+    )
     db.flush()
 
     after = {
@@ -1562,6 +1633,9 @@ def delete_snapshot_item(
     )
     snap.total_value_usd = sum(
         (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
+    )
+    snap.total_invested_brl = sum(
+        (i.total_invested_brl or Decimal("0") for i in items), Decimal("0"),
     )
     db.flush()
 
