@@ -72,6 +72,17 @@ def _get_or_404(db: Session, account_id: str) -> Account:
     return acc
 
 
+def _check_workspace_access(acc: Account, current_user: UserContext) -> None:
+    """Audit 2026-07-05: PUT /accounts/{id} + deactivate não checavam
+    workspace. Admin de ws A conseguia editar/desativar account de ws B
+    conhecendo o UUID. Sysadmin (híbrido ou puro) continua com acesso
+    cross-workspace por design."""
+    if current_user.role == UserRole.sysadmin:
+        return
+    if acc.workspace_id != current_user.workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+
+
 def _fi_name(db: Session, fi_id: str) -> str:
     fi = db.get(FinancialInstitution, fi_id)
     return fi.short_name if fi else fi_id
@@ -251,6 +262,7 @@ def update_account(
 ):
     _require_admin(current_user)
     account = _get_or_404(db, account_id)
+    _check_workspace_access(account, current_user)
     fi = db.get(FinancialInstitution, body.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
@@ -283,6 +295,7 @@ def deactivate_account(
 ):
     _require_admin(current_user)
     account = _get_or_404(db, account_id)
+    _check_workspace_access(account, current_user)
     account.is_active = False
     account.updated_at = datetime.now(timezone.utc)
     account.updated_by = current_user.user_id

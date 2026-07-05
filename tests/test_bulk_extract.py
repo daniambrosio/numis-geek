@@ -1509,3 +1509,52 @@ def test_bulk_apply_reconciles_when_qty_price_disagrees_with_market_value(db):
     applied = result.bulk_detail.applied[0]
     # unit_price aplicado deve ser 3850/100 = 38.50, não o 30 inicial do LLM.
     assert abs(float(applied["new_price"]) - 38.50) < 0.001
+
+
+def test_bulk_apply_skips_reconcile_for_treasury_percent_of_face(db):
+    """Audit 2026-07-05 achou: prompt v4 diz Treasuries têm mv = qty×price/100
+    (10000 face × 99.943 = 9994.30). Reconciler antigo via computed=999430 vs
+    mv=9994.30 e reescrevia unit=0.99943, destruindo o preço."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 10000, "unit_price": 99.943, "market_value": 9994.30,
+             "currency": "USD", "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # unit_price deve continuar 99.943 (não destruído pra 0.99943)
+    assert result.applied_count == 1
+    applied = result.bulk_detail.applied[0]
+    assert abs(float(applied["new_price"]) - 99.943) < 0.001, (
+        f"unit_price got corrupted: {applied['new_price']}"
+    )
+    # Nenhum error de reconciliation deve aparecer (a invariante /100 fecha)
+    assert not any("recomputed" in e for e in result.errors), (
+        f"reconciler should have skipped Treasury; got: {result.errors}"
+    )
+
+
+def test_bulk_apply_derives_unit_price_from_mv_when_llm_omits(db):
+    """Audit 2026-07-05: fallback antigo usava mv como unit_price se LLM
+    omitisse. Setava Asset.current_price = VALOR TOTAL da posição pra STOCK/ETF.
+    Fix: derivar unit = mv/qty."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "market_value": 3850.00, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    applied = result.bulk_detail.applied[0]
+    # unit_price = mv/qty = 3850/100 = 38.50, não mv=3850
+    assert abs(float(applied["new_price"]) - 38.50) < 0.001, (
+        f"expected 38.50 derived from mv/qty, got: {applied['new_price']}"
+    )

@@ -77,6 +77,40 @@ def _get_user_or_404(db: Session, user_id: str) -> User:
     return user
 
 
+def _check_workspace_access(target: User, current_user: UserContext) -> None:
+    """Audit 2026-07-05: PUT /users/{id}/role|deactivate|name deixavam admin
+    de ws A modificar user de ws B. Sysadmin (híbrido ou puro) continua
+    cross-workspace por design."""
+    if current_user.role == UserRole.sysadmin:
+        return
+    if target.workspace_id != current_user.workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+
+def _check_role_ceiling(
+    target: User, new_role: UserRole, current_user: UserContext,
+) -> None:
+    """Impede admin de conceder sysadmin (privilege escalation) e admin
+    de rebaixar/promover a si mesmo (self-target). Sysadmin pode tudo."""
+    if current_user.role == UserRole.sysadmin:
+        return
+    if new_role == UserRole.sysadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin cannot grant sysadmin role.",
+        )
+    if target.role == UserRole.sysadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin cannot modify sysadmin user's role.",
+        )
+    if target.id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot change your own role.",
+        )
+
+
 # ── admin routes ──────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[UserOut])
@@ -142,6 +176,8 @@ def change_role(
     _require_admin(current_user)
     acting = _get_user_or_404(db, current_user.user_id)
     user = _get_user_or_404(db, user_id)
+    _check_workspace_access(user, current_user)
+    _check_role_ceiling(user, body.role, current_user)
     old_role = user.role.value
     user.role = body.role
     user.updated_by = current_user.user_id
@@ -167,6 +203,17 @@ def deactivate_user(
     _require_admin(current_user)
     acting = _get_user_or_404(db, current_user.user_id)
     target = _get_user_or_404(db, user_id)
+    _check_workspace_access(target, current_user)
+    if current_user.role != UserRole.sysadmin and target.role == UserRole.sysadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin cannot deactivate a sysadmin.",
+        )
+    if target.id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot deactivate yourself.",
+        )
     UserService(db).deactivate(user_id, acting_user=acting)
     AuditService(db).log(
         user_email=acting.email,
@@ -190,6 +237,7 @@ def update_user_name(
     _require_admin(current_user)
     acting = _get_user_or_404(db, current_user.user_id)
     target = _get_user_or_404(db, user_id)
+    _check_workspace_access(target, current_user)
     target.name = body.name
     target.updated_by = current_user.user_id
     db.flush()

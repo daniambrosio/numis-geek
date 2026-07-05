@@ -437,7 +437,16 @@ def auto_settle(
     com base no current_price do underlying. Mesma lógica que o job diário."""
     if current_user.role not in (UserRole.admin, UserRole.sysadmin):
         raise HTTPException(403, "Apenas admin/sysadmin pode rodar auto-settle.")
-    results = auto_settle_expired_options(db, created_by=current_user.user_id)
+    # Audit 2026-07-05: scope pra workspace do user. Sysadmin puro
+    # (workspace_id=None) roda cross-workspace (comportamento anterior).
+    ws_scope = (
+        None if current_user.role == UserRole.sysadmin
+        and not current_user.workspace_id
+        else current_user.workspace_id
+    )
+    results = auto_settle_expired_options(
+        db, created_by=current_user.user_id, workspace_id=ws_scope,
+    )
     return AutoSettleResponse(
         expired=sum(1 for r in results if r.decision == "expired"),
         exercised=sum(1 for r in results if r.decision == "exercised"),

@@ -21,7 +21,7 @@ class UserService:
         return user
 
     def deactivate(self, user_id: str, acting_user: User) -> None:
-        if acting_user.role != UserRole.admin:
+        if acting_user.role not in (UserRole.admin, UserRole.sysadmin):
             raise PermissionError("Only admins can deactivate users.")
         user = self.db.get(User, user_id)
         if user:
@@ -29,6 +29,6 @@ class UserService:
             self.db.flush()
 
     def invite(self, workspace_id: str, email: str, password: str, acting_user: User) -> User:
-        if acting_user.role != UserRole.admin:
+        if acting_user.role not in (UserRole.admin, UserRole.sysadmin):
             raise PermissionError("Only admins can invite users.")
         return self.create(workspace_id, email, password, UserRole.member)

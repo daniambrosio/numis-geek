@@ -396,6 +396,7 @@ def auto_settle_expired_options(
     *,
     today: date | None = None,
     created_by: str | None = None,
+    workspace_id: str | None = None,
 ) -> list[AutoSettleResult]:
     """Detecta opções vencidas e dispara expire_option / exercise_option.
 
@@ -412,7 +413,7 @@ def auto_settle_expired_options(
     fica de fora da query inicial.
     """
     ref_today = today or date.today()
-    candidates = (
+    q = (
         db.query(Asset)
         .filter(
             Asset.asset_class == AssetClass.OPTION,
@@ -420,7 +421,14 @@ def auto_settle_expired_options(
             Asset.expiration_date.isnot(None),
             Asset.expiration_date < ref_today,
         )
-        .all()
+    )
+    # Audit 2026-07-05: sem filtro de workspace, admin de ws A criava
+    # movements de EXPIRED/EXERCISED em opções de ws B. Caller passa
+    # workspace_id (None = sysadmin puro = todos os workspaces).
+    if workspace_id is not None:
+        q = q.filter(Asset.workspace_id == workspace_id)
+    candidates = (
+        q.all()
     )
 
     def _skip(opt, ut, up, src, eff, reason):

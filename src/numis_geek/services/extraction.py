@@ -1001,24 +1001,54 @@ def _classify_bulk_extract(
             and llm_mv is not None
         ):
             try:
-                computed = float(llm_qty) * float(llm_unit)
+                q = float(llm_qty)
+                p = float(llm_unit)
                 mv = float(llm_mv)
-                if mv > 0 and abs(computed - mv) / mv > 0.01:
-                    # Divergência >1%: prefere market_value/qty pra
-                    # preservar o total do extrato.
-                    reconciled_unit = mv / float(llm_qty) if float(llm_qty) != 0 else llm_unit
+                computed = q * p
+                # % de face value: prompt v4 Rule 5 diz Treasuries/bonds
+                # cotados em % têm mv = qty × price / 100 (ex.: 10000 face
+                # × 99.943 = 9994.30). Se a conta bate com /100, aceita
+                # sem reconciliar. Audit 2026-07-05 pegou reconciler
+                # destruindo unit_price de Treasuries: 99.943 → 0.99943.
+                if q > 0 and mv > 0 and abs(computed / 100 - mv) / mv <= 0.01:
+                    pass  # % of face, invariante OK
+                elif q > 0 and mv > 0 and abs(computed - mv) / mv > 0.01:
+                    reconciled_unit = mv / q
+                    if reconciled_unit <= 0:
+                        errors.append(
+                            f"{ticker}: reconciled unit_price seria {reconciled_unit:.4f} (≤0); mantendo LLM value e sinalizando review"
+                        )
+                    else:
+                        errors.append(
+                            f"{ticker}: qty×price ({computed:.2f}) ≠ mv ({mv:.2f}); "
+                            f"unit_price recomputed from mv/qty = {reconciled_unit:.4f}"
+                        )
+                        llm_unit = reconciled_unit
+                elif q == 0 and mv > 0:
                     errors.append(
-                        f"{ticker}: qty×price ({computed:.2f}) ≠ mv ({mv:.2f}); "
-                        f"unit_price recomputed from mv/qty = {reconciled_unit:.4f}"
+                        f"{ticker}: qty=0 mas mv={mv:.2f}; verificar se posição zerada ou mv errado"
                     )
-                    llm_unit = reconciled_unit
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
-        unit_price_raw = (
-            manual_price
-            or llm_unit
-            or llm_mv
-        )
+        # Fallback: se LLM omitiu unit_price mas mandou qty + mv, deriva.
+        # Não usa llm_mv direto como unit_price (bug pré-existente: setava
+        # asset.current_price = valor TOTAL da posição pra STOCK/ETF).
+        if manual_price is None and llm_unit is None and llm_qty is not None and llm_mv is not None:
+            try:
+                q = float(llm_qty)
+                if q > 0:
+                    llm_unit = float(llm_mv) / q
+                    errors.append(
+                        f"{ticker}: LLM omitiu unit_price; derivado de mv/qty = {llm_unit:.4f}"
+                    )
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        # Fallback llm_mv REMOVIDO (2026-07-05): usar mv como unit_price
+        # setava Asset.current_price = valor TOTAL da posição pra
+        # STOCK/ETF (ex.: AAPL 100 shares × $150 = mv 15000 virava
+        # current_price=15000). Se falta unit_price real, agora é
+        # derivado de mv/qty acima antes de chegar aqui.
+        unit_price_raw = manual_price or llm_unit
         if not ticker:
             errors.append("position with no ticker")
             continue
