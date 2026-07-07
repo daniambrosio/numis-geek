@@ -182,6 +182,159 @@ def test_fund_class_also_value_mode(world):
     assert pos["current_value"] == Decimal("100000")
 
 
+def test_full_redeemed_value_mode_hides_current_value(world):
+    """Bug 2026-07-05 audit — FULL_REDEMPTION zerava basis mas
+    effective_qty=1 continuava, mostrando current_value = current_price
+    pra posição zerada.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=100_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 1, 1),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 2, 1),
+        mtype=AssetMovementType.FULL_REDEMPTION,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # posição foi zerada → não mostrar current_value fantasma
+    assert pos["current_value"] is None
+    assert pos["current_value_brl"] is None
+    assert pos["quantity_held"] == Decimal("0")
+
+
+def test_hybrid_cotado_plus_non_cotado_sums_both(world):
+    """Bug 2026-07-05 audit — se um asset tinha BUY cotado (qty>0)
+    E BUY non-cotado (qty=None, gross=X), o if/else descartava um lado.
+    Tesouro Selic 2031 aparecia com total_invested_brl negativo.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=15_000,
+    )
+    # BUY cotado: 100 títulos @ R$100
+    now = datetime.now(timezone.utc)
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 1),
+        quantity=Decimal("100"), unit_price=Decimal("100"),
+        gross_amount=Decimal("10000"), net_amount=Decimal("10000"),
+        currency=Currency.BRL,
+    ))
+    # BUY non-cotado (qty=None, gross=5000)
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 2, 1),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("5000"), net_amount=Decimal("5000"),
+        currency=Currency.BRL,
+    ))
+    world["db"].commit()
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # 100 × 100 (cotado) + 5000 (non_cotado) = 15000
+    assert pos["total_invested_brl"] == Decimal("15000")
+
+
+def test_value_mode_uses_frozen_snapshot_price_when_available(world):
+    """Bug 2026-07-05 audit — value-mode asset com current_price stale
+    (Fundo Verde BTG R$1,72) deveria usar market_value_native do último
+    snapshot CLOSED (R$81.912) como preço atual.
+    """
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotStatus,
+    )
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=1.72,  # STALE
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=80_000, event_date=date(2025, 1, 1),
+    )
+    # Snapshot CLOSED mar/26 com mv_native fresh
+    now = datetime.now(timezone.utc)
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        period_end_date=date(2026, 3, 31),
+        fx_rate_usd_brl=Decimal("5.00"),
+        total_value_brl=Decimal("81912"),
+        total_value_usd=Decimal("16382.40"),
+        total_invested_brl=Decimal("80000"),
+        status=SnapshotStatus.CLOSED,
+        closed_at=now, closed_by="test",
+        is_active=True,
+        created_at=now, updated_at=now,
+    )
+    world["db"].add(snap)
+    world["db"].add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=a.id,
+        quantity=Decimal("1"),
+        unit_price=Decimal("81912"),
+        market_value_native=Decimal("81912"),
+        market_value_brl=Decimal("81912"),
+        market_value_usd=Decimal("16382.40"),
+        total_invested_brl=Decimal("80000"),
+        created_at=now, updated_at=now,
+    ))
+    world["db"].commit()
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # DEVE usar R$81.912 do snapshot, não R$1,72 do asset.current_price
+    assert pos["current_value"] == Decimal("81912")
+    assert pos["current_value_brl"] == Decimal("81912")
+
+
+def test_value_mode_frozen_price_respects_as_of(world):
+    """Snapshot fechado APÓS as_of não deve influenciar posição retroativa."""
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotStatus,
+    )
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=50_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=40_000, event_date=date(2025, 1, 1),
+    )
+    now = datetime.now(timezone.utc)
+    # Snapshot fechado jun/26 (após as_of=mar/26)
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        period_end_date=date(2026, 6, 30),
+        fx_rate_usd_brl=Decimal("5.00"),
+        total_value_brl=Decimal("100000"),
+        total_value_usd=Decimal("20000"),
+        total_invested_brl=Decimal("40000"),
+        status=SnapshotStatus.CLOSED,
+        closed_at=now, closed_by="test",
+        is_active=True,
+        created_at=now, updated_at=now,
+    )
+    world["db"].add(snap)
+    world["db"].add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=a.id,
+        quantity=Decimal("1"),
+        unit_price=Decimal("100000"),
+        market_value_native=Decimal("100000"),
+        market_value_brl=Decimal("100000"),
+        market_value_usd=Decimal("20000"),
+        total_invested_brl=Decimal("40000"),
+        created_at=now, updated_at=now,
+    ))
+    world["db"].commit()
+    # Posição em mar/26 (as_of anterior ao snapshot jun/26)
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 3, 31))
+    # NÃO deve usar mv_native=100000 do snapshot jun/26 (posterior).
+    # Cai no asset.current_price=50000.
+    assert pos["current_value"] == Decimal("50000")
+
+
 def test_variation_none_when_no_current_price(world):
     """Sanity: sem current_price, todos os derivados são None."""
     a = _make_asset(
@@ -205,3 +358,198 @@ def test_variation_none_when_no_current_price(world):
     assert pos["current_value"] is None
     assert pos["variation"] is None
     assert pos["rentabilidade"] is None
+
+
+def test_hybrid_sell_zeroing_cotado_preserves_non_cotado(world):
+    """Bug 2026-07-07 audit — reset_basis() em SELL que zerava running_qty
+    também zerava non_cotado_basis_brl, perdendo o componente non_cotado
+    do total_invested_brl. Fix: SELL usa reset_cotado_basis() (só cotado).
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=15_000,
+    )
+    now = datetime.now(timezone.utc)
+    # BUY cotado: 100 títulos @ R$100
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 1),
+        quantity=Decimal("100"), unit_price=Decimal("100"),
+        gross_amount=Decimal("10000"), net_amount=Decimal("10000"),
+        currency=Currency.BRL,
+    ))
+    # BUY non-cotado: R$ 5000 saldo em conta
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 2, 1),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("5000"), net_amount=Decimal("5000"),
+        currency=Currency.BRL,
+    ))
+    # SELL 100 zerando o cotado (running_qty→0 dispara reset)
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.SELL, event_date=date(2026, 3, 1),
+        quantity=Decimal("100"), unit_price=Decimal("110"),
+        gross_amount=Decimal("11000"), net_amount=Decimal("11000"),
+        currency=Currency.BRL,
+    ))
+    world["db"].commit()
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # Cotado zerou (running_qty=0, basis_cost_brl=0). Non_cotado persiste.
+    # total_invested_brl = 0 + 5000 = 5000.
+    assert pos["total_invested_brl"] == Decimal("5000")
+    assert pos["quantity_held"] == Decimal("0")
+
+
+def test_full_redemption_zeroes_both_cotado_and_non_cotado(world):
+    """FULL_REDEMPTION deve resetar TUDO (semantic: fim total)."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=100_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 1, 1),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 2, 1),
+        mtype=AssetMovementType.FULL_REDEMPTION,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("0")
+
+
+def test_full_redemption_then_new_buy_reopens_position(world):
+    """Após FULL_REDEMPTION, um novo BUY re-abre posição — has_position
+    deve voltar True e current_value re-aparecer.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=30_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 1, 1),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 2, 1),
+        mtype=AssetMovementType.FULL_REDEMPTION,
+    )
+    # novo aporte após resgate
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=30_000, event_date=date(2026, 3, 1),
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # Posição re-aberta: current_value = current_price total (30k).
+    assert pos["current_value"] == Decimal("30000")
+    assert pos["total_invested_brl"] == Decimal("30000")
+
+
+def test_fresh_manual_price_wins_over_stale_snapshot(world):
+    """Bug 2026-07-07 audit — se o user atualiza asset.current_price
+    DEPOIS do último snapshot fechar, o update manual deve vencer o
+    valor frozen (que agora é o stale).
+    """
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotStatus,
+    )
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=90_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2025, 1, 1),
+    )
+    # Snapshot CLOSED com valor VELHO (jan/26), fechado em jan/26
+    old_close = datetime(2026, 1, 31, 20, 0, tzinfo=timezone.utc)
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        period_end_date=date(2026, 1, 31),
+        fx_rate_usd_brl=Decimal("5.00"),
+        total_value_brl=Decimal("50000"),
+        total_value_usd=Decimal("10000"),
+        total_invested_brl=Decimal("50000"),
+        status=SnapshotStatus.CLOSED,
+        closed_at=old_close, closed_by="test",
+        is_active=True,
+        created_at=old_close, updated_at=old_close,
+    )
+    world["db"].add(snap)
+    world["db"].add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=a.id,
+        quantity=Decimal("1"),
+        unit_price=Decimal("50000"),
+        market_value_native=Decimal("50000"),
+        market_value_brl=Decimal("50000"),
+        market_value_usd=Decimal("10000"),
+        total_invested_brl=Decimal("50000"),
+        created_at=old_close, updated_at=old_close,
+    ))
+    # User atualiza asset.current_price HOJE (jul/26) — mais recente que o snapshot.
+    a.current_price = Decimal("90000")
+    a.price_updated_at = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
+    world["db"].commit()
+
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 7, 7))
+    # Manual update é POSTERIOR ao close do snapshot → respeita current_price.
+    assert pos["current_value"] == Decimal("90000")
+
+
+def test_yield_on_cost_hybrid_cotado_plus_non_cotado(world):
+    """Fix C4 — yield_on_cost em asset híbrido soma AMBOS cotado
+    e non_cotado no invested_native. Bug antigo (if/elif) descartava
+    um lado silenciosamente.
+    """
+    from numis_geek.models.distribution import Distribution, DistributionType
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=15_000,
+    )
+    now = datetime.now(timezone.utc)
+    # BUY cotado: 100 @ R$100 = R$10.000
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 1),
+        quantity=Decimal("100"), unit_price=Decimal("100"),
+        gross_amount=Decimal("10000"), net_amount=Decimal("10000"),
+        currency=Currency.BRL,
+    ))
+    # BUY non_cotado: R$5.000
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 2, 1),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("5000"), net_amount=Decimal("5000"),
+        currency=Currency.BRL,
+    ))
+    fi_id = world["db"].query(FinancialInstitution).first().id
+    # Distribuição TTM: R$450 (yield_on_cost esperado = 450 / 15000 = 0.03)
+    world["db"].add(Distribution(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        financial_institution_id=fi_id,
+        type=DistributionType.JCP,
+        event_date=date(2026, 4, 1),
+        gross_amount=Decimal("450"),
+        net_amount=Decimal("450"),
+        currency=Currency.BRL,
+        fx_rate=Decimal("1"),
+        is_active=True,
+        created_at=now, updated_at=now,
+    ))
+    world["db"].commit()
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # invested_native = 100 × 100 (cotado) + 5000 (non_cotado) = 15000
+    # yield_on_cost = 450 / 15000 = 0.03
+    assert pos["yield_on_cost"] is not None
+    assert abs(pos["yield_on_cost"] - Decimal("0.03")) < Decimal("0.0001")

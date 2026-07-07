@@ -26,7 +26,7 @@ Returned shape — see `compute_position`:
 - total_received_brl: Decimal — sum of Distribution net_amount × fx_rate
 - currency: str — asset's native currency
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import TypedDict
 
@@ -36,6 +36,11 @@ from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.corporate_action import CorporateAction, CorporateActionType
 from numis_geek.models.distribution import Distribution
+from numis_geek.models.portfolio_snapshot import (
+    PortfolioSnapshot,
+    PortfolioSnapshotItem,
+    SnapshotStatus,
+)
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 
 
@@ -109,11 +114,56 @@ def asset_has_position(pos: "Position", asset: Asset | None = None) -> bool:
     return qty != 0 or invested != 0
 
 
+def _last_closed_snapshot_value(
+    db: Session, asset_id: str, as_of: date | None
+) -> tuple[Decimal, datetime | None] | None:
+    """Value-mode assets: usa `market_value_native` do último item CLOSED.
+
+    Retorna `(mv_native, snapshot.closed_at)` do snapshot fechado mais
+    recente com esse asset, ou None se não há.
+
+    Respeita `as_of`: nunca retorna valor de snapshot fechado APÓS a data
+    alvo. IMPORTANTE: filtro `status=CLOSED` também garante que snapshots
+    em criação (IN_REVIEW dentro da mesma transação) não são consultados,
+    evitando circular-dependency em create_snapshot.
+    """
+    q = (
+        db.query(
+            PortfolioSnapshotItem.market_value_native,
+            PortfolioSnapshot.closed_at,
+        )
+        .join(
+            PortfolioSnapshot,
+            PortfolioSnapshotItem.snapshot_id == PortfolioSnapshot.id,
+        )
+        .filter(
+            PortfolioSnapshotItem.asset_id == asset_id,
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshot.is_active == True,  # noqa: E712
+            PortfolioSnapshotItem.market_value_native.isnot(None),
+        )
+    )
+    if as_of is not None:
+        q = q.filter(PortfolioSnapshot.period_end_date <= as_of)
+    row = q.order_by(PortfolioSnapshot.period_end_date.desc()).first()
+    if row is None:
+        return None
+    return (row[0], row[1])
+
+
 def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -> Position:
     """Compute current position for an asset.
 
     `as_of` filters to events with event_date <= as_of. None = all-time.
     Inactive rows are skipped (soft-delete semantics).
+
+    Value-mode assets (FUND/PRIVATE_PENSION/FIXED_INCOME/CASH/FGTS/OTHER/
+    REAL_ESTATE/VEHICLE) preferem `market_value_native` do último snapshot
+    CLOSED como `current_price` — a menos que o user tenha atualizado
+    `asset.current_price` DEPOIS desse snapshot fechar. Consequência:
+    compute_position em value-mode NÃO É stateless — depende do histórico
+    de snapshots CLOSED do workspace. Cotado (STOCK/REIT/ETF/OPTION/CRYPTO)
+    permanece stateless (só olha AssetMovement/Distribution/current_price).
     """
     asset = db.get(Asset, asset_id)
     currency = asset.currency.value if asset else "BRL"
@@ -156,11 +206,22 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     non_cotado_basis_brl = Decimal("0")  # standalone BRL basis for non-cotado movements
 
     def reset_basis() -> None:
+        """Reset ALL basis (cotado + non_cotado). Use pra fim total de
+        posição: FULL_REDEMPTION, ASSET_CONVERSION."""
         nonlocal basis_qty, basis_cost_native, basis_cost_brl, non_cotado_basis_brl
         basis_qty = Decimal("0")
         basis_cost_native = Decimal("0")
         basis_cost_brl = Decimal("0")
         non_cotado_basis_brl = Decimal("0")
+
+    def reset_cotado_basis() -> None:
+        """Reset SÓ o basis cotado (basis_qty, basis_cost_*). Use quando
+        a perna cotada zera via SELL mas non_cotado pode persistir (asset
+        híbrido: Tesouro Selic + saldo em conta, por exemplo)."""
+        nonlocal basis_qty, basis_cost_native, basis_cost_brl
+        basis_qty = Decimal("0")
+        basis_cost_native = Decimal("0")
+        basis_cost_brl = Decimal("0")
 
     for kind, r in timeline:
         if kind == "ca":
@@ -209,12 +270,20 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
             if is_non_cotado_row:
                 non_cotado_basis_brl -= gross * effective_fx
 
-        # ── Cost-basis reset (PRIO3 / FULL_REDEMPTION) ─────────────────────
-        if r.type == AssetMovementType.FULL_REDEMPTION or (
-            r.type == AssetMovementType.SELL and abs(running_qty) < _TOLERANCE
-        ):
+        # ── Cost-basis reset ────────────────────────────────────────────────
+        # FULL_REDEMPTION: zera TUDO (posição encerrada por completo).
+        # SELL que zera running_qty: zera SÓ o basis cotado. Se o asset for
+        # híbrido (BUY cotado + BUY non_cotado, ex: Tesouro Selic + saldo
+        # em conta corretora), o non_cotado_basis_brl PERSISTE — SELL
+        # cotado não afeta aportes non_cotado.
+        # Bug 2026-07-07 audit — pré-fix `reset_basis()` zerava TAMBÉM o
+        # non_cotado em SELL, perdendo a parte non_cotado do total_invested.
+        if r.type == AssetMovementType.FULL_REDEMPTION:
             running_qty = Decimal("0")
             reset_basis()
+        elif r.type == AssetMovementType.SELL and abs(running_qty) < _TOLERANCE:
+            running_qty = Decimal("0")
+            reset_cotado_basis()
 
     if basis_qty > 0:
         average_cost = basis_cost_native / basis_qty
@@ -223,10 +292,12 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         average_cost = Decimal("0")
         average_cost_brl = Decimal("0")
 
-    if non_cotado_basis_brl != 0:
-        total_invested_brl = non_cotado_basis_brl
-    else:
-        total_invested_brl = running_qty * average_cost_brl
+    # Bug 2026-07-05 audit — pré-fix, o if/else descartava silenciosamente
+    # o componente cotado quando o asset tinha AMBOS aportes cotados e
+    # non_cotado (Tesouro Selic 2031 apareceu com total_invested_brl
+    # negativo -R$297k). Fix: soma ambos os componentes.
+    cotado_invested_brl = running_qty * average_cost_brl if basis_qty > 0 else Decimal("0")
+    total_invested_brl = non_cotado_basis_brl + cotado_invested_brl
 
     # ── Distribution income ────────────────────────────────────────────────
     dq = (
@@ -269,7 +340,33 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         asset and asset.asset_class and asset.asset_class not in _COTADO_CLASSES
     )
     if is_value_mode:
-        effective_qty = Decimal("1")
+        # Bug 2026-07-05 audit — pré-fix, FULL_REDEMPTION zerava running_qty
+        # e non_cotado_basis_brl mas effective_qty=1 permanecia, fazendo
+        # current_value = current_price aparecer pra posições zeradas.
+        # Fix: só forçar qty=1 se ainda há posição real.
+        has_position = running_qty != 0 or non_cotado_basis_brl != 0
+        effective_qty = Decimal("1") if has_position else Decimal("0")
+        # Bug 2026-07-05 audit — asset.current_price de value-mode com
+        # price_source=MANUAL fica stale (ex: Fundo Verde BTG current_price
+        # R$1,72 vs snapshot mv_native R$81.912). Preferir o último item
+        # frozen num snapshot CLOSED sobre o current_price do asset.
+        # Bug 2026-07-07 audit — MAS se o user atualizou o current_price
+        # DEPOIS do último snapshot fechar, respeita o update manual.
+        # Sem essa checagem, um edit manual hoje some do dashboard porque
+        # o snapshot mais recente (mesmo velho) sempre vencia.
+        frozen = _last_closed_snapshot_value(db, asset_id, as_of)
+        if frozen is not None:
+            frozen_price, snap_closed_at = frozen
+            price_updated = asset.price_updated_at if asset else None
+            # Manual update é "mais recente" só se acontece APÓS o snapshot
+            # ser fechado. Se ambos None, cai no frozen (comportamento default).
+            manual_wins = (
+                price_updated is not None
+                and snap_closed_at is not None
+                and price_updated > snap_closed_at
+            )
+            if not manual_wins:
+                current_price = frozen_price
     if current_price is not None and effective_qty != 0:
         current_value = effective_qty * current_price
         if currency == "BRL":
@@ -300,12 +397,16 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     if ttm_dividends_native > 0:
         if current_value is not None and current_value > 0:
             dividend_yield = ttm_dividends_native / current_value
-        invested_native: Decimal | None = None
-        if running_qty != 0 and average_cost > 0:
-            invested_native = running_qty * average_cost
-        elif non_cotado_basis_brl > 0:
-            invested_native = non_cotado_basis_brl
-        if invested_native is not None and invested_native > 0:
+        # Espelha o fix do total_invested_brl: em híbrido cotado+non_cotado
+        # o antigo if/elif descartava um lado silenciosamente. Ambos usam
+        # a mesma moeda (asset value-mode é sempre BRL — assets cotados
+        # USD nunca têm non_cotado por design).
+        cotado_native = (
+            running_qty * average_cost if (running_qty != 0 and average_cost > 0) else Decimal("0")
+        )
+        non_cotado_native = non_cotado_basis_brl if non_cotado_basis_brl > 0 else Decimal("0")
+        invested_native = cotado_native + non_cotado_native
+        if invested_native > 0:
             yield_on_cost = ttm_dividends_native / invested_native
 
     return Position(
