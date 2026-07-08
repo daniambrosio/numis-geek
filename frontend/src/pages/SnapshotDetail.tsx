@@ -33,6 +33,7 @@ import AppLayout from '../components/AppLayout'
 import AddSnapshotAssetModal from '../components/AddSnapshotAssetModal'
 import DistributionEditModal from '../components/DistributionEditModal'
 import AssetFilterBar from '../components/AssetFilterBar'
+import MoMDeltaBlock from '../components/MoMDeltaBlock'
 import PendencyPanel from '../components/PendencyPanel'
 import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
@@ -753,6 +754,13 @@ export default function SnapshotDetail() {
 
         {snap && !loading && (
           <>
+            {/* ── 1. Spec 62 — MoM anomaly detection (topo do detail) ── */}
+            <MoMDeltaBlock
+              snapshotId={snap.id}
+              isReadOnly={!isPending}
+              onResolved={refreshPendencies}
+            />
+
             {/* ── 2. Pendency panel (Spec 47 — single source of truth) ── */}
             {isPending && (
               <PendencyPanel

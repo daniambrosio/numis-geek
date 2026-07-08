@@ -1018,6 +1018,19 @@ export const api = {
       method: 'POST',
     }),
 
+  // Spec 62 — Detecção de variações anômalas no fechamento
+  listSnapshotMomDeltas: (snapshot_id: string) =>
+    request<MoMDeltaResponse>(`/snapshots/${snapshot_id}/mom-deltas`),
+  recheckSnapshotDeltas: (snapshot_id: string) =>
+    request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/recheck-deltas`, {
+      method: 'POST',
+    }),
+  confirmDeltaPendency: (pendency_id: string, note?: string) =>
+    request<SnapshotPendencyOut>(`/snapshots/pendencies/${pendency_id}/confirm-delta`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note ?? null }),
+    }),
+
   // ── Options (spec 17) ────────────────────────────────────────────────────
   parseOption: (ticker: string, underlying_price?: number) => {
     const qs = new URLSearchParams({ ticker })
@@ -1542,11 +1555,46 @@ export type PendencyReason =
   | 'UPLOAD_REQUIRED'
   | 'STALE_PRICE'
   | 'HISTORICAL_PRICE_REQUIRED'
+  | 'SUSPICIOUS_DELTA'
 
 export type PendencyAction =
   | 'RETRY_API'
   | 'EDIT_PRICE'
   | 'UPLOAD_FILE'
+  | 'CONFIRM_DELTA'
+
+// Spec 62 — MoM delta view
+export type MoMDeltaStatus =
+  | 'OK'
+  | 'NEW'
+  | 'ZEROED'
+  | 'SUPPRESSED_MOVEMENT'
+  | 'SUPPRESSED_CA'
+  | 'SUSPICIOUS_PENDING'
+  | 'SUSPICIOUS_RESOLVED'
+
+export interface MoMDeltaRow {
+  asset_id: string
+  asset_name: string
+  asset_ticker: string | null
+  asset_class: string
+  currency: string
+  previous_mv_native: string | null
+  current_mv_native: string | null
+  delta_native: string | null
+  delta_pct: string | null
+  threshold_pct: string
+  status: MoMDeltaStatus
+  pendency_id: string | null
+  pendency_resolved: boolean
+}
+
+export interface MoMDeltaResponse {
+  snapshot_id: string
+  previous_snapshot_id: string | null
+  previous_period_end: string | null
+  rows: MoMDeltaRow[]
+}
 
 export interface SnapshotOut {
   id: string
