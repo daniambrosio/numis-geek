@@ -56,6 +56,11 @@ class PendencyReason(str, enum.Enum):
     # period_end != hoje. Não temos preço histórico (Spec 53 vai
     # buscar via providers); user preenche manualmente até lá.
     HISTORICAL_PRICE_REQUIRED = "HISTORICAL_PRICE_REQUIRED"
+    # Spec 62 — variação MoM do item excede o threshold da asset_class
+    # sem AssetMovement/CorporateAction no período que justifique.
+    # Rede de segurança contra bugs tipo BHIA3 (3× stale), Fundo Verde
+    # BTG (R$81k→R$1,72), PGBL Flexprev (23× inflado).
+    SUSPICIOUS_DELTA = "SUSPICIOUS_DELTA"
 
 
 class PendencyAction(str, enum.Enum):
@@ -63,6 +68,8 @@ class PendencyAction(str, enum.Enum):
     RETRY_API = "RETRY_API"
     EDIT_PRICE = "EDIT_PRICE"
     UPLOAD_FILE = "UPLOAD_FILE"
+    # Spec 62 — user confirma "sim, esse delta é real" sem editar dado.
+    CONFIRM_DELTA = "CONFIRM_DELTA"
 
 
 class PortfolioSnapshot(Base):

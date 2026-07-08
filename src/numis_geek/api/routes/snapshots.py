@@ -42,10 +42,13 @@ from numis_geek.services.snapshot import (
     add_snapshot_item,
     apply_recompute_to_snapshot,
     apply_skip_recompute,
+    confirm_delta_pendency,
     confirm_snapshot,
     create_snapshot,
     delete_snapshot_item,
+    detect_suspicious_deltas,
     find_affected_snapshots,
+    list_mom_deltas,
     list_pendencies,
     list_snapshots,
     reopen_snapshot,
@@ -925,6 +928,136 @@ def retry_api(
 
 
 # ── Spec 48 — bulk extract upload ───────────────────────────────────────────
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spec 62 — SUSPICIOUS_DELTA endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class MoMDeltaRowOut(BaseModel):
+    asset_id: str
+    asset_name: str
+    asset_ticker: str | None
+    asset_class: str
+    currency: str
+    previous_mv_native: str | None
+    current_mv_native: str | None
+    delta_native: str | None
+    delta_pct: str | None
+    threshold_pct: str
+    status: str
+    pendency_id: str | None
+    pendency_resolved: bool
+
+
+class MoMDeltaResponse(BaseModel):
+    snapshot_id: str
+    previous_snapshot_id: str | None
+    previous_period_end: str | None
+    rows: list[MoMDeltaRowOut]
+
+
+class ConfirmDeltaRequest(BaseModel):
+    note: str | None = None
+
+
+@router.get("/{snapshot_id}/mom-deltas", response_model=MoMDeltaResponse)
+def list_snapshot_mom_deltas(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 62 — retorna comparativo MoM ativo-a-ativo do snapshot vs
+    o snapshot CLOSED anterior. Popula o bloco MoMDeltaBlock no topo do
+    Snapshot Detail."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    rows = list_mom_deltas(db, snapshot_id)
+    prev = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.workspace_id == snap.workspace_id,
+            PortfolioSnapshot.is_active == True,  # noqa: E712
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshot.period_end_date < snap.period_end_date,
+        )
+        .order_by(PortfolioSnapshot.period_end_date.desc())
+        .first()
+    )
+    return MoMDeltaResponse(
+        snapshot_id=snapshot_id,
+        previous_snapshot_id=prev.id if prev else None,
+        previous_period_end=prev.period_end_date.isoformat() if prev else None,
+        rows=[
+            MoMDeltaRowOut(
+                asset_id=r.asset_id,
+                asset_name=r.asset_name,
+                asset_ticker=r.asset_ticker,
+                asset_class=r.asset_class,
+                currency=r.currency,
+                previous_mv_native=str(r.previous_mv_native) if r.previous_mv_native is not None else None,
+                current_mv_native=str(r.current_mv_native) if r.current_mv_native is not None else None,
+                delta_native=str(r.delta_native) if r.delta_native is not None else None,
+                delta_pct=str(r.delta_pct) if r.delta_pct is not None else None,
+                threshold_pct=str(r.threshold_pct),
+                status=r.status,
+                pendency_id=r.pendency_id,
+                pendency_resolved=r.pendency_resolved,
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.post("/{snapshot_id}/recheck-deltas", response_model=list[SnapshotPendencyOut])
+def recheck_snapshot_deltas(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 62 — re-avalia SUSPICIOUS_DELTA em items existentes.
+
+    Útil quando o user editou items manualmente e quer forçar
+    re-avaliação. Só cria pendencies novas; não remove existentes."""
+    ws_id = _workspace_id(current_user)
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None or snap.workspace_id != ws_id:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    new_ids = detect_suspicious_deltas(db, snapshot_id)
+    new_pens = [db.get(SnapshotPendency, pid) for pid in new_ids]
+    return [
+        _hydrate_pendency(db, p) for p in new_pens if p is not None
+    ]
+
+
+@router.post(
+    "/pendencies/{pendency_id}/confirm-delta",
+    response_model=SnapshotPendencyOut,
+)
+def confirm_delta(
+    pendency_id: str,
+    body: ConfirmDeltaRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 62 — user confirma "sim, esse delta é real" sem editar dado."""
+    ws_id = _workspace_id(current_user)
+    _pendency_or_404(db, pendency_id, ws_id)
+    try:
+        pen = confirm_delta_pendency(
+            db, pendency_id=pendency_id,
+            user_id=current_user.user_id,
+            user_email=_user_email(db, current_user),
+            note=body.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _hydrate_pendency(db, pen)
 
 
 @router.post("/{snapshot_id}/bulk-extract", status_code=status.HTTP_201_CREATED)

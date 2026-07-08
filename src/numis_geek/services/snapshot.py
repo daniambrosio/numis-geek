@@ -5,6 +5,7 @@ CLOSED), pendency detection per source, confirm/reopen flows, and audit.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -13,7 +14,28 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
-from numis_geek.models.asset import Asset, PriceSource
+from numis_geek.models.asset import Asset, AssetClass, PriceSource
+from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
+from numis_geek.models.corporate_action import CorporateAction
+
+
+# Movements que mudam POSIÇÃO/BASIS — justificam variação de mv_native.
+# COME_COTAS (tax-only) NÃO conta: mv pode mover 20% por preço mesmo com
+# come-cotas no período, e a suppression daria false negative. Também
+# exclui DIVIDEND-like se algum dia forem modelados como AssetMovement.
+_POSITION_CHANGING_MOVEMENT_TYPES = {
+    AssetMovementType.BUY,
+    AssetMovementType.SELL,
+    AssetMovementType.BONUS,
+    AssetMovementType.SUBSCRIPTION,
+    AssetMovementType.FULL_REDEMPTION,
+    AssetMovementType.SELL_OPEN,
+    AssetMovementType.BUY_TO_OPEN,
+    AssetMovementType.BUY_TO_CLOSE,
+    AssetMovementType.SELL_TO_CLOSE,
+    AssetMovementType.EXERCISED,
+    AssetMovementType.EXPIRED,
+}
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PendencyAction,
@@ -32,6 +54,37 @@ from numis_geek.services.price_freshness import (
     PriceTier,
     freshness_tier,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spec 62 — SUSPICIOUS_DELTA thresholds por asset_class
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Value-mode (patrimônio previdenciário/fundo raramente move mais que
+# ~15% num mês). Cotado (STOCK/ETF/REIT/CRYPTO/OPTION) tolera 40% de
+# volatilidade normal. CASH (saldo em conta) raramente pula 20%.
+_SUSPICIOUS_THRESHOLDS: dict[AssetClass, Decimal] = {
+    AssetClass.FUND: Decimal("0.15"),
+    AssetClass.PRIVATE_PENSION: Decimal("0.15"),
+    AssetClass.FIXED_INCOME: Decimal("0.15"),
+    AssetClass.FGTS: Decimal("0.15"),
+    AssetClass.REAL_ESTATE: Decimal("0.15"),
+    AssetClass.VEHICLE: Decimal("0.15"),
+    AssetClass.STOCK: Decimal("0.40"),
+    AssetClass.ETF: Decimal("0.40"),
+    AssetClass.REIT: Decimal("0.40"),
+    AssetClass.CRYPTO: Decimal("0.40"),
+    AssetClass.OPTION: Decimal("0.40"),
+    AssetClass.CASH: Decimal("0.20"),
+}
+
+
+def _suspicious_threshold_for(asset_class: AssetClass | None) -> Decimal:
+    """Threshold |Δ%| pra flagar suspicious delta. Fallback: 15% (mais
+    conservador) pra classes que não estejam no map."""
+    if asset_class is None:
+        return Decimal("0.15")
+    return _SUSPICIOUS_THRESHOLDS.get(asset_class, Decimal("0.15"))
 
 
 @dataclass
@@ -358,6 +411,13 @@ def create_snapshot(
     snap.total_value_usd = total_usd
     snap.total_invested_brl = total_inv_brl
     snap.total_received_brl = total_rec_brl
+    db.flush()
+
+    # Spec 62 — SUSPICIOUS_DELTA detection após items populados. Ativos
+    # que já ganharam pendency de outro reason (HISTORICAL_PRICE_REQUIRED
+    # etc) são skipados dentro de detect_suspicious_deltas.
+    delta_pendency_ids = detect_suspicious_deltas(db, snap.id, now=now)
+    pendency_ids.extend(delta_pendency_ids)
 
     # Downgrade to IN_REVIEW if there are open pendencies and the caller asked for CLOSED.
     if pendency_ids and initial_status == SnapshotStatus.CLOSED:
@@ -380,6 +440,525 @@ def create_snapshot(
         pendencies_count=len(pendency_ids),
         pendency_ids=pendency_ids,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spec 62 — SUSPICIOUS_DELTA detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _previous_closed_snapshot(
+    db: Session, workspace_id: str, period_end: date
+) -> PortfolioSnapshot | None:
+    """Retorna o snapshot CLOSED imediatamente anterior a `period_end`
+    no workspace. None se não há histórico."""
+    return (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.workspace_id == workspace_id,
+            PortfolioSnapshot.is_active == True,  # noqa: E712
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshot.period_end_date < period_end,
+        )
+        .order_by(PortfolioSnapshot.period_end_date.desc())
+        .first()
+    )
+
+
+def _has_movement_in_period(
+    db: Session, asset_id: str, from_date: date, to_date: date
+) -> bool:
+    """True se há AssetMovement do asset em (from_date, to_date] que
+    MUDA posição/basis. Filtra por _POSITION_CHANGING_MOVEMENT_TYPES —
+    COME_COTAS (tax-only) NÃO justifica variação de mv, então não
+    suprime o flag.
+
+    Range aberto em from_date pra não contar movements do próprio dia do
+    snapshot anterior (period_end é último dia calendário). Fechado em
+    to_date pra incluir o dia do snapshot atual (posição frozen EOD).
+    """
+    return (
+        db.query(AssetMovement.id)
+        .filter(
+            AssetMovement.asset_id == asset_id,
+            AssetMovement.is_active == True,  # noqa: E712
+            AssetMovement.type.in_(_POSITION_CHANGING_MOVEMENT_TYPES),
+            AssetMovement.event_date > from_date,
+            AssetMovement.event_date <= to_date,
+        )
+        .first()
+        is not None
+    )
+
+
+def _has_corporate_action_in_period(
+    db: Session, asset_id: str, from_date: date, to_date: date
+) -> bool:
+    """True se há CorporateAction (SPLIT/GROUPING/CONVERSION) do asset
+    em (from_date, to_date]."""
+    return (
+        db.query(CorporateAction.id)
+        .filter(
+            CorporateAction.asset_id == asset_id,
+            CorporateAction.is_active == True,  # noqa: E712
+            CorporateAction.event_date > from_date,
+            CorporateAction.event_date <= to_date,
+        )
+        .first()
+        is not None
+    )
+
+
+def _compute_mom_delta(
+    prev_mv_native: Decimal | None, curr_mv_native: Decimal | None
+) -> tuple[Decimal, Decimal | None]:
+    """Retorna (delta_absoluto, delta_pct). delta_pct=None se prev=0."""
+    prev = prev_mv_native or Decimal("0")
+    curr = curr_mv_native or Decimal("0")
+    delta_abs = curr - prev
+    if prev == 0:
+        return delta_abs, None
+    delta_pct = abs(delta_abs) / abs(prev)
+    return delta_abs, delta_pct
+
+
+def detect_suspicious_deltas(
+    db: Session, snapshot_id: str, *, now: datetime | None = None
+) -> list[str]:
+    """Compara cada item do snapshot com o mesmo asset no snapshot CLOSED
+    anterior. Cria SnapshotPendency SUSPICIOUS_DELTA para variações que
+    ultrapassam o threshold da asset_class sem AssetMovement ou
+    CorporateAction no período que justifique.
+
+    Idempotente: skipa items que já têm QUALQUER pendency open pra esse
+    asset nesse snapshot (unique constraint snapshot_id+asset_id, e
+    outro pendency provavelmente cobre o mesmo problema).
+
+    Retorna lista de IDs de pendencies novas criadas.
+    """
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+
+    prev_snap = _previous_closed_snapshot(db, snap.workspace_id, snap.period_end_date)
+    if prev_snap is None:
+        return []  # Sem histórico, sem delta pra comparar.
+
+    prev_items_by_asset: dict[str, PortfolioSnapshotItem] = {
+        i.asset_id: i
+        for i in db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == prev_snap.id)
+        .all()
+    }
+    curr_items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+
+    now = now or datetime.now(timezone.utc)
+    new_pendency_ids: list[str] = []
+
+    for item in curr_items:
+        prev_item = prev_items_by_asset.get(item.asset_id)
+        if prev_item is None:
+            # Ativo NOVO — skip (aporte inicial é esperado).
+            continue
+
+        prev_mv = prev_item.market_value_native
+        curr_mv = item.market_value_native
+
+        # Ativo ZERADO ou virou zero — skip (saída legítima; se foi bug
+        # de dado, outros checks pegam).
+        if not prev_mv or not curr_mv:
+            continue
+
+        delta_abs, delta_pct = _compute_mom_delta(prev_mv, curr_mv)
+        if delta_pct is None:
+            continue
+
+        asset = db.get(Asset, item.asset_id)
+        if asset is None or asset.asset_class is None:
+            continue
+
+        threshold = _suspicious_threshold_for(asset.asset_class)
+        if delta_pct < threshold:
+            continue
+
+        # Movimento ou CA no período justificam automaticamente.
+        if _has_movement_in_period(
+            db, item.asset_id, prev_snap.period_end_date, snap.period_end_date
+        ):
+            continue
+        if _has_corporate_action_in_period(
+            db, item.asset_id, prev_snap.period_end_date, snap.period_end_date
+        ):
+            continue
+
+        # Skip se já existe qualquer pendency pra esse asset nesse snapshot
+        # (unique constraint + outro reason provavelmente cobre).
+        existing = (
+            db.query(SnapshotPendency)
+            .filter(
+                SnapshotPendency.snapshot_id == snap.id,
+                SnapshotPendency.asset_id == item.asset_id,
+            )
+            .first()
+        )
+        if existing is not None:
+            continue
+
+        detail_payload = {
+            "previous_snapshot_id": prev_snap.id,
+            "previous_period_end": prev_snap.period_end_date.isoformat(),
+            "previous_mv_native": str(prev_mv),
+            "current_mv_native": str(curr_mv),
+            "delta_native": str(delta_abs),
+            "delta_pct": str(delta_pct),
+            "threshold_pct": str(threshold),
+            "asset_class": asset.asset_class.value,
+        }
+        pen = SnapshotPendency(
+            id=str(uuid.uuid4()),
+            snapshot_id=snap.id,
+            asset_id=item.asset_id,
+            reason=PendencyReason.SUSPICIOUS_DELTA,
+            action_type=PendencyAction.CONFIRM_DELTA,
+            detail=json.dumps(detail_payload),
+            created_at=now,
+        )
+        db.add(pen)
+        db.flush()
+        new_pendency_ids.append(pen.id)
+
+    # Se criou pendencies e o snapshot está CLOSED, downgrade pra
+    # IN_REVIEW (mesmo padrão do detect_pendencies durante criação).
+    if new_pendency_ids and snap.status == SnapshotStatus.CLOSED:
+        snap.status = SnapshotStatus.IN_REVIEW
+        snap.closed_at = None
+        snap.closed_by = None
+        db.flush()
+
+    return new_pendency_ids
+
+
+def _reevaluate_suspicious_delta_for_asset(
+    db: Session,
+    snapshot_id: str,
+    asset_id: str,
+    *,
+    user_id: str | None = None,
+    user_email: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Após edição manual de preço, re-avalia se a SUSPICIOUS_DELTA aberta
+    daquele item ainda é válida. Se o novo delta ficou abaixo do
+    threshold OU se há movement/CA no período agora, auto-resolve a
+    pendency. Retorna True se resolveu."""
+    pen = (
+        db.query(SnapshotPendency)
+        .filter(
+            SnapshotPendency.snapshot_id == snapshot_id,
+            SnapshotPendency.asset_id == asset_id,
+            SnapshotPendency.reason == PendencyReason.SUSPICIOUS_DELTA,
+            SnapshotPendency.resolved_at.is_(None),
+        )
+        .first()
+    )
+    if pen is None:
+        return False
+
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    prev_snap = _previous_closed_snapshot(db, snap.workspace_id, snap.period_end_date)
+    if prev_snap is None:
+        return False
+
+    prev_item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == prev_snap.id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    curr_item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == snapshot_id,
+            PortfolioSnapshotItem.asset_id == asset_id,
+        )
+        .first()
+    )
+    if prev_item is None or curr_item is None:
+        return False
+
+    delta_abs, delta_pct = _compute_mom_delta(
+        prev_item.market_value_native, curr_item.market_value_native
+    )
+    asset = db.get(Asset, asset_id)
+    threshold = _suspicious_threshold_for(asset.asset_class if asset else None)
+
+    should_auto_resolve = (
+        (delta_pct is not None and delta_pct < threshold)
+        or _has_movement_in_period(
+            db, asset_id, prev_snap.period_end_date, snap.period_end_date
+        )
+        or _has_corporate_action_in_period(
+            db, asset_id, prev_snap.period_end_date, snap.period_end_date
+        )
+    )
+    if not should_auto_resolve:
+        # Delta AINDA passa threshold. Se piorou, atualiza o detail
+        # payload da pendency pra refletir o novo valor — antes ficava
+        # stale (audit finding spec 62).
+        new_detail = {
+            "previous_snapshot_id": prev_snap.id,
+            "previous_period_end": prev_snap.period_end_date.isoformat(),
+            "previous_mv_native": str(prev_item.market_value_native or Decimal("0")),
+            "current_mv_native": str(curr_item.market_value_native or Decimal("0")),
+            "delta_native": str(delta_abs),
+            "delta_pct": str(delta_pct) if delta_pct is not None else None,
+            "threshold_pct": str(threshold),
+            "asset_class": asset.asset_class.value if asset and asset.asset_class else None,
+        }
+        pen.detail = json.dumps(new_detail)
+        db.flush()
+        return False
+
+    now = now or datetime.now(timezone.utc)
+    pen.resolved_at = now
+    pen.resolved_by = user_id
+    pen.resolution_note = "Auto-resolvido: novo delta abaixo do threshold ou movimento/CA no período."
+    db.flush()
+
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.pendency.auto_resolve",
+        workspace_id=snap.workspace_id,
+        user_id=user_id,
+        resource_type="pendency",
+        resource_id=pen.id,
+        details={
+            "snapshot_id": snapshot_id,
+            "asset_id": asset_id,
+            "reason": PendencyReason.SUSPICIOUS_DELTA.value,
+        },
+    )
+    return True
+
+
+def confirm_delta_pendency(
+    db: Session,
+    *,
+    pendency_id: str,
+    user_id: str | None,
+    user_email: str | None = None,
+    note: str | None = None,
+    now: datetime | None = None,
+) -> SnapshotPendency:
+    """Resolve uma SUSPICIOUS_DELTA — user confirma "sim, esse delta é real".
+    Não altera items; só marca resolved_at."""
+    pen = db.get(SnapshotPendency, pendency_id)
+    if pen is None:
+        raise ValueError(f"Pendency {pendency_id} not found")
+    if pen.reason != PendencyReason.SUSPICIOUS_DELTA:
+        raise ValueError(
+            f"Pendency {pendency_id} is not SUSPICIOUS_DELTA "
+            f"(got {pen.reason.value}); use resolve_pendency instead."
+        )
+    if pen.resolved_at is not None:
+        # Idempotente — mas log a tentativa pra trilha completa
+        # (audit finding spec 62).
+        snap_for_log = db.get(PortfolioSnapshot, pen.snapshot_id)
+        AuditService(db).log(
+            user_email=user_email or (user_id or "system"),
+            action="snapshot.pendency.confirm_delta.idempotent_retry",
+            workspace_id=snap_for_log.workspace_id if snap_for_log else None,
+            user_id=user_id,
+            resource_type="pendency",
+            resource_id=pen.id,
+            details={
+                "snapshot_id": pen.snapshot_id,
+                "asset_id": pen.asset_id,
+                "note": note,
+            },
+        )
+        return pen
+
+    now = now or datetime.now(timezone.utc)
+    pen.resolved_at = now
+    pen.resolved_by = user_id
+    pen.resolution_note = note
+    db.flush()
+
+    snap = db.get(PortfolioSnapshot, pen.snapshot_id)
+    AuditService(db).log(
+        user_email=user_email or (user_id or "system"),
+        action="snapshot.pendency.confirm_delta",
+        workspace_id=snap.workspace_id if snap else None,
+        user_id=user_id,
+        resource_type="pendency",
+        resource_id=pen.id,
+        details={
+            "snapshot_id": pen.snapshot_id,
+            "asset_id": pen.asset_id,
+            "note": note,
+        },
+    )
+    return pen
+
+
+@dataclass
+class MoMDeltaRow:
+    """Uma linha do comparativo MoM ativo-a-ativo. Cobre TODOS os items
+    do snapshot atual (não só os suspeitos) pra permitir UI unificada."""
+    asset_id: str
+    asset_name: str
+    asset_ticker: str | None
+    asset_class: str
+    currency: str
+    previous_mv_native: Decimal | None
+    current_mv_native: Decimal | None
+    delta_native: Decimal | None
+    delta_pct: Decimal | None
+    threshold_pct: Decimal
+    status: str  # "OK", "NEW", "ZEROED", "SUPPRESSED_MOVEMENT",
+                 # "SUPPRESSED_CA", "SUSPICIOUS_PENDING", "SUSPICIOUS_RESOLVED"
+    pendency_id: str | None
+    pendency_resolved: bool
+
+
+def list_mom_deltas(db: Session, snapshot_id: str) -> list[MoMDeltaRow]:
+    """Retorna todas as rows do comparativo MoM pro frontend.
+
+    Ordem: por magnitude |delta_native| desc (suspicious/OK misturados;
+    frontend re-ordena/filtra). Ativo novo/zerado/suprimido é incluído
+    (com status descritivo) pra transparência da UI."""
+    snap = db.get(PortfolioSnapshot, snapshot_id)
+    if snap is None:
+        raise ValueError(f"Snapshot {snapshot_id} not found")
+
+    prev_snap = _previous_closed_snapshot(db, snap.workspace_id, snap.period_end_date)
+    prev_items_by_asset: dict[str, PortfolioSnapshotItem] = {}
+    if prev_snap is not None:
+        prev_items_by_asset = {
+            i.asset_id: i
+            for i in db.query(PortfolioSnapshotItem)
+            .filter(PortfolioSnapshotItem.snapshot_id == prev_snap.id)
+            .all()
+        }
+
+    curr_items = (
+        db.query(PortfolioSnapshotItem)
+        .filter(PortfolioSnapshotItem.snapshot_id == snapshot_id)
+        .all()
+    )
+    # Índice de pendencies SUSPICIOUS_DELTA por asset_id.
+    pending_by_asset: dict[str, SnapshotPendency] = {
+        p.asset_id: p
+        for p in db.query(SnapshotPendency)
+        .filter(
+            SnapshotPendency.snapshot_id == snapshot_id,
+            SnapshotPendency.reason == PendencyReason.SUSPICIOUS_DELTA,
+        )
+        .all()
+    }
+
+    seen_asset_ids: set[str] = set()
+    rows: list[MoMDeltaRow] = []
+
+    for item in curr_items:
+        asset = db.get(Asset, item.asset_id)
+        if asset is None:
+            continue
+        seen_asset_ids.add(item.asset_id)
+
+        prev_item = prev_items_by_asset.get(item.asset_id)
+        prev_mv = prev_item.market_value_native if prev_item else None
+        curr_mv = item.market_value_native
+        threshold = _suspicious_threshold_for(asset.asset_class)
+
+        if prev_snap is None or prev_item is None:
+            status = "NEW"
+            delta_abs: Decimal | None = None
+            delta_pct: Decimal | None = None
+        elif not prev_mv or not curr_mv:
+            status = "ZEROED"
+            delta_abs, delta_pct = _compute_mom_delta(prev_mv, curr_mv)
+        else:
+            delta_abs, delta_pct = _compute_mom_delta(prev_mv, curr_mv)
+            pen = pending_by_asset.get(item.asset_id)
+            has_mv = _has_movement_in_period(
+                db, item.asset_id, prev_snap.period_end_date, snap.period_end_date
+            )
+            has_ca = _has_corporate_action_in_period(
+                db, item.asset_id, prev_snap.period_end_date, snap.period_end_date
+            )
+            if pen is not None:
+                status = "SUSPICIOUS_RESOLVED" if pen.resolved_at else "SUSPICIOUS_PENDING"
+            elif delta_pct is not None and delta_pct >= threshold:
+                if has_mv:
+                    status = "SUPPRESSED_MOVEMENT"
+                elif has_ca:
+                    status = "SUPPRESSED_CA"
+                else:
+                    # Passa threshold mas não temos pendency ainda —
+                    # detect_suspicious_deltas não rodou desde a última
+                    # mudança do item. Marca como pendente "virtual" —
+                    # UI mostra que precisa recheck.
+                    status = "SUSPICIOUS_PENDING"
+            else:
+                status = "OK"
+
+        pen = pending_by_asset.get(item.asset_id)
+        rows.append(MoMDeltaRow(
+            asset_id=item.asset_id,
+            asset_name=asset.name,
+            asset_ticker=asset.ticker,
+            asset_class=asset.asset_class.value if asset.asset_class else "",
+            currency=asset.currency.value if asset.currency else "BRL",
+            previous_mv_native=prev_mv,
+            current_mv_native=curr_mv,
+            delta_native=delta_abs,
+            delta_pct=delta_pct,
+            threshold_pct=threshold,
+            status=status,
+            pendency_id=pen.id if pen else None,
+            pendency_resolved=bool(pen and pen.resolved_at),
+        ))
+
+    # Ativos que estavam no snapshot anterior mas NÃO estão no atual
+    # (posição zerada por FULL_REDEMPTION ou saída silenciosa).
+    for asset_id, prev_item in prev_items_by_asset.items():
+        if asset_id in seen_asset_ids:
+            continue
+        asset = db.get(Asset, asset_id)
+        if asset is None:
+            continue
+        rows.append(MoMDeltaRow(
+            asset_id=asset_id,
+            asset_name=asset.name,
+            asset_ticker=asset.ticker,
+            asset_class=asset.asset_class.value if asset.asset_class else "",
+            currency=asset.currency.value if asset.currency else "BRL",
+            previous_mv_native=prev_item.market_value_native,
+            current_mv_native=None,
+            delta_native=None,
+            delta_pct=None,
+            threshold_pct=_suspicious_threshold_for(asset.asset_class),
+            status="ZEROED",
+            pendency_id=None,
+            pendency_resolved=False,
+        ))
+
+    # Ordena por |delta_native| desc; None (NEW/ZEROED sem delta) vai pro fim.
+    def sort_key(r: MoMDeltaRow) -> tuple[int, Decimal]:
+        if r.delta_native is None:
+            return (1, Decimal("0"))
+        return (0, -abs(r.delta_native))
+
+    rows.sort(key=sort_key)
+    return rows
 
 
 # ── Lifecycle transitions ───────────────────────────────────────────────────
@@ -745,6 +1324,15 @@ def resolve_pendency(
         )
         db.flush()
 
+    # Spec 62 — GAP CONHECIDO: se este resolve mudou mv_native
+    # significativamente (via new_price), o delta vs snapshot anterior
+    # pode agora exceder threshold. Idealmente rodaríamos
+    # detect_suspicious_deltas aqui, MAS o unique constraint
+    # (snapshot_id, asset_id) na SnapshotPendency impede criar uma
+    # segunda pendency (SUSPICIOUS_DELTA) enquanto essa (resolved)
+    # ainda existe. Fix real exige relaxar o constraint pra
+    # (snapshot_id, asset_id, reason) via migration — TODO spec 62.1.
+
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
         action="snapshot.pendency.resolve",
@@ -881,12 +1469,16 @@ def update_snapshot_item_price(
     # Se houver pendência aberta pra esse (snapshot, asset), marca como
     # resolvida — assim o mesmo fluxo de edição cobre os 2 caminhos
     # (Editar na seção Pendências e Editar na seção Posições Congeladas).
+    # SUSPICIOUS_DELTA (spec 62) é intencionalmente excluído: sua resolução
+    # depende de o novo delta ter ficado dentro do threshold, decisão que
+    # fica com _reevaluate_suspicious_delta_for_asset abaixo.
     open_pen = (
         db.query(SnapshotPendency)
         .filter(
             SnapshotPendency.snapshot_id == snapshot_id,
             SnapshotPendency.asset_id == asset_id,
             SnapshotPendency.resolved_at.is_(None),
+            SnapshotPendency.reason != PendencyReason.SUSPICIOUS_DELTA,
         )
         .first()
     )
@@ -913,6 +1505,19 @@ def update_snapshot_item_price(
         (i.total_invested_brl or Decimal("0") for i in items), Decimal("0"),
     )
     db.flush()
+
+    # Spec 62 — dupla passagem pós-edit:
+    # (a) auto-resolve SUSPICIOUS_DELTA aberto que ficou dentro do
+    #     threshold com o novo preço;
+    # (b) detect_suspicious_deltas pra criar pendency NOVA caso o user
+    #     tenha editado pra fora do threshold (bug do audit spec 62 —
+    #     antes só rodava reevaluate, deixando delta suspeito novo sem
+    #     pendency e passando batido no CLOSE).
+    _reevaluate_suspicious_delta_for_asset(
+        db, snapshot_id, asset_id,
+        user_id=user_id, user_email=user_email, now=now,
+    )
+    detect_suspicious_deltas(db, snapshot_id, now=now)
 
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
@@ -1200,6 +1805,11 @@ def sync_snapshot_items(
         )
         db.flush()
 
+        # Spec 62 — items novos podem introduzir deltas suspeitos vs
+        # snapshot anterior. Roda detecção pra qualquer item recém-criado.
+        delta_ids = detect_suspicious_deltas(db, snap.id, now=now)
+        pendency_ids.extend(delta_ids)
+
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
         action="snapshot.sync_items",
@@ -1479,6 +2089,17 @@ def apply_recompute_to_snapshot(
         (i.total_invested_brl or Decimal("0") for i in items), Decimal("0"),
     )
     db.flush()
+
+    # Spec 62 — retro-lançamento pode ter mudado o valor do item
+    # significativamente. Re-avalia: (a) SUSPICIOUS_DELTA nova pra ESSE
+    # asset caso o delta agora ultrapasse threshold; (b) auto-resolve
+    # SUSPICIOUS_DELTA existente se o novo delta ficou abaixo (ou se o
+    # próprio recompute inclui movement/CA no período).
+    _reevaluate_suspicious_delta_for_asset(
+        db, snapshot_id, asset_id,
+        user_id=user_id, user_email=user_email, now=now,
+    )
+    detect_suspicious_deltas(db, snapshot_id, now=now)
 
     after = {
         "quantity": str(existing.quantity),
