@@ -1558,3 +1558,223 @@ def test_bulk_apply_derives_unit_price_from_mv_when_llm_omits(db):
     assert abs(float(applied["new_price"]) - 38.50) < 0.001, (
         f"expected 38.50 derived from mv/qty, got: {applied['new_price']}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Item 3.3 (2026-07-22) — Adversarial coverage do extractor
+# Cenários que a Fase 2 do audit apontou como buracos: mv=0, mv<0,
+# qty=0 mv>0, threshold ±1%, override manual, string JSON, negative qty.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_bulk_apply_warns_when_mv_null_but_qty_and_unit_present(db):
+    """Item 3.2: LLM devolve qty+unit mas omite market_value. Sem mv
+    não dá pra cross-check. Emite warning + downgrade confidence."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+    # Warning surface na review UI
+    # Warning mv-null/inválido (mensagem revisada no audit Item 3)
+    assert any("market_value" in e for e in result.errors), (
+        f"expected mv-missing warning, got: {result.errors}"
+    )
+    applied = result.bulk_detail.applied[0]
+    # unit_price preservado (não corrompido, é o único sinal disponível)
+    assert abs(float(applied["new_price"]) - 38.50) < 0.001
+
+
+def test_bulk_apply_qty_0_mv_positive_flags_warning_not_reconciles(db):
+    """qty=0 mv=1000 é inconsistente — não pode reconcile pra unit=∞.
+    Fix Fase 1: só warning, não muta unit_price."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 0, "unit_price": 30.00, "market_value": 1000.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # Warning presente
+    assert any("qty=0 mas mv=" in e for e in result.errors), (
+        f"expected qty=0 warning, got: {result.errors}"
+    )
+
+
+def test_bulk_apply_mv_0_no_reconcile_no_crash(db):
+    """mv=0 com qty+unit_price: reconciler divide por mv na comparação,
+    poderia crashar. Confirma que trata sem exception."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 30.00, "market_value": 0.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # Não crasha; apply prossegue com unit_price original
+    assert result.applied_count == 1
+    applied = result.bulk_detail.applied[0]
+    assert abs(float(applied["new_price"]) - 30.00) < 0.001
+
+
+def test_bulk_apply_negative_mv_no_reconcile(db):
+    """mv=-100 (LLM absurdo) não pode virar reconciled_unit=-1. Fix
+    Fase 1 tinha guard `mv > 0` — confirma."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 30.00, "market_value": -100.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # unit_price NÃO deve ser reescrito pra -1
+    applied = result.bulk_detail.applied[0]
+    assert float(applied["new_price"]) > 0, (
+        f"unit_price got corrupted to non-positive: {applied['new_price']}"
+    )
+
+
+def test_bulk_apply_reconcile_threshold_within_1_percent_skips(db):
+    """Reconciler só age se |computed-mv|/mv > 1%. Confirma que 0.5%
+    diff NÃO dispara reconcile (evita falso positivo por rounding)."""
+    w = _world(db)
+    # qty=100, unit=38.50, computed=3850. mv=3830 → diff=0.52% (abaixo do 1%)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "market_value": 3830.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    applied = result.bulk_detail.applied[0]
+    # unit_price preservado (não reconciliado)
+    assert abs(float(applied["new_price"]) - 38.50) < 0.001
+
+
+def test_bulk_apply_manual_price_override_bypasses_reconciler(db):
+    """Se user setou preço via manual_prices, o reconciler NÃO deve
+    tocar — user tem a última palavra."""
+    w = _world(db)
+    # LLM devolve qty×unit ≠ mv (batia reconcile), mas manual_price=50 vence
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 30.00, "market_value": 5000.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+        manual_prices={"PETR4": Decimal("50.00")},
+    )
+    applied = result.bulk_detail.applied[0]
+    # manual price vence — 50, não 30 nem 50 (mv/qty)
+    assert abs(float(applied["new_price"]) - 50.00) < 0.001
+
+
+def test_bulk_apply_string_numeric_input_from_llm_handled(db):
+    """LLM ocasionalmente devolve números como string ('100' em vez de 100).
+    O reconciler faz float(...) por dentro; deve tolerar sem crash."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": "100", "unit_price": "38.50", "market_value": "3850.00",
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # Não crasha, aplica
+    assert result.applied_count == 1
+
+
+def test_bulk_apply_treasury_noisy_mv_preserves_unit_price_and_warns(db):
+    """Item 3 audit CRITICAL: mv Treasury noisy fora do 1% tolerance
+    caía no elif e destruía unit_price 99.943 → 1.019. Fix: tie-breaker
+    dist_face vs dist_direct."""
+    w = _world(db)
+    # Treasury % of face: qty=10000, unit=99.943. Invariant tight: mv=9994.30.
+    # Noisy: mv=10194.19 (2% off) — computed/100=99.943 muito mais perto
+    # de 10194.19 que computed=999430. Deveria preservar unit e avisar.
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 10000, "unit_price": 99.943, "market_value": 10194.19,
+             "currency": "USD", "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    applied = result.bulk_detail.applied[0]
+    # unit_price PRESERVADO (não destruído pra 1.019)
+    assert abs(float(applied["new_price"]) - 99.943) < 0.01, (
+        f"unit_price got corrupted: {applied['new_price']}"
+    )
+    # Warning surface pra user rever mv
+    assert any("% of face" in e or "Treasury" in e for e in result.errors), (
+        f"expected Treasury noisy warning, got: {result.errors}"
+    )
+
+
+def test_bulk_apply_mv_0_flags_warning(db):
+    """Item 3 audit: mv=0 (LLM absurdo) sem manual_price deveria
+    disparar warning igual ao mv=None. Antes passava silencioso."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "market_value": 0.00,
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert any("market_value" in e for e in result.errors), (
+        f"expected mv=0 warning, got: {result.errors}"
+    )
+
+
+def test_bulk_apply_nan_string_from_llm_flagged(db):
+    """Item 3 audit: LLM ocasionalmente devolve 'NaN' (JSON literal).
+    float('nan') não crasha mas todas as comparações viram False, pulando
+    reconciler silencioso. Fix: math.isfinite check + error surface."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": 38.50, "market_value": "NaN",
+             "confidence": 0.95},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    # Non-finite warning surface
+    assert any("não-finito" in e or "NaN" in e for e in result.errors), (
+        f"expected NaN warning, got: {result.errors}"
+    )

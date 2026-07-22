@@ -1004,26 +1004,52 @@ def _classify_bulk_extract(
                 q = float(llm_qty)
                 p = float(llm_unit)
                 mv = float(llm_mv)
+                # Item 3 audit: NaN/Infinity strings de LLM. float("nan")
+                # não crasha mas destrói todas as comparações abaixo
+                # (nan comparisons são sempre False, pula reconciler
+                # silencioso). Detecta e sinaliza review.
+                import math
+                if not (math.isfinite(q) and math.isfinite(p) and math.isfinite(mv)):
+                    errors.append(
+                        f"{ticker}: LLM devolveu valor não-finito (NaN/Inf) em qty/unit/mv; revise manualmente"
+                    )
+                    raise ValueError("non-finite value")
                 computed = q * p
                 # % de face value: prompt v4 Rule 5 diz Treasuries/bonds
                 # cotados em % têm mv = qty × price / 100 (ex.: 10000 face
                 # × 99.943 = 9994.30). Se a conta bate com /100, aceita
                 # sem reconciliar. Audit 2026-07-05 pegou reconciler
                 # destruindo unit_price de Treasuries: 99.943 → 0.99943.
-                if q > 0 and mv > 0 and abs(computed / 100 - mv) / mv <= 0.01:
-                    pass  # % of face, invariante OK
-                elif q > 0 and mv > 0 and abs(computed - mv) / mv > 0.01:
-                    reconciled_unit = mv / q
-                    if reconciled_unit <= 0:
+                # Item 3 audit (2026-07-22): tie-breaker. Antes, mv Treasury
+                # noisy fora do 1% caía no elif e destruía o preço mesmo
+                # sendo obviamente % of face. Fix: se computed/100 tá mais
+                # perto de mv que computed direto, é % of face — só avisa.
+                if q > 0 and mv > 0:
+                    dist_face = abs(computed / 100 - mv) / mv
+                    dist_direct = abs(computed - mv) / mv
+                    if dist_face <= 0.01:
+                        pass  # % of face, invariante tight — OK
+                    elif dist_face < dist_direct:
+                        # Formato % of face com mv ruidoso — não reconcile,
+                        # avisa pra user revisar mv (pode ser accrued
+                        # interest, dirty price, ou LLM misread).
                         errors.append(
-                            f"{ticker}: reconciled unit_price seria {reconciled_unit:.4f} (≤0); mantendo LLM value e sinalizando review"
+                            f"{ticker}: qty×price/100 ({computed/100:.2f}) mais perto de mv ({mv:.2f}) "
+                            f"que qty×price direto ({computed:.2f}); parece Treasury/bond % of face — "
+                            f"unit_price preservado, revisar mv."
                         )
-                    else:
-                        errors.append(
-                            f"{ticker}: qty×price ({computed:.2f}) ≠ mv ({mv:.2f}); "
-                            f"unit_price recomputed from mv/qty = {reconciled_unit:.4f}"
-                        )
-                        llm_unit = reconciled_unit
+                    elif dist_direct > 0.01:
+                        reconciled_unit = mv / q
+                        if reconciled_unit <= 0:
+                            errors.append(
+                                f"{ticker}: reconciled unit_price seria {reconciled_unit:.4f} (≤0); mantendo LLM value e sinalizando review"
+                            )
+                        else:
+                            errors.append(
+                                f"{ticker}: qty×price ({computed:.2f}) ≠ mv ({mv:.2f}); "
+                                f"unit_price recomputed from mv/qty = {reconciled_unit:.4f}"
+                            )
+                            llm_unit = reconciled_unit
                 elif q == 0 and mv > 0:
                     errors.append(
                         f"{ticker}: qty=0 mas mv={mv:.2f}; verificar se posição zerada ou mv errado"
@@ -1048,6 +1074,32 @@ def _classify_bulk_extract(
         # STOCK/ETF (ex.: AAPL 100 shares × $150 = mv 15000 virava
         # current_price=15000). Se falta unit_price real, agora é
         # derivado de mv/qty acima antes de chegar aqui.
+        # Item 3.2 (2026-07-22, revised por audit Item 3): mv ausente OU
+        # inválido (0, negativo) sem manual_price → sem cross-check
+        # possível. Warning surfaceada em errors[] rende como card
+        # amarelo no BulkExtractReviewModal (linha 201-207 lê errors).
+        # Downgrade de pos.confidence foi removido — audit achou que era
+        # dead code (job.confidence é persistido no extract, não no
+        # confirm; SQLAlchemy não rastreava mutação nested).
+        if (
+            manual_price is None
+            and llm_qty is not None
+            and llm_unit is not None
+        ):
+            mv_invalid = False
+            if llm_mv is None:
+                mv_invalid = True
+            else:
+                try:
+                    if float(llm_mv) <= 0:
+                        mv_invalid = True
+                except (TypeError, ValueError):
+                    mv_invalid = True
+            if mv_invalid:
+                errors.append(
+                    f"{ticker}: LLM omitiu ou devolveu market_value inválido; "
+                    f"qty×unit_price não pôde ser verificado — revise manualmente"
+                )
         unit_price_raw = manual_price or llm_unit
         if not ticker:
             errors.append("position with no ticker")
