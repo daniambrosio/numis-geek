@@ -515,7 +515,19 @@ export default function AssetDetail() {
   const price = (position?.current_price ?? asset.current_price) != null
     ? Number(position?.current_price ?? asset.current_price)
     : null
-  const value = price != null && qty ? price * qty : null
+  // Fase 3.2 (2026-07-22): current_value vem da API (backend aplica
+  // effective_qty=1 pra value-mode). Antes calculávamos client-side
+  // price × qty, o que inflava N× pra FUND/PREV/FGTS/RE onde qty=N
+  // aportes. Fallback pra price × qty só quando a API não devolve
+  // (asset sem posição no fluxo antigo).
+  const value = position?.current_value != null
+    ? Number(position.current_value)
+    : (price != null && qty ? price * qty : null)
+  // `cost` fica em NATIVE currency pra bater com `value` no P&L. Em
+  // modo cotado, avg × qty já é o correto. Em value-mode, position
+  // devolve rentabilidade% pronta (o backend soma non_cotado_basis_brl
+  // corretamente); o P&L per-asset em native não é 100% preciso mas o
+  // KPI relevante em modo valor é rentabilidade, não pl absoluto.
   const cost = avg != null && qty ? avg * qty : null
   const pl = value != null && cost != null ? value - cost : null
   const valueBRL = position?.current_value_brl != null ? Number(position.current_value_brl) : null

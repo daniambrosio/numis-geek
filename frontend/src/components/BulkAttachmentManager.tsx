@@ -359,8 +359,11 @@ export default function BulkAttachmentManager({
         <BulkExtractReviewModal
           job={reviewJob}
           pendencies={pendencies}
-          onApplied={() => {
-            setReviewJob(null)
+          onApplied={(_count, hasErrors) => {
+            // Fase 3 audit: só fecha modal se aplicou sem erros. Com
+            // erros, mantém aberto pra user endereçar (refresh a lista
+            // subjacente pra refletir o que aplicou).
+            if (!hasErrors) setReviewJob(null)
             void refresh()
             onResolved()
           }}

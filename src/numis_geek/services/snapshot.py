@@ -48,7 +48,11 @@ from numis_geek.models.portfolio_snapshot import (
 )
 from numis_geek.services.audit import AuditService
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
-from numis_geek.services.positions import asset_has_position, compute_position
+from numis_geek.services.positions import (
+    _COTADO_CLASSES,
+    asset_has_position,
+    compute_position,
+)
 from numis_geek.services.price_freshness import (
     AUTOMATED_SOURCES,
     PriceTier,
@@ -195,6 +199,25 @@ def detect_pendencies(
 
 
 # ── Helper para item NOVO em snapshot (Spec 52) ─────────────────────────────
+
+
+def _effective_item_quantity(asset: Asset, pos_qty: Decimal | None) -> Decimal:
+    """Spec 62 hotfix — value-mode items são armazenados com qty=1.
+
+    Bug histórico: pós-normalize_valor_qty (2026-07-02) cada movement
+    value-mode carrega qty=1, então compute_position devolve
+    running_qty=N (número de aportes). Persistir isso no item
+    (`quantity=N`) quebra invariante `mv = qty × unit_price` — em value
+    mode item.unit_price é o VALOR TOTAL, então mv fica N × total.
+    apply_recompute_to_snapshot recomputa mv = new_qty × existing.unit_price
+    e infla (N+1)/N a cada retro-lançamento.
+
+    Fix: sempre qty=1 pra value-mode. `unit_price=mv_native` fica
+    consistente (`1 × total = total`).
+    """
+    if asset.asset_class is not None and asset.asset_class not in _COTADO_CLASSES:
+        return Decimal("1")
+    return pos_qty or Decimal("0")
 
 
 def _new_item_values(
@@ -355,7 +378,7 @@ def create_snapshot(
         pos = compute_position(db, asset.id, as_of=period_end)
         if not asset_has_position(pos, asset):
             continue
-        qty = pos["quantity_held"]
+        qty = _effective_item_quantity(asset, pos["quantity_held"])
 
         mv_native = pos["current_value"]
         mv_brl = pos["current_value_brl"]
@@ -1225,6 +1248,20 @@ def resolve_pendency(
     asset = db.get(Asset, pen.asset_id)
     now = datetime.now(timezone.utc)
 
+    # Fase 3.5 (2026-07-22): captura o valor ANTERIOR antes de aplicar
+    # o novo preço, pra append no resolution_note e criar trilha durável
+    # (audit log é rico, mas o note fica junto da pendency na UI).
+    _pre_item = (
+        db.query(PortfolioSnapshotItem)
+        .filter(
+            PortfolioSnapshotItem.snapshot_id == pen.snapshot_id,
+            PortfolioSnapshotItem.asset_id == pen.asset_id,
+        )
+        .first()
+    )
+    _pre_unit_price = _pre_item.unit_price if _pre_item else None
+    _pre_mv_native = _pre_item.market_value_native if _pre_item else None
+
     if new_price is not None and asset is not None:
         # Spec 49 hotfix #9 — auto-detect or honor explicit mode. When
         # mode is "total", divide by the position's quantity so that
@@ -1246,7 +1283,11 @@ def resolve_pendency(
                 qty = existing.quantity
             else:
                 position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
-                qty = position.get("quantity_held") or Decimal("0")
+                # Fase 3 audit: value-mode divisor = 1 (senão new_price /
+                # N vira per-aporte e mv fica deflated no próximo recompute).
+                qty = _effective_item_quantity(
+                    asset, position.get("quantity_held") or Decimal("0"),
+                )
             if qty and qty > 0:
                 new_price = new_price / qty
         asset.current_price = new_price
@@ -1265,7 +1306,11 @@ def resolve_pendency(
             # gives us the cumulative quantity at period_end; fallback to 1
             # when zero (typical previdência / no-movement asset).
             position = compute_position(db, pen.asset_id, as_of=snap.period_end_date) if snap else {}
-            qty = position.get("quantity_held") or Decimal("0")
+            # Fase 3 audit: value-mode força qty=1 (senão next recompute
+            # deflate mv por 1/N via _effective_item_quantity=1).
+            qty = _effective_item_quantity(
+                asset, position.get("quantity_held") or Decimal("0"),
+            )
             if qty == 0:
                 qty = Decimal("1")
             item = PortfolioSnapshotItem(
@@ -1303,7 +1348,46 @@ def resolve_pendency(
 
     pen.resolved_at = now
     pen.resolved_by = user_id
-    pen.resolution_note = note
+
+    # Fase 3.5: cola snapshot do delta no note pra trilha durável.
+    # Formato: "user_note · [antes: X | depois: Y | Δ Z%]"
+    # Só anexa delta annotation se houve mudança real de valor (new_price
+    # setado). Retry sem new_price (só nota adicional) NÃO gera "[antes:
+    # X | depois: X | Δ +0.0%]" spam.
+    _annotation_parts: list[str] = []
+    if new_price is not None:
+        _post_item = (
+            db.query(PortfolioSnapshotItem)
+            .filter(
+                PortfolioSnapshotItem.snapshot_id == pen.snapshot_id,
+                PortfolioSnapshotItem.asset_id == pen.asset_id,
+            )
+            .first()
+        )
+        _post_mv = _post_item.market_value_native if _post_item else None
+        if _pre_mv_native is not None or _post_mv is not None:
+            pre_s = f"{_pre_mv_native:.2f}" if _pre_mv_native is not None else "—"
+            post_s = f"{_post_mv:.2f}" if _post_mv is not None else "—"
+            pct_s = ""
+            if (
+                _pre_mv_native is not None and _post_mv is not None
+                and _pre_mv_native != 0
+            ):
+                delta_pct = (_post_mv - _pre_mv_native) / abs(_pre_mv_native)
+                # Zero exato não leva sinal — evita "+0.0%" enganoso.
+                if delta_pct == 0:
+                    pct_s = " | Δ 0.0%"
+                else:
+                    sign = "+" if delta_pct > 0 else ""
+                    pct_s = f" | Δ {sign}{delta_pct * 100:.1f}%"
+            _annotation_parts.append(f"[antes: {pre_s} | depois: {post_s}{pct_s}]")
+    # Retry: preserva note anterior se novo note não veio (audit trail
+    # intacto na pendency mesmo depois de várias interações).
+    final_note = note if note is not None else (pen.resolution_note or "")
+    if _annotation_parts:
+        joined = " · ".join(_annotation_parts)
+        final_note = f"{final_note} · {joined}" if final_note else joined
+    pen.resolution_note = final_note or None
     db.flush()
 
     # Refresh snapshot totals from items so the UI doesn't show stale headers.
@@ -1415,7 +1499,10 @@ def update_snapshot_item_price(
                 qty = existing.quantity
             else:
                 position = compute_position(db, asset_id, as_of=snap.period_end_date)
-                qty = position.get("quantity_held") or Decimal("0")
+                # Fase 3 audit: value-mode divisor = 1.
+                qty = _effective_item_quantity(
+                    asset, position.get("quantity_held") or Decimal("0"),
+                )
         if qty and qty > 0:
             stored_price = stored_price / qty
 
@@ -1433,7 +1520,10 @@ def update_snapshot_item_price(
     )
     if item is None:
         position = compute_position(db, asset_id, as_of=snap.period_end_date)
-        qty = position.get("quantity_held") or Decimal("1")
+        # Fase 3 audit: value-mode força qty=1.
+        qty = _effective_item_quantity(
+            asset, position.get("quantity_held") or Decimal("0"),
+        )
         if qty == 0:
             qty = Decimal("1")
         item = PortfolioSnapshotItem(
@@ -1445,7 +1535,9 @@ def update_snapshot_item_price(
         )
         db.add(item)
     if new_quantity is not None and new_quantity > 0:
-        item.quantity = new_quantity
+        # Fase 3 audit: clamp qty pra value-mode. Sem isso, user
+        # digitando qty=3 em fundo/prev quebra invariante mv=qty×up.
+        item.quantity = _effective_item_quantity(asset, new_quantity)
     item.unit_price = stored_price
     if item.quantity is not None:
         # Mesma regra do resolve_pendency: qty>0 multiplica, qty=0
@@ -1594,7 +1686,7 @@ def add_snapshot_item(
         id=str(uuid.uuid4()),
         snapshot_id=snapshot_id,
         asset_id=asset_id,
-        quantity=pos["quantity_held"] or Decimal("0"),
+        quantity=_effective_item_quantity(asset, pos["quantity_held"]),
         unit_price=unit_price,
         market_value_native=mv_native,
         market_value_brl=mv_brl,
@@ -1701,7 +1793,7 @@ def _sync_missing_value_mode_items(
             id=str(uuid.uuid4()),
             snapshot_id=snap.id,
             asset_id=asset.id,
-            quantity=pos["quantity_held"],
+            quantity=_effective_item_quantity(asset, pos["quantity_held"]),
             unit_price=unit_price,
             market_value_native=mv_native,
             market_value_brl=mv_brl,
@@ -1894,7 +1986,9 @@ def find_affected_snapshots(
         if not asset_has_position(pos, asset) and existing is None:
             continue
 
-        new_qty = pos["quantity_held"] or Decimal("0")
+        # Fase 3.1 — mantém consistência com apply_recompute: value-mode
+        # persiste qty=1 no item; o preview do delta usa mesma regra.
+        new_qty = _effective_item_quantity(asset, pos["quantity_held"] or Decimal("0"))
         # Spec 52 — preço FROZEN do item existente, não LIVE
         # (asset.current_price). Pra item novo em snapshot antigo o
         # preview mostra mv None (vai virar pendency manual). Em
@@ -2001,6 +2095,10 @@ def apply_recompute_to_snapshot(
     pos = compute_position(db, asset_id, as_of=snap.period_end_date)
     currency = asset.currency.value
     new_qty = pos["quantity_held"] or Decimal("0")
+    # Spec 62 hotfix (Fase 3.1) — value-mode grava qty=1. Sem isso, cada
+    # retro-lançamento inflava mv = new_qty × existing.unit_price em
+    # (N+1)/N (unit_price é o VALOR TOTAL no modo valor).
+    effective_new_qty = _effective_item_quantity(asset, new_qty)
 
     if existing is None:
         if not asset_has_position(pos, asset):
@@ -2017,7 +2115,7 @@ def apply_recompute_to_snapshot(
             id=str(uuid.uuid4()),
             snapshot_id=snapshot_id,
             asset_id=asset_id,
-            quantity=new_qty,
+            quantity=effective_new_qty,
             unit_price=unit_price,
             market_value_native=mv_native,
             market_value_brl=mv_brl,
@@ -2043,12 +2141,12 @@ def apply_recompute_to_snapshot(
     else:
         # Spec 52 — item EXISTENTE: preserva unit_price frozen. Só qty,
         # average_cost e total_invested recalculam. market_value deriva
-        # do unit_price preservado × new_qty (e fx FROZEN do snapshot).
-        existing.quantity = new_qty
+        # do unit_price preservado × effective_new_qty (e fx FROZEN do snapshot).
+        existing.quantity = effective_new_qty
         existing.average_cost_brl = pos["average_cost_brl"]
         existing.total_invested_brl = pos["total_invested_brl"]
-        if existing.unit_price is not None and new_qty != 0:
-            mv_native = new_qty * existing.unit_price
+        if existing.unit_price is not None and effective_new_qty != 0:
+            mv_native = effective_new_qty * existing.unit_price
             existing.market_value_native = mv_native
             fx_snap = snap.fx_rate_usd_brl
             if currency == "BRL":

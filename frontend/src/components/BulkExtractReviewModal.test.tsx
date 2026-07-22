@@ -87,7 +87,7 @@ describe('BulkExtractReviewModal', () => {
       manual_mappings: null,
       manual_prices: null,
     }))
-    expect(onApplied).toHaveBeenCalledWith(1)
+    expect(onApplied).toHaveBeenCalledWith(1, false)
   })
 
   it('Apply button disabled when no matches', () => {

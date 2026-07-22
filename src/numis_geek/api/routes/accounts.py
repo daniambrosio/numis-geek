@@ -11,6 +11,7 @@ from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import UserRole
+from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 
@@ -213,6 +214,7 @@ def list_by_custodian(
 @router.post("", response_model=AccountOut, status_code=status.HTTP_201_CREATED)
 def create_account(
     body: AccountRequest,
+    workspace_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
@@ -220,9 +222,24 @@ def create_account(
     fi = db.get(FinancialInstitution, body.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
-    workspace_id = current_user.workspace_id
-    if workspace_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sysadmin must specify workspace.")
+    # Fase 3.6 (2026-07-22): sysadmin híbrido usa o próprio workspace por
+    # default; sysadmin puro (workspace_id=None) tem que passar via
+    # query param — antes batia 400 permanente.
+    if current_user.role == UserRole.sysadmin:
+        target_ws = workspace_id or current_user.workspace_id
+        if not target_ws:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="workspace_id is required for sysadmin without workspace.",
+            )
+        # Sanity: workspace precisa existir
+        if not db.get(Workspace, target_ws):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
+        workspace_id = target_ws
+    else:
+        workspace_id = current_user.workspace_id
+        if workspace_id is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No workspace bound to user.")
     now = datetime.now(timezone.utc)
     account = Account(
         id=str(uuid.uuid4()),
@@ -278,7 +295,10 @@ def update_account(
     AuditService(db).log(
         user_email=current_user.user_id,
         action="account.updated",
-        workspace_id=current_user.workspace_id,
+        # Fase 3 audit: workspace do RECURSO, não do ator. Sysadmin
+        # editando conta de outro workspace precisa aparecer no audit
+        # log do workspace da conta pra rastreabilidade.
+        workspace_id=account.workspace_id,
         user_id=current_user.user_id,
         resource_type="account",
         resource_id=account.id,
@@ -304,7 +324,7 @@ def deactivate_account(
     AuditService(db).log(
         user_email=current_user.user_id,
         action="account.deactivated",
-        workspace_id=current_user.workspace_id,
+        workspace_id=account.workspace_id,
         user_id=current_user.user_id,
         resource_type="account",
         resource_id=account.id,

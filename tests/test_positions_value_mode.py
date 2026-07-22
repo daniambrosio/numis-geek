@@ -553,3 +553,88 @@ def test_yield_on_cost_hybrid_cotado_plus_non_cotado(world):
     # yield_on_cost = 450 / 15000 = 0.03
     assert pos["yield_on_cost"] is not None
     assert abs(pos["yield_on_cost"] - Decimal("0.03")) < Decimal("0.0001")
+
+
+# ── Fase 3.1 — _effective_item_quantity helper ─────────────────────────
+
+def test_effective_item_quantity_forces_1_for_value_mode(world):
+    """Fase 3.1: helper _effective_item_quantity retorna 1 pra value-mode."""
+    from numis_geek.services.snapshot import _effective_item_quantity
+    a_fund = _make_asset(world["db"], world["ws_id"], world["account_id"], AssetClass.FUND, current_price=0)
+    a_prev = _make_asset(world["db"], world["ws_id"], world["account_id"], AssetClass.PRIVATE_PENSION, current_price=0)
+    a_re = _make_asset(world["db"], world["ws_id"], world["account_id"], AssetClass.REAL_ESTATE, current_price=0)
+    a_stock = _make_asset(world["db"], world["ws_id"], world["account_id"], AssetClass.STOCK, current_price=0)
+    # Value-mode: sempre 1 (mesmo com pos_qty=23)
+    assert _effective_item_quantity(a_fund, Decimal("23")) == Decimal("1")
+    assert _effective_item_quantity(a_prev, Decimal("0")) == Decimal("1")
+    assert _effective_item_quantity(a_re, Decimal("999")) == Decimal("1")
+    # Cotado: preserva pos_qty
+    assert _effective_item_quantity(a_stock, Decimal("100")) == Decimal("100")
+    assert _effective_item_quantity(a_stock, Decimal("0")) == Decimal("0")
+    # None pos_qty vira 0 pra cotado (compat)
+    assert _effective_item_quantity(a_stock, None) == Decimal("0")
+
+
+def test_apply_recompute_value_mode_does_not_inflate_by_new_qty(world):
+    """Fase 3.1: retro-lançamento em value-mode antes inflava
+    mv_native em (N+1)/N. Com effective_qty=1 na persistência do item,
+    mv_native = 1 × unit_price = valor total, mesmo com N+1 aportes.
+    """
+    from numis_geek.models.portfolio_snapshot import (
+        PortfolioSnapshot, PortfolioSnapshotItem, SnapshotStatus,
+    )
+    from numis_geek.services.snapshot import apply_recompute_to_snapshot
+
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=50_000,
+    )
+    # 3 aportes value-mode antes do snapshot
+    for i in range(3):
+        _add_value_mode_movement(
+            world["db"], world["ws_id"], a.id,
+            gross=15_000, event_date=date(2026, 1, 1 + i),
+        )
+    # Snapshot com valor frozen R$50k (item.quantity=1, unit_price=50000)
+    now = datetime.now(timezone.utc)
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        period_end_date=date(2026, 3, 31),
+        fx_rate_usd_brl=Decimal("5.00"),
+        total_value_brl=Decimal("50000"),
+        total_value_usd=Decimal("10000"),
+        total_invested_brl=Decimal("45000"),
+        status=SnapshotStatus.IN_REVIEW,
+        is_active=True,
+        created_at=now, updated_at=now,
+    )
+    world["db"].add(snap)
+    item = PortfolioSnapshotItem(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=a.id,
+        quantity=Decimal("1"),
+        unit_price=Decimal("50000"),
+        market_value_native=Decimal("50000"),
+        market_value_brl=Decimal("50000"),
+        market_value_usd=Decimal("10000"),
+        total_invested_brl=Decimal("45000"),
+        created_at=now, updated_at=now,
+    )
+    world["db"].add(item)
+    world["db"].commit()
+
+    # Retro-lançamento novo movement value-mode (agora total = 4 aportes)
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=15_000, event_date=date(2026, 2, 15),
+    )
+
+    # Recompute: pré-fix, item.quantity=4 e mv = 4 × 50000 = 200000 (bug).
+    # Pós-fix, item.quantity=1 e mv = 1 × 50000 = 50000.
+    apply_recompute_to_snapshot(
+        world["db"], snapshot_id=snap.id, asset_id=a.id,
+        user_id="test", trigger_event_type="movement", trigger_event_id="x",
+    )
+    world["db"].refresh(item)
+    assert item.quantity == Decimal("1")
+    assert item.market_value_native == Decimal("50000")
+    assert item.market_value_brl == Decimal("50000")

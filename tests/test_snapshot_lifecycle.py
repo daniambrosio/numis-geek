@@ -816,8 +816,9 @@ def test_create_snapshot_includes_value_mode_assets(db):
     ).all()
     assert len(items) == 1, "VALUE-mode asset must appear in the snapshot"
     assert items[0].total_invested_brl == Decimal("50000")
-    # qty is 0, market_value depends on current_price (NULL → mv NULL).
-    assert items[0].quantity == Decimal("0")
+    # Fase 3.1 (2026-07-22): value-mode items grava sempre qty=1 pra
+    # manter invariante mv = qty × unit_price (unit_price = total).
+    assert items[0].quantity == Decimal("1")
 
 
 def test_reopen_snapshot_adds_missing_value_mode_assets(db):
@@ -1071,8 +1072,9 @@ def test_find_affected_snapshots_handles_value_mode(db):
     a = affected[0]
     assert a.old_total_invested_brl == Decimal("10000")
     assert a.new_total_invested_brl == Decimal("15000")
-    assert a.old_quantity == Decimal("0")
-    assert a.new_quantity == Decimal("0")
+    # Fase 3.1: value-mode agora persiste qty=1 (era qty=0 pré-fix).
+    assert a.old_quantity == Decimal("1")
+    assert a.new_quantity == Decimal("1")
 
 
 def test_apply_recompute_auto_reopens_closed(db):
@@ -1571,7 +1573,8 @@ def test_resolve_pendency_modo_valor_qty_zero_sets_market_value_to_typed_value(d
         )
         .one()
     )
-    assert item.quantity == Decimal("0")
+    # Fase 3.1: value-mode agora persiste qty=1 (era 0), unit_price=total.
+    assert item.quantity == Decimal("1")
     assert item.unit_price == typed_value
     assert item.market_value_native == typed_value, (
         f"market_value_native = {item.market_value_native}, esperado {typed_value}"
@@ -1645,5 +1648,6 @@ def test_update_snapshot_item_price_modo_valor_qty_zero(db):
         db, snapshot_id=r.snapshot_id, asset_id=asset_id,
         user_id="alice", new_price=typed, value_mode="total",
     )
-    assert item.quantity == Decimal("0")
+    # Fase 3.1: value-mode agora persiste qty=1 (era 0).
+    assert item.quantity == Decimal("1")
     assert item.market_value_brl == typed, f"got {item.market_value_brl}"

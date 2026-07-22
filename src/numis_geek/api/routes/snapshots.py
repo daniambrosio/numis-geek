@@ -12,7 +12,7 @@ import json
 from datetime import date as date_t
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -306,18 +306,31 @@ class SnapshotPendencyOut(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _workspace_id(current_user: UserContext) -> str:
-    # Sysadmin sem workspace_id (o "puro", CLAUDE.md classic) precisa
-    # scoping explícito por query param. Sysadmin COM workspace_id
-    # (padrão híbrido — user promovido mas mantido na workspace de uso
-    # diária) opera na dele por default. Antes ambos batiam 400 e o
-    # front engolia (setSnaps nunca chamado, virava "0 apurações").
-    if current_user.role == UserRole.sysadmin and not current_user.workspace_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Sysadmin sem workspace precisa especificar workspace_id.",
-        )
+def _workspace_id(
+    current_user: UserContext, workspace_id_param: str | None = None
+) -> str:
+    # Sysadmin híbrido: usa próprio workspace por default.
+    # Sysadmin puro: precisa passar ?workspace_id=X (Fase 3.6, antes
+    # batia 400 permanente).
+    # Regular user: sempre workspace do próprio user.
+    if current_user.role == UserRole.sysadmin:
+        target = workspace_id_param or current_user.workspace_id
+        if not target:
+            raise HTTPException(
+                status_code=400,
+                detail="Sysadmin sem workspace precisa especificar workspace_id.",
+            )
+        return target
     return current_user.workspace_id
+
+
+def _ws_id_dep(
+    workspace_id: str | None = Query(default=None, description="Sysadmin puro: obriga passar."),
+    current_user: UserContext = Depends(get_current_user),
+) -> str:
+    """FastAPI dep pra resolver workspace_id. Endpoints que a usam
+    aceitam automaticamente `?workspace_id=X` — útil pra sysadmin puro."""
+    return _workspace_id(current_user, workspace_id_param=workspace_id)
 
 
 def _pendency_counts(db: Session, snapshot_id: str) -> tuple[int, int]:
@@ -414,10 +427,12 @@ def _hydrate_pendency(
 
 @router.get("", response_model=list[SnapshotOut])
 def list_workspace_snapshots(
+    workspace_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
-    ws_id = _workspace_id(current_user)
+    # Fase 3.6: sysadmin puro passa ?workspace_id=X.
+    ws_id = _workspace_id(current_user, workspace_id_param=workspace_id)
     rows = list_snapshots(db, ws_id)
     return [_hydrate_snapshot(db, s) for s in rows]
 
@@ -425,10 +440,12 @@ def list_workspace_snapshots(
 @router.post("", response_model=SnapshotOut, status_code=status.HTTP_201_CREATED)
 def create_workspace_snapshot(
     body: SnapshotCreateRequest,
+    workspace_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
-    ws_id = _workspace_id(current_user)
+    # Fase 3.6 (2026-07-22): sysadmin puro passa ?workspace_id=X.
+    ws_id = _workspace_id(current_user, workspace_id_param=workspace_id)
     if (body.period_end_date is None) == (body.target_ym is None):
         raise HTTPException(
             status_code=400,

@@ -352,6 +352,12 @@ function Row({
   const inactive = !asset.is_active
   const qty = position?.quantity_held ?? null
   const avg = position?.average_cost ?? null
+  // Fase 3.3 (2026-07-22): value-mode (FUND/PREV/FGTS/RE/VE/FI/CASH)
+  // não tem preço unitário nem qty semânticos (qty=1 sempre; unit_price
+  // é VALOR TOTAL). Renderizar Qtd/Atual per-share nesses ativos é
+  // ruído — só faz sentido em modo cotado.
+  const _COTADO_CLASSES = new Set(['STOCK', 'REIT', 'ETF', 'OPTION', 'CRYPTO'])
+  const isValueMode = !_COTADO_CLASSES.has(asset.asset_class)
 
   return (
     <tr
@@ -393,13 +399,21 @@ function Row({
         )}
       </td>
       <td className="px-2 text-right tnum text-gray-700 dark:text-gray-300">
-        {qty == null ? <span className="text-gray-300 dark:text-gray-700">…</span> : fmtNum(qty, qty < 100 ? 2 : 0)}
+        {isValueMode
+          ? <span className="text-gray-300 dark:text-gray-700">—</span>
+          : (qty == null
+              ? <span className="text-gray-300 dark:text-gray-700">…</span>
+              : fmtNum(qty, qty < 100 ? 2 : 0))}
       </td>
       <td className="px-2 text-right tnum money text-gray-500 dark:text-gray-400">
-        {avg == null ? <span className="text-gray-300 dark:text-gray-700">…</span> : fmtMoney(avg, asset.currency)}
+        {isValueMode
+          ? <span className="text-gray-300 dark:text-gray-700">—</span>
+          : (avg == null
+              ? <span className="text-gray-300 dark:text-gray-700">…</span>
+              : fmtMoney(avg, asset.currency))}
       </td>
       <td className="px-2 text-right tnum money text-gray-700 dark:text-gray-300">
-        {position?.current_price == null
+        {isValueMode || position?.current_price == null
           ? <span className="text-gray-300 dark:text-gray-700">—</span>
           : fmtMoney(position.current_price, asset.currency)}
       </td>

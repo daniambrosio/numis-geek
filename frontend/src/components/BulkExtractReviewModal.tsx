@@ -30,7 +30,9 @@ import { useEscapeKey } from '../lib/useEscapeKey'
 interface Props {
   job: BulkExtractJobOut
   pendencies: SnapshotPendencyOut[]
-  onApplied: (appliedCount: number) => void
+  // Fase 3 audit: hasErrors=true → parent NÃO deve fechar o modal
+  // (user precisa ver os erros que não aplicaram); só refresh a lista.
+  onApplied: (appliedCount: number, hasErrors: boolean) => void
   onClose: () => void
 }
 
@@ -184,17 +186,27 @@ export default function BulkExtractReviewModal({
         manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
         manual_prices: Object.keys(priceMap).length ? priceMap : null,
       })
-      // Spec 49 hotfix — when matches were expected but none applied
-      // (e.g. unit_price null + no manual price), surface result.errors
-      // in the modal so the user knows what to fix instead of the modal
-      // closing silently with zero effect.
+      // Spec 49 hotfix — quando matches eram esperados mas nenhum
+      // aplicou (ex.: unit_price null sem manual price), abre erro no
+      // modal em vez de fechar silenciosamente.
       if (result.applied_count === 0 && preview.matched.length > 0) {
         const detail = (result.errors ?? []).join(' · ') || 'Nenhuma pendência foi resolvida.'
         setError(detail)
         setApplying(false)
         return
       }
-      onApplied(result.applied_count)
+      // Fase 3.4 (2026-07-22): mesmo quando aplicou algum item, se o
+      // backend retornou errors, o user precisa ver. Antes só mostrava
+      // errors quando applied_count == 0 — errors parciais sumiam.
+      if (result.errors && result.errors.length > 0) {
+        setError(result.errors.join(' · '))
+        setApplying(false)
+        // Notifica o pai — a lista refresca — MAS sinaliza hasErrors=true
+        // pro pai NÃO fechar o modal (user precisa ver os erros).
+        onApplied(result.applied_count, true)
+        return
+      }
+      onApplied(result.applied_count, false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro')
       setApplying(false)
