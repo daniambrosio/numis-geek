@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from numis_geek.integrations.brapi import BrapiError, fetch_quote as brapi_quote
 from numis_geek.integrations.coinbase import CoinbaseError, fetch_spot as coinbase_spot
 from numis_geek.integrations.finnhub import FinnhubError, fetch_quote as finnhub_quote
+from numis_geek.integrations.tesouro import TesouroError, fetch_close_on as tesouro_close_on
 from numis_geek.models.asset import Asset, AssetClass, PriceSource
 from numis_geek.models.integration_credential import (
     IntegrationCredential,
@@ -113,7 +114,19 @@ def _fetch_price(db: Session, asset: Asset) -> tuple[Decimal, str]:
         return quote.price, "coinbase"
 
     if source == PriceSource.TESOURO:
-        raise _SkipReason("TESOURO adapter not implemented in V1")
+        # Spec 53 follow-up: usa o CSV público do Tesouro Transparente
+        # (data mais recente disponível — CSV é diário do dia útil anterior).
+        from datetime import date as _date
+        try:
+            price = tesouro_close_on(asset.name, _date.today())
+        except TesouroError as exc:
+            raise _SkipReason(f"tesouro fetch failed: {exc}") from exc
+        if price is None:
+            raise _SkipReason(
+                f"tesouro CSV não tem preço pra {asset.name!r} hoje "
+                "(título vencido, nome sem match, ou dia sem publicação)"
+            )
+        return price, "tesouro"
 
     # MANUAL / None handled before reaching here
     raise _SkipReason(f"source {source} is not auto-refreshable")
