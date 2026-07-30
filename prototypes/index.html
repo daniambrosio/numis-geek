@@ -608,7 +608,8 @@ const openOptionsOnAsset = (assetId) => ASSETS.filter(a => isOption(a) && a.unde
 const allOpenOptions = () => ASSETS.filter(a => isOption(a) && a.is_active !== false);
 
 // OPTION_PREMIUM rows — derived from SELL_OPEN / BUY_TO_CLOSE movements on OPTION assets.
-// Used by /proventos UNION and synthetic dividend totals on /onde-investir.
+// Used by /proventos UNION. (Synthetic-dividend totals foram removidas de
+// Suporte à Decisão nas specs 61a-61d — o feature virou stack quant.)
 // NEVER feeds DY/YoC of the underlying.
 const OPTION_PREMIUMS = MOVEMENTS
   .filter(m => m.type === "SELL_OPEN" || m.type === "BUY_TO_CLOSE")
@@ -1689,7 +1690,7 @@ const NAV = [
   { kind: "item", label: "Fechamentos",    href: "#/fechamentos",    icon: "calendar-check",
     badge: SNAPSHOTS.some(s => s.status === "em_revisao") ? "!" : null,
     badgeIntent: "warn" },
-  { kind: "item", label: "Onde investir",  href: "#/onde-investir",  icon: "target" },
+  { kind: "item", label: "Suporte à Decisão", href: "#/decision-support", icon: "target" },
   { kind: "item", label: "Ativos",         href: "#/ativos",         icon: "line-chart", badge: ASSETS.length.toString() },
   { kind: "item", label: "Lançamentos",    href: "#/lancamentos",    icon: "arrow-down-up", badge: MOVEMENTS.length.toString() },
   { kind: "item", label: "Proventos",      href: "#/proventos",      icon: "coins", badge: DISTRIBUTIONS.length.toString() },
@@ -8277,277 +8278,512 @@ function LoginPage() {
 /* ---------- Hint: Field with right-aligned hint slot ---------- */
 // (Field component already supports `hint` prop — used here to slot a button.)
 
-/* ---------- Onde Investir (decision-support cockpit) ---------- */
+/* ---------- Suporte à Decisão (specs 61a-61d — target/valuation/Markowitz) ---------- */
 
-function OndeInvestirPage() {
-  // 1. Cash disponível
-  const checkingBRL = ACCOUNTS.filter(a => a.type === "checking" && a.currency === "BRL").reduce((s, a) => s + a.balance, 0);
-  const checkingUSD = ACCOUNTS.filter(a => a.type === "checking" && a.currency === "USD").reduce((s, a) => s + a.balance, 0);
-  const cashTotal = checkingBRL + checkingUSD * PTAX;
+// Country-level target allocation — placeholder até integração de dados do Notion.
+// Cadastrado em produção via /admin/target-allocation (spec 61a).
+const TARGET_ALLOCATION_COUNTRY = [
+  { dimension: "country", key: "BR", target_pct: 0.70 },
+  { dimension: "country", key: "US", target_pct: 0.30 },
+];
 
-  // Float em corretora — float de contas investment
-  const floatBRL = ACCOUNTS.filter(a => a.type === "investment" && a.currency === "BRL").reduce((s, a) => s + a.balance, 0);
-  const floatUSD = ACCOUNTS.filter(a => a.type === "investment" && a.currency === "USD").reduce((s, a) => s + a.balance, 0);
-  const floatTotal = floatBRL + floatUSD * PTAX;
+const COUNTRY_META = {
+  BR: { label: "Brasil", color: "#22c55e" },
+  US: { label: "EUA",    color: "#3b82f6" },
+};
 
-  // 2. Reserva de emergência
-  const reservaAtual = ASSETS
-    .filter(a => EMERGENCY_RESERVE_ASSET_IDS.includes(a.id))
-    .reduce((s, a) => s + a.qty * a.price * (a.ccy === "USD" ? PTAX : 1), 0);
-  const reservaTarget = USER_PREFERENCES.emergency_reserve_target_brl;
-  const reservaOK = reservaAtual >= reservaTarget;
-  const reservaPct = reservaTarget ? reservaAtual / reservaTarget : 1;
+// Verdict badge — espelha frontend/src/components/VerdictBadge.tsx.
+function VerdictBadge({ verdict, title, size = "md" }) {
+  const styles = {
+    BUY:  { cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Comprar" },
+    HOLD: { cls: "bg-gray-500/15 text-gray-700 dark:text-gray-300",           label: "Manter"  },
+    SELL: { cls: "bg-red-500/15 text-red-700 dark:text-red-300",              label: "Vender"  },
+    NA:   { cls: "bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-500", label: "—" },
+  };
+  const s = styles[verdict] || styles.NA;
+  const sz = size === "sm" ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-[11px]";
+  return (
+    <span title={title} className={`inline-flex items-center rounded-full font-semibold ${sz} ${s.cls}`}>
+      {s.label}
+    </span>
+  );
+}
 
-  // Cash disponível pra investir = todo cash + float, MENOS gap de reserva se houver
-  const reservaGap = Math.max(0, reservaTarget - reservaAtual);
-  const cashDisponivel = cashTotal + floatTotal - reservaGap;
+// Fronteira eficiente — SVG inline, sem recharts (espelha EfficientFrontierChart.tsx).
+function EfficientFrontierSvg({ frontier, currentPoint, optimalPoint, width = 480, height = 260 }) {
+  const points = [...frontier];
+  if (currentPoint) points.push(currentPoint);
+  if (optimalPoint) points.push(optimalPoint);
+  if (points.length === 0) {
+    return <div className="text-[12px] text-gray-500 italic py-8 text-center">Sem pontos de fronteira eficiente.</div>;
+  }
+  const pad = 40;
+  const minVol = Math.min(...points.map(p => p.vol));
+  const maxVol = Math.max(...points.map(p => p.vol));
+  const minRet = Math.min(...points.map(p => p.ret));
+  const maxRet = Math.max(...points.map(p => p.ret));
+  const volRange = Math.max(maxVol - minVol, 1e-6) * 1.05;
+  const retRange = Math.max(maxRet - minRet, 1e-6) * 1.05;
+  const xOf = (v) => pad + ((v - minVol) / volRange) * (width - 2 * pad);
+  const yOf = (r) => height - pad - ((r - minRet) / retRange) * (height - 2 * pad);
+  const sorted = [...frontier].sort((a, b) => a.vol - b.vol);
+  const pathD = sorted.map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(p.vol)} ${yOf(p.ret)}`).join(" ");
+  const xTicks = Array.from({ length: 4 }, (_, i) => minVol + (volRange / 1.05) * (i / 3));
+  const yTicks = Array.from({ length: 4 }, (_, i) => minRet + (retRange / 1.05) * (i / 3));
+  return (
+    <div className="relative">
+      <svg width={width} height={height} className="overflow-visible max-w-full">
+        {yTicks.map((v, i) => (
+          <Fragment key={`y-${i}`}>
+            <line x1={pad} x2={width - pad} y1={yOf(v)} y2={yOf(v)}
+              stroke="currentColor" strokeDasharray="2,2"
+              className="text-gray-200 dark:text-gray-800"/>
+            <text x={pad - 6} y={yOf(v) + 3} textAnchor="end"
+              className="text-[10px] fill-current text-gray-500 dark:text-gray-400 tnum">
+              {fmtPct(v, 1)}
+            </text>
+          </Fragment>
+        ))}
+        {xTicks.map((v, i) => (
+          <text key={`x-${i}`} x={xOf(v)} y={height - pad + 14} textAnchor="middle"
+            className="text-[10px] fill-current text-gray-500 dark:text-gray-400 tnum">
+            {fmtPct(v, 1)}
+          </text>
+        ))}
+        <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad}
+          stroke="currentColor" className="text-gray-400 dark:text-gray-600"/>
+        <line x1={pad} y1={pad} x2={pad} y2={height - pad}
+          stroke="currentColor" className="text-gray-400 dark:text-gray-600"/>
+        {sorted.length > 1 && (
+          <path d={pathD} fill="none" strokeWidth="2" stroke="currentColor"
+            className="text-indigo-500 dark:text-indigo-400"/>
+        )}
+        {sorted.map((p, i) => (
+          <circle key={`fp-${i}`} cx={xOf(p.vol)} cy={yOf(p.ret)} r="2"
+            fill="currentColor" className="text-indigo-400 dark:text-indigo-500"/>
+        ))}
+        {currentPoint && (
+          <g>
+            <circle cx={xOf(currentPoint.vol)} cy={yOf(currentPoint.ret)} r="6"
+              fill="currentColor" className="text-red-500"/>
+            <text x={xOf(currentPoint.vol) + 9} y={yOf(currentPoint.ret) + 4}
+              className="text-[10px] fill-current text-red-600 dark:text-red-300 font-medium">
+              atual
+            </text>
+          </g>
+        )}
+        {optimalPoint && (
+          <g>
+            <circle cx={xOf(optimalPoint.vol)} cy={yOf(optimalPoint.ret)} r="6"
+              fill="currentColor" className="text-emerald-500"/>
+            <text x={xOf(optimalPoint.vol) + 9} y={yOf(optimalPoint.ret) + 4}
+              className="text-[10px] fill-current text-emerald-700 dark:text-emerald-300 font-medium">
+              sugerido
+            </text>
+          </g>
+        )}
+      </svg>
+      <div className="absolute bottom-1 right-2 text-[9px] text-gray-500 dark:text-gray-500">
+        eixo X: volatilidade anual · eixo Y: retorno anual esperado
+      </div>
+    </div>
+  );
+}
 
-  // 3. Gap vs target allocation
+function SuporteADecisaoPage() {
+  const [gapDim, setGapDim] = useState("CLASS");
+  const [opt, setOpt] = useState(null);
+  const [optimizing, setOptimizing] = useState(false);
+
   const totalInvest = TOTAL_INVEST;
-  const classAllocation = {};
-  ASSETS.filter(a => !isOption(a)).forEach(a => {
-    const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
-    classAllocation[a.klass] = (classAllocation[a.klass] || 0) + v;
-  });
-  const allocationGap = TARGET_ALLOCATION.map(t => {
-    const currentValue = classAllocation[t.key] || 0;
-    const currentPct = totalInvest ? currentValue / totalInvest : 0;
-    const targetValue = totalInvest * t.target_pct;
-    const gapValue = targetValue - currentValue;
-    const gapPct = t.target_pct - currentPct;
-    return { ...t, currentValue, currentPct, targetValue, gapValue, gapPct };
-  }).sort((a, b) => b.gapValue - a.gapValue);
 
-  // 4. Top opportunities — assets with "Comprar" verdict, ranked by variation
-  const opportunities = ASSETS
-    .filter(a => !isOption(a) && a.is_active !== false)
-    .map(a => ({ asset: a, verdict: assetVerdict(a), returns: assetReturns(a) }))
-    .filter(o => o.verdict.label === "Comprar")
-    .sort((a, b) => a.returns.variation - b.returns.variation)
-    .slice(0, 8);
+  // ── Card 1: gap vs alocação alvo (classe/país) ────────────────
+  const classValueByKey = useMemo(() => {
+    const acc = {};
+    ASSETS.filter(a => !isOption(a)).forEach(a => {
+      const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
+      acc[a.klass] = (acc[a.klass] || 0) + v;
+    });
+    return acc;
+  }, []);
+  const countryValueByKey = useMemo(() => {
+    const acc = {};
+    ASSETS.filter(a => !isOption(a)).forEach(a => {
+      const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
+      acc[a.country] = (acc[a.country] || 0) + v;
+    });
+    return acc;
+  }, []);
+  const classSlices = TARGET_ALLOCATION
+    .filter(t => t.dimension === "class")
+    .map(t => ({
+      key: t.key,
+      label: KLASS[t.key]?.label || t.key,
+      color: KLASS[t.key]?.color || "#94a3b8",
+      current_pct: totalInvest ? (classValueByKey[t.key] || 0) / totalInvest : 0,
+      target_pct: t.target_pct,
+    }))
+    .sort((a, b) => b.target_pct - a.target_pct || b.current_pct - a.current_pct);
+  const countrySlices = TARGET_ALLOCATION_COUNTRY.map(t => ({
+    key: t.key,
+    label: COUNTRY_META[t.key]?.label || t.key,
+    color: COUNTRY_META[t.key]?.color || "#94a3b8",
+    current_pct: totalInvest ? (countryValueByKey[t.key] || 0) / totalInvest : 0,
+    target_pct: t.target_pct,
+  }));
+  const gapSlices = gapDim === "CLASS" ? classSlices : countrySlices;
+  const gapMaxScale = Math.max(1, ...gapSlices.flatMap(s => [s.current_pct, s.target_pct])) * 100;
 
-  // 5. Dividendo sintético (opções abertas)
-  const openOptions = allOpenOptions();
-  const syntheticPremium = OPTION_PREMIUMS.reduce((s, p) => s + p.net * (p.ccy === "USD" ? PTAX : 1), 0);
+  // ── Card 2: otimização Markowitz ──────────────────────────────
+  function runOptimize() {
+    setOptimizing(true);
+    // Mock do output do solver — gera fronteira sintética + alocação-alvo
+    // que empurra cada ativo em direção ao target de classe, respeitando cap 15%.
+    setTimeout(() => {
+      const frontier = [];
+      for (let i = 0; i < 24; i++) {
+        const t = i / 23;
+        const vol = 0.09 + t * 0.16;
+        const ret = 0.045 + Math.log(1 + t * 3) * 0.052;
+        frontier.push({ vol, ret });
+      }
+      const eligibleAssets = ASSETS.filter(a =>
+        !isOption(a) && !["REAL_ESTATE", "VEHICLE", "FGTS"].includes(a.klass)
+      );
+      const optimalAllocations = eligibleAssets.map(a => {
+        const cur = totalInvest ? (a.qty * a.price * (a.ccy === "USD" ? PTAX : 1)) / totalInvest : 0;
+        const classTarget = TARGET_ALLOCATION.find(t => t.key === a.klass)?.target_pct;
+        const classCur = classValueByKey[a.klass] ? classValueByKey[a.klass] / totalInvest : cur;
+        const factor = classTarget != null && classCur > 0 ? classTarget / classCur : 1;
+        const raw = cur * factor;
+        const tgt = Math.max(0, Math.min(0.15, raw));
+        const delta = tgt - cur;
+        return {
+          asset_id: a.id, ticker: a.ticker, name: a.name,
+          country: a.country, asset_class: a.klass,
+          current_weight: cur, weight: tgt,
+          delta,
+          trade_value_brl: delta * totalInvest,
+          trade_action: delta > 0.005 ? "BUY" : (delta < -0.005 ? "SELL" : "HOLD"),
+        };
+      });
+      const excluded = ASSETS
+        .filter(a => !isOption(a) && ["REAL_ESTATE", "VEHICLE", "FGTS"].includes(a.klass))
+        .map(a => ({
+          asset_id: a.id, ticker: a.ticker, name: a.name,
+          reason: a.klass === "FGTS" ? "sem série mensal em BRL" : "ativo ilíquido / sem preço de mercado",
+        }));
+      setOpt({
+        n_assets: optimalAllocations.length,
+        expected_return: 0.128,
+        volatility: 0.153,
+        n_excluded: excluded.length,
+        frontier,
+        optimal: optimalAllocations,
+        binding_constraints: ["asset_cap:15%", "country_cap:BR≤70%"],
+        excluded,
+      });
+      setOptimizing(false);
+    }, 400);
+  }
+
+  // Ponto do portfólio atual — proxy simples usando variação e vol assumida.
+  const currentPortfolioPoint = useMemo(() => {
+    const items = ASSETS.filter(a => !isOption(a));
+    const totalV = items.reduce((s, a) => s + a.qty * a.price * (a.ccy === "USD" ? PTAX : 1), 0);
+    const wRet = items.reduce((s, a) => {
+      const w = totalV ? a.qty * a.price * (a.ccy === "USD" ? PTAX : 1) / totalV : 0;
+      return s + w * assetReturns(a).variation;
+    }, 0);
+    return { ret: wRet, vol: 0.19 };
+  }, []);
+
+  // ── Card 3: valuation por ativo ───────────────────────────────
+  const valuations = useMemo(() =>
+    ASSETS
+      .filter(a => !isOption(a) && a.is_active !== false)
+      .map(a => {
+        const v = assetVerdict(a);
+        let verdict = "NA";
+        if (v.label === "Comprar") verdict = "BUY";
+        else if (v.label === "Vender") verdict = "SELL";
+        else if (v.label === "Manter") verdict = "HOLD";
+        return { asset: a, verdict, reason: v.reason };
+      })
+      .sort((a, b) => {
+        const order = { BUY: 0, SELL: 1, HOLD: 2, NA: 3 };
+        return (order[a.verdict] - order[b.verdict])
+          || ((a.asset.ticker || a.asset.name).localeCompare(b.asset.ticker || b.asset.name));
+      }),
+    []
+  );
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Onde investir"
-        countLabel="cockpit de decisão · onde alocar o cash disponível"
+        title="Suporte à Decisão"
+        count={valuations.length}
+        countLabel="ativos analisados · gap vs alvo · Markowitz · valuation"
         action={
           <div className="flex items-center gap-2">
-            <a href="#/alocacao-alvo" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+            <a href="#/alocacao-alvo"
+               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
               <Icon name="target" className="w-3.5 h-3.5"/> Alocação alvo
             </a>
           </div>
         }
       />
 
-      {/* Row 1: Cash + Reserva */}
-      <div className="grid grid-cols-12 gap-6">
-        <Card className="col-span-12 lg:col-span-8">
-          <SectionTitle action={<span className="text-[11px] text-gray-500">{ACCOUNTS.filter(a => a.type === "checking").length} contas correntes + {ACCOUNTS.filter(a => a.type === "investment").length} contas de investimento</span>}>
-            Cash disponível pra investir
-          </SectionTitle>
-          <div className="flex items-baseline gap-3 mb-1">
-            <div className="text-4xl font-semibold tnum money">{fmtBRL(cashDisponivel)}</div>
-            <CcyPill ccy="BRL"/>
-          </div>
-          <div className="text-[12px] text-gray-500 tnum money">≈ {fmtUSD(cashDisponivel / PTAX)} ao PTAX R$ {PTAX.toFixed(4)}</div>
+      <p className="text-[12px] text-gray-500 dark:text-gray-400 -mt-2 max-w-3xl">
+        Decisões de aporte/rebalance baseadas em (a) gap vs alocação alvo por classe/país,
+        (b) otimização média-variância (Markowitz) com <span className="tnum">cap 15%/ativo</span>,
+        <span className="tnum"> 70% Brasil</span> e no-short, e (c) valuation fundamentalista
+        por classe. Metas em <a className="underline hover:text-indigo-400" href="#/alocacao-alvo">Alocação alvo</a>.
+      </p>
 
-          <div className="mt-5 grid grid-cols-3 gap-3">
-            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
-              <div className="text-[10px] uppercase tracking-wider text-gray-500">Conta corrente BRL</div>
-              <div className="text-sm font-semibold tnum money">{fmtBRL(checkingBRL, { compact: true })}</div>
-            </div>
-            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
-              <div className="text-[10px] uppercase tracking-wider text-gray-500">Conta corrente USD</div>
-              <div className="text-sm font-semibold tnum money">{fmtUSD(checkingUSD, { compact: true })}</div>
-            </div>
-            <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50">
-              <div className="text-[10px] uppercase tracking-wider text-gray-500">Float em corretora</div>
-              <div className="text-sm font-semibold tnum money">{fmtBRL(floatTotal, { compact: true })}</div>
-            </div>
-          </div>
-          {reservaGap > 0 && (
-            <div className="mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] text-amber-300">
-              <Icon name="circle-dot" className="w-3.5 h-3.5 inline mr-1"/>
-              Reserva R$ <span className="tnum">{fmtBRL(reservaGap, { compact: true })}</span> abaixo do alvo — descontado do disponível acima. Reforce a reserva antes de investir o resto.
-            </div>
-          )}
-        </Card>
-
-        <Card className="col-span-12 lg:col-span-4">
-          <SectionTitle action={
-            <button className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-300 hover:bg-gray-700"><Icon name="settings" className="w-3 h-3"/></button>
-          }>Reserva de emergência</SectionTitle>
-          <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-semibold tnum money">{fmtBRL(reservaAtual, { compact: true })}</div>
-            <div className="text-[11px] text-gray-500">de <span className="tnum money">{fmtBRL(reservaTarget, { compact: true })}</span></div>
-          </div>
-          <div className="mt-2"><HBar value={Math.min(reservaAtual, reservaTarget)} max={reservaTarget} color={reservaOK ? "#22c55e" : "#f59e0b"} height={8}/></div>
-          <div className={`mt-2 text-[11px] ${reservaOK ? "text-emerald-400" : "text-amber-400"}`}>
-            {reservaOK
-              ? <Fragment><Icon name="check" className="w-3.5 h-3.5 inline mr-1"/>OK · {fmtPct(reservaPct, 0)}</Fragment>
-              : <Fragment><Icon name="circle-dot" className="w-3.5 h-3.5 inline mr-1"/>Faltam {fmtBRL(reservaGap, { compact: true })}</Fragment>
-            }
-          </div>
-          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800">
-            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Ativos marcados como reserva</div>
-            <div className="space-y-1.5">
-              {EMERGENCY_RESERVE_ASSET_IDS.map(id => {
-                const a = assetById[id];
-                if (!a) return null;
-                const v = a.qty * a.price * (a.ccy === "USD" ? PTAX : 1);
-                return (
-                  <a key={id} href={`#/ativo/${id}`} className="flex items-center gap-2 text-[11px] hover:text-indigo-400">
-                    <span className="w-1 h-3 rounded-full" style={{ background: KLASS[a.klass].color }}/>
-                    <span className="truncate flex-1">{a.name}</span>
-                    <span className="tnum money text-gray-400">{fmtBRL(v, { compact: true })}</span>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Row 2: Allocation gap */}
+      {/* ── (a) Gap vs alocação alvo ────────────────────────────── */}
       <Card>
-        <SectionTitle action={
-          <span className="text-[11px] text-gray-500">
-            <Icon name="circle-dot" className="w-3 h-3 inline mr-0.5 text-amber-400"/>
-            target placeholder · aguardando dados do Notion
-          </span>
-        }>
-          Gap vs alocação alvo
-        </SectionTitle>
+        <div className="flex items-start justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            Gap vs alocação alvo
+          </h3>
+          <div className="flex items-center gap-1">
+            {["CLASS", "COUNTRY"].map(k => (
+              <button key={k} onClick={() => setGapDim(k)}
+                className={`h-7 px-2.5 text-[11px] rounded-md transition-colors ${
+                  gapDim === k
+                    ? "bg-indigo-500/15 text-indigo-400"
+                    : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                }`}>
+                {k === "CLASS" ? "Por classe" : "Por país"}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="space-y-2">
-          {allocationGap.filter(g => g.target_pct > 0).map(g => {
-            const meta = KLASS[g.key];
-            const overweight = g.gapValue < 0;
+          {gapSlices.map(s => {
+            const curPct = (s.current_pct * 100) / gapMaxScale * 100;
+            const tgtPct = (s.target_pct * 100) / gapMaxScale * 100;
+            const delta = s.current_pct - s.target_pct;
+            const deltaLabel = Math.abs(delta) < 0.001
+              ? "ok"
+              : (delta > 0 ? `+${fmtPct(delta, 1)}` : fmtPct(delta, 1));
+            const deltaTone = Math.abs(delta) < 0.005
+              ? "text-gray-500"
+              : delta > 0
+                ? "text-red-600 dark:text-red-400"
+                : "text-emerald-600 dark:text-emerald-400";
             return (
-              <div key={g.key} className="grid grid-cols-12 items-center gap-3 py-1.5">
-                <div className="col-span-3 flex items-center gap-2">
-                  <span className="w-1.5 h-5 rounded-full" style={{ background: meta?.color }}/>
-                  <span className="text-[12px] font-medium">{meta?.label}</span>
+              <div key={s.key} className="flex items-center gap-3">
+                <div className="w-28 text-[12px] text-gray-700 dark:text-gray-300 truncate">{s.label}</div>
+                <div className="flex-1 relative h-5 rounded bg-gray-100 dark:bg-gray-800">
+                  <div className="absolute inset-y-0 left-0 rounded"
+                       style={{ width: `${curPct}%`, background: s.color, opacity: 0.85 }}/>
+                  <div className="absolute inset-y-0 left-0 rounded border-2 border-dashed pointer-events-none"
+                       style={{ width: `${tgtPct}%`, borderColor: s.color }}/>
                 </div>
-                <div className="col-span-5 flex items-center gap-2">
-                  <div className="flex-1 relative h-2 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
-                    <div className="absolute inset-y-0 left-0 rounded-full"
-                         style={{ width: `${Math.min(100, g.currentPct * 100)}%`, background: meta?.color }}/>
-                    <div className="absolute inset-y-0 w-0.5 bg-gray-500"
-                         style={{ left: `${Math.min(100, g.target_pct * 100)}%` }} title={`Alvo ${fmtPct(g.target_pct, 1)}`}/>
-                  </div>
-                  <span className="text-[11px] tnum text-gray-400 w-12 text-right">{fmtPct(g.currentPct, 1)}</span>
-                  <span className="text-[10px] text-gray-500 w-10 text-right">alvo {fmtPct(g.target_pct, 0)}</span>
+                <div className="w-32 flex justify-end items-center gap-2 text-[11px] tnum">
+                  <span className="text-gray-700 dark:text-gray-300">{fmtPct(s.current_pct, 1)}</span>
+                  <span className="text-gray-400 dark:text-gray-600">→</span>
+                  <span className="text-gray-500">{fmtPct(s.target_pct, 1)}</span>
                 </div>
-                <div className="col-span-4 text-right">
-                  <div className={`text-[12px] tnum font-medium ${overweight ? "text-gray-500" : "text-emerald-400"}`}>
-                    {overweight ? "↑ acima " : "↓ alocar "}<span className="money">{fmtBRL(Math.abs(g.gapValue), { compact: true })}</span>
-                  </div>
-                  <div className="text-[10px] text-gray-500">{fmtPct(Math.abs(g.gapPct), 1)} {overweight ? "acima" : "abaixo"}</div>
-                </div>
+                <div className={`w-16 text-right text-[11px] tnum font-medium ${deltaTone}`}>{deltaLabel}</div>
               </div>
             );
           })}
         </div>
+        <div className="mt-3 flex items-center gap-3 text-[10px] text-gray-500">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded bg-indigo-500/70"/> Atual
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded border-2 border-dashed border-gray-400"/> Alvo
+          </span>
+        </div>
       </Card>
 
-      {/* Row 3: Top opportunities + Synthetic premium */}
-      <div className="grid grid-cols-12 gap-6">
-        <Card className="col-span-12 lg:col-span-8">
-          <SectionTitle action={
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-gray-500">verdict baseado em regras simples · ver doc</span>
-              <a href="#/ativos" className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver todos →</a>
+      {/* ── (b) Otimização Markowitz ─────────────────────────────── */}
+      <Card>
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Otimização Markowitz
+            </h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Min-variance respeitando metas por classe (equality), cap 15%/ativo,
+              cap 70% Brasil, no-short. Retornos mensais em BRL, Ledoit-Wolf α=0,05, SLSQP.
+            </p>
+          </div>
+          <button onClick={runOptimize} disabled={optimizing}
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium rounded-md bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-50">
+            <Icon name="sparkles" className="w-3.5 h-3.5"/>
+            {optimizing ? "Otimizando…" : (opt ? "Recomputar" : "Otimizar")}
+          </button>
+        </div>
+
+        {!opt && !optimizing && (
+          <div className="text-[12px] text-gray-500 italic py-6 text-center">
+            Rode a otimização pra ver a fronteira eficiente e o rebalance sugerido.
+          </div>
+        )}
+
+        {opt && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Ativos elegíveis</div>
+                <div className="text-sm font-semibold tnum">{opt.n_assets}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Retorno esperado</div>
+                <div className="text-sm font-semibold tnum text-emerald-600 dark:text-emerald-400">{fmtPct(opt.expected_return, 1)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Volatilidade</div>
+                <div className="text-sm font-semibold tnum">{fmtPct(opt.volatility, 1)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Excluídos</div>
+                <div className="text-sm font-semibold tnum">{opt.n_excluded}</div>
+              </div>
             </div>
-          }>
-            Top oportunidades · "Comprar" agora
-          </SectionTitle>
-          {opportunities.length === 0
-            ? <div className="text-[12px] text-gray-500 italic py-6 text-center">Nenhum ativo com verdict "Comprar" no momento.</div>
-            : (
+
+            <EfficientFrontierSvg
+              frontier={opt.frontier}
+              currentPoint={currentPortfolioPoint}
+              optimalPoint={{ vol: opt.volatility, ret: opt.expected_return }}
+            />
+
+            {opt.binding_constraints.length > 0 && (
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                Restrições ativas: {opt.binding_constraints.join(" · ")}
+              </div>
+            )}
+
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 font-semibold">
+                Trades sugeridos
+              </div>
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-[12px]">
                   <thead>
-                    <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                      <th className="text-left font-medium px-2 py-2">Ativo</th>
-                      <th className="text-left font-medium px-2 py-2">Classe</th>
-                      <th className="text-right font-medium px-2 py-2">Preço atual</th>
-                      <th className="text-right font-medium px-2 py-2">Variação</th>
-                      <th className="text-left font-medium px-2 py-2">Sinal</th>
-                      <th className="px-2"/>
+                    <tr className="border-b border-gray-200 dark:border-gray-800 text-[10px] uppercase tracking-wider text-gray-500">
+                      <th className="text-left py-1.5 font-medium">Ativo</th>
+                      <th className="text-left py-1.5 font-medium">Classe</th>
+                      <th className="text-right py-1.5 font-medium">Atual</th>
+                      <th className="text-right py-1.5 font-medium">Alvo</th>
+                      <th className="text-right py-1.5 font-medium">Δ valor</th>
+                      <th className="text-right py-1.5 font-medium pr-1">Ação</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {opportunities.map(({ asset: a, verdict, returns }) => (
-                      <tr key={a.id}
-                        onClick={() => { window.location.hash = `#/ativo/${a.id}`; }}
-                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
-                        <td className="px-2 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <span className="w-1 h-5 rounded-full" style={{ background: KLASS[a.klass].color }}/>
-                            <div>
-                              <div className="font-mono font-medium flex items-center gap-1.5">{a.ticker || a.name} <CountryFlag country={a.country}/></div>
-                              <div className="text-[11px] text-gray-500 truncate max-w-[200px]">{a.name}</div>
+                    {[...opt.optimal].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).map(o => {
+                      const meta = KLASS[o.asset_class];
+                      const actionCls = o.trade_action === "BUY"
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : o.trade_action === "SELL"
+                          ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                          : "bg-gray-500/15 text-gray-700 dark:text-gray-300";
+                      const actionLabel = { BUY: "Comprar", SELL: "Vender", HOLD: "Manter" }[o.trade_action];
+                      return (
+                        <tr key={o.asset_id} className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/40">
+                          <td className="py-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <CountryFlag country={o.country}/>
+                              <span className="font-mono font-medium text-gray-900 dark:text-white">{o.ticker || o.name}</span>
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-2"><ClassBadge klass={a.klass} size="xs" withDot={false}/></td>
-                        <td className="px-2 text-right tnum money">{fmtMoney(a.price, a.ccy)}</td>
-                        <td className="px-2 text-right">
-                          <div className={`tnum font-medium ${returns.variation >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(returns.variation, 2, true)}</div>
-                        </td>
-                        <td className="px-2">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider bg-emerald-500/15 text-emerald-400`}>
-                            {verdict.label}
-                          </span>
-                          <div className="text-[10px] text-gray-500 mt-0.5 truncate max-w-[180px]">{verdict.reason}</div>
-                        </td>
-                        <td className="px-2 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className="py-1.5">
+                            <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 dark:text-gray-400">
+                              <span className="inline-block w-2 h-2 rounded-full" style={{ background: meta?.color || "#9ca3af" }}/>
+                              {meta?.label || o.asset_class}
+                            </span>
+                          </td>
+                          <td className="py-1.5 text-right tnum text-gray-700 dark:text-gray-300">{fmtPct(o.current_weight, 1)}</td>
+                          <td className="py-1.5 text-right tnum text-gray-900 dark:text-white font-medium">{fmtPct(o.weight, 1)}</td>
+                          <td className="py-1.5 text-right tnum text-gray-700 dark:text-gray-300 money">
+                            {fmtBRL(o.trade_value_brl, { sign: true, compact: true })}
+                          </td>
+                          <td className="py-1.5 text-right pr-1">
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${actionCls}`}>
+                              {actionLabel}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            {opt.excluded.length > 0 && (
+              <details className="text-[12px]">
+                <summary className="cursor-pointer text-gray-600 dark:text-gray-400">
+                  {opt.excluded.length} ativo(s) excluído(s) — clique pra ver
+                </summary>
+                <ul className="mt-2 space-y-0.5 text-[11px] text-gray-500">
+                  {opt.excluded.map(e => (
+                    <li key={e.asset_id}>
+                      <span className="font-medium text-gray-700 dark:text-gray-300">{e.ticker || e.name}</span> — {e.reason}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
-        </Card>
-
-        <Card className="col-span-12 lg:col-span-4">
-          <SectionTitle action={openOptions.length > 0 && <a href={`#/ativo/${openOptions[0].underlying}`} className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver →</a>}>
-            Dividendo sintético
-          </SectionTitle>
-          <div className="text-2xl font-semibold tnum money text-emerald-400">{fmtBRL(syntheticPremium, { sign: true, compact: true })}</div>
-          <div className="text-[11px] text-gray-500 mt-1">prêmios de opções recebidos · não compõe DY/YoC</div>
-
-          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800">
-            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Opções abertas · {openOptions.length}</div>
-            {openOptions.length === 0
-              ? <div className="text-[12px] text-gray-500 italic">Nenhuma opção aberta no momento.</div>
-              : (
-                <div className="space-y-1.5">
-                  {openOptions.map(opt => {
-                    const underlying = assetById[opt.underlying];
-                    const days = Math.max(0, Math.round((new Date(opt.expiration_date) - new Date("2026-05-06")) / 86400000));
-                    return (
-                      <a key={opt.id} href={`#/ativo/${opt.underlying}`} className="flex items-center gap-2 text-[11px] hover:text-indigo-400">
-                        <span className={`inline-flex items-center px-1 py-0.5 rounded text-[9px] uppercase ${opt.option_type === "PUT" ? "bg-blue-500/15 text-blue-400" : "bg-violet-500/15 text-violet-300"}`}>{opt.option_type}</span>
-                        <span className="font-mono truncate flex-1">{opt.ticker}</span>
-                        <span className={`text-[10px] tnum ${days < 14 ? "text-amber-400" : "text-gray-500"}`}>{days}d</span>
-                      </a>
-                    );
-                  })}
-                </div>
-              )}
           </div>
-        </Card>
-      </div>
+        )}
+      </Card>
+
+      {/* ── (c) Valuation por ativo ──────────────────────────────── */}
+      <Card>
+        <SectionTitle action={
+          <span className="text-[11px] text-gray-500">
+            verdict fundamentalista · Bazin / Graham / Lynch / P-VP / P-FFO / DY
+          </span>
+        }>
+          Valuation por ativo
+        </SectionTitle>
+        {valuations.length === 0
+          ? <div className="text-[12px] text-gray-500 italic py-4 text-center">Sem ativos pra analisar.</div>
+          : (
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-800 text-[10px] uppercase tracking-wider text-gray-500">
+                    <th className="text-left py-1.5 font-medium">Ativo</th>
+                    <th className="text-left py-1.5 font-medium">Classe</th>
+                    <th className="text-left py-1.5 font-medium">Veredito</th>
+                    <th className="text-left py-1.5 font-medium pr-1">Razão</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {valuations.map(row => (
+                    <tr key={row.asset.id}
+                        onClick={() => { window.location.hash = `#/ativo/${row.asset.id}`; }}
+                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/40 cursor-pointer">
+                      <td className="py-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <CountryFlag country={row.asset.country}/>
+                          <span className="font-mono font-medium text-gray-900 dark:text-white">{row.asset.ticker || row.asset.name}</span>
+                        </div>
+                      </td>
+                      <td className="py-1.5"><ClassBadge klass={row.asset.klass} size="xs"/></td>
+                      <td className="py-1.5"><VerdictBadge verdict={row.verdict} size="sm" title={row.reason}/></td>
+                      <td className="py-1.5 text-[11px] text-gray-600 dark:text-gray-400 truncate max-w-md">{row.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </Card>
 
       {/* Footnote */}
       <div className="text-center text-[11px] text-gray-500">
-        Verdicts são heurísticos · regras completas em <span className="text-gray-400">docs/decision-support-rationale.md §12</span>
+        Regras completas em <span className="text-gray-400">docs/decision-support-rationale.md</span>
+        {" "}— verdicts (§12), formulação Markowitz v1 e calibração fundamentalista.
       </div>
     </div>
   );
@@ -8683,9 +8919,9 @@ function App() {
       { label: "Fechamentos", href: "#/fechamentos" },
       { label: ymLabelLong(ym) }
     ];
-  } else if (route === "/onde-investir") {
-    page = <OndeInvestirPage/>;
-    breadcrumbs = [{ label: "Investimentos" }, { label: "Onde investir" }];
+  } else if (route === "/decision-support") {
+    page = <SuporteADecisaoPage/>;
+    breadcrumbs = [{ label: "Investimentos" }, { label: "Suporte à Decisão" }];
   } else if (route === "/audit") {
     page = <AuditLogPage/>;
     breadcrumbs = [{ label: "Admin" }, { label: "Audit log" }];
