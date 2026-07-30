@@ -50,6 +50,8 @@ from numis_geek.services import extraction as extraction_service
 from numis_geek.services.auth import AuthService
 from numis_geek.services.positions import asset_has_position, compute_position
 from numis_geek.services.snapshot import (
+    apply_recompute_to_snapshot,
+    confirm_snapshot,
     create_snapshot,
     update_snapshot_item_price,
 )
@@ -696,4 +698,156 @@ def test_update_snapshot_item_price_total_mode_with_qty_gt1_on_value_mode_asset(
     )
     assert item.market_value_brl == Decimal("1200"), (
         f"Esperado mv_brl=1200 (asset BRL), veio {item.market_value_brl}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Test 7 — mv_columns invariant via apply_recompute_to_snapshot
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_apply_recompute_updates_all_three_mv_columns_and_snapshot_totals(db):
+    """Invariante idêntico ao test_1 mas via apply_recompute_to_snapshot:
+    quando uma mov retroativa dispara recompute, o item resultante DEVE
+    ter os 3 mv_* coerentes via fx_rate frozen do snapshot, E os totais
+    do snapshot DEVEM bater com SUM(items).
+
+    Bug de origem: mesma família do BHIA3 606× — se apply_recompute
+    esquecer de recomputar todas as 3 colunas mv_* + refresh dos totais
+    do snapshot pai, mv_usd fica LIVE (do fx_rate atual) em vez de
+    frozen (do snap.fx_rate_usd_brl). Ver memória mv_columns_invariant.md
+    e session_state audit 2026-07-05 (task 39 do audit de coerência).
+    """
+    period = date(2026, 4, 30)
+    seed = _seed_ws(db, ptax_date=period, ptax_rate=Decimal("5.00"))
+    ws = seed["ws"]
+    now = seed["now"]
+
+    aapl = Asset(
+        id=str(uuid.uuid4()), workspace_id=ws.id, account_id=seed["acc_usd"].id,
+        asset_class=AssetClass.STOCK, country="US",
+        name="Apple", ticker="AAPL",
+        currency=Currency.USD, current_price=Decimal("200.00"),
+        price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(aapl)
+    # Compra inicial: 10 shares @ 200 antes do period_end.
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws.id, asset_id=aapl.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 1, 10),
+        quantity=Decimal("10"), unit_price=Decimal("200.00"),
+        gross_amount=Decimal("2000"), net_amount=Decimal("2000"),
+        currency=Currency.USD, fx_rate=Decimal("5.0"),
+        is_active=True, created_at=now, updated_at=now,
+    ))
+    db.flush()
+
+    # Cria snapshot IN_REVIEW — item vai ter qty=10, unit_price=200,
+    # mv_native=2000, mv_usd=2000, mv_brl=10000 (fx frozen 5.00).
+    r = create_snapshot(db, workspace_id=ws.id, period_end=period,
+                       initial_status=SnapshotStatus.IN_REVIEW)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    fx = snap.fx_rate_usd_brl
+    assert fx == Decimal("5.00"), "PTAX seed foi injetado 5.00"
+
+    # Sanity: item inicial.
+    item0 = db.query(PortfolioSnapshotItem).filter_by(
+        snapshot_id=snap.id, asset_id=aapl.id,
+    ).one()
+    assert item0.quantity == Decimal("10")
+    assert item0.unit_price == Decimal("200.00")
+
+    # period_end < hoje pode gerar HISTORICAL_PRICE_REQUIRED via
+    # _new_item_values (PriceSource.MANUAL → provider retorna None).
+    # Limpa pendencies pra permitir o close abaixo — o unit_price já foi
+    # travado no item pelo create_snapshot no branch is_today (não é o
+    # caso aqui), então preenche manualmente se preciso pra manter
+    # invariante do close (SUM(items) == totals).
+    from numis_geek.models.portfolio_snapshot import SnapshotPendency
+    db.query(SnapshotPendency).filter_by(snapshot_id=snap.id).delete()
+    db.flush()
+    # Se o item não conseguiu preço histórico, injeta o unit_price frozen
+    # manualmente pra simular a resolução da pendency (equivalente ao
+    # user editar preço via UI).
+    if item0.unit_price is None:
+        item0.unit_price = Decimal("200.00")
+        item0.market_value_native = item0.quantity * item0.unit_price
+        item0.market_value_usd = item0.market_value_native
+        item0.market_value_brl = item0.market_value_native * fx
+        db.flush()
+
+    # Fecha snapshot pra travar fx_rate frozen (força auto-reopen dentro
+    # do apply_recompute — path mais realista do bug retroativo).
+    confirm_snapshot(db, snapshot_id=snap.id, user_id="tester",
+                     user_email="tester@test.com")
+    db.refresh(snap)
+    assert snap.status == SnapshotStatus.CLOSED
+    assert snap.fx_rate_usd_brl == Decimal("5.00")
+
+    # Movimento retroativo: BUY 5 shares @ 210 com event_date < period_end.
+    retro = AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=ws.id, asset_id=aapl.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 3, 15),
+        quantity=Decimal("5"), unit_price=Decimal("210.00"),
+        gross_amount=Decimal("1050"), net_amount=Decimal("1050"),
+        currency=Currency.USD, fx_rate=Decimal("5.0"),
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(retro)
+    db.flush()
+
+    # Dispara o recompute (path do bug — não passa por update_snapshot_item_price).
+    apply_recompute_to_snapshot(
+        db,
+        snapshot_id=snap.id,
+        asset_id=aapl.id,
+        trigger_event_type="asset_movement",
+        trigger_event_id=retro.id,
+        user_id="tester",
+        user_email="tester@test.com",
+    )
+
+    item = db.query(PortfolioSnapshotItem).filter_by(
+        snapshot_id=snap.id, asset_id=aapl.id,
+    ).one()
+    # Qty soma o retro: 10 + 5 = 15.
+    assert item.quantity == Decimal("15"), (
+        f"Esperado quantity=15 (10 + 5 retro), veio {item.quantity}"
+    )
+    # Spec 52: unit_price frozen preservado (não é 210 nem average).
+    assert item.unit_price == Decimal("200.00"), (
+        f"unit_price frozen deve permanecer 200 (spec 52), veio {item.unit_price}"
+    )
+    # mv_native = 15 × 200 = 3000.
+    assert item.market_value_native == Decimal("15") * Decimal("200.00"), (
+        f"Esperado mv_native=3000, veio {item.market_value_native}"
+    )
+    # USD asset → mv_usd = mv_native.
+    assert item.market_value_usd == item.market_value_native, (
+        f"USD asset: mv_usd deve == mv_native, veio "
+        f"{item.market_value_usd} vs {item.market_value_native}"
+    )
+    # mv_brl = mv_native × fx FROZEN (5.00) — NÃO fx live/atual.
+    assert item.market_value_brl == item.market_value_native * fx, (
+        f"mv_brl deve usar fx frozen ({fx}): esperado "
+        f"{item.market_value_native * fx}, veio {item.market_value_brl}"
+    )
+    assert item.market_value_brl == Decimal("15000.00"), (
+        f"Esperado mv_brl=15000 (3000 × 5.00), veio {item.market_value_brl}"
+    )
+
+    # Totais do snapshot batem com SUM(items) — bug de origem quebrava
+    # aqui quando o refresh do total no fim do apply_recompute era omitido.
+    db.refresh(snap)
+    items = db.query(PortfolioSnapshotItem).filter_by(snapshot_id=snap.id).all()
+    sum_brl = sum((i.market_value_brl or Decimal("0") for i in items), Decimal("0"))
+    sum_usd = sum((i.market_value_usd or Decimal("0") for i in items), Decimal("0"))
+    assert round(snap.total_value_brl, 2) == round(sum_brl, 2), (
+        f"snapshot.total_value_brl={snap.total_value_brl} não bate "
+        f"com sum(items.market_value_brl)={sum_brl}"
+    )
+    assert round(snap.total_value_usd, 2) == round(sum_usd, 2), (
+        f"snapshot.total_value_usd={snap.total_value_usd} não bate "
+        f"com sum(items.market_value_usd)={sum_usd}"
     )
