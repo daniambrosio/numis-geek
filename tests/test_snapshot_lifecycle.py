@@ -1314,10 +1314,18 @@ def test_apply_recompute_preserves_frozen_unit_price(db):
     assert item_after.market_value_native == Decimal("125") * frozen_price
 
 
-def test_apply_recompute_new_item_in_old_snapshot_creates_pendency(db):
+def test_apply_recompute_new_item_in_old_snapshot_creates_pendency(db, monkeypatch):
     """Spec 52 — item NOVO em snapshot antigo (period_end no passado):
     não escreve LIVE price, escreve unit_price=None + cria pendency
-    HISTORICAL_PRICE_REQUIRED + EDIT_PRICE."""
+    HISTORICAL_PRICE_REQUIRED + EDIT_PRICE.
+
+    Spec 53 wire-in: pendency só nasce quando o provider histórico
+    (fetch_on) devolve None. Mockamos None pra preservar a semântica
+    original desse teste."""
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda *a, **kw: None,
+    )
     w = _seed(db)
     r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
     # Asset novo (criado APÓS o snapshot) — não está no snapshot ainda.
@@ -1379,8 +1387,15 @@ def test_apply_recompute_new_item_today_uses_current_price(db):
     assert pen is None
 
 
-def test_add_snapshot_item_old_snapshot_creates_pendency(db):
-    """Spec 52 — add_snapshot_item em snapshot antigo: pendency, não LIVE."""
+def test_add_snapshot_item_old_snapshot_creates_pendency(db, monkeypatch):
+    """Spec 52 — add_snapshot_item em snapshot antigo: pendency, não LIVE.
+
+    Spec 53 wire-in: mockamos fetch_on=None pra preservar semântica
+    (pendency é o fallback quando provider histórico não devolve)."""
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda *a, **kw: None,
+    )
     w = _seed(db)
     r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
     # Reabre se necessário (PERIOD pode ter sido fechado pelo seed?).
@@ -1412,9 +1427,15 @@ def test_add_snapshot_item_old_snapshot_creates_pendency(db):
     assert pen.action_type == PendencyAction.EDIT_PRICE
 
 
-def test_sync_snapshot_items_old_snapshot_creates_pendency(db):
+def test_sync_snapshot_items_old_snapshot_creates_pendency(db, monkeypatch):
     """Spec 52 — sync_snapshot_items em snapshot antigo:
-    items adicionados ficam sem unit_price + pendency."""
+    items adicionados ficam sem unit_price + pendency.
+
+    Spec 53 wire-in: mockamos fetch_on=None pra preservar semântica."""
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda *a, **kw: None,
+    )
     w = _seed(db)
     r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
     snap = db.get(PortfolioSnapshot, r.snapshot_id)
@@ -1454,9 +1475,14 @@ def test_sync_snapshot_items_old_snapshot_creates_pendency(db):
     assert pen.action_type == PendencyAction.EDIT_PRICE
 
 
-def test_retry_pendency_api_rejects_old_snapshot(db):
-    """Spec 52 — refresh_one chama API LIVE. Em snapshot antigo isso
-    corrompe o histórico, então a operação deve falhar."""
+def test_retry_pendency_api_rejects_old_snapshot(db, monkeypatch):
+    """Spec 52/53 — retry_pendency_api em snapshot antigo tenta
+    historical_price.fetch_on primeiro; se o provider não devolver,
+    rejeita com mensagem clara pra o user cair no fluxo EDIT_PRICE."""
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda *a, **kw: None,
+    )
     w = _seed(db)
     r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
     # Pendency RETRY_API existe pro AAPL (FINNHUB never refreshed).
@@ -1466,10 +1492,275 @@ def test_retry_pendency_api_rejects_old_snapshot(db):
     ).first()
     assert pen is not None  # seed garante essa pendency
 
-    with pytest.raises(ValueError, match="Snapshot antigo"):
+    with pytest.raises(ValueError, match="Provider histórico não retornou preço"):
         retry_pendency_api(
             db, pendency_id=pen.id, user_id="alice",
         )
+
+
+# ── Spec 53 — historical_price.fetch_on wire-in (happy path) ───────────────
+
+
+def test_apply_recompute_new_item_old_snapshot_uses_fetch_on_when_provider_returns(
+    db, monkeypatch,
+):
+    """Spec 53 — item NOVO em snapshot antigo tenta fetch_on primeiro.
+    Se o provider devolve preço, grava direto no item SEM criar
+    pendency HISTORICAL_PRICE_REQUIRED."""
+    hist_price = Decimal("42.50")
+    calls: list = []
+
+    def _fake_fetch(db_arg, asset_arg, target_arg):
+        calls.append((asset_arg.id, target_arg))
+        return hist_price
+
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        _fake_fetch,
+    )
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="Novo BRAPI", ticker="NEW3",
+        source=PriceSource.BRAPI, current_price=Decimal("999"),
+    )
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="10", price="30",
+    )
+    item = apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=new_id,
+        trigger_event_type="asset_movement.create", trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    assert item.unit_price == hist_price
+    assert item.quantity == Decimal("10")
+    assert item.market_value_native == Decimal("10") * hist_price
+    # Nenhuma pendency HISTORICAL_PRICE_REQUIRED foi criada.
+    pen_count = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).count()
+    assert pen_count == 0
+    # fetch_on foi chamado com o target_date correto.
+    assert (new_id, PERIOD) in calls
+
+
+def test_add_snapshot_item_old_snapshot_uses_fetch_on(db, monkeypatch):
+    """Spec 53 — add_snapshot_item usa fetch_on em snapshot antigo."""
+    hist_price = Decimal("87.25")
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda db_arg, asset_arg, target_arg: hist_price,
+    )
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    if snap.status == SnapshotStatus.CLOSED:
+        reopen_snapshot(
+            db, snapshot_id=snap.id, user_id="alice", reason="test",
+        )
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="ADD BRAPI", ticker="ADDD3",
+        source=PriceSource.BRAPI, current_price=Decimal("321"),
+    )
+    _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="5", price="100",
+    )
+    item = add_snapshot_item(
+        db, snapshot_id=r.snapshot_id, asset_id=new_id,
+        user_id="alice",
+    )
+    assert item.unit_price == hist_price
+    assert item.market_value_native == Decimal("5") * hist_price
+    pen_count = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).count()
+    assert pen_count == 0
+
+
+def test_sync_snapshot_items_old_snapshot_uses_fetch_on(db, monkeypatch):
+    """Spec 53 — sync_snapshot_items usa fetch_on em snapshot antigo."""
+    hist_price = Decimal("15.75")
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda db_arg, asset_arg, target_arg: hist_price,
+    )
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    snap = db.get(PortfolioSnapshot, r.snapshot_id)
+    if snap.status == SnapshotStatus.CLOSED:
+        reopen_snapshot(
+            db, snapshot_id=snap.id, user_id="alice", reason="test",
+        )
+    new_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="SYNC BRAPI", ticker="SYNC3",
+        source=PriceSource.BRAPI, current_price=Decimal("888"),
+    )
+    _add_buy_movement(
+        db, w["ws_id"], new_id, PERIOD - timedelta(days=2),
+        qty="3", price="200",
+    )
+    result = sync_snapshot_items(
+        db, snapshot_id=r.snapshot_id, user_id="alice",
+    )
+    assert result["items_added"] >= 1
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == new_id,
+    ).one()
+    assert item.unit_price == hist_price
+    assert item.market_value_native == Decimal("3") * hist_price
+    pen_count = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.asset_id == new_id,
+        SnapshotPendency.reason == PendencyReason.HISTORICAL_PRICE_REQUIRED,
+    ).count()
+    assert pen_count == 0
+
+
+def test_retry_pendency_api_old_snapshot_uses_fetch_on_and_resolves(
+    db, monkeypatch,
+):
+    """Spec 53 — retry em pendency RETRY_API de snapshot antigo:
+    fetch_on devolve preço → item.unit_price atualizado e pendency
+    marcada como resolvida (sem chamar refresh_one LIVE)."""
+    hist_price = Decimal("175.50")
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda db_arg, asset_arg, target_arg: hist_price,
+    )
+    # Garante que refresh_one NÃO é chamado (path LIVE) — se for, o
+    # patch falha e pegamos o bug.
+    def _refresh_should_not_be_called(*a, **kw):
+        raise AssertionError("refresh_one não deveria ser chamado no path histórico")
+    monkeypatch.setattr(
+        "numis_geek.services.price_update.refresh_one",
+        _refresh_should_not_be_called,
+    )
+
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.action_type == PendencyAction.RETRY_API,
+        SnapshotPendency.asset_id == w["aapl_id"],
+    ).first()
+    assert pen is not None
+
+    original_current = db.get(Asset, w["aapl_id"]).current_price
+
+    pen2 = retry_pendency_api(
+        db, pendency_id=pen.id, user_id="alice",
+    )
+    db.refresh(pen2)
+    assert pen2.resolved_at is not None
+    assert "Historical" in (pen2.resolution_note or "")
+
+    # Asset.current_price NÃO tocado — preço histórico não vira LIVE.
+    assert db.get(Asset, w["aapl_id"]).current_price == original_current
+
+    # Item.unit_price atualizado com preço histórico.
+    item = db.query(PortfolioSnapshotItem).filter(
+        PortfolioSnapshotItem.snapshot_id == r.snapshot_id,
+        PortfolioSnapshotItem.asset_id == w["aapl_id"],
+    ).one()
+    assert item.unit_price == hist_price
+    if item.quantity is not None and item.quantity > 0:
+        assert item.market_value_native == item.quantity * hist_price
+
+
+def test_retry_pendency_api_old_snapshot_raises_when_fetch_returns_none(
+    db, monkeypatch,
+):
+    """Spec 53 — quando fetch_on retorna None, retry_pendency_api
+    rejeita com a nova mensagem clara (não a antiga 'Snapshot antigo')."""
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        lambda *a, **kw: None,
+    )
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+    pen = db.query(SnapshotPendency).filter(
+        SnapshotPendency.snapshot_id == r.snapshot_id,
+        SnapshotPendency.action_type == PendencyAction.RETRY_API,
+    ).first()
+    assert pen is not None
+
+    with pytest.raises(ValueError, match="Provider histórico não retornou preço"):
+        retry_pendency_api(
+            db, pendency_id=pen.id, user_id="alice",
+        )
+
+
+def test_new_item_uses_fetch_on_dispatches_by_price_source(db, monkeypatch):
+    """Spec 53 — sanity check: fetch_on SEMPRE é chamado no branch
+    retroativo (o dispatch por MANUAL vs BRAPI acontece dentro do
+    fetch_on/_chain_for, não em _new_item_values). Antes desse test,
+    o wire-in podia esquecer de chamar o helper e cair direto na
+    pendency."""
+    call_log: list = []
+
+    def _fake(db_arg, asset_arg, target_arg):
+        call_log.append(asset_arg.price_source)
+        # Simula o comportamento real: MANUAL retorna None,
+        # BRAPI retorna preço.
+        if asset_arg.price_source == PriceSource.MANUAL:
+            return None
+        return Decimal("50")
+
+    monkeypatch.setattr(
+        "numis_geek.services.snapshot.historical_price.fetch_on",
+        _fake,
+    )
+    w = _seed(db)
+    r = create_snapshot(db, workspace_id=w["ws_id"], period_end=PERIOD)
+
+    # 1) MANUAL new asset — fetch_on chamado, retorna None → pendency.
+    manual_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="MANUAL check", ticker="MAN1",
+        source=PriceSource.MANUAL, current_price=Decimal("100"),
+    )
+    _add_buy_movement(
+        db, w["ws_id"], manual_id, PERIOD - timedelta(days=2),
+        qty="2", price="50",
+    )
+    mov_id = _add_buy_movement(
+        db, w["ws_id"], manual_id, PERIOD - timedelta(days=1),
+        qty="1", price="60",
+    )
+    apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=manual_id,
+        trigger_event_type="asset_movement.create", trigger_event_id=mov_id,
+        user_id="alice",
+    )
+    assert PriceSource.MANUAL in call_log
+
+    # 2) BRAPI new asset — fetch_on chamado, retorna preço → sem pendency.
+    brapi_id = _new_asset(
+        db, w["ws_id"], db.get(Asset, w["petr_id"]).account_id,
+        name="BRAPI check", ticker="BRA1",
+        source=PriceSource.BRAPI, current_price=Decimal("100"),
+    )
+    mov2_id = _add_buy_movement(
+        db, w["ws_id"], brapi_id, PERIOD - timedelta(days=1),
+        qty="4", price="25",
+    )
+    item = apply_recompute_to_snapshot(
+        db, snapshot_id=r.snapshot_id, asset_id=brapi_id,
+        trigger_event_type="asset_movement.create", trigger_event_id=mov2_id,
+        user_id="alice",
+    )
+    assert PriceSource.BRAPI in call_log
+    assert item.unit_price == Decimal("50")
 
 
 def test_find_affected_snapshots_preview_uses_frozen_price(db):

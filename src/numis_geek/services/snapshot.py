@@ -46,6 +46,7 @@ from numis_geek.models.portfolio_snapshot import (
     SnapshotSource,
     SnapshotStatus,
 )
+from numis_geek.services import historical_price
 from numis_geek.services.audit import AuditService
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 from numis_geek.services.positions import (
@@ -221,6 +222,7 @@ def _effective_item_quantity(asset: Asset, pos_qty: Decimal | None) -> Decimal:
 
 
 def _new_item_values(
+    db: Session,
     snap: PortfolioSnapshot,
     asset: Asset,
     pos: dict,
@@ -233,16 +235,19 @@ def _new_item_values(
     Decimal | None,        # market_value_usd
     SnapshotPendency | None,  # pendency a persistir (ou None)
 ]:
-    """Spec 52 — decide unit_price + market_values pra um item NOVO sem
+    """Spec 52/53 — decide unit_price + market_values pra um item NOVO sem
     sobrescrever preço frozen com LIVE.
 
     Regra:
     - Se `snap.period_end_date == today`: usa `pos["current_price"]` —
       é o caso "primeira captura". Asset.current_price representa o
       preço de hoje, que é o period_end_price.
-    - Caso contrário: `unit_price=None` + `SnapshotPendency`
-      HISTORICAL_PRICE_REQUIRED + EDIT_PRICE. Spec 53 vai eliminar a
-      pendency tentando primeiro `historical_price.fetch_on`.
+    - Caso contrário (spec 53 wire-in): tenta primeiro
+      `historical_price.fetch_on` — se o provider devolver, usa o preço
+      histórico e recomputa mv_native/brl/usd usando o fx frozen do
+      snapshot. Se o provider retornar None (MANUAL/None ou chain
+      esgotada), cai no fallback antigo: unit_price=None + pendency
+      HISTORICAL_PRICE_REQUIRED + EDIT_PRICE.
 
     Caller persiste o `PortfolioSnapshotItem` + (opcional) pendency.
     """
@@ -263,7 +268,31 @@ def _new_item_values(
                 mv_usd = mv_brl / fx
         return unit_price, mv_native, mv_brl, mv_usd, None
 
-    # period_end no passado — não sabemos preço histórico.
+    # period_end no passado — tenta provider histórico (spec 53) antes
+    # de criar pendency.
+    hist_price = historical_price.fetch_on(db, asset, snap.period_end_date)
+    if hist_price is not None:
+        eff_qty = _effective_item_quantity(asset, qty)
+        if eff_qty and eff_qty > 0:
+            mv_native = eff_qty * hist_price
+        else:
+            # Value-mode com qty=0 (edge case) — mv = preço direto.
+            mv_native = hist_price
+        fx = snap.fx_rate_usd_brl
+        ccy = asset.currency.value
+        mv_brl: Decimal | None = None
+        mv_usd: Decimal | None = None
+        if ccy == "BRL":
+            mv_brl = mv_native
+            if fx and fx > 0:
+                mv_usd = mv_native / fx
+        elif ccy == "USD":
+            mv_usd = mv_native
+            if fx and fx > 0:
+                mv_brl = mv_native * fx
+        return hist_price, mv_native, mv_brl, mv_usd, None
+
+    # Provider histórico não devolveu preço — cria pendency como fallback.
     pen = SnapshotPendency(
         id=str(uuid.uuid4()),
         snapshot_id=snap.id,
@@ -276,9 +305,6 @@ def _new_item_values(
         ),
         created_at=now,
     )
-    # qty pode ser != 0 (mov retroativa cravou posição), mas sem
-    # unit_price não temos market_value. Caller persiste qty.
-    _ = qty  # silencia lint
     return None, None, None, None, pen
 
 
@@ -1683,9 +1709,10 @@ def add_snapshot_item(
 
     now = datetime.now(timezone.utc)
     pos = compute_position(db, asset_id, as_of=snap.period_end_date)
-    # Spec 52 — não escreve LIVE price em snapshot antigo.
+    # Spec 52 — não escreve LIVE price em snapshot antigo. Spec 53 —
+    # helper tenta fetch_on antes de cair na pendency.
     unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
-        snap, asset, pos, now=now,
+        db, snap, asset, pos, now=now,
     )
     item = PortfolioSnapshotItem(
         id=str(uuid.uuid4()),
@@ -1790,9 +1817,10 @@ def _sync_missing_value_mode_items(
         pos = compute_position(db, asset.id, as_of=snap.period_end_date)
         if not asset_has_position(pos, asset):
             continue
-        # Spec 52 — não escreve LIVE price em snapshot antigo.
+        # Spec 52/53 — helper tenta preço histórico via provider antes
+        # de cair em pendency.
         unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
-            snap, asset, pos, now=now,
+            db, snap, asset, pos, now=now,
         )
         db.add(PortfolioSnapshotItem(
             id=str(uuid.uuid4()),
@@ -2111,10 +2139,11 @@ def apply_recompute_to_snapshot(
             raise ValueError(
                 "Asset has no position at period_end — nothing to recompute.",
             )
-        # Spec 52 — item NOVO: helper decide preço (current_price se
-        # period_end == hoje, senão pendency HISTORICAL_PRICE_REQUIRED).
+        # Spec 52/53 — item NOVO: helper decide preço (current_price se
+        # period_end == hoje; senão tenta historical_price.fetch_on e cai
+        # em pendency HISTORICAL_PRICE_REQUIRED só se o provider falhar).
         unit_price, mv_native, mv_brl, mv_usd, hist_pen = _new_item_values(
-            snap, asset, pos, now=now,
+            db, snap, asset, pos, now=now,
         )
         existing = PortfolioSnapshotItem(
             id=str(uuid.uuid4()),
@@ -2405,19 +2434,91 @@ def retry_pendency_api(
             f"Pendency {pendency_id} is not RETRY_API (got {pen.action_type.value})"
         )
 
-    # Spec 52 — refresh_one chama o adapter LIVE (preço de hoje). Em
-    # snapshot antigo isso corrompe o histórico. Spec 53 vai substituir
-    # por historical_price.fetch_on; até lá, bloqueia e direciona o
-    # user pro fluxo EDIT_PRICE.
+    # Spec 52/53 — refresh_one chama o adapter LIVE (preço de hoje). Em
+    # snapshot antigo isso corromperia o histórico, então usamos
+    # historical_price.fetch_on (spec 53) pra buscar o preço do
+    # period_end. Se o provider histórico não devolver, mantemos o
+    # bloqueio antigo e direcionamos o user pro fluxo EDIT_PRICE.
     snap = db.get(PortfolioSnapshot, pen.snapshot_id)
+    now = datetime.now(timezone.utc)
     if snap is not None and snap.period_end_date != date.today():
-        raise ValueError(
-            "Snapshot antigo — API retorna preço de hoje, não do period_end. "
-            "Preencha o preço manualmente."
+        hist_price = historical_price.fetch_on(
+            db, asset, snap.period_end_date,
         )
+        if hist_price is None:
+            raise ValueError(
+                f"Provider histórico não retornou preço para "
+                f"{snap.period_end_date.isoformat()}. "
+                "Preencha manualmente."
+            )
+        # Preço histórico ≠ preço de hoje — NÃO tocamos em
+        # asset.current_price. Só atualizamos o item + resolve pendency,
+        # espelhando o bloco pós-refresh_one do path LIVE.
+        item = (
+            db.query(PortfolioSnapshotItem)
+            .filter(
+                PortfolioSnapshotItem.snapshot_id == snap.id,
+                PortfolioSnapshotItem.asset_id == asset.id,
+            )
+            .first()
+        )
+        if item is not None:
+            item.unit_price = hist_price
+            if item.quantity is not None:
+                if item.quantity > 0:
+                    mv_native = item.quantity * hist_price
+                else:
+                    mv_native = hist_price
+                item.market_value_native = mv_native
+                ccy = asset.currency.value
+                fx = snap.fx_rate_usd_brl
+                if ccy == "BRL":
+                    item.market_value_brl = mv_native
+                    if fx and fx > 0:
+                        item.market_value_usd = mv_native / fx
+                elif ccy == "USD":
+                    item.market_value_usd = mv_native
+                    if fx and fx > 0:
+                        item.market_value_brl = mv_native * fx
+        pen.resolved_at = now
+        pen.resolved_by = user_id
+        pen.resolution_note = f"Historical fetch ok: {hist_price}"
+        db.flush()
+
+        # Refresh snapshot totals.
+        items = (
+            db.query(PortfolioSnapshotItem)
+            .filter(PortfolioSnapshotItem.snapshot_id == snap.id)
+            .all()
+        )
+        snap.total_value_brl = sum(
+            (i.market_value_brl or Decimal("0") for i in items), Decimal("0"),
+        )
+        snap.total_value_usd = sum(
+            (i.market_value_usd or Decimal("0") for i in items), Decimal("0"),
+        )
+        db.flush()
+
+        AuditService(db).log(
+            user_email=user_email or (user_id or "system"),
+            action="snapshot.pendency.retry_api",
+            workspace_id=snap.workspace_id,
+            user_id=user_id,
+            resource_type="pendency",
+            resource_id=pen.id,
+            details={
+                "asset_id": asset.id,
+                "ticker": asset.ticker,
+                "status": "ok",
+                "old_price": None,
+                "new_price": str(hist_price),
+                "error": None,
+                "path": "historical",
+            },
+        )
+        return pen
 
     result = refresh_one(db, asset, user_email=user_email or "system")
-    now = datetime.now(timezone.utc)
 
     if result.status == "ok":
         snap = db.get(PortfolioSnapshot, pen.snapshot_id)
