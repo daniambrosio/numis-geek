@@ -114,7 +114,7 @@ export default function AddSnapshotAssetModal({
 
           <label className="block">
             <span className="text-[11px] uppercase tracking-wider font-medium text-gray-500">
-              Ativo ({filtered.length} disponível{filtered.length === 1 ? '' : 'is'})
+              Ativo ({filtered.length} {filtered.length === 1 ? 'disponível' : 'disponíveis'})
             </span>
             <select
               value={picked}

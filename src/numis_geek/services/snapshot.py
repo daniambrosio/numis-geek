@@ -1485,7 +1485,12 @@ def update_snapshot_item_price(
         # cotado). compute_position vira só fallback pra item que ainda não
         # existe.
         if new_quantity is not None and new_quantity > 0:
-            qty = new_quantity
+            # Task 56 fix: aplicar o mesmo clamp value-mode aqui — se não,
+            # dividir por new_quantity pré-clamp (=3) e depois setar
+            # item.quantity=1 (=clamp pós) esmaga stored_price pra 1/3 do
+            # valor enviado. `_effective_item_quantity` devolve new_quantity
+            # pra asset cotado (sem efeito) e Decimal(1) pra value-mode.
+            qty = _effective_item_quantity(asset, new_quantity)
         else:
             existing = (
                 db.query(PortfolioSnapshotItem)
