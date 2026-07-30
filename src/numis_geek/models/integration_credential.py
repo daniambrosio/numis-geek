@@ -14,6 +14,7 @@ class IntegrationProvider(str, enum.Enum):
     FINNHUB = "FINNHUB"
     YFINANCE = "YFINANCE"
     ANTHROPIC = "ANTHROPIC"   # Spec 38 — LLM extraction
+    TESOURO = "TESOURO"       # Tesouro Transparente CSV (histórico de PU)
 
 
 INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
@@ -22,6 +23,7 @@ INTEGRATION_PROVIDER_LABELS: dict[IntegrationProvider, str] = {
     IntegrationProvider.FINNHUB: "Finnhub (cotação US)",
     IntegrationProvider.YFINANCE: "Yahoo Finance (histórico US)",
     IntegrationProvider.ANTHROPIC: "Anthropic Claude (LLM extraction)",
+    IntegrationProvider.TESOURO: "Tesouro Transparente (histórico de PU)",
 }
 
 PROVIDERS_REQUIRING_CREDENTIALS: set[IntegrationProvider] = {

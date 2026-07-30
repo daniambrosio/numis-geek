@@ -147,6 +147,47 @@ def fetch_quote(ticker: str, token: str) -> BrapiQuote:
     return BrapiQuote(ticker=ticker, price=Decimal(str(price)))
 
 
+def _range_for_target(target_date: date, *, today: date | None = None) -> str:
+    """Pick smallest brapi range that covers ``today - target_date``.
+
+    Aceita 1d/5d/1mo/3mo/6mo/1y/2y/5y/10y/max. Retorna a menor janela
+    suficiente pra reduzir payload — walkback é responsabilidade do
+    caller, não do adapter.
+    """
+    ref = today or datetime.now(timezone.utc).date()
+    days = max((ref - target_date).days, 0)
+    for threshold, label in (
+        (5, "5d"),
+        (30, "1mo"),
+        (90, "3mo"),
+        (180, "6mo"),
+        (365, "1y"),
+        (730, "2y"),
+        (1825, "5y"),
+        (3650, "10y"),
+    ):
+        if days <= threshold:
+            return label
+    return "max"
+
+
+def fetch_close_on(
+    ticker: str, token: str, target_date: date
+) -> Decimal | None:
+    """Preço de fechamento em ``target_date`` (ou None se não houver ponto exato).
+
+    Wrapper puro em torno de :func:`fetch_history`: escolhe a janela mínima
+    que cobre a data pedida e filtra a série. Sem walkback — datas sem
+    candle (fins-de-semana, feriados) retornam None e o service decide.
+    """
+    range_ = _range_for_target(target_date)
+    points = fetch_history(ticker, token, range_=range_)
+    for p in points:
+        if p.date == target_date:
+            return p.close
+    return None
+
+
 def fetch_history(
     ticker: str,
     token: str,

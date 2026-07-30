@@ -7,7 +7,7 @@ Endpoints:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +15,7 @@ import httpx
 
 FINNHUB_QUOTE = "https://finnhub.io/api/v1/quote"
 FINNHUB_METRIC = "https://finnhub.io/api/v1/stock/metric"
+FINNHUB_CANDLE = "https://finnhub.io/api/v1/stock/candle"
 DEFAULT_TIMEOUT = 15.0
 
 
@@ -132,3 +133,54 @@ def fetch_quote(symbol: str, token: str) -> FinnhubQuote:
     if price in (None, 0, 0.0):
         raise FinnhubError(f"Finnhub {symbol} returned zero price (likely unknown ticker)")
     return FinnhubQuote(symbol=symbol, price=Decimal(str(price)))
+
+
+def _midnight_utc_ts(d: date) -> int:
+    return int(datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+
+
+def fetch_close_on(
+    symbol: str, token: str, target_date: date
+) -> Decimal | None:
+    """Preço de fechamento diário em ``target_date`` (ou None se não existir).
+
+    Consulta ``/stock/candle`` com resolution=D e janela +-alguns dias em
+    torno de ``target_date`` (buffer pra fim-de-semana). Sem walkback:
+    retorna None quando a série vem vazia ou nenhum candle bate com a data.
+    Erros de rede/parse continuam levantando FinnhubError.
+    """
+    ts_from = _midnight_utc_ts(target_date - timedelta(days=5))
+    ts_to = _midnight_utc_ts(target_date + timedelta(days=1))
+    try:
+        r = httpx.get(
+            FINNHUB_CANDLE,
+            params={
+                "symbol": symbol,
+                "resolution": "D",
+                "from": ts_from,
+                "to": ts_to,
+                "token": token,
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except httpx.HTTPError as e:
+        raise FinnhubError(f"Finnhub candle {symbol} failed: {e}") from e
+    except ValueError as e:
+        raise FinnhubError(f"Finnhub candle {symbol} returned non-JSON: {e}") from e
+
+    if not isinstance(data, dict) or data.get("s") == "no_data":
+        return None
+    closes = data.get("c") or []
+    timestamps = data.get("t") or []
+    if not closes or not timestamps or len(closes) != len(timestamps):
+        return None
+    for ts, close in zip(timestamps, closes):
+        try:
+            candle_date = datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
+        except (TypeError, ValueError, OSError):
+            continue
+        if candle_date == target_date:
+            return _as_decimal(close)
+    return None

@@ -395,3 +395,303 @@ def test_bcb_fetch_ptax_range_end_before_start_raises():
 
     with pytest.raises(ValueError, match="precedes start"):
         bcb_mod.fetch_ptax_range(date(2026, 2, 1), date(2026, 1, 1))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BRAPI — fetch_close_on (wrapper histórico)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _brapi_history_payload(dates_and_closes: list[tuple[date, float]]) -> dict:
+    """Constrói o shape que /api/quote/<t>?range=... retorna."""
+    from datetime import datetime as _dt, timezone as _tz
+    return {
+        "results": [
+            {
+                "symbol": "PETR4",
+                "historicalDataPrice": [
+                    {
+                        "date": int(_dt(d.year, d.month, d.day, tzinfo=_tz.utc).timestamp()),
+                        "close": c,
+                    }
+                    for d, c in dates_and_closes
+                ],
+            }
+        ]
+    }
+
+
+def test_brapi_range_for_target_boundaries():
+    """Mapeamento dias→range: escolhe menor janela suficiente."""
+    from numis_geek.integrations.brapi import _range_for_target
+
+    today = date(2026, 6, 1)
+    assert _range_for_target(date(2026, 5, 30), today=today) == "5d"
+    assert _range_for_target(date(2026, 5, 15), today=today) == "1mo"
+    assert _range_for_target(date(2026, 3, 20), today=today) == "3mo"
+    assert _range_for_target(date(2026, 1, 5), today=today) == "6mo"
+    assert _range_for_target(date(2025, 8, 1), today=today) == "1y"
+    assert _range_for_target(date(2024, 8, 1), today=today) == "2y"
+    assert _range_for_target(date(2022, 1, 1), today=today) == "5y"
+    assert _range_for_target(date(2017, 1, 1), today=today) == "10y"
+    assert _range_for_target(date(2000, 1, 1), today=today) == "max"
+
+
+def test_brapi_fetch_close_on_happy():
+    """Data pedida está na série → retorna o close."""
+    from numis_geek.integrations.brapi import fetch_close_on
+
+    payload = _brapi_history_payload([
+        (date(2026, 5, 26), 37.10),
+        (date(2026, 5, 27), 38.42),
+        (date(2026, 5, 28), 39.05),
+    ])
+    with patch("numis_geek.integrations.brapi.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("PETR4", "fake-token", date(2026, 5, 27))
+    assert px == Decimal("38.42")
+
+
+def test_brapi_fetch_close_on_missing_date_returns_none():
+    """Data não está na série (fim-de-semana/feriado) → None (sem walkback)."""
+    from numis_geek.integrations.brapi import fetch_close_on
+
+    payload = _brapi_history_payload([
+        (date(2026, 5, 26), 37.10),
+        (date(2026, 5, 28), 39.05),
+    ])
+    with patch("numis_geek.integrations.brapi.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("PETR4", "fake-token", date(2026, 5, 27))
+    assert px is None
+
+
+def test_brapi_fetch_close_on_propagates_http_error():
+    """fetch_history raise BrapiError → fetch_close_on também raise."""
+    from numis_geek.integrations.brapi import BrapiError, fetch_close_on
+
+    with patch("numis_geek.integrations.brapi.httpx.get") as g:
+        g.side_effect = httpx.ConnectError("network down")
+        with pytest.raises(BrapiError, match="brapi history"):
+            fetch_close_on("PETR4", "fake-token", date(2026, 5, 27))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FINNHUB — fetch_close_on (candle histórico)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _finnhub_candle_payload(dates_and_closes: list[tuple[date, float]]) -> dict:
+    from datetime import datetime as _dt, timezone as _tz
+    ts = [int(_dt(d.year, d.month, d.day, tzinfo=_tz.utc).timestamp()) for d, _ in dates_and_closes]
+    return {
+        "s": "ok",
+        "t": ts,
+        "c": [c for _, c in dates_and_closes],
+        "o": [c for _, c in dates_and_closes],
+        "h": [c for _, c in dates_and_closes],
+        "l": [c for _, c in dates_and_closes],
+        "v": [1000 for _ in dates_and_closes],
+    }
+
+
+def test_finnhub_fetch_close_on_happy():
+    from numis_geek.integrations.finnhub import fetch_close_on
+
+    payload = _finnhub_candle_payload([
+        (date(2026, 5, 26), 195.10),
+        (date(2026, 5, 27), 196.42),
+        (date(2026, 5, 28), 197.20),
+    ])
+    with patch("numis_geek.integrations.finnhub.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("AAPL", "fake-token", date(2026, 5, 27))
+    assert px == Decimal("196.42")
+
+
+def test_finnhub_fetch_close_on_no_data_status_returns_none():
+    """s == 'no_data' → None."""
+    from numis_geek.integrations.finnhub import fetch_close_on
+
+    with patch("numis_geek.integrations.finnhub.httpx.get") as g:
+        g.return_value = _mock_response({"s": "no_data"})
+        px = fetch_close_on("AAPL", "fake-token", date(2026, 5, 27))
+    assert px is None
+
+
+def test_finnhub_fetch_close_on_missing_date_returns_none():
+    """Série não contém o target_date exato → None."""
+    from numis_geek.integrations.finnhub import fetch_close_on
+
+    payload = _finnhub_candle_payload([
+        (date(2026, 5, 26), 195.10),
+        (date(2026, 5, 28), 197.20),
+    ])
+    with patch("numis_geek.integrations.finnhub.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("AAPL", "fake-token", date(2026, 5, 27))
+    assert px is None
+
+
+def test_finnhub_fetch_close_on_http_error_raises():
+    from numis_geek.integrations.finnhub import FinnhubError, fetch_close_on
+
+    with patch("numis_geek.integrations.finnhub.httpx.get") as g:
+        g.side_effect = httpx.ConnectError("down")
+        with pytest.raises(FinnhubError, match="Finnhub candle"):
+            fetch_close_on("AAPL", "fake-token", date(2026, 5, 27))
+
+
+def test_finnhub_fetch_close_on_sends_expected_params():
+    """Valida params: symbol, resolution=D, from/to em unix ts, token."""
+    from numis_geek.integrations.finnhub import fetch_close_on
+
+    with patch("numis_geek.integrations.finnhub.httpx.get") as g:
+        g.return_value = _mock_response({"s": "no_data"})
+        fetch_close_on("AAPL", "fake-token", date(2026, 5, 27))
+        args, kwargs = g.call_args
+    params = kwargs["params"]
+    assert params["symbol"] == "AAPL"
+    assert params["resolution"] == "D"
+    assert params["token"] == "fake-token"
+    assert isinstance(params["from"], int) and isinstance(params["to"], int)
+    assert params["from"] < params["to"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# COINBASE — fetch_close_on (candles diários)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _coinbase_candles_payload(dates_and_closes: list[tuple[date, float]]) -> list:
+    """[timestamp, low, high, open, close, volume] — ordem reversa cronológica."""
+    from datetime import datetime as _dt, timezone as _tz
+    rows = [
+        [
+            int(_dt(d.year, d.month, d.day, tzinfo=_tz.utc).timestamp()),
+            c - 100, c + 100, c, c, 12.34,
+        ]
+        for d, c in dates_and_closes
+    ]
+    rows.sort(key=lambda r: r[0], reverse=True)
+    return rows
+
+
+def test_coinbase_fetch_close_on_happy():
+    from numis_geek.integrations.coinbase import fetch_close_on
+
+    payload = _coinbase_candles_payload([(date(2026, 5, 27), 67100.42)])
+    with patch("numis_geek.integrations.coinbase.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("BTC", date(2026, 5, 27))
+    assert px == Decimal("67100.42")
+
+
+def test_coinbase_fetch_close_on_empty_list_returns_none():
+    from numis_geek.integrations.coinbase import fetch_close_on
+
+    with patch("numis_geek.integrations.coinbase.httpx.get") as g:
+        g.return_value = _mock_response([])
+        px = fetch_close_on("BTC", date(2026, 5, 27))
+    assert px is None
+
+
+def test_coinbase_fetch_close_on_missing_date_returns_none():
+    """Candle existe mas em outro dia — retorna None (não faz walkback)."""
+    from numis_geek.integrations.coinbase import fetch_close_on
+
+    payload = _coinbase_candles_payload([(date(2026, 5, 26), 67000.0)])
+    with patch("numis_geek.integrations.coinbase.httpx.get") as g:
+        g.return_value = _mock_response(payload)
+        px = fetch_close_on("BTC", date(2026, 5, 27))
+    assert px is None
+
+
+def test_coinbase_fetch_close_on_uses_correct_pair_and_range():
+    from numis_geek.integrations.coinbase import fetch_close_on
+
+    with patch("numis_geek.integrations.coinbase.httpx.get") as g:
+        g.return_value = _mock_response([])
+        fetch_close_on("eth", date(2026, 5, 27), quote_currency="usd")
+        args, kwargs = g.call_args
+    assert "ETH-USD" in args[0]
+    params = kwargs["params"]
+    assert params["start"] == "2026-05-27"
+    assert params["end"] == "2026-05-28"
+    assert params["granularity"] == 86400
+
+
+def test_coinbase_fetch_close_on_http_error_raises():
+    from numis_geek.integrations.coinbase import CoinbaseError, fetch_close_on
+
+    with patch("numis_geek.integrations.coinbase.httpx.get") as g:
+        g.side_effect = httpx.ConnectError("down")
+        with pytest.raises(CoinbaseError, match="coinbase candles"):
+            fetch_close_on("BTC", date(2026, 5, 27))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# YFINANCE — fetch_close_on (close diário)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_daily_df(closes: list[tuple[str, float]]):
+    import pandas as pd
+    idx = pd.to_datetime([d for d, _ in closes])
+    return pd.DataFrame({"Close": [c for _, c in closes]}, index=idx)
+
+
+def test_yfinance_fetch_close_on_happy():
+    from numis_geek.integrations import yfinance as yfmod
+
+    df = _make_daily_df([("2026-05-27", 196.42)])
+    fake_yf = MagicMock()
+    fake_yf.Ticker.return_value = _FakeYFTicker(df)
+    with patch.object(yfmod, "yf", fake_yf), patch.object(yfmod, "_HAS_YFINANCE", True):
+        px = yfmod.fetch_close_on("AAPL", date(2026, 5, 27))
+    assert px == Decimal("196.42")
+
+
+def test_yfinance_fetch_close_on_empty_df_returns_none():
+    from numis_geek.integrations import yfinance as yfmod
+    import pandas as pd
+
+    fake_yf = MagicMock()
+    fake_yf.Ticker.return_value = _FakeYFTicker(pd.DataFrame({"Close": []}))
+    with patch.object(yfmod, "yf", fake_yf), patch.object(yfmod, "_HAS_YFINANCE", True):
+        px = yfmod.fetch_close_on("AAPL", date(2026, 5, 27))
+    assert px is None
+
+
+def test_yfinance_fetch_close_on_wrong_date_returns_none():
+    """DF veio com row mas em data diferente do target — None."""
+    from numis_geek.integrations import yfinance as yfmod
+
+    df = _make_daily_df([("2026-05-26", 195.10)])
+    fake_yf = MagicMock()
+    fake_yf.Ticker.return_value = _FakeYFTicker(df)
+    with patch.object(yfmod, "yf", fake_yf), patch.object(yfmod, "_HAS_YFINANCE", True):
+        px = yfmod.fetch_close_on("AAPL", date(2026, 5, 27))
+    assert px is None
+
+
+def test_yfinance_fetch_close_on_raises_when_pkg_missing():
+    from numis_geek.integrations import yfinance as yfmod
+
+    with patch.object(yfmod, "_HAS_YFINANCE", False):
+        with pytest.raises(yfmod.YFinanceError, match="not installed"):
+            yfmod.fetch_close_on("AAPL", date(2026, 5, 27))
+
+
+def test_yfinance_fetch_close_on_network_error_wraps():
+    from numis_geek.integrations import yfinance as yfmod
+
+    class _BoomTicker:
+        def history(self, **kw):
+            raise RuntimeError("yahoo down")
+
+    fake_yf = MagicMock()
+    fake_yf.Ticker.return_value = _BoomTicker()
+    with patch.object(yfmod, "yf", fake_yf), patch.object(yfmod, "_HAS_YFINANCE", True):
+        with pytest.raises(yfmod.YFinanceError, match="close_on"):
+            yfmod.fetch_close_on("AAPL", date(2026, 5, 27))

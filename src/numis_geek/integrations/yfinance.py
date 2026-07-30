@@ -11,7 +11,7 @@ YFinanceError so the ingestion service can degrade gracefully.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -117,3 +117,35 @@ def fetch_history_monthly(
         d = idx.date() if hasattr(idx, "date") else idx
         points.append(YFinanceMonthlyPoint(date=d, close=_as_decimal(close) or Decimal("0")))
     return points
+
+
+def fetch_close_on(symbol: str, target_date: date) -> Decimal | None:
+    """Close diário em ``target_date`` via yfinance (ou None se sem row).
+
+    Requisita uma janela [target_date, target_date+1d) com interval=1d.
+    Sem walkback: fins-de-semana/feriados retornam None e o service
+    consumidor decide. Levanta YFinanceError apenas quando o pacote não
+    está instalado ou a chamada Yahoo falha por rede/parse.
+    """
+    if not _HAS_YFINANCE:
+        raise YFinanceError("yfinance package not installed")
+    try:
+        tk = yf.Ticker(symbol)
+        hist = tk.history(
+            start=target_date.isoformat(),
+            end=(target_date + timedelta(days=1)).isoformat(),
+            interval="1d",
+            auto_adjust=True,
+        )
+    except Exception as e:
+        raise YFinanceError(f"yfinance close_on {symbol} failed: {e}") from e
+    if hist is None or hist.empty:
+        return None
+    for idx, row in hist.iterrows():
+        d = idx.date() if hasattr(idx, "date") else idx
+        if d == target_date:
+            close = row.get("Close")
+            if close is None:
+                return None
+            return _as_decimal(close)
+    return None
