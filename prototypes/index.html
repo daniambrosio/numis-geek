@@ -1274,6 +1274,8 @@ const ICONS = {
   "check-circle":    "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M8 12l3 3 5-6",
   "history":         "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2",
   "rotate-ccw":      "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5",
+  "git-compare":     "M8 7l-4 5 4 5M16 7l4 5-4 5M4 12h16",
+  "x":               "M18 6L6 18M6 6l12 12",
 };
 
 function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
@@ -7397,6 +7399,434 @@ function SnapshotChart({ data }) {
 }
 
 /* =====================================================================
+ * SPEC 59 — Comparativo mês a mês de fechamento
+ * Helpers + DiffPanel (tabela N-way) + SeriePanel (chart multi-linha).
+ * Reaproveitado por FechamentoDetail (seção no fim), /fechamentos/compare,
+ * e painel do chart Evolução em /fechamentos.
+ * =================================================================== */
+
+const COMPARE_ALL_YMS = SNAPSHOTS.map(s => s.ym); // cronológico asc, todos (inclui em_revisao) — só p/ achar prev do baseYm
+const COMPARE_CLOSED_YMS = SNAPSHOTS
+  .filter(s => s.status === "fechado")
+  .map(s => s.ym); // usado no dropdown "+ Coluna" (memory: só CLOSED)
+
+function _compareValueOf(snap, ccy) {
+  return ccy === "BRL" ? snap.total_brl : snap.total_usd;
+}
+
+// Split determinístico de um total entre um conjunto de chaves.
+// Cada (ym, key, seed) gera um peso; normaliza pra somar 1 e escala pelo total.
+// Mocks pro protótipo — no real, o backend agrega direto do PortfolioSnapshotItem.
+function _splitTotal(ym, total, keys, seed) {
+  // Cada key tem um peso âncora (estável entre meses, varia por key) + drift pequeno por (ym, key)
+  // Drift ≤ 10% do peso âncora → variação plausível MoM.
+  // ym = "YYYY-MM" — charCodeAt(6) é o dígito que varia mais entre meses adjacentes.
+  const raws = {};
+  let sum = 0;
+  const monthSalt = ym.charCodeAt(3) * 3 + ym.charCodeAt(5) * 7 + ym.charCodeAt(6) * 11;
+  keys.forEach((k, i) => {
+    const anchor = Math.abs(Math.sin(i * 2.3 + seed * 0.7)) + 0.05; // estável por key
+    const drift = Math.sin(monthSalt * 0.13 + i * 3.7 + seed) * 0.1;     // ±10%
+    const w = anchor * (1 + drift);
+    raws[k] = w;
+    sum += w;
+  });
+  const out = {};
+  keys.forEach(k => { out[k] = (raws[k] / sum) * total; });
+  return out;
+}
+
+function comparativoData(yms, ccy) {
+  const classKeys = Object.keys(KLASS);
+  const custodianKeys = FIs.map(f => f.id);
+  const countryKeys = ["BR", "US"];
+  return yms.map(ym => {
+    const snap = snapshotByYm[ym];
+    if (!snap) return null;
+    const total = _compareValueOf(snap, ccy);
+    return {
+      ym,
+      snap,
+      total,
+      byClass:      _splitTotal(ym, total, classKeys, 0),
+      byCustodian:  _splitTotal(ym, total, custodianKeys, 100),
+      byCountry:    _splitTotal(ym, total, countryKeys, 200),
+    };
+  }).filter(Boolean);
+}
+
+function _fmtCcy(v, ccy) {
+  // Compact com 2 casas decimais — "R$ 3,01 mi" ao invés de "R$ 3 mi", mais legível em comparativo
+  if (v == null) return "—";
+  const abs = Math.abs(v);
+  const compact = abs >= 10000;
+  const fmt = new Intl.NumberFormat(ccy === "USD" ? "en-US" : "pt-BR", {
+    style: "currency",
+    currency: ccy,
+    notation: compact ? "compact" : "standard",
+    minimumFractionDigits: compact ? 2 : 0,
+    maximumFractionDigits: 2,
+  });
+  return v < 0 ? "−" + fmt.format(Math.abs(v)) : fmt.format(v);
+}
+
+function DeltaCell({ curr, prev, ccy }) {
+  if (prev === undefined || prev === null) return null;
+  const abs = curr - prev;
+  const pct = prev !== 0 ? abs / prev : 0;
+  const color = abs >= 0 ? "text-emerald-400" : "text-red-400";
+  const sign = abs >= 0 ? "+" : "";
+  return (
+    <div className={`text-[10px] tnum ${color}`}>
+      <div>{sign}{_fmtCcy(abs, ccy)}</div>
+      <div className="opacity-70">{sign}{(pct * 100).toFixed(2)}%</div>
+    </div>
+  );
+}
+
+function ComparativoSection({ baseYm }) {
+  const baseIdx = COMPARE_ALL_YMS.indexOf(baseYm);
+  // defaultPrev = último CLOSED estritamente anterior ao baseYm (funciona mesmo se baseYm for em_revisao)
+  const defaultPrev = baseIdx >= 0
+    ? [...COMPARE_ALL_YMS.slice(0, baseIdx)].reverse().find(y => COMPARE_CLOSED_YMS.includes(y)) || null
+    : null;
+  const initialYms = defaultPrev ? [defaultPrev, baseYm] : [baseYm];
+
+  const [yms, setYms] = useState(initialYms);
+  const [ccy, setCcy] = useState("BRL");
+  const [baseMode, setBaseMode] = useState("chained"); // "chained" | "vs_base"
+  const [hiddenClasses, setHiddenClasses] = useState(() => new Set());
+
+  const data = useMemo(() => comparativoData(yms, ccy), [yms, ccy]);
+  const classKeys = Object.keys(KLASS);
+  const custodianEntries = FIs.map(f => ({ id: f.id, label: f.short || f.name }));
+  const countryEntries = [
+    { id: "BR", label: "Brasil" },
+    { id: "US", label: "Estados Unidos" },
+  ];
+
+  const refFor = (i) =>
+    i === 0 ? null : (baseMode === "vs_base" ? data[0] : data[i - 1]);
+
+  const addYm = (candidate) => {
+    if (!candidate || yms.includes(candidate)) return;
+    setYms([...yms, candidate].sort());
+  };
+  const removeYm = (y) => {
+    if (yms.length <= 2) return;
+    setYms(yms.filter(x => x !== y));
+  };
+  const remainingYms = COMPARE_CLOSED_YMS.filter(y => !yms.includes(y));
+
+  return (
+    <Card padding="p-5" className="scroll-mt-20">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2">
+            <Icon name="git-compare" className="w-4 h-4 text-indigo-400"/>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Comparativo</h3>
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            Compara este fechamento com meses anteriores · classes, custodiantes e países
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Currency toggle */}
+          <div className="inline-flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 text-[11px]">
+            {["BRL", "USD"].map(c => (
+              <button key={c} onClick={() => setCcy(c)}
+                className={`px-2.5 h-6 rounded-md ${ccy === c ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm" : "text-gray-500"}`}>
+                {c}
+              </button>
+            ))}
+          </div>
+          {/* Base mode toggle */}
+          <div className="inline-flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 text-[11px]">
+            {[
+              { k: "chained", label: "Δ vs anterior" },
+              { k: "vs_base", label: "Δ vs base" },
+            ].map(m => (
+              <button key={m.k} onClick={() => setBaseMode(m.k)}
+                className={`px-2.5 h-6 rounded-md ${baseMode === m.k ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm" : "text-gray-500"}`}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Column chips */}
+      <div className="flex items-center gap-1.5 flex-wrap mb-4">
+        <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mr-1">Meses:</span>
+        {yms.map(y => {
+          const snap = snapshotByYm[y];
+          const inReview = snap && snap.status === "em_revisao";
+          return (
+            <span key={y} className={`inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[11px] ${
+              inReview ? "bg-amber-500/15 text-amber-300" : "bg-indigo-500/15 text-indigo-300"
+            }`}>
+              {ymLabelShort(y)}
+              {inReview && <span className="text-[9px] uppercase font-semibold opacity-80">rev</span>}
+              {yms.length > 2 && (
+                <button onClick={() => removeYm(y)} className={`w-4 h-4 inline-flex items-center justify-center rounded ${inReview ? "hover:bg-amber-500/25" : "hover:bg-indigo-500/25"}`}>
+                  <Icon name="x" className="w-3 h-3"/>
+                </button>
+              )}
+            </span>
+          );
+        })}
+        {remainingYms.length > 0 && (
+          <select onChange={(e) => { addYm(e.target.value); e.target.value = ""; }}
+            defaultValue=""
+            className="h-6 px-2 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-500 border border-dashed border-gray-300 dark:border-gray-700">
+            <option value="" disabled>+ Coluna</option>
+            {remainingYms.map(y => <option key={y} value={y}>{ymLabelShort(y)}</option>)}
+          </select>
+        )}
+      </div>
+
+      {/* DiffPanel table */}
+      <div className="overflow-x-auto -mx-1 mb-6 border border-gray-100 dark:border-gray-800/60 rounded-lg">
+        <table className="w-full text-[12px] min-w-max">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-gray-500 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40">
+              <th className="text-left font-medium px-3 py-2 sticky left-0 bg-gray-50 dark:bg-gray-800/40 z-10 min-w-[160px]">Dimensão</th>
+              {data.map((d) => {
+                const inReview = d.snap.status === "em_revisao";
+                return (
+                  <th key={d.ym} className="text-right font-medium px-3 py-2 min-w-[140px]">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <span className="text-gray-300">{ymLabelShort(d.ym)}</span>
+                      {inReview && (
+                        <span className="inline-flex items-center px-1 h-4 rounded text-[9px] font-semibold uppercase bg-amber-500/20 text-amber-300" title="Em revisão — números podem mudar">
+                          rev
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5">{fmtDateBR(d.snap.period_end)}</div>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Total */}
+            <tr className="border-b border-gray-200 dark:border-gray-800 font-semibold bg-indigo-500/[0.04]">
+              <td className="px-3 py-2 sticky left-0 bg-indigo-500/[0.06] dark:bg-indigo-500/[0.08] text-gray-200">Total do patrimônio</td>
+              {data.map((d, i) => {
+                const ref = refFor(i);
+                return (
+                  <td key={d.ym} className="px-3 py-2 text-right">
+                    <div className="tnum money text-gray-100">{_fmtCcy(d.total, ccy)}</div>
+                    {ref && <DeltaCell curr={d.total} prev={ref.total} ccy={ccy}/>}
+                  </td>
+                );
+              })}
+            </tr>
+
+            {/* Por classe */}
+            <tr>
+              <td colSpan={data.length + 1} className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+                Por classe
+              </td>
+            </tr>
+            {classKeys.map(k => {
+              const meta = KLASS[k];
+              if (!meta) return null;
+              return (
+                <tr key={k} className="border-t border-gray-100 dark:border-gray-800/60">
+                  <td className="px-3 py-1.5 sticky left-0 bg-white dark:bg-gray-950">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }}/>
+                      <span className="text-[11px] text-gray-300">{meta.label}</span>
+                    </span>
+                  </td>
+                  {data.map((d, i) => {
+                    const ref = refFor(i);
+                    const v = d.byClass[k];
+                    return (
+                      <td key={d.ym} className="px-3 py-1.5 text-right">
+                        <div className="tnum money text-gray-300">{_fmtCcy(v, ccy)}</div>
+                        {ref && <DeltaCell curr={v} prev={ref.byClass[k]} ccy={ccy}/>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+
+            {/* Por custodiante */}
+            <tr>
+              <td colSpan={data.length + 1} className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+                Por custodiante
+              </td>
+            </tr>
+            {custodianEntries.map(c => (
+              <tr key={c.id} className="border-t border-gray-100 dark:border-gray-800/60">
+                <td className="px-3 py-1.5 sticky left-0 bg-white dark:bg-gray-950 text-[11px] text-gray-300">{c.label}</td>
+                {data.map((d, i) => {
+                  const ref = refFor(i);
+                  const v = d.byCustodian[c.id];
+                  return (
+                    <td key={d.ym} className="px-3 py-1.5 text-right">
+                      <div className="tnum money text-gray-300">{_fmtCcy(v, ccy)}</div>
+                      {ref && <DeltaCell curr={v} prev={ref.byCustodian[c.id]} ccy={ccy}/>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+
+            {/* Por país */}
+            <tr>
+              <td colSpan={data.length + 1} className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+                Por país
+              </td>
+            </tr>
+            {countryEntries.map(c => (
+              <tr key={c.id} className="border-t border-gray-100 dark:border-gray-800/60">
+                <td className="px-3 py-1.5 sticky left-0 bg-white dark:bg-gray-950">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-300">
+                    <CountryFlag country={c.id}/> {c.label}
+                  </span>
+                </td>
+                {data.map((d, i) => {
+                  const ref = refFor(i);
+                  const v = d.byCountry[c.id];
+                  return (
+                    <td key={d.ym} className="px-3 py-1.5 text-right">
+                      <div className="tnum money text-gray-300">{_fmtCcy(v, ccy)}</div>
+                      {ref && <DeltaCell curr={v} prev={ref.byCountry[c.id]} ccy={ccy}/>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* SeriePanel — chart multi-linha */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold">Série temporal · total + linhas por classe</h4>
+          <div className="text-[10px] text-gray-500">
+            {data.length} {data.length === 1 ? "mês" : "meses"} · clique nas classes pra ligar/desligar
+          </div>
+        </div>
+        <MultiLineSeries data={data} ccy={ccy} hiddenClasses={hiddenClasses} setHiddenClasses={setHiddenClasses}/>
+      </div>
+    </Card>
+  );
+}
+
+function MultiLineSeries({ data, ccy, hiddenClasses, setHiddenClasses }) {
+  const w = 720, h = 220, pad = { l: 44, r: 12, t: 12, b: 24 };
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const classKeys = Object.keys(KLASS).filter(k => KLASS[k]);
+  const showTotal = !hiddenClasses.has("__total__");
+
+  const activeSeries = [
+    ...(showTotal ? [data.map(d => d.total)] : []),
+    ...classKeys.filter(k => !hiddenClasses.has(k)).map(k => data.map(d => d.byClass[k])),
+  ];
+  const allValues = activeSeries.flat();
+  const rawMin = allValues.length ? Math.min(...allValues) : 0;
+  const rawMax = allValues.length ? Math.max(...allValues) : 1;
+  const min = Math.min(0, rawMin * 0.98);
+  const max = Math.max(1, rawMax * 1.02);
+  const range = max - min || 1;
+  const stepX = data.length > 1 ? innerW / (data.length - 1) : innerW;
+  const xOf = (i) => pad.l + i * stepX;
+  const yOf = (v) => pad.t + innerH - ((v - min) / range) * innerH;
+  const pathOf = (series) =>
+    "M " + series.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" L ");
+
+  const toggle = (key) => {
+    const next = new Set(hiddenClasses);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    setHiddenClasses(next);
+  };
+
+  const fmtY = (v) => {
+    const abs = Math.abs(v);
+    if (abs >= 1_000_000) return (ccy === "USD" ? "$" : "R$") + (v / 1_000_000).toFixed(1) + "M";
+    if (abs >= 1_000) return (ccy === "USD" ? "$" : "R$") + Math.round(v / 1_000) + "k";
+    return (ccy === "USD" ? "$" : "R$") + Math.round(v);
+  };
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full min-w-[520px]" style={{ maxHeight: h }}>
+          {/* Grid */}
+          {[0, 0.25, 0.5, 0.75, 1].map((t, i) => {
+            const y = pad.t + t * innerH;
+            const v = min + range * (1 - t);
+            return (
+              <g key={i}>
+                <line x1={pad.l} y1={y} x2={w - pad.r} y2={y} stroke="currentColor" className="text-gray-200 dark:text-gray-800" strokeWidth="0.5"/>
+                <text x={pad.l - 6} y={y + 3} fontSize="9" textAnchor="end" fill="#6b7280">{fmtY(v)}</text>
+              </g>
+            );
+          })}
+          {/* X labels */}
+          {data.map((d, i) => (
+            <text key={d.ym} x={xOf(i)} y={h - 6} fontSize="9" textAnchor="middle" fill="#6b7280">
+              {ymLabelShort(d.ym).split("/")[0]}
+            </text>
+          ))}
+          {/* Total series */}
+          {showTotal && (
+            <g>
+              {data.length > 1 && <path d={pathOf(data.map(d => d.total))} fill="none" stroke="#a78bfa" strokeWidth="2.5"/>}
+              {data.map((d, i) => <circle key={i} cx={xOf(i)} cy={yOf(d.total)} r="3" fill="#a78bfa"/>)}
+            </g>
+          )}
+          {/* Per-class series */}
+          {classKeys.map(k => {
+            if (hiddenClasses.has(k)) return null;
+            const meta = KLASS[k];
+            const series = data.map(d => d.byClass[k]);
+            return (
+              <g key={k}>
+                {data.length > 1 && <path d={pathOf(series)} fill="none" stroke={meta.color} strokeWidth="1.5" strokeOpacity="0.85"/>}
+                {data.map((_, i) => <circle key={i} cx={xOf(i)} cy={yOf(series[i])} r="2" fill={meta.color}/>)}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      {/* Legend */}
+      <div className="mt-3 flex items-center gap-1.5 flex-wrap">
+        <button onClick={() => toggle("__total__")}
+          className={`inline-flex items-center gap-1.5 px-2 h-6 rounded-md text-[11px] border ${
+            showTotal ? "border-violet-400/40 text-violet-300 bg-violet-500/10" : "border-gray-200 dark:border-gray-800 text-gray-500 opacity-60"
+          }`}>
+          <span className="w-2 h-2 rounded-full" style={{ background: showTotal ? "#a78bfa" : "#6b7280" }}/>
+          Total
+        </button>
+        {classKeys.map(k => {
+          const meta = KLASS[k];
+          const active = !hiddenClasses.has(k);
+          return (
+            <button key={k} onClick={() => toggle(k)}
+              className={`inline-flex items-center gap-1.5 px-2 h-6 rounded-md text-[11px] border ${
+                active ? "border-gray-200 dark:border-gray-700 text-gray-300" : "border-gray-200 dark:border-gray-800 text-gray-500 opacity-60"
+              }`}>
+              <span className="w-2 h-2 rounded-full" style={{ background: active ? meta.color : "#6b7280" }}/>
+              {meta.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
  * FECHAMENTO DETAIL — relatório congelado do mês
  * =================================================================== */
 
@@ -7487,6 +7917,14 @@ function FechamentoDetailPage({ ym }) {
               {ymLabelShort(nextYm)} <Icon name="arrow-right" className="w-3 h-3"/>
             </a>
           )}
+          <button
+            onClick={() => {
+              const el = document.getElementById("comparativo-section");
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25">
+            <Icon name="git-compare" className="w-3.5 h-3.5"/> Ver comparativo
+          </button>
           <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
             <Icon name="download" className="w-3.5 h-3.5"/> Exportar PDF
           </button>
@@ -7701,6 +8139,11 @@ function FechamentoDetailPage({ ym }) {
             ))}
           </div>
         </Card>
+      </div>
+
+      {/* SPEC 59 — Comparativo (seção no fim do fechamento) */}
+      <div id="comparativo-section">
+        <ComparativoSection baseYm={ym}/>
       </div>
 
       {/* Sources audit */}
