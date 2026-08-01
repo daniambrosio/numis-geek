@@ -48,6 +48,33 @@ function fmtDateBR(iso: string): string {
   return `${d}/${m}/${y}`
 }
 
+// SUSPICIOUS_DELTA (spec 62) grava detail=json.dumps(payload) no backend.
+// Renderizar cru vira "{previous_snapshot_id: ..., delta_native: ..., ...}"
+// na UI. O bloco MoMDelta no topo já mostra a comparação completa; aqui
+// basta um label curto. Fallback pro raw se o parse falhar.
+function formatPendencyDetail(reason: string, detail: string | null): string | null {
+  if (!detail) return null
+  if (reason !== 'SUSPICIOUS_DELTA') return detail
+  try {
+    const p = JSON.parse(detail) as {
+      delta_pct?: string
+      previous_period_end?: string
+    }
+    const pctNum = p.delta_pct != null ? Number(p.delta_pct) * 100 : null
+    const pctStr = pctNum != null && !Number.isNaN(pctNum)
+      ? `${pctNum >= 0 ? '+' : ''}${pctNum.toFixed(2)}%`
+      : null
+    const prevLabel = p.previous_period_end
+      ? ymLabelShort(p.previous_period_end.slice(0, 7))
+      : null
+    if (pctStr && prevLabel) return `Variação anômala ${pctStr} vs ${prevLabel} — confirme no bloco acima`
+    if (pctStr) return `Variação anômala ${pctStr} — confirme no bloco acima`
+    return 'Variação anômala — confirme no bloco acima'
+  } catch {
+    return detail
+  }
+}
+
 const UNGROUPED_FI_LABEL = 'Sem instituição'
 
 interface FIGroup {
@@ -378,7 +405,7 @@ function PendencyRow({
           )}
         </div>
         <div className="text-[11px] text-gray-500 truncate">
-          {pendency.detail ?? pendency.asset_name}
+          {formatPendencyDetail(pendency.reason, pendency.detail) ?? pendency.asset_name}
           {hasPrevious && (
             <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
               · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}
