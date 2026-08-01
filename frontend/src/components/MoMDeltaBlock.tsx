@@ -279,15 +279,23 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
                         </span>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {isPending && !isReadOnly && (
+                        {isPending && !isReadOnly && row.pendency_id && (
                           <button
                             type="button"
                             onClick={() => handleConfirm(row)}
-                            disabled={confirmingId === row.pendency_id}
+                            disabled={confirmingId != null && confirmingId === row.pendency_id}
                             className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 dark:bg-emerald-500 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
                           >
-                            {confirmingId === row.pendency_id ? 'Confirmando…' : 'Confirmar'}
+                            {confirmingId != null && confirmingId === row.pendency_id ? 'Confirmando…' : 'Confirmar'}
                           </button>
+                        )}
+                        {isPending && !isReadOnly && !row.pendency_id && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400 italic"
+                            title="Delta detectado ao vivo mas pendência ainda não foi persistida. Clique em Recalcular acima pra criá-la."
+                          >
+                            (Recalcular)
+                          </span>
                         )}
                       </td>
                     </tr>

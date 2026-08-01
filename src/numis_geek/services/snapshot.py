@@ -157,18 +157,30 @@ def detect_pendencies(
     """Inspect a single asset and return (reason, action, detail) when it
     blocks closing the snapshot. None when the asset is fine.
 
-    Rules (spec 35 §2.2):
-    - NULL / no source            → skip (no pendency)
+    Rules (spec 35 §2.2, revised 2026-08-01):
+    - NULL / no source + value-mode class (FIXED_INCOME, FUND, PENSION,
+      CASH, FGTS)                 → MANUAL_SOURCE (was: silently skipped;
+                                     bug — CD Itau, Meli Dólar etc. viravam
+                                     items no snapshot com valor do BUY
+                                     movement e nunca pediam revisão)
+    - NULL / no source + cotado class → skip (real estate, etc. sem preço
+                                     configurado ficam silenciosos)
     - MANUAL                      → MANUAL_SOURCE (or UPLOAD_REQUIRED via heuristic)
     - Automated source + price OK (tier FRESH or STALE) → no pendency
     - Automated source + tier OLD → STALE_PRICE
     - Automated source + never refreshed (price_updated_at IS NULL) → API_FAILED
     """
     source = asset.price_source
-    if source is None:
+    # NULL price_source só bloqueia fechamento pra assets em value-mode.
+    # Assets cotados (STOCK/ETF/etc.) sem source ficam silenciosos como antes.
+    is_value_mode = (
+        asset.asset_class is not None
+        and asset.asset_class not in _COTADO_CLASSES
+    )
+    if source is None and not is_value_mode:
         return None
 
-    if source == PriceSource.MANUAL:
+    if source is None or source == PriceSource.MANUAL:
         if _is_avenue_generic(db, asset):
             return (
                 PendencyReason.UPLOAD_REQUIRED,

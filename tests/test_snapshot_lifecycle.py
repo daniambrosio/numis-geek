@@ -255,10 +255,16 @@ def test_detect_upload_required_for_avenue_generic(db):
     assert det[1] == PendencyAction.UPLOAD_FILE
 
 
-def test_detect_skips_no_source_assets(db):
+def test_detect_no_source_value_mode_generates_manual(db):
+    """Fix 2026-08-01: CASH/FGTS/FIXED_INCOME/FUND/PENSION sem price_source
+    agora geram MANUAL_SOURCE (antes eram silenciados; bug — CD Itau,
+    Meli Dólar etc. entravam com valor do BUY movement sem revisão)."""
     w = _seed(db)
     asset = db.get(Asset, w["cash_id"])
-    assert detect_pendencies(db, asset, period_end=PERIOD, now=NOW) is None
+    det = detect_pendencies(db, asset, period_end=PERIOD, now=NOW)
+    assert det is not None
+    assert det[0] == PendencyReason.MANUAL_SOURCE
+    assert det[1] == PendencyAction.EDIT_PRICE
 
 
 # ── create_snapshot lifecycle ──────────────────────────────────────────────
@@ -270,8 +276,9 @@ def test_create_snapshot_downgrades_to_in_review_when_pendencies(db):
         db, workspace_id=w["ws_id"], period_end=PERIOD, now=NOW,
     )
     assert result.status == SnapshotStatus.IN_REVIEW
-    # 4 pendencies expected (petr_stale, aapl, casa, avenue_generic).
-    assert result.pendencies_count == 4
+    # 5 pendencies expected (petr_stale, aapl, casa, avenue_generic, cash).
+    # Cash added 2026-08-01 — value-mode sem source agora gera MANUAL_SOURCE.
+    assert result.pendencies_count == 5
 
 
 def test_create_snapshot_closes_when_no_pendencies(db):
