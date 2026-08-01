@@ -19,6 +19,7 @@ from numis_geek.models.integration_credential import (
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot, PortfolioSnapshotItem, SnapshotStatus,
 )
+from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.workspace import Workspace
 from numis_geek.models.audit_log import AuditLog
 from numis_geek.services import historical_price as hp_module
@@ -514,3 +515,109 @@ def test_fetch_on_missing_token_skips_provider(db, monkeypatch):
     price = fetch_on(db, asset, date(2026, 6, 19))
     assert price == Decimal("22.22")
     assert yf_calls[0] == ("ITUB4", date(2026, 6, 19))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fix 2026-08-01: chain COINBASE devolve USD; se asset.currency=BRL, converter
+# via PTAX venda da data efetiva antes de gravar. Sem essa etapa, o refresh
+# escrevia preço em USD como se fosse BRL e mv_native ficava ~5x menor,
+# disparando SUSPICIOUS_DELTA (visto em BTC/USDC no fechamento Jul/26).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _seed_ptax(db, on_date: date, rate: str):
+    now = datetime.now(timezone.utc)
+    db.add(PTAXRate(
+        id=str(uuid.uuid4()), date=on_date, rate=Decimal(rate),
+        source="BCB_SGS", fetched_at=now, created_at=now, updated_at=now,
+    ))
+    db.flush()
+
+
+def _coinbase_asset_brl(db, w, *, ticker="BTC"):
+    a = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws"].id, account_id=w["acc"].id,
+        asset_class=AssetClass.CRYPTO, country="BR",
+        name=ticker, ticker=ticker, currency=Currency.BRL,
+        price_source=PriceSource.COINBASE,
+        is_active=True, created_at=w["now"], updated_at=w["now"],
+    )
+    db.add(a)
+    db.flush()
+    return a
+
+
+def test_fetch_on_coinbase_brl_converts_via_ptax(db, monkeypatch):
+    """Coinbase → USD 63048.34; asset BRL + PTAX 5.20 → 327851.37 BRL."""
+    w = _world(db)
+    asset = _coinbase_asset_brl(db, w, ticker="BTC")
+    _seed_ptax(db, date(2026, 7, 31), "5.20")
+
+    monkeypatch.setattr(
+        hp_module, "coinbase_close_on",
+        lambda t, target, quote="USD": (
+            Decimal("63048.34") if target == date(2026, 7, 31) else None
+        ),
+    )
+    monkeypatch.setattr(hp_module, "yfinance_close_on", lambda *a, **kw: None)
+
+    price = fetch_on(db, asset, date(2026, 7, 31))
+    assert price == Decimal("63048.34") * Decimal("5.20")
+
+    import json
+    log = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action == "price.fetch_historical",
+            AuditLog.resource_id == asset.id,
+        )
+        .one()
+    )
+    payload = json.loads(log.details)
+    assert payload["fx_conversion"]["native_price_usd"] == "63048.34"
+    assert payload["fx_conversion"]["ptax_venda"] == "5.20000000"
+    assert payload["fx_conversion"]["converted_to"] == "BRL"
+
+
+def test_fetch_on_coinbase_usd_no_conversion(db, monkeypatch):
+    """Asset com currency=USD não converte, mesmo com PTAX disponível."""
+    w = _world(db)
+    asset = _coinbase_asset(db, w, ticker="BTC")  # currency=USD
+    _seed_ptax(db, date(2026, 7, 31), "5.20")
+
+    monkeypatch.setattr(
+        hp_module, "coinbase_close_on",
+        lambda t, target, quote="USD": (
+            Decimal("63048.34") if target == date(2026, 7, 31) else None
+        ),
+    )
+    monkeypatch.setattr(hp_module, "yfinance_close_on", lambda *a, **kw: None)
+
+    price = fetch_on(db, asset, date(2026, 7, 31))
+    assert price == Decimal("63048.34")
+
+
+def test_fetch_on_coinbase_brl_no_ptax_returns_none(db, monkeypatch):
+    """Sem PTAX na janela → prefere retornar None a gravar preço USD como BRL.
+
+    A fallback yfinance também devolve USD; sem PTAX, ambas as etapas da
+    chain são puladas e fetch_on retorna None. Chamador (pendency retry) vai
+    manter o item aguardando edição manual — o comportamento seguro."""
+    w = _world(db)
+    asset = _coinbase_asset_brl(db, w, ticker="BTC")
+    # NB: sem _seed_ptax — tabela vazia dentro da janela de 10 dias.
+
+    monkeypatch.setattr(
+        hp_module, "coinbase_close_on",
+        lambda t, target, quote="USD": (
+            Decimal("63048.34") if target == date(2026, 7, 31) else None
+        ),
+    )
+    monkeypatch.setattr(
+        hp_module, "yfinance_close_on",
+        lambda symbol, target: (
+            Decimal("63048.34") if target == date(2026, 7, 31) else None
+        ),
+    )
+
+    price = fetch_on(db, asset, date(2026, 7, 31))
+    assert price is None

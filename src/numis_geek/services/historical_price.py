@@ -51,6 +51,7 @@ from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot, PortfolioSnapshotItem,
 )
 from numis_geek.services.audit import AuditService
+from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 from numis_geek.utils.business_day import is_business_day
 
 
@@ -316,20 +317,46 @@ def fetch_on(
         if result is None:
             continue
         price, effective_date, provider = result
+
+        # Chain COINBASE (coinbase + yfinance <TICKER>-USD) devolve preço
+        # em USD. Se o asset é armazenado em BRL, converte via PTAX venda
+        # da data efetiva. Sem PTAX pra converter → pula esse provider
+        # (todos os outros da chain também devolvem USD, então tipicamente
+        # o fetch termina retornando None — melhor que gravar preço errado).
+        fx_applied: Decimal | None = None
+        native_price = price
+        if (
+            asset.price_source == PriceSource.COINBASE
+            and asset.currency
+            and asset.currency.value == "BRL"
+        ):
+            try:
+                fx_applied = fx_rate_on(db, effective_date)
+            except FxRateNotFound:
+                continue
+            price = price * fx_applied
+
+        details: dict[str, object] = {
+            "provider": provider,
+            "target_date": target_date.isoformat(),
+            "effective_date": effective_date.isoformat(),
+            "price": str(price),
+            "ticker": asset.ticker,
+            "price_source": asset.price_source.value if asset.price_source else None,
+        }
+        if fx_applied is not None:
+            details["fx_conversion"] = {
+                "native_price_usd": str(native_price),
+                "ptax_venda": str(fx_applied),
+                "converted_to": "BRL",
+            }
         AuditService(db).log(
             user_email="system@historical_price",
             action="price.fetch_historical",
             workspace_id=asset.workspace_id,
             resource_type="asset",
             resource_id=asset.id,
-            details={
-                "provider": provider,
-                "target_date": target_date.isoformat(),
-                "effective_date": effective_date.isoformat(),
-                "price": str(price),
-                "ticker": asset.ticker,
-                "price_source": asset.price_source.value if asset.price_source else None,
-            },
+            details=details,
         )
         return price
 

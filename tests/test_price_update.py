@@ -21,6 +21,7 @@ from numis_geek.models.integration_credential import (
     IntegrationCredential,
     IntegrationProvider,
 )
+from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.workspace import Workspace
 from numis_geek.integrations.coinbase import CoinbaseQuote
 from numis_geek.models.audit_log import AuditLog
@@ -225,6 +226,62 @@ def test_refresh_one_skips_manual(db):
     r = refresh_one(db, world["asset_manual"])
     assert r.status == "skipped"
     assert "MANUAL" in (r.error or "")
+
+
+# ── Fix 2026-08-01: Coinbase BRL → conversão via PTAX no refresh diário ────
+
+
+def _seed_ptax(db, on_date, rate: str):
+    now = datetime.now(timezone.utc)
+    db.add(PTAXRate(
+        id=str(uuid.uuid4()), date=on_date, rate=Decimal(rate),
+        source="BCB_SGS", fetched_at=now, created_at=now, updated_at=now,
+    ))
+    db.flush()
+
+
+def _seed_coinbase_brl_asset(db):
+    world = _seed_with_crypto(db)
+    now = datetime.now(timezone.utc)
+    asset_brl = Asset(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        account_id=world["asset_br"].account_id,
+        asset_class=AssetClass.CRYPTO, country="BR",
+        name="Bitcoin BRL", ticker="BTC",
+        currency=Currency.BRL, price_source=PriceSource.COINBASE,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(asset_brl)
+    db.flush()
+    world["asset_crypto_brl"] = asset_brl
+    return world
+
+
+def test_refresh_one_coinbase_brl_converts_via_ptax(db):
+    """USD 67000 × PTAX 5.20 = BRL 348400 gravado em asset.current_price."""
+    world = _seed_coinbase_brl_asset(db)
+    _seed_ptax(db, datetime.now(timezone.utc).date(), "5.20")
+    with patch(
+        "numis_geek.services.price_update.coinbase_spot",
+        return_value=CoinbaseQuote(symbol="BTC", price=Decimal("67000"), currency="USD"),
+    ):
+        r = refresh_one(db, world["asset_crypto_brl"])
+    assert r.status == "ok"
+    assert r.new_price == Decimal("67000") * Decimal("5.20")
+
+
+def test_refresh_one_coinbase_brl_no_ptax_skips(db):
+    """Sem PTAX na janela → skip com erro (não grava preço em moeda errada)."""
+    world = _seed_coinbase_brl_asset(db)
+    # NB: sem _seed_ptax
+    with patch(
+        "numis_geek.services.price_update.coinbase_spot",
+        return_value=CoinbaseQuote(symbol="BTC", price=Decimal("67000"), currency="USD"),
+    ):
+        r = refresh_one(db, world["asset_crypto_brl"])
+    assert r.status == "skipped"
+    assert "PTAX" in (r.error or "")
+    assert world["asset_crypto_brl"].current_price is None
 
 
 def test_refresh_by_source_filters(db):

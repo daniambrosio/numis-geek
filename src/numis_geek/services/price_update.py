@@ -37,6 +37,7 @@ from numis_geek.models.integration_credential import (
     IntegrationProvider,
 )
 from numis_geek.services.audit import AuditService
+from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 from numis_geek.services.price_freshness import AUTOMATED_SOURCES
 
 
@@ -174,24 +175,48 @@ def refresh_one(
         base.error = str(e)
         return base
 
+    # Coinbase adapter devolve preço em USD. Se o asset é BRL, converte via
+    # PTAX de hoje. Sem PTAX → skip pra não gravar preço em moeda errada.
+    fx_applied: Decimal | None = None
+    native_price = new_price
+    if (
+        asset.price_source == PriceSource.COINBASE
+        and asset.currency
+        and asset.currency.value == "BRL"
+    ):
+        try:
+            fx_applied = fx_rate_on(db, datetime.now(timezone.utc).date())
+        except FxRateNotFound:
+            base.status = "skipped"
+            base.error = "PTAX indisponível pra converter preço USD→BRL"
+            return base
+        new_price = new_price * fx_applied
+
     old_price = asset.current_price
     asset.current_price = new_price
     asset.price_updated_at = datetime.now(timezone.utc)
     db.flush()
 
+    audit_details: dict[str, object] = {
+        "ticker": asset.ticker,
+        "name": asset.name,
+        "old_price": str(old_price) if old_price is not None else None,
+        "new_price": str(new_price),
+        "source": asset.price_source.value,
+    }
+    if fx_applied is not None:
+        audit_details["fx_conversion"] = {
+            "native_price_usd": str(native_price),
+            "ptax_venda": str(fx_applied),
+            "converted_to": "BRL",
+        }
     AuditService(db).log(
         user_email=user_email,
         action=audit_action,
         workspace_id=asset.workspace_id,
         resource_type="asset",
         resource_id=asset.id,
-        details={
-            "ticker": asset.ticker,
-            "name": asset.name,
-            "old_price": str(old_price) if old_price is not None else None,
-            "new_price": str(new_price),
-            "source": asset.price_source.value,
-        },
+        details=audit_details,
     )
 
     return PriceUpdateResult(
