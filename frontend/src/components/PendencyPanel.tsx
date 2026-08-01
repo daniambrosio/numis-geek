@@ -48,32 +48,9 @@ function fmtDateBR(iso: string): string {
   return `${d}/${m}/${y}`
 }
 
-// SUSPICIOUS_DELTA (spec 62) grava detail=json.dumps(payload) no backend.
-// Renderizar cru vira "{previous_snapshot_id: ..., delta_native: ..., ...}"
-// na UI. O bloco MoMDelta no topo já mostra a comparação completa; aqui
-// basta um label curto. Fallback pro raw se o parse falhar.
-function formatPendencyDetail(reason: string, detail: string | null): string | null {
-  if (!detail) return null
-  if (reason !== 'SUSPICIOUS_DELTA') return detail
-  try {
-    const p = JSON.parse(detail) as {
-      delta_pct?: string
-      previous_period_end?: string
-    }
-    const pctNum = p.delta_pct != null ? Number(p.delta_pct) * 100 : null
-    const pctStr = pctNum != null && !Number.isNaN(pctNum)
-      ? `${pctNum >= 0 ? '+' : ''}${pctNum.toFixed(2)}%`
-      : null
-    const prevLabel = p.previous_period_end
-      ? ymLabelShort(p.previous_period_end.slice(0, 7))
-      : null
-    if (pctStr && prevLabel) return `Variação anômala ${pctStr} vs ${prevLabel} — confirme no bloco acima`
-    if (pctStr) return `Variação anômala ${pctStr} — confirme no bloco acima`
-    return 'Variação anômala — confirme no bloco acima'
-  } catch {
-    return detail
-  }
-}
+// Spec 62 SUSPICIOUS_DELTA formatter removido pela spec 65.
+// Pendencies existentes com esse reason (histórico) exibem detail cru;
+// não há mais criação de novas.
 
 const UNGROUPED_FI_LABEL = 'Sem instituição'
 
@@ -148,15 +125,15 @@ export default function PendencyPanel({
     ? Math.round((resolvedAssets / totalAssetsCount) * 100)
     : 0
 
-  // Per-group expand state. `undefined` → use default (expanded if has open
-  // pendencies, collapsed if fully resolved). Set to true/false when the
-  // user toggles. This way grupos com FI já resolvido aparecem colapsados
-  // mas continuam acessíveis pra subir mais arquivos (ex.: proventos).
+  // Per-group expand state. Default = SEMPRE expandido pra upload de
+  // proventos/extratos ficar visível mesmo quando todas pendências
+  // resolvidas. Fix 2026-08-01 após feedback do user: "nao tenho como
+  // fazer o upload do arquivo" quando grupo colapsava.
   const [userToggled, setUserToggled] = useState<Map<string, boolean>>(new Map())
   function isExpanded(g: FIGroup): boolean {
     const u = userToggled.get(g.name)
     if (u !== undefined) return u
-    return g.openItems.length > 0
+    return true
   }
   function toggleGroup(name: string, next: boolean) {
     const m = new Map(userToggled)
@@ -405,7 +382,7 @@ function PendencyRow({
           )}
         </div>
         <div className="text-[11px] text-gray-500 truncate">
-          {formatPendencyDetail(pendency.reason, pendency.detail) ?? pendency.asset_name}
+          {pendency.detail ?? pendency.asset_name}
           {hasPrevious && (
             <span className="ml-2 text-gray-600 dark:text-gray-300 tnum">
               · {ymLabelShort(pendency.previous_period_end!.slice(0, 7))}:{' '}

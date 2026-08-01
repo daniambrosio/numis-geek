@@ -1018,18 +1018,9 @@ export const api = {
       method: 'POST',
     }),
 
-  // Spec 62 — Detecção de variações anômalas no fechamento
-  listSnapshotMomDeltas: (snapshot_id: string) =>
-    request<MoMDeltaResponse>(`/snapshots/${snapshot_id}/mom-deltas`),
-  recheckSnapshotDeltas: (snapshot_id: string) =>
-    request<SnapshotPendencyOut[]>(`/snapshots/${snapshot_id}/recheck-deltas`, {
-      method: 'POST',
-    }),
-  confirmDeltaPendency: (pendency_id: string, note?: string) =>
-    request<SnapshotPendencyOut>(`/snapshots/pendencies/${pendency_id}/confirm-delta`, {
-      method: 'POST',
-      body: JSON.stringify({ note: note ?? null }),
-    }),
+  // Spec 62 (removido pela spec 65): MoM anomaly detection frontend
+  // methods deletados. Delta MoM agora renderizado inline via campo
+  // `previous_mv_native` em SnapshotItemOut.
 
   // ── Options (spec 17) ────────────────────────────────────────────────────
   parseOption: (ticker: string, underlying_price?: number) => {
@@ -1555,46 +1546,14 @@ export type PendencyReason =
   | 'UPLOAD_REQUIRED'
   | 'STALE_PRICE'
   | 'HISTORICAL_PRICE_REQUIRED'
-  | 'SUSPICIOUS_DELTA'
 
 export type PendencyAction =
   | 'RETRY_API'
   | 'EDIT_PRICE'
   | 'UPLOAD_FILE'
-  | 'CONFIRM_DELTA'
 
-// Spec 62 — MoM delta view
-export type MoMDeltaStatus =
-  | 'OK'
-  | 'NEW'
-  | 'ZEROED'
-  | 'SUPPRESSED_MOVEMENT'
-  | 'SUPPRESSED_CA'
-  | 'SUSPICIOUS_PENDING'
-  | 'SUSPICIOUS_RESOLVED'
-
-export interface MoMDeltaRow {
-  asset_id: string
-  asset_name: string
-  asset_ticker: string | null
-  asset_class: string
-  currency: string
-  previous_mv_native: string | null
-  current_mv_native: string | null
-  delta_native: string | null
-  delta_pct: string | null
-  threshold_pct: string
-  status: MoMDeltaStatus
-  pendency_id: string | null
-  pendency_resolved: boolean
-}
-
-export interface MoMDeltaResponse {
-  snapshot_id: string
-  previous_snapshot_id: string | null
-  previous_period_end: string | null
-  rows: MoMDeltaRow[]
-}
+// Spec 62 MoMDelta types removidos pela spec 65 — delta agora vem via
+// SnapshotItemOut.previous_mv_native (renderizado inline na tabela).
 
 export interface SnapshotOut {
   id: string
@@ -1647,6 +1606,9 @@ export interface SnapshotItemOut {
   average_cost_brl: string | null
   total_invested_brl: string | null
   updated_at: string
+  // Spec 65 — mv_native do mesmo asset no snapshot do mês calendário
+  // anterior (usado pra renderizar Δ % inline na tabela).
+  previous_mv_native?: string | null
 }
 
 export interface PriceRefreshOut {

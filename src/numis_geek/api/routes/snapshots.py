@@ -76,6 +76,10 @@ class SnapshotItemOut(BaseModel):
     average_cost_brl: str | None
     total_invested_brl: str | None
     updated_at: str
+    # Spec 65 — MoM delta inline na tabela de Posições Congeladas.
+    # market_value_native do mesmo asset no snapshot do MÊS CALENDÁRIO
+    # anterior (independente de status). None se não existe.
+    previous_mv_native: str | None = None
 
     @classmethod
     def from_orm(cls, i: PortfolioSnapshotItem) -> "SnapshotItemOut":
@@ -306,6 +310,21 @@ class SnapshotPendencyOut(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
+def _prev_calendar_month(d: date_t) -> date_t | None:
+    """Último dia do mês calendário anterior a d. Mai/26 → Abr/30. Fev/26 → Jan/31."""
+    if d.month == 1:
+        py, pm = d.year - 1, 12
+    else:
+        py, pm = d.year, d.month - 1
+    # Calcula último dia daquele mês
+    if pm == 12:
+        last = date_t(py, 12, 31)
+    else:
+        from datetime import timedelta
+        last = date_t(py, pm + 1, 1) - timedelta(days=1)
+    return last
+
+
 def _workspace_id(
     current_user: UserContext, workspace_id_param: str | None = None
 ) -> str:
@@ -485,7 +504,34 @@ def list_snapshot_items(
     items = db.query(PortfolioSnapshotItem).filter(
         PortfolioSnapshotItem.snapshot_id == snapshot_id
     ).all()
-    return [SnapshotItemOut.from_orm(i) for i in items]
+    # Spec 65 — MoM delta inline. Busca o snapshot do mês calendário
+    # anterior (independente de status) e mapeia mv_native por asset_id.
+    prev_period = _prev_calendar_month(snap.period_end_date)
+    prev_by_asset: dict[str, str] = {}
+    if prev_period is not None:
+        prev_snap = (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.workspace_id == ws_id,
+                PortfolioSnapshot.period_end_date == prev_period,
+            )
+            .first()
+        )
+        if prev_snap is not None:
+            prev_items = (
+                db.query(PortfolioSnapshotItem)
+                .filter(PortfolioSnapshotItem.snapshot_id == prev_snap.id)
+                .all()
+            )
+            for pi in prev_items:
+                if pi.market_value_native is not None:
+                    prev_by_asset[pi.asset_id] = str(pi.market_value_native)
+    result = []
+    for i in items:
+        out = SnapshotItemOut.from_orm(i)
+        out.previous_mv_native = prev_by_asset.get(i.asset_id)
+        result.append(out)
+    return result
 
 
 @router.patch(

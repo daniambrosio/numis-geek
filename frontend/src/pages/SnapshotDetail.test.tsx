@@ -103,15 +103,8 @@ function renderPage() {
 describe('SnapshotDetail (Spec 45)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    // Spec 62 — MoMDeltaBlock chama listSnapshotMomDeltas ao montar.
-    // Mock default vazio pra não estourar em jsdom nem exigir override
-    // em cada test.
-    vi.spyOn(api, 'listSnapshotMomDeltas').mockResolvedValue({
-      snapshot_id: 's1',
-      previous_snapshot_id: null,
-      previous_period_end: null,
-      rows: [],
-    })
+    // Spec 62 MoMDeltaBlock removido pela spec 65 — não há mais chamada
+    // de listSnapshotMomDeltas ao montar SnapshotDetail.
   })
 
   it('shows 20 positions by default with "ver todos" link, expands on click', async () => {
