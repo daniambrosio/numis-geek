@@ -37,6 +37,9 @@ interface IncomeRow {
   external_id: string
   event_date: string
   ticker: string | null
+  // option_events (compra/venda de opção) usam `option_ticker` no
+  // payload em vez de `ticker` — fallback pra não renderizar "—".
+  option_ticker?: string | null
   asset_id: string | null
   asset_name: string | null
   type: string
@@ -196,7 +199,7 @@ export default function BulkIncomeReviewModal({
                         {TYPE_LABEL[r.type] ?? r.type}
                       </span>
                       <span className="ml-2 font-mono text-gray-700 dark:text-gray-300">
-                        {r.ticker ?? '—'}
+                        {r.ticker ?? r.option_ticker ?? '—'}
                       </span>
                     </div>
                     <div className="tnum text-[11px] text-gray-600 dark:text-gray-400">

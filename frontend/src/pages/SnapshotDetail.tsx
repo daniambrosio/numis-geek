@@ -1176,6 +1176,7 @@ export default function SnapshotDetail() {
                       <th className="text-right font-medium px-3 py-2">Valor total (BRL)</th>
                       <th className="text-right font-medium px-3 py-2">Valor total (USD)</th>
                       <th className="text-right font-medium px-3 py-2">% portfólio</th>
+                      <th className="text-right font-medium px-3 py-2" title="Variação vs mês anterior">Δ %</th>
                       <th className="px-2" />
                     </tr>
                   </thead>
@@ -1265,6 +1266,26 @@ export default function SnapshotDetail() {
                           </td>
                           <td className="px-3 text-right tnum text-gray-500">
                             {hasValue ? `${pct.toFixed(2)}%` : '—'}
+                          </td>
+                          <td className="px-3 text-right tnum">
+                            {(() => {
+                              // Spec 65 — coluna Δ % inline. Compara
+                              // market_value_native atual vs mesmo item
+                              // do mês calendário anterior (backend popula
+                              // previous_mv_native). Sem sinal: vermelho
+                              // queda / verde alta. Sem prev / prev=0 → —.
+                              const cur = it.market_value_native != null ? Number(it.market_value_native) : null
+                              const prev = it.previous_mv_native != null ? Number(it.previous_mv_native) : null
+                              if (cur == null || prev == null || prev === 0) {
+                                return <span className="text-gray-500">—</span>
+                              }
+                              const pctDelta = ((cur - prev) / prev) * 100
+                              const sign = pctDelta >= 0 ? '+' : ''
+                              const cls = pctDelta >= 0
+                                ? 'text-emerald-500 dark:text-emerald-400'
+                                : 'text-red-500 dark:text-red-400'
+                              return <span className={cls}>{sign}{pctDelta.toFixed(2)}%</span>
+                            })()}
                           </td>
                           <td className="px-3 text-gray-400">
                             <ChevronRight className="w-4 h-4" />
