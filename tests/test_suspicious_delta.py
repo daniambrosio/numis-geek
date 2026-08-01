@@ -29,6 +29,7 @@ from numis_geek.models.portfolio_snapshot import (
 )
 from numis_geek.services.snapshot import (
     PendencyOpenError,
+    _compute_mom_delta,
     confirm_delta_pendency,
     confirm_snapshot,
     create_snapshot,
@@ -495,3 +496,45 @@ def test_create_snapshot_downgrades_to_in_review_on_suspicious(world):
     # sem movement em (mai, jun] → deveria criar pendency + downgrade.
     assert r.status == SnapshotStatus.IN_REVIEW
     assert r.pendencies_count >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fix 2026-08-01: delta_pct preserva sinal (curr<prev → negativo). Frontend
+# fmtPct usa `pct >= 0 ? '+' : ''` — antes sempre mostrava '+' em queda.
+# Threshold interno compara abs(delta_pct).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_compute_mom_delta_negative_when_value_falls():
+    delta_abs, delta_pct = _compute_mom_delta(Decimal("32.19"), Decimal("22.62"))
+    assert delta_abs == Decimal("-9.57")
+    # (22.62 - 32.19) / 32.19 = -0.29729... — sinal preservado
+    assert delta_pct is not None
+    assert delta_pct < 0
+    assert abs(delta_pct - Decimal("-0.29729729729729729729729729")) < Decimal("0.001")
+
+
+def test_compute_mom_delta_positive_when_value_rises():
+    delta_abs, delta_pct = _compute_mom_delta(Decimal("100"), Decimal("150"))
+    assert delta_abs == Decimal("50")
+    assert delta_pct == Decimal("0.5")
+
+
+def test_compute_mom_delta_none_when_prev_zero():
+    delta_abs, delta_pct = _compute_mom_delta(Decimal("0"), Decimal("100"))
+    assert delta_abs == Decimal("100")
+    assert delta_pct is None
+
+
+def test_threshold_check_uses_absolute_value():
+    """Delta de -50% (queda) deve disparar suspicious tanto quanto +50% (alta).
+    Antes do fix, delta negativo passava a comparação `delta_pct < threshold`
+    porque -0.5 < 0.4 é True — resultava em falso-negativo de detecção."""
+    # -50%: |−0.5| > 0.4 → deve ser flagged
+    _, pct_down = _compute_mom_delta(Decimal("100"), Decimal("50"))
+    assert pct_down < 0
+    assert abs(pct_down) > Decimal("0.4")  # threshold STOCK
+    # +50%: idem
+    _, pct_up = _compute_mom_delta(Decimal("100"), Decimal("150"))
+    assert pct_up > 0
+    assert abs(pct_up) > Decimal("0.4")

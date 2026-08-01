@@ -561,13 +561,16 @@ def _has_corporate_action_in_period(
 def _compute_mom_delta(
     prev_mv_native: Decimal | None, curr_mv_native: Decimal | None
 ) -> tuple[Decimal, Decimal | None]:
-    """Retorna (delta_absoluto, delta_pct). delta_pct=None se prev=0."""
+    """Retorna (delta_absoluto, delta_pct). delta_pct=None se prev=0.
+
+    delta_pct preserva o sinal (curr < prev → negativo). Comparações de
+    threshold devem usar abs(delta_pct) para checar magnitude."""
     prev = prev_mv_native or Decimal("0")
     curr = curr_mv_native or Decimal("0")
     delta_abs = curr - prev
     if prev == 0:
         return delta_abs, None
-    delta_pct = abs(delta_abs) / abs(prev)
+    delta_pct = delta_abs / abs(prev)
     return delta_abs, delta_pct
 
 
@@ -631,7 +634,7 @@ def detect_suspicious_deltas(
             continue
 
         threshold = _suspicious_threshold_for(asset.asset_class)
-        if delta_pct < threshold:
+        if abs(delta_pct) < threshold:
             continue
 
         # Movimento ou CA no período justificam automaticamente.
@@ -748,7 +751,7 @@ def _reevaluate_suspicious_delta_for_asset(
     threshold = _suspicious_threshold_for(asset.asset_class if asset else None)
 
     should_auto_resolve = (
-        (delta_pct is not None and delta_pct < threshold)
+        (delta_pct is not None and abs(delta_pct) < threshold)
         or _has_movement_in_period(
             db, asset_id, prev_snap.period_end_date, snap.period_end_date
         )
@@ -945,7 +948,7 @@ def list_mom_deltas(db: Session, snapshot_id: str) -> list[MoMDeltaRow]:
             )
             if pen is not None:
                 status = "SUSPICIOUS_RESOLVED" if pen.resolved_at else "SUSPICIOUS_PENDING"
-            elif delta_pct is not None and delta_pct >= threshold:
+            elif delta_pct is not None and abs(delta_pct) >= threshold:
                 if has_mv:
                     status = "SUPPRESSED_MOVEMENT"
                 elif has_ca:
