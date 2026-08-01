@@ -63,19 +63,19 @@ const STATUS_LABEL: Record<MoMDeltaStatus, string> = {
 function statusBadge(status: MoMDeltaStatus): { color: string; icon: string | null } {
   switch (status) {
     case 'SUSPICIOUS_PENDING':
-      return { color: 'bg-red-100 text-red-800 border-red-200', icon: '🔴' }
+      return { color: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300 border-red-200 dark:border-red-900', icon: '🔴' }
     case 'SUSPICIOUS_RESOLVED':
-      return { color: 'bg-emerald-100 text-emerald-800 border-emerald-200', icon: '✅' }
+      return { color: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900', icon: '✅' }
     case 'SUPPRESSED_MOVEMENT':
-      return { color: 'bg-slate-100 text-slate-700 border-slate-200', icon: '🔄' }
+      return { color: 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700', icon: '🔄' }
     case 'SUPPRESSED_CA':
-      return { color: 'bg-slate-100 text-slate-700 border-slate-200', icon: '🔀' }
+      return { color: 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700', icon: '🔀' }
     case 'NEW':
-      return { color: 'bg-blue-50 text-blue-700 border-blue-200', icon: '✨' }
+      return { color: 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900', icon: '✨' }
     case 'ZEROED':
-      return { color: 'bg-slate-50 text-slate-600 border-slate-200', icon: '⊘' }
+      return { color: 'bg-gray-50 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700', icon: '⊘' }
     default:
-      return { color: 'bg-slate-50 text-slate-500 border-slate-200', icon: null }
+      return { color: 'bg-gray-50 dark:bg-gray-900/40 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700', icon: null }
   }
 }
 
@@ -144,7 +144,7 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
   if (loading && data === null) {
     return (
       <Card className="mb-4">
-        <div className="p-3 text-sm text-slate-500">Carregando comparação MoM…</div>
+        <div className="p-3 text-sm text-gray-500 dark:text-gray-400">Carregando comparação MoM…</div>
       </Card>
     )
   }
@@ -158,30 +158,30 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
 
   return (
     <Card className="mb-4">
-      <div className="flex items-center justify-between p-3 border-b border-slate-200">
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-800">
         <button
           type="button"
           onClick={() => setCollapsed(v => !v)}
           className="flex items-center gap-2 text-left"
         >
-          {collapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+          {collapsed ? <ChevronDown className="w-4 h-4 text-gray-500 dark:text-gray-400" /> : <ChevronUp className="w-4 h-4 text-gray-500 dark:text-gray-400" />}
           <div>
-            <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+            <div className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2">
               Variações anômalas vs {prevLabel ?? 'mês anterior'}
               {pendingCount > 0 && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-xs font-medium">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-xs font-medium">
                   <AlertTriangle className="w-3 h-3" />
                   {pendingCount}
                 </span>
               )}
               {pendingCount === 0 && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-xs font-medium">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 text-xs font-medium">
                   <CheckCircle2 className="w-3 h-3" />
                   ok
                 </span>
               )}
             </div>
-            <div className="text-xs text-slate-500 mt-0.5">
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               {pendingCount > 0
                 ? `${pendingCount} pendente${pendingCount > 1 ? 's' : ''} de confirmação — bloqueia${pendingCount > 1 ? 'm' : ''} o fechamento`
                 : 'nenhuma variação anômala detectada'}
@@ -189,7 +189,7 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
           </div>
         </button>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-slate-600">
+          <label className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
             <input
               type="checkbox"
               checked={showAll}
@@ -203,7 +203,7 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
               type="button"
               onClick={handleRecheck}
               disabled={rechecking}
-              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
               title="Re-avaliar variações após edição manual de preços"
             >
               <RefreshCw className={`w-3 h-3 ${rechecking ? 'animate-spin' : ''}`} />
@@ -216,12 +216,12 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
       {!collapsed && (
         <div className="overflow-x-auto">
           {displayRows.length === 0 ? (
-            <div className="p-4 text-center text-sm text-slate-500">
+            <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
               {showAll ? 'Nenhum item pra comparar.' : 'Nada a confirmar.'}
             </div>
           ) : (
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-600 uppercase tracking-wide">
+              <thead className="bg-gray-50 dark:bg-gray-900/60 text-xs text-gray-600 dark:text-gray-400 uppercase tracking-wide">
                 <tr>
                   <th className="text-left px-3 py-2 font-medium">Ativo</th>
                   <th className="text-left px-3 py-2 font-medium">Classe</th>
@@ -240,31 +240,31 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
                   return (
                     <tr
                       key={row.asset_id}
-                      className={`border-t border-slate-100 ${isPending ? 'bg-red-50/30' : ''}`}
+                      className={`border-t border-gray-100 dark:border-gray-800 ${isPending ? 'bg-red-50/30 dark:bg-red-900/10' : ''}`}
                     >
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <div className="font-medium text-slate-800">{row.asset_name}</div>
+                        <div className="font-medium text-gray-800 dark:text-gray-200">{row.asset_name}</div>
                         {row.asset_ticker && (
-                          <div className="text-xs text-slate-500">{row.asset_ticker}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">{row.asset_ticker}</div>
                         )}
                       </td>
                       <td className="px-3 py-2">
                         <ClassBadge klass={row.asset_class as any} />
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">
                         {fmtMoney(row.previous_mv_native, row.currency)}
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">
                         {fmtMoney(row.current_mv_native, row.currency)}
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">
                         {fmtMoney(row.delta_native, row.currency)}
                       </td>
                       <td
                         className={`px-3 py-2 text-right tabular-nums font-medium ${
                           row.delta_pct != null && Number(row.delta_pct) >= Number(row.threshold_pct)
-                            ? 'text-red-700'
-                            : 'text-slate-700'
+                            ? 'text-red-700 dark:text-red-400'
+                            : 'text-gray-700 dark:text-gray-300'
                         }`}
                       >
                         {fmtPct(row.delta_pct)}
@@ -284,7 +284,7 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
                             type="button"
                             onClick={() => handleConfirm(row)}
                             disabled={confirmingId === row.pendency_id}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 dark:bg-emerald-500 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
                           >
                             {confirmingId === row.pendency_id ? 'Confirmando…' : 'Confirmar'}
                           </button>
