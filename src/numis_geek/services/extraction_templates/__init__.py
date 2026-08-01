@@ -206,7 +206,7 @@ class BrokerIncomeOutput(BaseModel):
 
 
 BROKER_INCOME = Template(
-    version="broker-income-v1",
+    version="broker-income-v2",
     system=(
         "Você extrai eventos de PROVENTOS de extratos de corretora "
         "(brasileiras ou exterior). Um arquivo pode conter movimentações "
@@ -223,7 +223,14 @@ BROKER_INCOME = Template(
         "DIVIDEND no nosso schema).\n"
         "- JCP — juros sobre capital próprio (específico BR).\n"
         "- INTEREST — juros/cupom de renda fixa, treasury, bond, CDB, "
-        "debênture. Use TAMBÉM pra amortização de principal de renda fixa.\n"
+        "debênture. Use TAMBÉM pra amortização de principal de renda fixa. "
+        "Use TAMBÉM pra CRYPTO REWARDS/STAKING/YIELDS pagos por exchanges "
+        "(Coinbase 'USDC rewards', Binance 'Earn', 'Staking rewards', "
+        "'Learn & Earn', etc.) — mapear como INTEREST com ticker_raw = "
+        "símbolo da cripto que gerou o rendimento (USDC/ETH/BTC/etc.), "
+        "mesmo que o pagamento venha em outra cripto (ex.: Coinbase paga "
+        "rewards de USDC em BTC — ticker_raw='USDC', mas gross_amount em "
+        "BRL/USD conforme mostrado).\n"
         "- SECURITIES_LENDING — empréstimo/aluguel de ações (BTC).\n\n"
         "NÃO EXTRAIR em events[] (ignore ou roteie diferente):\n"
         "- Compras/vendas de ação/ETF/FII (são trades, não proventos).\n"
