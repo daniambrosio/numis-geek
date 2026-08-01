@@ -46,6 +46,7 @@ from numis_geek.services import attachment_storage
 from numis_geek.services.audit import AuditService
 from numis_geek.services.extraction_templates import Template, template_for
 from numis_geek.services.fx import resolve_fx_rate
+from numis_geek.services.positions import _COTADO_CLASSES
 from numis_geek.integrations.llm import (
     DEFAULT_MODEL, LLMClient, get_llm_client, parse_json_block,
 )
@@ -1172,7 +1173,30 @@ def _classify_bulk_extract(
             mode_overrides.get(ticker_raw_key)
             or mode_overrides.get(ticker)
         )
-        new_price = Decimal(str(unit_price_raw))
+        # Fix 2026-08-01: pra asset value-mode (FUND/PENSION/FIXED_INCOME/
+        # CASH/FGTS/etc.), o writer `update_snapshot_item_price` espera
+        # new_price=TOTAL (armazena qty=1, unit_price=total). Se enviarmos
+        # o unit_price do LLM (per-title), o item fica com mv=unit em vez
+        # de mv=total. Bug visto em Tesouro IPCA+ 2035 XP Jul/26: LLM
+        # extraiu qty=52.18 unit=2370.25 mv=123656.16; preview mostrava
+        # R$ 2.370 em vez de R$ 123.656. Fix: se asset é value-mode e LLM
+        # devolveu mv, usa mv como new_price. Cotado (STOCK/ETF/CRYPTO/
+        # REIT/OPTION) mantém unit_price.
+        is_value_mode_asset = (
+            asset.asset_class is not None
+            and asset.asset_class not in _COTADO_CLASSES
+        )
+        if (
+            manual_price is None
+            and is_value_mode_asset
+            and llm_mv is not None
+        ):
+            try:
+                new_price = Decimal(str(llm_mv))
+            except (TypeError, ValueError):
+                new_price = Decimal(str(unit_price_raw))
+        else:
+            new_price = Decimal(str(unit_price_raw))
         apply_plan.append({
             "pendency_id": pendency.id,
             "asset_id": asset.id,
