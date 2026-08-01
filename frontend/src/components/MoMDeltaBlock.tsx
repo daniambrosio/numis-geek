@@ -113,15 +113,30 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
   )
 
   const handleConfirm = async (row: MoMDeltaRow) => {
-    if (!row.pendency_id) return
     if (confirmingId) return
-    setConfirmingId(row.pendency_id)
+    // Se a pendency não foi persistida ainda (detectada só ao vivo via
+    // list_mom_deltas), roda recheck primeiro pra criar. Isso acontece
+    // quando o snapshot foi criado antes do último detect_suspicious_deltas
+    // ou quando o delta veio via edit manual sem trigger de recheck.
+    const key = row.pendency_id ?? `pending-${row.asset_id}`
+    setConfirmingId(key)
     try {
-      await api.confirmDeltaPendency(row.pendency_id)
+      let pendencyId = row.pendency_id
+      if (!pendencyId) {
+        const created = await api.recheckSnapshotDeltas(snapshotId)
+        pendencyId = created.find(p => p.asset_id === row.asset_id)?.id ?? null
+        if (!pendencyId) {
+          throw new Error(
+            'Não foi possível criar pendência para esse ativo. Delta detectado ao vivo mas backend suprimiu (movimento/CA no período?)',
+          )
+        }
+      }
+      await api.confirmDeltaPendency(pendencyId)
       await fetchData()
       onResolved?.()
     } catch (e) {
       console.error('confirmDeltaPendency error', e)
+      alert(e instanceof Error ? e.message : 'Erro ao confirmar')
     } finally {
       setConfirmingId(null)
     }
@@ -279,24 +294,23 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
                         </span>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {isPending && !isReadOnly && row.pendency_id && (
-                          <button
-                            type="button"
-                            onClick={() => handleConfirm(row)}
-                            disabled={confirmingId != null && confirmingId === row.pendency_id}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 dark:bg-emerald-500 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
-                          >
-                            {confirmingId != null && confirmingId === row.pendency_id ? 'Confirmando…' : 'Confirmar'}
-                          </button>
-                        )}
-                        {isPending && !isReadOnly && !row.pendency_id && (
-                          <span
-                            className="inline-flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400 italic"
-                            title="Delta detectado ao vivo mas pendência ainda não foi persistida. Clique em Recalcular acima pra criá-la."
-                          >
-                            (Recalcular)
-                          </span>
-                        )}
+                        {isPending && !isReadOnly && (() => {
+                          const rowKey = row.pendency_id ?? `pending-${row.asset_id}`
+                          const busy = confirmingId != null && confirmingId === rowKey
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleConfirm(row)}
+                              disabled={busy || confirmingId != null}
+                              title={row.pendency_id
+                                ? undefined
+                                : 'Cria pendência e confirma numa ação só'}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 dark:bg-emerald-500 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
+                            >
+                              {busy ? 'Confirmando…' : 'Confirmar'}
+                            </button>
+                          )
+                        })()}
                       </td>
                     </tr>
                   )
