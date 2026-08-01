@@ -44,7 +44,10 @@ from numis_geek.models.portfolio_snapshot import (
     SnapshotStatus,
 )
 from numis_geek.services.historical_price import fetch_on
-from numis_geek.services.snapshot import detect_suspicious_deltas
+from numis_geek.services.snapshot import (
+    _reevaluate_suspicious_delta_for_asset,
+    detect_suspicious_deltas,
+)
 
 
 def _parse_period(s: str) -> tuple[date, date]:
@@ -141,6 +144,19 @@ def main() -> int:
                     item.market_value_native = new_mv_native
                     item.market_value_brl = new_mv_brl
                     item.market_value_usd = new_mv_usd
+                    db.flush()
+                    # Re-avalia a SUSPICIOUS_DELTA aberta desse asset (se
+                    # houver) — new delta abaixo do threshold → auto-resolve.
+                    # detect_suspicious_deltas no fim do loop só CRIA novas,
+                    # não resolve as antigas.
+                    resolved = _reevaluate_suspicious_delta_for_asset(
+                        db,
+                        snap.id,
+                        asset.id,
+                        user_email="system@backfill_coinbase_brl",
+                    )
+                    if resolved:
+                        print(f"    ↳ SUSPICIOUS_DELTA aberta resolvida")
                 changed += 1
 
             if args.apply:
@@ -157,9 +173,8 @@ def main() -> int:
                     (i.market_value_usd or Decimal("0")) for i in all_items
                 )
                 db.flush()
-                # Re-avalia SUSPICIOUS_DELTA — pendencies que voltaram pra
-                # dentro do threshold são resolvidas automaticamente pela
-                # próxima chamada; detect_suspicious_deltas é idempotente.
+                # Detecta SUSPICIOUS_DELTA em items OUTROS que possam ter
+                # cruzado o threshold agora (raro, mas defensivo).
                 detect_suspicious_deltas(db, snap.id)
 
         if args.apply:
