@@ -1048,11 +1048,17 @@ def confirm_snapshot(
     if snap is None:
         raise ValueError(f"Snapshot {snapshot_id} not found")
 
+    # SUSPICIOUS_DELTA (spec 62) NÃO bloqueia o fechamento — é informativo,
+    # dependia de compare-vs-CLOSED anterior que gera muitos falsos-positivos
+    # (assets value-mode sem movement, edits manuais, snapshots antigos
+    # gerados por versão diferente do detector). User revisa MoM na UI mas
+    # não deve ficar preso pra fechar. Mudança 2026-08-01 após bug reports.
     open_pendencies = (
         db.query(SnapshotPendency)
         .filter(
             SnapshotPendency.snapshot_id == snap.id,
             SnapshotPendency.resolved_at.is_(None),
+            SnapshotPendency.reason != PendencyReason.SUSPICIOUS_DELTA,
         )
         .count()
     )

@@ -135,8 +135,10 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
       await fetchData()
       onResolved?.()
     } catch (e) {
+      // Não usa alert — memory `feedback_user_feedback_during_long_actions`
+      // pede toast pra erros. Aqui só log; se backend suprimir (movement/CA)
+      // é benigno (delta já explicado pelo movement) — user pode ignorar.
       console.error('confirmDeltaPendency error', e)
-      alert(e instanceof Error ? e.message : 'Erro ao confirmar')
     } finally {
       setConfirmingId(null)
     }
@@ -198,7 +200,7 @@ export default function MoMDeltaBlock({ snapshotId, isReadOnly, onResolved }: Pr
             </div>
             <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               {pendingCount > 0
-                ? `${pendingCount} pendente${pendingCount > 1 ? 's' : ''} de confirmação — bloqueia${pendingCount > 1 ? 'm' : ''} o fechamento`
+                ? `${pendingCount} variação${pendingCount > 1 ? 'ões' : ''} pra revisar — informativo, não bloqueia o fechamento`
                 : 'nenhuma variação anômala detectada'}
             </div>
           </div>

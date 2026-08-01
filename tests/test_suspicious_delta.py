@@ -212,13 +212,19 @@ def test_zeroed_asset_no_flag(world):
 
 # ── Bloqueio + resolução ───────────────────────────────────────────────
 
-def test_confirm_snapshot_blocked_by_open_suspicious_delta(world):
+def test_confirm_snapshot_NOT_blocked_by_open_suspicious_delta(world):
+    """Mudança 2026-08-01: SUSPICIOUS_DELTA é informativo, não bloqueia
+    fechamento. Falsos-positivos demais (value-mode sem movement, edits
+    manuais, snapshots gerados por versão anterior do detector) —
+    prendia user no fechamento sem valor real. User revisa MoM na UI,
+    mas fecha independente."""
     a = _make_asset(world["db"], world["ws_id"], world["account_id"], AssetClass.FUND, 100_000)
     _snap(world["db"], world["ws_id"], date(2026, 5, 31), [(a.id, Decimal("50000"))])
     snap = _snap(world["db"], world["ws_id"], date(2026, 6, 30), [(a.id, Decimal("100000"))], status=SnapshotStatus.IN_REVIEW)
-    detect_suspicious_deltas(world["db"], snap.id)
-    with pytest.raises(PendencyOpenError):
-        confirm_snapshot(world["db"], snapshot_id=snap.id, user_id="u1")
+    ids = detect_suspicious_deltas(world["db"], snap.id)
+    assert len(ids) == 1  # pendency ainda é criada — visível na UI
+    result = confirm_snapshot(world["db"], snapshot_id=snap.id, user_id="u1")
+    assert result.status == SnapshotStatus.CLOSED  # não bloqueou
 
 
 def test_confirm_delta_pendency_unblocks_close(world):
