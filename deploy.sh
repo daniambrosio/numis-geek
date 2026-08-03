@@ -15,6 +15,12 @@
 #   6. docker compose up -d + health check
 #   7. rollback on failure (restores old image tag + DB backup if migration was involved)
 #
+# Rollback AFTER the fact (hours/days later): the `numis-geek:rollback` tag is gone
+# by morning (nightly image prune), so use the saved image —
+#   docker load -i /opt/infra/backups/rollback/numis-geek-<sha>.tar.gz
+#   docker tag numis-geek:latest numis-geek:latest && docker compose up -d
+# Last 3 deploys are kept there. Older than that: the nightly full-*.tgz backup.
+#
 # Logs: /opt/infra/apps/numis-geek/data/deploy.log
 
 set -euo pipefail
@@ -24,6 +30,7 @@ APP=/opt/infra/apps/numis-geek
 CF="$APP/docker-compose.yml"
 LOG="$APP/data/deploy.log"
 DB="$APP/data/numis_geek.db"
+ROLLBACK_DIR=/opt/infra/backups/rollback   # own dir: backup-all.sh globs full-*.tgz only
 FORCE_REBUILD=${1:-}
 BACKUP=""
 
@@ -75,6 +82,27 @@ fi
 if [ "$REBUILD" = "true" ]; then
   docker tag numis-geek:latest numis-geek:rollback 2>/dev/null \
     && log "tagged numis-geek:rollback" || log "WARN could not tag rollback image"
+
+  # The tag above only covers THIS run's failure path. /etc/cron.d/docker-image-prune
+  # runs `docker image prune -af --filter until=24h` nightly, so any rollback tag is
+  # gone by morning — "roll back to what ran last Tuesday" was never actually possible.
+  # Save the image to disk instead. Keep 3: the box hit 76% full on 2026-08-01.
+  if docker image inspect numis-geek:latest >/dev/null 2>&1; then
+    mkdir -p "$ROLLBACK_DIR"
+    SAVE="$ROLLBACK_DIR/numis-geek-$OLD_SHORT.tar.gz"
+    if [ -f "$SAVE" ]; then
+      log "rollback image for $OLD_SHORT already saved"
+    elif docker save numis-geek:latest | gzip -1 > "$SAVE.part" 2>>"$LOG"; then
+      mv "$SAVE.part" "$SAVE"
+      log "rollback image saved: $(basename "$SAVE") ($(du -h "$SAVE" | cut -f1))"
+    else
+      rm -f "$SAVE.part"
+      log "WARN docker save failed — rollback limited to this run's tag"
+    fi
+    ls -1t "$ROLLBACK_DIR"/numis-geek-*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do
+      rm -f "$old" && log "pruned old rollback image: $(basename "$old")"
+    done
+  fi
   # Spec 54 — injeta versão pra exibir no UI + detectar mismatch.
   export GIT_SHA="$(git -C "$APP" rev-parse --short HEAD)"
   export BUILD_DATE="$(date +%F)"
