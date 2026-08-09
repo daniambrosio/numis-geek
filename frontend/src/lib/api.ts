@@ -185,6 +185,52 @@ export interface TagOut {
   created_at: string
 }
 
+// Spec 69 — credit cards & invoices
+export interface CreditCardOut {
+  id: string
+  workspace_id: string
+  financial_institution_id: string
+  financial_institution_name: string
+  fi_logo_slug: string | null
+  name: string
+  brand: string | null
+  last4: string | null
+  currency: 'BRL' | 'USD'
+  credit_limit: number | null
+  close_day: number
+  due_day: number
+  is_active: boolean
+  open_invoice_total: number
+  limit_used_pct: number | null
+  created_at: string
+}
+
+export interface CreditCardPayload {
+  name: string
+  financial_institution_id: string
+  currency: string
+  brand?: string | null
+  last4?: string | null
+  credit_limit?: number | null
+  close_day: number
+  due_day: number
+}
+
+export interface InvoiceOut {
+  id: string
+  workspace_id: string
+  credit_card_account_id: string
+  credit_card_name: string
+  close_date: string
+  due_date: string
+  total_amount: number | null
+  iof_total: number | null
+  currency: 'BRL' | 'USD'
+  status: 'OPEN' | 'CLOSED' | 'PAID'
+  paid_at: string | null
+  notes: string | null
+}
+
 export type AssetClass =
   | 'STOCK'
   | 'REIT'
@@ -784,6 +830,31 @@ export const api = {
     request<PartyOut>(`/parties/${id}/deactivate`, { method: 'PUT' }),
   mergeParty: (survivorId: string, sourcePartyId: string) =>
     request<PartyOut>(`/parties/${survivorId}/merge`, { method: 'POST', body: JSON.stringify({ source_party_id: sourcePartyId }) }),
+
+  // ── Spec 69 — credit cards & invoices ─────────────────────────────────────
+
+  listCreditCards: (params?: { include_inactive?: boolean }) => {
+    const qs = params?.include_inactive ? '?include_inactive=true' : ''
+    return request<CreditCardOut[]>(`/credit-cards${qs}`)
+  },
+  createCreditCard: (data: CreditCardPayload) =>
+    request<CreditCardOut>('/credit-cards', { method: 'POST', body: JSON.stringify(data) }),
+  updateCreditCard: (id: string, data: CreditCardPayload) =>
+    request<CreditCardOut>(`/credit-cards/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deactivateCreditCard: (id: string) =>
+    request<CreditCardOut>(`/credit-cards/${id}/deactivate`, { method: 'PUT' }),
+  listCardInvoices: (cardId: string) => request<InvoiceOut[]>(`/credit-cards/${cardId}/invoices`),
+  createInvoice: (cardId: string, data: { close_date: string; due_date: string; total_amount?: number | null }) =>
+    request<InvoiceOut>(`/credit-cards/${cardId}/invoices`, { method: 'POST', body: JSON.stringify(data) }),
+  listInvoices: (params?: { status?: string; card_id?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.status) qs.set('status', params.status)
+    if (params?.card_id) qs.set('card_id', params.card_id)
+    const s = qs.toString()
+    return request<InvoiceOut[]>(`/invoices${s ? `?${s}` : ''}`)
+  },
+  closeInvoice: (id: string, total_amount?: number | null) =>
+    request<InvoiceOut>(`/invoices/${id}/close`, { method: 'POST', body: JSON.stringify({ total_amount }) }),
 
   listTags: () => request<TagOut[]>('/tags'),
   createTag: (name: string) => request<TagOut>('/tags', { method: 'POST', body: JSON.stringify({ name }) }),

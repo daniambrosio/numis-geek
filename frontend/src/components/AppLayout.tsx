@@ -51,8 +51,8 @@ const NAV: NavEntry[] = [
 
   { kind: 'section', label: 'Caixa & Cartões' },
   { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
-  { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard, placeholder: true },
-  { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText, placeholder: true },
+  { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard },
+  { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText },
   { kind: 'item', label: 'Categorias', href: '/categories', icon: Layers },
   { kind: 'item', label: 'Fornecedores/Clientes', href: '/parties', icon: BookUser },
   { kind: 'item', label: 'Orçamento', href: '/budget', icon: Target, placeholder: true },
@@ -99,7 +99,7 @@ const NOVO_ITEMS: NovoItem[] = [
   { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: false },
   { key: 'asset',        label: 'Ativo',                desc: 'Cadastrar um novo ativo',               icon: LineChart,    group: 'Cadastros',        shortcut: 'A', enabled: true, composeRoute: '/assets' },
   { key: 'account',      label: 'Conta',                desc: 'Nova conta corrente ou de investimento',icon: Layers,       group: 'Cadastros',        shortcut: 'C', enabled: false },
-  { key: 'card',         label: 'Cartão',               desc: 'Novo cartão de crédito',                icon: CreditCard,   group: 'Cadastros',        shortcut: 'K', enabled: false },
+  { key: 'card',         label: 'Cartão',               desc: 'Novo cartão de crédito',                icon: CreditCard,   group: 'Cadastros',        shortcut: 'K', enabled: true, composeRoute: '/credit-cards' },
 ]
 
 const NOVO_GROUPS: NovoGroup[] = ['Investimentos', 'Caixa & Cartões', 'Cadastros']
