@@ -71,7 +71,7 @@ function CategoryModal({ initial, parent, onSave, onClose }: CategoryModalProps)
       await onSave({
         name,
         parent_id: parent?.id ?? initial?.parent_id ?? null,
-        kind: isSub ? null : kind,
+        kind,
         color,
       })
       onClose()
@@ -92,15 +92,13 @@ function CategoryModal({ initial, parent, onSave, onClose }: CategoryModalProps)
           <Field label="Nome">
             <input type="text" value={name} onChange={e => setName(e.target.value)} required className={INPUT_CLS} />
           </Field>
-          {!isSub && (
-            <Field label="Tipo">
-              <select value={kind} onChange={e => setKind(e.target.value as CategoryOut['kind'])} className={INPUT_CLS}>
-                <option value="EXPENSE">Despesa</option>
-                <option value="INCOME">Renda</option>
-                <option value="TRANSFER">Transferência</option>
-              </select>
-            </Field>
-          )}
+          <Field label={isSub ? 'Tipo (herda do pai; pode sobrescrever)' : 'Tipo'}>
+            <select value={kind} onChange={e => setKind(e.target.value as CategoryOut['kind'])} className={INPUT_CLS}>
+              <option value="EXPENSE">Despesa</option>
+              <option value="INCOME">Renda</option>
+              <option value="TRANSFER">Transferência</option>
+            </select>
+          </Field>
           <Field label="Cor">
             <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-9 w-16 rounded cursor-pointer bg-transparent" />
           </Field>
@@ -336,6 +334,7 @@ export default function Registry() {
                       <div key={c.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 group">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color ?? '#6b7280' }} />
                         <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">{c.name}</span>
+                        {c.kind !== root.kind && <KindBadge kind={c.kind} />}
                         {canWrite && (
                           <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                             <button title="Editar" onClick={() => setCatModal({ initial: c })} className="p-1 rounded text-gray-500 hover:text-indigo-500"><Pencil className="w-3 h-3" /></button>
@@ -477,7 +476,7 @@ export default function Registry() {
           parent={catModal.parent}
           onSave={async data => {
             if (catModal.initial) {
-              await api.updateCategory(catModal.initial.id, { name: data.name, color: data.color, kind: catModal.initial.parent_id ? undefined : data.kind ?? undefined })
+              await api.updateCategory(catModal.initial.id, { name: data.name, color: data.color, kind: data.kind ?? undefined })
             } else {
               await api.createCategory(data)
             }

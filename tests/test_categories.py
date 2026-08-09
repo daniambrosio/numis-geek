@@ -143,17 +143,34 @@ def test_homonym_under_different_parent_ok(client, seed):
     assert r.status_code == 201
 
 
-def test_subcategory_cannot_change_kind(client, seed):
+def test_subcategory_kind_override_on_create(client, seed):
+    # Decisão 2026-08-09: raízes mistas — sub pode declarar kind próprio.
+    r = client.post(
+        "/api/categories",
+        json={"name": "Venda Usados", "parent_id": seed["casa_id"], "kind": "INCOME"},
+        headers=auth(seed["admin_token"]),
+    )
+    assert r.status_code == 201
+    assert r.json()["kind"] == "INCOME"
+    seed["venda_id"] = r.json()["id"]
+
+
+def test_subcategory_kind_editable(client, seed):
     r = client.put(f"/api/categories/{seed['energia_id']}", json={"kind": "INCOME"}, headers=auth(seed["admin_token"]))
-    assert r.status_code == 422
+    assert r.status_code == 200
+    assert r.json()["kind"] == "INCOME"
+    # volta
+    client.put(f"/api/categories/{seed['energia_id']}", json={"kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
 
 
-def test_root_kind_change_syncs_children(client, seed):
+def test_root_kind_change_does_not_cascade(client, seed):
+    # Com overrides por sub, mudar a raiz NÃO reescreve as filhas.
     r = client.put(f"/api/categories/{seed['casa_id']}", json={"kind": "INCOME"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 200
     r2 = client.get("/api/categories", headers=auth(seed["admin_token"]))
     kinds = {c["id"]: c["kind"] for c in r2.json()}
-    assert kinds[seed["energia_id"]] == "INCOME"
+    assert kinds[seed["energia_id"]] == "EXPENSE"   # manteve o próprio kind
+    assert kinds[seed["venda_id"]] == "INCOME"      # override preservado
     # volta
     client.put(f"/api/categories/{seed['casa_id']}", json={"kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
 

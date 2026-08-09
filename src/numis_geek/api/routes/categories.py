@@ -44,14 +44,17 @@ class CategoryOut(BaseModel):
 class CategoryCreateRequest(BaseModel):
     name: str
     parent_id: str | None = None
-    kind: CategoryKind | None = None  # required for roots; inherited for children
+    # Roots: required. Subs: optional — inherits the parent's kind when
+    # omitted, but MAY override it (decisão 2026-08-09: raízes mistas como
+    # "Bens Móveis" têm subs EXPENSE e INCOME juntas).
+    kind: CategoryKind | None = None
     color: str | None = None
 
 
 class CategoryUpdateRequest(BaseModel):
     name: str | None = None
     color: str | None = None
-    kind: CategoryKind | None = None  # roots only
+    kind: CategoryKind | None = None  # editável em qualquer nível
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -127,7 +130,7 @@ def create_category(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Only one nesting level: parent is already a subcategory.",
             )
-        kind = parent.kind  # subcategory inherits
+        kind = body.kind or parent.kind  # inherit by default, override allowed
         color = body.color or parent.color
     else:
         if body.kind is None:
@@ -188,14 +191,10 @@ def update_category(
     if body.color is not None:
         c.color = body.color
     if body.kind is not None:
-        if c.parent_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Subcategory inherits kind from parent.",
-            )
+        # Kind é editável em qualquer nível. Mudar a raiz NÃO cascateia
+        # pras filhas: cada sub mantém o próprio kind (herdado na criação
+        # ou sobrescrito depois) — semântica previsível com overrides.
         c.kind = body.kind
-        # keep children's denormalized kind in sync
-        db.query(Category).filter(Category.parent_id == c.id).update({"kind": body.kind})
     c.updated_at = datetime.now(timezone.utc)
     c.updated_by = current_user.user_id
     db.flush()
