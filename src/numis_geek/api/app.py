@@ -19,18 +19,21 @@ from numis_geek.api.routes import (
     audit,
     auth,
     backup,
+    categories,
     corporate_actions,
     distributions,
     extractions,
     financial_institutions,
     integrations,
     options,
+    parties,
     portfolio,
     portfolio_optimize,
     prices,
     ptax,
     snapshots,
     sysadmin_logs,
+    tags,
     target_allocation,
     users,
     valuation,
@@ -93,6 +96,9 @@ app.include_router(sysadmin_logs.router, prefix="/api")
 app.include_router(target_allocation.router, prefix="/api")
 app.include_router(valuation.router, prefix="/api")
 app.include_router(portfolio_optimize.router, prefix="/api")
+app.include_router(categories.router, prefix="/api")
+app.include_router(parties.router, prefix="/api")
+app.include_router(tags.router, prefix="/api")
 
 
 @app.get("/health")

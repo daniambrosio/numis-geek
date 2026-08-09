@@ -57,6 +57,9 @@ from numis_geek.models.asset_fundamentals import (
     AssetFundamentals,
     FundamentalsSource,
 )
+from numis_geek.models.category import Category, CategoryKind
+from numis_geek.models.party import Party, PartyAlias, PartyKind
+from numis_geek.models.tag import Tag
 
 __all__ = [
     "Workspace",
@@ -106,4 +109,10 @@ __all__ = [
     "TargetAllocationDimension",
     "AssetFundamentals",
     "FundamentalsSource",
+    "Category",
+    "CategoryKind",
+    "Party",
+    "PartyAlias",
+    "PartyKind",
+    "Tag",
 ]
