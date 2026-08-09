@@ -4,7 +4,7 @@ import {
   LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
-  Plug, DollarSign, Sparkles, ClipboardCheck, Sigma,
+  Plug, DollarSign, Sparkles, ClipboardCheck, Sigma, BookUser,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
@@ -54,6 +54,7 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard, placeholder: true },
   { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText, placeholder: true },
   { kind: 'item', label: 'Orçamento', href: '/budget', icon: Target, placeholder: true },
+  { kind: 'item', label: 'Cadastros', href: '/registry', icon: BookUser },
 
   { kind: 'section', label: 'Estrutura' },
   { kind: 'item', label: 'Instituições', href: '/financial-institutions', icon: Building2, placeholder: true },

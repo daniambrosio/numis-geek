@@ -155,6 +155,36 @@ export interface AccountOut {
   created_at: string
 }
 
+// Spec 68 — registry types
+export interface CategoryOut {
+  id: string
+  workspace_id: string
+  name: string
+  parent_id: string | null
+  kind: 'EXPENSE' | 'INCOME' | 'TRANSFER'
+  color: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface PartyOut {
+  id: string
+  workspace_id: string
+  name: string
+  kind: 'SUPPLIER' | 'CLIENT' | 'BOTH'
+  notes: string | null
+  is_active: boolean
+  alias_count: number
+  created_at: string
+}
+
+export interface TagOut {
+  id: string
+  workspace_id: string
+  name: string
+  created_at: string
+}
+
 export type AssetClass =
   | 'STOCK'
   | 'REIT'
@@ -725,6 +755,40 @@ export const api = {
 
   deactivateAccount: (id: string) =>
     request<AccountOut>(`/accounts/${id}/deactivate`, { method: 'PUT' }),
+
+  // ── Spec 68 — registry (categories / parties / tags) ──────────────────────
+
+  listCategories: (params?: { include_inactive?: boolean }) => {
+    const qs = params?.include_inactive ? '?include_inactive=true' : ''
+    return request<CategoryOut[]>(`/categories${qs}`)
+  },
+  createCategory: (data: { name: string; parent_id?: string | null; kind?: string | null; color?: string | null }) =>
+    request<CategoryOut>('/categories', { method: 'POST', body: JSON.stringify(data) }),
+  updateCategory: (id: string, data: { name?: string; color?: string | null; kind?: string | null }) =>
+    request<CategoryOut>(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deactivateCategory: (id: string) =>
+    request<CategoryOut>(`/categories/${id}/deactivate`, { method: 'PUT' }),
+
+  listParties: (params?: { search?: string; include_inactive?: boolean }) => {
+    const qs = new URLSearchParams()
+    if (params?.search) qs.set('search', params.search)
+    if (params?.include_inactive) qs.set('include_inactive', 'true')
+    const s = qs.toString()
+    return request<PartyOut[]>(`/parties${s ? `?${s}` : ''}`)
+  },
+  createParty: (data: { name: string; kind?: string; notes?: string | null }) =>
+    request<PartyOut>('/parties', { method: 'POST', body: JSON.stringify(data) }),
+  updateParty: (id: string, data: { name: string; kind: string; notes?: string | null }) =>
+    request<PartyOut>(`/parties/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deactivateParty: (id: string) =>
+    request<PartyOut>(`/parties/${id}/deactivate`, { method: 'PUT' }),
+  mergeParty: (survivorId: string, sourcePartyId: string) =>
+    request<PartyOut>(`/parties/${survivorId}/merge`, { method: 'POST', body: JSON.stringify({ source_party_id: sourcePartyId }) }),
+
+  listTags: () => request<TagOut[]>('/tags'),
+  createTag: (name: string) => request<TagOut>('/tags', { method: 'POST', body: JSON.stringify({ name }) }),
+  renameTag: (id: string, name: string) => request<TagOut>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  deleteTag: (id: string) => request<void>(`/tags/${id}`, { method: 'DELETE' }),
 
   listWorkspaces: () => request<WorkspaceOut[]>('/workspaces'),
 
