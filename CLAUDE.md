@@ -109,6 +109,8 @@ Three roles exist: `sysadmin`, `admin`, `member`.
 
 ## Frontend Patterns
 
+- **Rotas canônicas em inglês, labels de UI em português** (decidido 2026-08-09, vale pro app todo). Rotas PT legadas viram `<Navigate replace>` pra EN — nunca o contrário. Ex.: `/credit-cards` (label "Cartões"), `/transactions` (label "Movimentações"), `/financial-institutions` (label "Instituições"). Rotas novas nascem só em EN.
+
 - **Never catch data-fetch errors with `navigate('/login')`**. Only `api.me()` should trigger a login redirect on failure. All other fetches (listUsers, listAudit, etc.) should handle errors separately — a 403 or 500 on a data call must never log the user out.
 - Split `api.me()` and data fetches into separate `useEffect` hooks; gate the data fetch on `me` being set.
 - **Every modal must close on ESC.** Use the `useEscapeKey` hook from `frontend/src/lib/useEscapeKey.ts`, passing a close handler that's a no-op when the modal isn't open (e.g. `useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })`). Applies to component-level modals (e.g. `AssetModal`, `MovementComposer`) and to inline confirm/edit dialogs rendered directly inside a page. Never ship a new overlay without this.
