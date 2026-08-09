@@ -21,6 +21,7 @@ from numis_geek.api.routes import (
     backup,
     categories,
     corporate_actions,
+    credit_cards,
     distributions,
     extractions,
     financial_institutions,
@@ -99,6 +100,8 @@ app.include_router(portfolio_optimize.router, prefix="/api")
 app.include_router(categories.router, prefix="/api")
 app.include_router(parties.router, prefix="/api")
 app.include_router(tags.router, prefix="/api")
+app.include_router(credit_cards.router, prefix="/api")
+app.include_router(credit_cards.invoice_router, prefix="/api")
 
 
 @app.get("/health")
