@@ -71,7 +71,9 @@ TREE: list[tuple[str, str, CategoryKind, list[tuple[str, CategoryKind | None]]]]
         ("Aluguel e Condomínio", None), ("Consumo de Gás", None),
         ("Seguro e Monitoramento Residencial", None), ("Internet", None),
         ("Piscina", None), ("Jardim", None), ("Aquário", None), ("Impostos Moradia", None),
-        # +5 subcategorias ocultas no print — user manda depois; re-run adiciona.
+        # +5 que estavam ocultas no primeiro print (galeria enviada 2026-08-09):
+        ("Dedetização", None), ("Diarista", None), ("Itens para Casa", None),
+        ("Manutenção da Casa", None), ("Produtos de Limpeza", None),
     ]),
     ("O Dani Geek", "#f97316", CategoryKind.EXPENSE, [
         ("Ferramentas", None),
