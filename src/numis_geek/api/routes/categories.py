@@ -22,7 +22,7 @@ class CategoryOut(BaseModel):
     workspace_id: str
     name: str
     parent_id: str | None
-    kind: str
+    kind: str | None  # NULL em raízes (agrupador); preenchido em subs
     color: str | None
     is_active: bool
     created_at: str
@@ -34,7 +34,7 @@ class CategoryOut(BaseModel):
             workspace_id=c.workspace_id,
             name=c.name,
             parent_id=c.parent_id,
-            kind=c.kind.value,
+            kind=c.kind.value if c.kind else None,
             color=c.color,
             is_active=c.is_active,
             created_at=c.created_at.isoformat(),
@@ -44,9 +44,8 @@ class CategoryOut(BaseModel):
 class CategoryCreateRequest(BaseModel):
     name: str
     parent_id: str | None = None
-    # Roots: required. Subs: optional — inherits the parent's kind when
-    # omitted, but MAY override it (decisão 2026-08-09: raízes mistas como
-    # "Bens Móveis" têm subs EXPENSE e INCOME juntas).
+    # Decisão 2026-08-09 v2: kind mora SÓ na subcategoria (obrigatório
+    # nela); raiz é agrupador puro — kind enviado pra raiz é rejeitado.
     kind: CategoryKind | None = None
     color: str | None = None
 
@@ -54,7 +53,7 @@ class CategoryCreateRequest(BaseModel):
 class CategoryUpdateRequest(BaseModel):
     name: str | None = None
     color: str | None = None
-    kind: CategoryKind | None = None  # editável em qualquer nível
+    kind: CategoryKind | None = None  # editável só em subs
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -130,15 +129,20 @@ def create_category(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Only one nesting level: parent is already a subcategory.",
             )
-        kind = body.kind or parent.kind  # inherit by default, override allowed
-        color = body.color or parent.color
-    else:
         if body.kind is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="kind is required for root categories.",
+                detail="kind is required for subcategories.",
             )
         kind = body.kind
+        color = body.color or parent.color
+    else:
+        if body.kind is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Root categories are pure groupers — kind lives on subcategories.",
+            )
+        kind = None
         color = body.color
 
     dup = db.query(Category).filter(
@@ -191,9 +195,11 @@ def update_category(
     if body.color is not None:
         c.color = body.color
     if body.kind is not None:
-        # Kind é editável em qualquer nível. Mudar a raiz NÃO cascateia
-        # pras filhas: cada sub mantém o próprio kind (herdado na criação
-        # ou sobrescrito depois) — semântica previsível com overrides.
+        if c.parent_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Root categories are pure groupers — kind lives on subcategories.",
+            )
         c.kind = body.kind
     c.updated_at = datetime.now(timezone.utc)
     c.updated_by = current_user.user_id

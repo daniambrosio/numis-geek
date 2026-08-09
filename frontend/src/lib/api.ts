@@ -161,7 +161,7 @@ export interface CategoryOut {
   workspace_id: string
   name: string
   parent_id: string | null
-  kind: 'EXPENSE' | 'INCOME' | 'TRANSFER'
+  kind: 'EXPENSE' | 'INCOME' | 'TRANSFER' | null  // null = raiz (agrupador)
   color: string | null
   is_active: boolean
   created_at: string

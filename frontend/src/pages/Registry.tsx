@@ -16,7 +16,9 @@ import { useEscapeKey } from '../lib/useEscapeKey'
 
 // ── shared meta ───────────────────────────────────────────────────────────────
 
-export const KIND_META: Record<CategoryOut['kind'], { label: string; bg: string; text: string }> = {
+export type CategoryKind = NonNullable<CategoryOut['kind']>
+
+export const KIND_META: Record<CategoryKind, { label: string; bg: string; text: string }> = {
   EXPENSE: { label: 'Despesa', bg: 'bg-red-500/10', text: 'text-red-600 dark:text-red-400' },
   INCOME: { label: 'Renda', bg: 'bg-emerald-500/10', text: 'text-emerald-600 dark:text-emerald-400' },
   TRANSFER: { label: 'Transferência', bg: 'bg-indigo-500/10', text: 'text-indigo-600 dark:text-indigo-300' },
@@ -28,7 +30,7 @@ export const PARTY_KIND_META: Record<PartyOut['kind'], string> = {
   BOTH: 'Ambos',
 }
 
-export function KindBadge({ kind }: { kind: CategoryOut['kind'] }) {
+export function KindBadge({ kind }: { kind: CategoryKind }) {
   const m = KIND_META[kind]
   return (
     <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wider ${m.bg} ${m.text}`}>
@@ -57,7 +59,7 @@ interface CategoryModalProps {
 
 function CategoryModal({ initial, parent, onSave, onClose }: CategoryModalProps) {
   const [name, setName] = useState(initial?.name ?? '')
-  const [kind, setKind] = useState<CategoryOut['kind']>(initial?.kind ?? parent?.kind ?? 'EXPENSE')
+  const [kind, setKind] = useState<CategoryKind>(initial?.kind ?? 'EXPENSE')
   const [color, setColor] = useState(initial?.color ?? parent?.color ?? '#6366f1')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -71,7 +73,8 @@ function CategoryModal({ initial, parent, onSave, onClose }: CategoryModalProps)
       await onSave({
         name,
         parent_id: parent?.id ?? initial?.parent_id ?? null,
-        kind,
+        // Raiz é agrupador puro — kind só vai pra subcategoria.
+        kind: isSub ? kind : null,
         color,
       })
       onClose()
@@ -92,13 +95,15 @@ function CategoryModal({ initial, parent, onSave, onClose }: CategoryModalProps)
           <Field label="Nome">
             <input type="text" value={name} onChange={e => setName(e.target.value)} required className={INPUT_CLS} />
           </Field>
-          <Field label={isSub ? 'Tipo (herda do pai; pode sobrescrever)' : 'Tipo'}>
-            <select value={kind} onChange={e => setKind(e.target.value as CategoryOut['kind'])} className={INPUT_CLS}>
-              <option value="EXPENSE">Despesa</option>
-              <option value="INCOME">Renda</option>
-              <option value="TRANSFER">Transferência</option>
-            </select>
-          </Field>
+          {isSub && (
+            <Field label="Tipo">
+              <select value={kind} onChange={e => setKind(e.target.value as CategoryKind)} className={INPUT_CLS}>
+                <option value="EXPENSE">Despesa</option>
+                <option value="INCOME">Renda</option>
+                <option value="TRANSFER">Transferência</option>
+              </select>
+            </Field>
+          )}
           <Field label="Cor">
             <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-9 w-16 rounded cursor-pointer bg-transparent" />
           </Field>
@@ -321,7 +326,6 @@ export default function Registry() {
                     <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 group">
                       <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: root.color ?? '#6b7280' }} />
                       <span className="text-[13px] font-medium text-gray-900 dark:text-white flex-1">{root.name}</span>
-                      <KindBadge kind={root.kind} />
                       {canWrite && (
                         <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                           <button title="Nova subcategoria" onClick={() => setCatModal({ parent: root })} className="p-1 rounded text-gray-500 hover:text-indigo-500"><Plus className="w-3.5 h-3.5" /></button>
@@ -334,7 +338,7 @@ export default function Registry() {
                       <div key={c.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 group">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color ?? '#6b7280' }} />
                         <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">{c.name}</span>
-                        {c.kind !== root.kind && <KindBadge kind={c.kind} />}
+                        {c.kind && c.kind !== 'EXPENSE' && <KindBadge kind={c.kind} />}
                         {canWrite && (
                           <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                             <button title="Editar" onClick={() => setCatModal({ initial: c })} className="p-1 rounded text-gray-500 hover:text-indigo-500"><Pencil className="w-3 h-3" /></button>

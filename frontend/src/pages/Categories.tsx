@@ -80,13 +80,12 @@ export default function Categories() {
                   <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg">
                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: root.color ?? '#6b7280' }} />
                     <span className="text-[13px] font-medium text-gray-900 dark:text-white flex-1">{root.name}</span>
-                    <KindBadge kind={root.kind} />
                   </div>
                   {children.map(c => (
                     <div key={c.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded-lg">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color ?? '#6b7280' }} />
                       <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">{c.name}</span>
-                      {c.kind !== root.kind && <KindBadge kind={c.kind} />}
+                      {c.kind && c.kind !== 'EXPENSE' && <KindBadge kind={c.kind} />}
                     </div>
                   ))}
                 </div>

@@ -4,11 +4,11 @@ Fonte: prints da DB "DB Numis Categorias" fornecidos pelo user em
 2026-08-09 (sem MCP — decisão do user: export/print é mais simples).
 A árvore vive AQUI, versionada, transcrita 1:1 dos prints.
 
-Kinds:
-  - raiz "Recebimentos" → INCOME; raiz "Transferências" → TRANSFER;
-    demais raízes → EXPENSE.
-  - Subs herdam a raiz, EXCETO os overrides marcados com "+" nos prints
-    (raízes mistas — decisão 2026-08-09: sub pode ter kind próprio).
+Kinds (decisão 2026-08-09 v2 — kind SÓ na subcategoria):
+  - Raiz é agrupador puro → kind NULL no banco.
+  - Na TREE abaixo, o 3º campo é o kind DEFAULT das subs daquela raiz
+    (Recebimentos → INCOME, Transferências → TRANSFER, demais → EXPENSE);
+    subs com "+" nos prints têm override explícito.
 
 Pendência conhecida: "Moradia" tem +5 subcategorias ocultas no print —
 o user manda depois (decisão registrada); re-rodar o script as adiciona.
@@ -32,7 +32,8 @@ from numis_geek.db.session import SessionLocal
 from numis_geek.models.category import Category, CategoryKind
 from numis_geek.models.workspace import Workspace
 
-# (root, color, root_kind, [(sub, override_kind|None), ...])
+# (root, color, default_sub_kind, [(sub, override_kind|None), ...])
+# — a raiz em si é gravada com kind NULL (agrupador).
 TREE: list[tuple[str, str, CategoryKind, list[tuple[str, CategoryKind | None]]]] = [
     ("Alimentação", "#f59e0b", CategoryKind.EXPENSE, [
         ("Comer Fora / Delivery", None), ("Mercado", None), ("Lanchonete / Padaria", None),
@@ -132,7 +133,7 @@ def run(apply: bool) -> int:
 
         created, updated, unchanged = 0, 0, 0
 
-        def upsert(name: str, parent: Category | None, kind: CategoryKind, color: str | None) -> Category:
+        def upsert(name: str, parent: Category | None, kind: CategoryKind | None, color: str | None) -> Category:
             nonlocal created, updated, unchanged
             row = roots_by_name.get(name) if parent is None else subs_by_path.get((parent.name, name))
             if row is None:
@@ -149,22 +150,24 @@ def run(apply: bool) -> int:
                 else:
                     subs_by_path[(parent.name, name)] = row
                 created += 1
-                print(f"  CREATE {'  ' if parent else ''}{name}  [{kind.value}]{' ' + color if color else ''}")
+                kd = kind.value if kind else "grouper"
+                print(f"  CREATE {'  ' if parent else ''}{name}  [{kd}]{' ' + color if color else ''}")
             elif row.kind != kind or (color and row.color != color):
                 if apply:
                     row.kind = kind
                     row.color = color
                     row.updated_at = now
                 updated += 1
-                print(f"  UPDATE {'  ' if parent else ''}{name}  → [{kind.value}] {color}")
+                kd = kind.value if kind else "grouper"
+                print(f"  UPDATE {'  ' if parent else ''}{name}  → [{kd}] {color}")
             else:
                 unchanged += 1
             return row
 
-        for root_name, color, root_kind, subs in TREE:
-            root = upsert(root_name, None, root_kind, color)
+        for root_name, color, default_kind, subs in TREE:
+            root = upsert(root_name, None, None, color)  # raiz = agrupador, kind NULL
             for sub_name, override in subs:
-                upsert(sub_name, root, override or root_kind, color)
+                upsert(sub_name, root, override or default_kind, color)
 
         if apply:
             db.commit()

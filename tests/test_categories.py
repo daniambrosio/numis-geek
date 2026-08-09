@@ -104,22 +104,28 @@ def test_member_cannot_create(client, seed):
     assert r.status_code == 403
 
 
-def test_create_root_requires_kind(client, seed):
-    r = client.post("/api/categories", json={"name": "Mercado"}, headers=auth(seed["admin_token"]))
+def test_create_root_rejects_kind(client, seed):
+    # Decisão 2026-08-09 v2: raiz é agrupador puro — kind só em sub.
+    r = client.post("/api/categories", json={"name": "Mercado", "kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 422
 
 
-def test_create_root(client, seed):
-    r = client.post("/api/categories", json={"name": "Casa", "kind": "EXPENSE", "color": "#8b5cf6"}, headers=auth(seed["admin_token"]))
+def test_create_root_as_grouper(client, seed):
+    r = client.post("/api/categories", json={"name": "Casa", "color": "#8b5cf6"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 201
     data = r.json()
-    assert data["kind"] == "EXPENSE"
+    assert data["kind"] is None
     assert data["parent_id"] is None
     seed["casa_id"] = data["id"]
 
 
-def test_create_subcategory_inherits_kind_and_color(client, seed):
+def test_create_subcategory_requires_kind(client, seed):
     r = client.post("/api/categories", json={"name": "Energia", "parent_id": seed["casa_id"]}, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422
+
+
+def test_create_subcategory_with_kind_inherits_color(client, seed):
+    r = client.post("/api/categories", json={"name": "Energia", "parent_id": seed["casa_id"], "kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 201
     data = r.json()
     assert data["kind"] == "EXPENSE"
@@ -133,13 +139,13 @@ def test_no_second_nesting_level(client, seed):
 
 
 def test_duplicate_name_same_parent_409(client, seed):
-    r = client.post("/api/categories", json={"name": "Casa", "kind": "INCOME"}, headers=auth(seed["admin_token"]))
+    r = client.post("/api/categories", json={"name": "Casa"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 409
 
 
 def test_homonym_under_different_parent_ok(client, seed):
     # "Energia" já existe sob Casa; raiz "Energia" é legal (unicidade por parent)
-    r = client.post("/api/categories", json={"name": "Energia", "kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
+    r = client.post("/api/categories", json={"name": "Energia"}, headers=auth(seed["admin_token"]))
     assert r.status_code == 201
 
 
@@ -163,16 +169,13 @@ def test_subcategory_kind_editable(client, seed):
     client.put(f"/api/categories/{seed['energia_id']}", json={"kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
 
 
-def test_root_kind_change_does_not_cascade(client, seed):
-    # Com overrides por sub, mudar a raiz NÃO reescreve as filhas.
+def test_root_kind_not_editable(client, seed):
     r = client.put(f"/api/categories/{seed['casa_id']}", json={"kind": "INCOME"}, headers=auth(seed["admin_token"]))
-    assert r.status_code == 200
+    assert r.status_code == 422
     r2 = client.get("/api/categories", headers=auth(seed["admin_token"]))
     kinds = {c["id"]: c["kind"] for c in r2.json()}
-    assert kinds[seed["energia_id"]] == "EXPENSE"   # manteve o próprio kind
-    assert kinds[seed["venda_id"]] == "INCOME"      # override preservado
-    # volta
-    client.put(f"/api/categories/{seed['casa_id']}", json={"kind": "EXPENSE"}, headers=auth(seed["admin_token"]))
+    assert kinds[seed["casa_id"]] is None
+    assert kinds[seed["venda_id"]] == "INCOME"
 
 
 def test_deactivate_cascades_children(client, seed):
@@ -207,7 +210,7 @@ def test_sysadmin_scopes_by_query_param(client, seed):
     assert len(r.json()) >= 2
     r2 = client.post(
         f"/api/categories?workspace_id={seed['ws2_id']}",
-        json={"name": "SysCat", "kind": "EXPENSE"},
+        json={"name": "SysCat"},
         headers=auth(seed["sysadmin_token"]),
     )
     assert r2.status_code == 201
