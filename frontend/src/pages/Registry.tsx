@@ -1,8 +1,10 @@
-/* Spec 68 — Cadastros (/registry): Categorias, Fornecedores/Clientes, Tags.
+/* Spec 68 — Cadastros (/admin/registry): CRUD de Categorias, Fornecedores/
+ * Clientes e Tags.
  *
- * Três abas sobre os cadastros-base do lado despesas. Members leem;
- * admin+sysadmin escrevem. Tela nova sem par no protótipo (delta
- * declarado na spec) — segue o padrão visual das páginas admin.
+ * Página ADMIN (member é redirecionado, como as demais /admin). As visões
+ * de consumo/relatório ficam nas páginas de domínio /categories e /parties
+ * (grupo Caixa & Cartões). Categorias NÃO têm seed — chegam pelo import do
+ * Notion (spec 73).
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -216,7 +218,10 @@ export default function Registry() {
 
   useEffect(() => {
     api.me()
-      .then(u => setMe(u))
+      .then(u => {
+        if (u.role === 'member') navigate('/dashboard')
+        setMe(u)
+      })
       .catch(() => navigate('/login'))
   }, [navigate])
 

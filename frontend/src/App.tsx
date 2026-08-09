@@ -20,6 +20,8 @@ import SysAdminIntegrations from './pages/sysadmin/Integrations'
 import SysAdminPTAX from './pages/sysadmin/PTAX'
 import ComingSoon from './components/ComingSoon'
 import Registry from './pages/Registry'
+import Categories from './pages/Categories'
+import Parties from './pages/Parties'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
 
@@ -53,7 +55,8 @@ export default function App() {
         <Route path="/credit-cards" element={<PrivateRoute><ComingSoon title="Cartões" hint="Cartões de crédito como entidade própria. Depende do Spec 23." /></PrivateRoute>} />
         <Route path="/invoices" element={<PrivateRoute><ComingSoon title="Faturas" hint="Fechamento de cartão por período. Depende do Spec 23." /></PrivateRoute>} />
         <Route path="/budget" element={<PrivateRoute><ComingSoon title="Orçamento" hint="Categorias × meses, com targets. Depende dos Specs 19 + 23." /></PrivateRoute>} />
-        <Route path="/registry" element={<PrivateRoute><Registry /></PrivateRoute>} />
+        <Route path="/categories" element={<PrivateRoute><Categories /></PrivateRoute>} />
+        <Route path="/parties" element={<PrivateRoute><Parties /></PrivateRoute>} />
 
         {/* Estrutura */}
         <Route path="/financial-institutions" element={<PrivateRoute><ComingSoon title="Instituições" hint="FI Hub com contas, cartões e ativos agregados. Chega no Spec 22." /></PrivateRoute>} />
@@ -69,9 +72,11 @@ export default function App() {
         <Route path="/faturas" element={<Navigate to="/invoices" replace />} />
         <Route path="/orcamento" element={<Navigate to="/budget" replace />} />
         <Route path="/instituicoes" element={<Navigate to="/financial-institutions" replace />} />
-        <Route path="/cadastros" element={<Navigate to="/registry" replace />} />
+        <Route path="/cadastros" element={<Navigate to="/admin/registry" replace />} />
+        <Route path="/registry" element={<Navigate to="/admin/registry" replace />} />
 
         {/* Admin */}
+        <Route path="/admin/registry" element={<PrivateRoute><Registry /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute><AdminUsers /></PrivateRoute>} />
         <Route path="/admin/audit" element={<PrivateRoute><AdminAudit /></PrivateRoute>} />
         <Route path="/admin/target-allocation" element={<PrivateRoute><AdminTargetAllocation /></PrivateRoute>} />

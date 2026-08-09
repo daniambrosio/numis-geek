@@ -53,14 +53,16 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
   { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard, placeholder: true },
   { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText, placeholder: true },
+  { kind: 'item', label: 'Categorias', href: '/categories', icon: Layers },
+  { kind: 'item', label: 'Fornecedores/Clientes', href: '/parties', icon: BookUser },
   { kind: 'item', label: 'Orçamento', href: '/budget', icon: Target, placeholder: true },
-  { kind: 'item', label: 'Cadastros', href: '/registry', icon: BookUser },
 
   { kind: 'section', label: 'Estrutura' },
   { kind: 'item', label: 'Instituições', href: '/financial-institutions', icon: Building2, placeholder: true },
   { kind: 'item', label: 'Contas', href: '/accounts', icon: Layers },
 
   { kind: 'section', label: 'Admin', roles: ['admin', 'sysadmin'] },
+  { kind: 'item', label: 'Cadastros', href: '/admin/registry', icon: BookUser },
   { kind: 'item', label: 'Alocação alvo', href: '/admin/target-allocation', icon: Target },
   { kind: 'item', label: 'Auditoria', href: '/admin/audit', icon: ScrollText },
 
