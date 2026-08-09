@@ -85,7 +85,7 @@ export default function Categories() {
                     <div key={c.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded-lg">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color ?? '#6b7280' }} />
                       <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">{c.name}</span>
-                      {c.kind && c.kind !== 'EXPENSE' && <KindBadge kind={c.kind} />}
+                      {c.kind && <KindBadge kind={c.kind} />}
                     </div>
                   ))}
                 </div>

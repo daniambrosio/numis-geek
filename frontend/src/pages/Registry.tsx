@@ -338,7 +338,7 @@ export default function Registry() {
                       <div key={c.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/40 group">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color ?? '#6b7280' }} />
                         <span className="text-[12px] text-gray-700 dark:text-gray-300 flex-1">{c.name}</span>
-                        {c.kind && c.kind !== 'EXPENSE' && <KindBadge kind={c.kind} />}
+                        {c.kind && <KindBadge kind={c.kind} />}
                         {canWrite && (
                           <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                             <button title="Editar" onClick={() => setCatModal({ initial: c })} className="p-1 rounded text-gray-500 hover:text-indigo-500"><Pencil className="w-3 h-3" /></button>
