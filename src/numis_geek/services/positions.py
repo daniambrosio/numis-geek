@@ -14,6 +14,13 @@ Behaviors:
 - For non-cotado movements (quantity null but gross_amount present) on
   BUY/SUBSCRIPTION: running_basis adds (gross × fx); qty unchanged.
   On SELL/FULL_REDEMPTION: running_basis subtracts; qty unchanged.
+- BONUS (bonificação) enters the basis with cost = `gross_amount`
+  (fiscal treatment, Lei 9.249/95 art. 10): when the company declares a
+  valor de incorporação, the row carries gross = qty × declared value and
+  the PM absorbs that cost; when nothing is declared (gross = 0), the
+  extra shares dilute the PM — same convention as the user's legacy
+  Notion "PreçoMed Pond". Before 2026-08 the engine ignored BONUS in the
+  basis entirely, which neither diluted nor added declared cost.
 
 Distribution income (DIVIDEND/INTEREST/JCP/SECURITIES_LENDING) feeds
 `total_received_brl` via Σ net_amount × fx_rate.
@@ -61,7 +68,12 @@ class Position(TypedDict):
     yield_on_cost: Decimal | None    # ttm_native / total_invested (native)
 
 
-_BASIS_ADD_TYPES = {AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION}
+_BASIS_ADD_TYPES = {
+    AssetMovementType.BUY, AssetMovementType.SUBSCRIPTION,
+    # BONUS: basis_qty += qty, cost += gross_amount (0 → PM dilution;
+    # declared valor de incorporação → correct fiscal cost, Lei 9.249/95).
+    AssetMovementType.BONUS,
+}
 _BASIS_SUB_TYPES = {AssetMovementType.SELL, AssetMovementType.FULL_REDEMPTION}
 _QTY_ADD_TYPES = {
     AssetMovementType.BUY, AssetMovementType.BONUS, AssetMovementType.SUBSCRIPTION,
@@ -262,6 +274,13 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         if r.type in _BASIS_ADD_TYPES:
             if is_non_cotado_row:
                 non_cotado_basis_brl += gross * effective_fx
+            elif r.type == AssetMovementType.BONUS:
+                # Bonificação: cost comes from gross_amount (declared valor
+                # de incorporação, or 0), never from unit_price (validation
+                # forbids unit_price on BONUS).
+                basis_qty += qty
+                basis_cost_native += gross
+                basis_cost_brl += gross * effective_fx
             else:
                 basis_qty += qty
                 basis_cost_native += qty * unit

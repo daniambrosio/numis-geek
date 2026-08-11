@@ -174,14 +174,69 @@ def test_position_quantity_held_with_compra_bonificacao_venda(client, seed):
     pos = r.json()
     # 100 + 50 - 80 = 70
     assert pos["quantity_held"] == 70.0
-    # Avg cost = (100 * 30) / 100 = 30 (BONIFICACAO doesn't affect basis;
-    # VENDA does not reduce basis qty either in our spec — it only reduces holdings).
-    assert pos["average_cost"] == 30.0
+    # BONUS enters the basis at cost = gross (0 here) and DILUTES the PM —
+    # fiscal convention (Lei 9.249/95) matching the legacy Notion PreçoMed
+    # Pond: (100×30 + 50×0) / (100+50) = 20.
+    assert pos["average_cost"] == 20.0
     assert pos["currency"] == "BRL"
     # BRL currency, fx_rate = 1 → avg_cost_brl == avg_cost
-    assert pos["average_cost_brl"] == 30.0
-    # total_invested_brl = 70 * 30 = 2100
-    assert pos["total_invested_brl"] == 2100.0
+    assert pos["average_cost_brl"] == 20.0
+    # total_invested_brl = 70 * 20 = 1400
+    assert pos["total_invested_brl"] == 1400.0
+
+
+def test_bonus_with_declared_fmv_enters_basis(client, seed):
+    """Bonificação com valor de incorporação declarado (caso ITUB4):
+    gross_amount = qty × valor declarado entra no custo fiscal do PM."""
+    db = TestSession()
+    fi = db.query(FinancialInstitution).first()
+    account = db.query(Account).first()
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()),
+        workspace_id=seed["ws_id"],
+        account_id=account.id,
+        asset_class=AssetClass.STOCK,
+        country="BR",
+        name="Itaú Unibanco PN (FMV test)",
+        ticker="ITUBT",
+        currency=Currency.BRL,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(a)
+    db.commit()
+    asset_id = a.id
+    db.close()
+
+    today = _today_iso()
+    # 2300 @ 31.70 → basis 72,910
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id,
+        "type": "BUY",
+        "event_date": today,
+        "quantity": 2300,
+        "unit_price": 31.70,
+    }, headers=auth(seed["admin_token"]))
+    # Bonificação 10% com valor de incorporação R$ 34/ação:
+    # 230 ações, gross = 230 × 34 = 7,820
+    client.post("/api/asset-movements", json={
+        "asset_id": asset_id,
+        "type": "BONUS",
+        "event_date": today,
+        "quantity": 230,
+        "gross_amount": 7820.00,
+    }, headers=auth(seed["admin_token"]))
+
+    r = client.get(f"/api/assets/{asset_id}/position", headers=auth(seed["admin_token"]))
+    assert r.status_code == 200, r.text
+    pos = r.json()
+    assert pos["quantity_held"] == 2530.0
+    # PM = (2300×31.70 + 7820) / 2530 = 80,730 / 2530 = 31.9091...
+    expected_pm = (2300 * 31.70 + 7820.00) / 2530
+    assert abs(pos["average_cost"] - expected_pm) < 0.0001
+    assert abs(pos["total_invested_brl"] - 2530 * expected_pm) < 0.01
 
 
 # ── Weighted average cost ──────────────────────────────────────────────────
@@ -279,7 +334,8 @@ def test_compute_position_service_direct(seed):
         pos = compute_position(db, seed["asset_brl"])
         assert pos["currency"] == "BRL"
         assert pos["quantity_held"] == Decimal("70")
-        assert pos["average_cost"] == Decimal("30")
+        # BONUS dilui o PM: (100×30 + 50×0) / 150 = 20
+        assert pos["average_cost"] == Decimal("20.00000000")
     finally:
         db.close()
 
