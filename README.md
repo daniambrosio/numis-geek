@@ -148,6 +148,7 @@ Tests use in-memory SQLite — they don't touch `numis_geek.db`. Module-scoped f
 numis-geek/
 ├── README.md                          # this file
 ├── CLAUDE.md                          # project conventions for Claude Code
+├── TODO.md                            # cross-session pending items ([user]/[claude] tags)
 ├── pyproject.toml                     # backend deps + pytest config
 ├── alembic.ini                        # migration config
 ├── .env.example                       # environment template

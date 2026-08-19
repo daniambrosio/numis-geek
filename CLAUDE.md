@@ -26,6 +26,9 @@ Claude acts as the **orchestrator**, not the implementer. Frameworks like LangGr
 2. **Interview the user in plan mode** before writing each spec
 3. A feature is only considered done when **all automated tests are written and passing**
 4. If needed, create a dedicated testing agent for automated test generation
+5. **Pendências entre sessões vivem em `TODO.md` na raiz** — ao encerrar uma sessão com
+   itens em aberto, anotar lá (com tag `[user]` ou `[claude]`); ao iniciar uma sessão,
+   conferir o arquivo antes de propor próximos passos
 
 ## Tech Stack
 
