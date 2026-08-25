@@ -220,7 +220,6 @@ export default function SysadminAssets() {
             positions={positions}
             institutions={institutions}
             grouping={grouping}
-            showWorkspaceColumn
             onRowClick={setSelected}
             onAssetUpdated={(updated) =>
               setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))

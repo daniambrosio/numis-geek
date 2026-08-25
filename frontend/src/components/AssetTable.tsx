@@ -11,7 +11,6 @@ interface Props {
   positions: Map<string, PositionOut | null>
   institutions: FinancialInstitutionOut[]
   grouping: 'none' | 'klass' | 'fi'
-  showWorkspaceColumn?: boolean
   onRowClick: (asset: AssetOut) => void
   /** Called when the per-row refresh button updates a single asset.
    * The parent should merge it back into its assets state. */
@@ -112,7 +111,7 @@ function nextSort(current: SortState, key: SortKey): SortState {
 }
 
 export default function AssetTable({
-  assets, positions, institutions, grouping, showWorkspaceColumn, onRowClick, onAssetUpdated,
+  assets, positions, institutions, grouping, onRowClick, onAssetUpdated,
 }: Props) {
   const [sort, setSort] = useState<SortState>({ key: null, dir: null })
   const onSort = (key: SortKey) => setSort(prev => nextSort(prev, key))
@@ -167,7 +166,6 @@ export default function AssetTable({
           assets={sorted}
           positions={positions}
           fiById={fiById}
-          showWorkspaceColumn={showWorkspaceColumn}
           sort={sort}
           onSort={onSort}
           onRowClick={onRowClick}
@@ -185,7 +183,6 @@ export default function AssetTable({
           group={{ ...g, items: sortAssets(g.items, positions, fiById, sort) }}
           positions={positions}
           fiById={fiById}
-          showWorkspaceColumn={showWorkspaceColumn}
           sort={sort}
           onSort={onSort}
           onRowClick={onRowClick}
@@ -205,12 +202,11 @@ function Card({ children }: { children: React.ReactNode }) {
 }
 
 function GroupCard({
-  group, positions, fiById, showWorkspaceColumn, sort, onSort, onRowClick, onAssetUpdated,
+  group, positions, fiById, sort, onSort, onRowClick, onAssetUpdated,
 }: {
   group: Group
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
-  showWorkspaceColumn?: boolean
   sort: SortState
   onSort: (key: SortKey) => void
   onRowClick: (a: AssetOut) => void
@@ -234,7 +230,6 @@ function GroupCard({
           assets={group.items}
           positions={positions}
           fiById={fiById}
-          showWorkspaceColumn={showWorkspaceColumn}
           sort={sort}
           onSort={onSort}
           onRowClick={onRowClick}
@@ -280,12 +275,11 @@ function SortHeader({
 }
 
 function Table({
-  assets, positions, fiById, showWorkspaceColumn, sort, onSort, onRowClick, onAssetUpdated,
+  assets, positions, fiById, sort, onSort, onRowClick, onAssetUpdated,
 }: {
   assets: AssetOut[]
   positions: Map<string, PositionOut | null>
   fiById: Map<string, FinancialInstitutionOut>
-  showWorkspaceColumn?: boolean
   sort: SortState
   onSort: (k: SortKey) => void
   onRowClick: (a: AssetOut) => void
@@ -303,7 +297,6 @@ function Table({
       <table className="w-full text-[12px]">
         <thead>
           <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-            {showWorkspaceColumn && <th className="text-left font-medium px-2 py-2">Workspace</th>}
             <SortHeader colKey="ticker" label="Ativo" align="left" sort={sort} onSort={onSort} />
             <SortHeader colKey="klass" label="Classe" align="left" sort={sort} onSort={onSort} />
             <SortHeader colKey="fi" label="Custodiante" align="left" sort={sort} onSort={onSort} />
@@ -326,7 +319,6 @@ function Table({
               asset={a}
               position={positions.get(a.id) ?? null}
               fi={fiById.get(a.financial_institution_id) ?? null}
-              showWorkspaceColumn={showWorkspaceColumn}
               onClick={() => onRowClick(a)}
               onAssetUpdated={onAssetUpdated}
             />
@@ -338,12 +330,11 @@ function Table({
 }
 
 function Row({
-  asset, position, fi, showWorkspaceColumn, onClick, onAssetUpdated,
+  asset, position, fi, onClick, onAssetUpdated,
 }: {
   asset: AssetOut
   position: PositionOut | null
   fi: FinancialInstitutionOut | null
-  showWorkspaceColumn?: boolean
   onClick: () => void
   onAssetUpdated?: (updated: AssetOut) => void
 }) {
@@ -366,11 +357,6 @@ function Row({
         inactive ? 'opacity-60' : ''
       }`}
     >
-      {showWorkspaceColumn && (
-        <td className="px-2 py-2.5 text-[11px] text-gray-500 dark:text-gray-400 truncate max-w-[160px]">
-          {asset.workspace_name ?? asset.workspace_id.slice(0, 8)}
-        </td>
-      )}
       <td className="px-2 py-2.5">
         <div className="flex items-center gap-2">
           <span className="w-1 h-5 rounded-full shrink-0" style={{ background: color }} />
