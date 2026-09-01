@@ -219,7 +219,7 @@ export default function AssetMovements() {
       .map(fi => ({
         id: fi.id,
         label: fi.short_name,
-        color: fiTokenFor(fi.logo_slug, fi.short_name).color,
+        color: fiTokenFor(fi.logo_slug, fi.short_name, fi.brand_color).color,
       }))
   }, [items, institutions, assetById])
 

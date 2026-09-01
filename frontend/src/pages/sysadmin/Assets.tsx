@@ -118,7 +118,7 @@ export default function SysadminAssets() {
     const present = new Set(assets.map(a => a.financial_institution_id))
     return institutions
       .filter(fi => present.has(fi.id))
-      .map(fi => ({ id: fi.id, label: fi.short_name, color: fiTokenFor(fi.logo_slug, fi.short_name).color }))
+      .map(fi => ({ id: fi.id, label: fi.short_name, color: fiTokenFor(fi.logo_slug, fi.short_name, fi.brand_color).color }))
   }, [assets, institutions])
 
   const stats = useMemo(() => {

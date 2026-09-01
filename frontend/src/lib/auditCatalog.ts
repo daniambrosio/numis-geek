@@ -237,6 +237,22 @@ function describeRaw(p: ParsedAudit): AuditDescription {
         summary: `Desativou custodiante "${str(d.short_name) ?? ''}".`,
         link: { to: '/sysadmin/financial-institutions', label: 'Ir para custodiantes' },
       }
+    case 'financial_institution.logo_uploaded':
+      return {
+        actionLabel: 'Logo do custodiante enviado',
+        actionTone: 'fi',
+        resourceLabel: str(d.short_name) ?? 'Custodiante',
+        summary: `Enviou logo do custodiante "${str(d.short_name) ?? ''}"${str(d.filename) ? ` (${str(d.filename)})` : ''}.`,
+        link: { to: '/sysadmin/financial-institutions', label: 'Ir para custodiantes' },
+      }
+    case 'financial_institution.logo_removed':
+      return {
+        actionLabel: 'Logo do custodiante removido',
+        actionTone: 'fi',
+        resourceLabel: str(d.short_name) ?? 'Custodiante',
+        summary: `Removeu o logo do custodiante "${str(d.short_name) ?? ''}".`,
+        link: { to: '/sysadmin/financial-institutions', label: 'Ir para custodiantes' },
+      }
 
     // ───────── Assets
     case 'asset.created':
@@ -643,6 +659,8 @@ export const ACTION_FILTER_GROUPS: ActionFilterGroup[] = [
       { value: 'financial_institution.created', label: 'Custodiante criado' },
       { value: 'financial_institution.updated', label: 'Custodiante atualizado' },
       { value: 'financial_institution.deactivated', label: 'Custodiante desativado' },
+      { value: 'financial_institution.logo_uploaded', label: 'Logo do custodiante enviado' },
+      { value: 'financial_institution.logo_removed', label: 'Logo do custodiante removido' },
       { value: 'integration_credential.created', label: 'Credencial criada' },
     ],
   },

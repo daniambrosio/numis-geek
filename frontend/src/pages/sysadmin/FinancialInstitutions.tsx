@@ -1,75 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Upload, Trash2 } from 'lucide-react'
 import { api, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
-import { Card, PageHeader } from '../../components/ui'
+import { Card, FILogo, PageHeader } from '../../components/ui'
+import { refreshFiLogos, useFiLogosById } from '../../lib/fiLogos'
 import { useEscapeKey } from '../../lib/useEscapeKey'
 
-const LOGO_COLORS: Record<string, string> = {
-  itau:        'bg-orange-500',
-  xp:          'bg-black dark:bg-gray-700',
-  avenue:      'bg-blue-600',
-  btg:         'bg-yellow-500',
-  bradesco:    'bg-red-600',
-  santander:   'bg-red-700',
-  mercadopago: 'bg-sky-500',
-  wise:        'bg-green-500',
-  coinbase:    'bg-blue-500',
-  clear:       'bg-violet-600',
-  caixa:       'bg-blue-800',
-}
+// Espelha o whitelist do backend (services/fi_logo_storage.py) — validar aqui
+// evita round-trip só pra receber 415/413.
+const ACCEPTED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']
+const MAX_LOGO_BYTES = 512 * 1024
 
-// Maps logo_slug to domain for favicon lookup
-const LOGO_DOMAINS: Record<string, string> = {
-  itau:        'itau.com.br',
-  xp:          'xpi.com.br',
-  avenue:      'avenue.us',
-  btg:         'btgpactual.com',
-  bradesco:    'bradesco.com.br',
-  santander:   'santander.com.br',
-  mercadopago: 'mercadopago.com.br',
-  wise:        'wise.com',
-  coinbase:    'coinbase.com',
-  clear:       'clear.com.br',
-  caixa:       'caixa.gov.br',
-}
-
-function getLogoUrl(slug: string): string | null {
-  const domain = LOGO_DOMAINS[slug]
-  if (!domain) return null
-  return `https://www.google.com/s2/favicons?sz=64&domain=${domain}`
-}
-
-function InstitutionLogo({ fi }: { fi: FinancialInstitutionOut }) {
-  const [imgFailed, setImgFailed] = useState(false)
-  const logoUrl = fi.logo_slug ? getLogoUrl(fi.logo_slug) : null
-
-  if (logoUrl && !imgFailed) {
-    return (
-      <div className="w-9 h-9 rounded-lg bg-white dark:bg-gray-800 flex items-center justify-center overflow-hidden shrink-0 border border-gray-100 dark:border-gray-700">
-        <img
-          src={logoUrl}
-          alt={fi.short_name}
-          className="w-7 h-7 object-contain"
-          onError={() => setImgFailed(true)}
-        />
-      </div>
-    )
-  }
-
-  const color = fi.logo_slug ? (LOGO_COLORS[fi.logo_slug] ?? 'bg-gray-400') : 'bg-gray-400'
-  const initials = fi.short_name.slice(0, 2).toUpperCase()
-  return (
-    <div className={`w-9 h-9 rounded-lg ${color} flex items-center justify-center text-white text-xs font-bold shrink-0`}>
-      {initials}
-    </div>
-  )
+export interface FiFormData {
+  long_name: string
+  short_name: string
+  logo_slug: string | null
+  brand_color: string | null
 }
 
 interface ModalProps {
   initial?: FinancialInstitutionOut
-  onSave: (data: { long_name: string; short_name: string; logo_slug: string | null }) => Promise<void>
+  onSave: (data: FiFormData, logoFile: File | null, removeLogo: boolean) => Promise<void>
   onClose: () => void
 }
 
@@ -77,15 +29,64 @@ function Modal({ initial, onSave, onClose }: ModalProps) {
   const [longName, setLongName] = useState(initial?.long_name ?? '')
   const [shortName, setShortName] = useState(initial?.short_name ?? '')
   const [logoSlug, setLogoSlug] = useState(initial?.logo_slug ?? '')
+  const [brandColor, setBrandColor] = useState(initial?.brand_color ?? '')
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
+  const [removeLogo, setRemoveLogo] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const fileInput = useRef<HTMLInputElement>(null)
+  const byId = useFiLogosById()
+
+  const storedLogo = initial ? byId[initial.id]?.data_url ?? null : null
+  const shownLogo = logoPreview ?? (removeLogo ? null : storedLogo)
+
+  // Object URL do arquivo escolhido — revogado ao trocar/desmontar.
+  useEffect(() => {
+    if (!logoFile) { setLogoPreview(null); return }
+    const url = URL.createObjectURL(logoFile)
+    setLogoPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [logoFile])
+
+  function handlePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''  // permite reescolher o mesmo arquivo
+    if (!file) return
+    if (!ACCEPTED_MIME.includes(file.type)) {
+      setError('Formato não suportado. Use PNG, JPG, WEBP ou SVG.')
+      return
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setError(`Logo de ${(file.size / 1024).toFixed(0)} KB excede o limite de ${MAX_LOGO_BYTES / 1024} KB.`)
+      return
+    }
+    setError('')
+    setRemoveLogo(false)
+    setLogoFile(file)
+  }
+
+  function handleRemoveLogo() {
+    setLogoFile(null)
+    setRemoveLogo(true)
+    setError('')
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     setSaving(true)
     try {
-      await onSave({ long_name: longName, short_name: shortName, logo_slug: logoSlug.trim() || null })
+      await onSave(
+        {
+          long_name: longName,
+          short_name: shortName,
+          logo_slug: logoSlug.trim() || null,
+          brand_color: brandColor.trim() || null,
+        },
+        logoFile,
+        removeLogo,
+      )
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
@@ -118,6 +119,83 @@ function Modal({ initial, onSave, onClose }: ModalProps) {
               />
             </div>
           ))}
+
+          <div>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Logo</label>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg flex items-center justify-center overflow-hidden shrink-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                {shownLogo ? (
+                  <img src={shownLogo} alt="Prévia do logo" className="w-full h-full object-contain p-1" />
+                ) : (
+                  <span
+                    className="w-full h-full flex items-center justify-center text-white text-xs font-semibold"
+                    style={{ background: brandColor.trim() || '#94a3b8' }}
+                  >
+                    {(shortName || '··').slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInput.current?.click()}
+                  className="px-3 py-1.5 inline-flex items-center gap-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" /> {shownLogo ? 'Trocar' : 'Enviar'}
+                </button>
+                {shownLogo && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveLogo}
+                    className="px-3 py-1.5 inline-flex items-center gap-1.5 text-xs rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Remover
+                  </button>
+                )}
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept={ACCEPTED_MIME.join(',')}
+                  onChange={handlePick}
+                  aria-label="Arquivo do logo"
+                  className="hidden"
+                />
+              </div>
+            </div>
+            <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-600">
+              PNG, JPG, WEBP ou SVG · até {MAX_LOGO_BYTES / 1024} KB. Sem logo, a instituição aparece com as iniciais sobre a cor da marca.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Cor da marca</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={/^#[0-9a-fA-F]{6}$/.test(brandColor.trim()) ? brandColor.trim() : '#94a3b8'}
+                onChange={e => setBrandColor(e.target.value)}
+                className="w-10 h-9 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 cursor-pointer"
+                aria-label="Cor da marca"
+              />
+              <input
+                type="text"
+                value={brandColor}
+                onChange={e => setBrandColor(e.target.value)}
+                placeholder="#820AD1 (opcional)"
+                className="flex-1 px-3.5 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              {brandColor.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setBrandColor('')}
+                  className="px-3 py-2 text-xs rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Limpar
+                </button>
+              )}
+            </div>
+          </div>
+
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
@@ -160,14 +238,23 @@ export default function SysAdminFinancialInstitutions() {
       .finally(() => setLoading(false))
   }, [me])
 
-  async function handleSave(data: { long_name: string; short_name: string; logo_slug: string | null }) {
-    if (editing) {
-      const updated = await api.updateFinancialInstitution(editing.id, data)
-      setItems(prev => prev.map(fi => fi.id === updated.id ? updated : fi))
-    } else {
-      const created = await api.createFinancialInstitution(data)
-      setItems(prev => [...prev, created].sort((a, b) => a.short_name.localeCompare(b.short_name)))
+  async function handleSave(data: FiFormData, logoFile: File | null, removeLogo: boolean) {
+    const isNew = !editing
+    // O upload é um segundo request (multipart) — numa instituição nova ele só
+    // pode rodar depois do POST, que é quem cria o id.
+    let saved = editing
+      ? await api.updateFinancialInstitution(editing.id, data)
+      : await api.createFinancialInstitution(data)
+    if (logoFile) {
+      saved = await api.uploadFinancialInstitutionLogo(saved.id, logoFile)
+    } else if (removeLogo && saved.has_logo) {
+      saved = await api.deleteFinancialInstitutionLogo(saved.id)
     }
+    setItems(prev => isNew
+      ? [...prev, saved].sort((a, b) => a.short_name.localeCompare(b.short_name))
+      : prev.map(fi => fi.id === saved.id ? saved : fi))
+    // Logo/cor são consumidos pelo <FILogo> do app inteiro via cache global.
+    refreshFiLogos()
   }
 
   async function handleDeactivate(fi: FinancialInstitutionOut) {
@@ -211,7 +298,7 @@ export default function SysAdminFinancialInstitutions() {
                 {items.map(fi => (
                   <tr key={fi.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
                     <td className="px-4 py-3 w-12">
-                      <InstitutionLogo fi={fi} />
+                      <FILogo slug={fi.logo_slug} shortName={fi.short_name} fiId={fi.id} size="lg" />
                     </td>
                     <td className="px-4 py-3 text-gray-900 dark:text-white font-medium">{fi.long_name}</td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{fi.short_name}</td>

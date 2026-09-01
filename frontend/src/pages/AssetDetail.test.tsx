@@ -44,7 +44,7 @@ function asset(currency: 'BRL' | 'USD' = 'USD'): AssetOut {
 
 const fi: FinancialInstitutionOut = {
   id: 'fi1', short_name: 'Avenue', long_name: 'Avenue Securities LLC',
-  country: 'US', logo_slug: 'avenue', is_active: true,
+  country: 'US', logo_slug: 'avenue', brand_color: null, has_logo: false, is_active: true,
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
 

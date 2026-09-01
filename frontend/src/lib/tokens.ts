@@ -99,9 +99,18 @@ export function amTypeColor(type: string): string {
 // Backward-compat alias (used in a few components still importing `lanTypeColor`).
 export const lanTypeColor = amTypeColor
 
-export function fiTokenFor(slug: string | null | undefined, shortName: string): FIToken {
+/** `brandColor` vem do cadastro da instituição (coluna `brand_color`) e tem
+ *  precedência sobre a paleta hardcoded — é o que permite instituição nova
+ *  ter cor própria sem tocar em código. */
+export function fiTokenFor(
+  slug: string | null | undefined,
+  shortName: string,
+  brandColor?: string | null,
+): FIToken {
+  const initials = slug && FI_PALETTE[slug]
+    ? FI_PALETTE[slug].initials
+    : shortName.split(/\s+/).slice(0, 2).map(s => s[0] ?? '').join('').toUpperCase() || '··'
+  if (brandColor) return { color: brandColor, initials }
   if (slug && FI_PALETTE[slug]) return FI_PALETTE[slug]
-  // Fallback — derive initials from short name.
-  const initials = shortName.split(/\s+/).slice(0, 2).map(s => s[0] ?? '').join('').toUpperCase() || '··'
   return { color: '#94a3b8', initials }
 }

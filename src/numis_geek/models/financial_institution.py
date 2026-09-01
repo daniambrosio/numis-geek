@@ -14,6 +14,12 @@ class FinancialInstitution(Base):
     long_name: Mapped[str] = mapped_column(String(255), nullable=False)
     short_name: Mapped[str] = mapped_column(String(100), nullable=False)
     logo_slug: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Logo enviado pelo sysadmin (spec-less fix 2026-09-01). `logo_storage_key`
+    # é o caminho relativo à raiz do fi_logo_storage; `brand_color` é o hex
+    # usado no fallback de iniciais e nas cores de gráfico por instituição.
+    logo_storage_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logo_mime: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    brand_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     country: Mapped[str] = mapped_column(String(2), nullable=False, default="BR")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

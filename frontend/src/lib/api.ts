@@ -135,10 +135,22 @@ export interface FinancialInstitutionOut {
   long_name: string
   short_name: string
   logo_slug: string | null
+  brand_color: string | null  // #RRGGBB
+  has_logo: boolean
   country: string  // ISO-2
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+/** Logo + cor de marca por instituição — o `data_url` vem embutido porque a
+ *  API é autenticada por Bearer e `<img src>` não manda header. */
+export interface FinancialInstitutionLogoOut {
+  id: string
+  logo_slug: string | null
+  short_name: string
+  brand_color: string | null
+  data_url: string | null
 }
 
 export interface AccountOut {
@@ -763,11 +775,37 @@ export const api = {
   listFinancialInstitutions: () =>
     request<FinancialInstitutionOut[]>('/financial-institutions'),
 
-  createFinancialInstitution: (data: { long_name: string; short_name: string; logo_slug?: string | null }) =>
+  listFinancialInstitutionLogos: () =>
+    request<FinancialInstitutionLogoOut[]>('/financial-institutions/logos'),
+
+  createFinancialInstitution: (data: { long_name: string; short_name: string; logo_slug?: string | null; brand_color?: string | null }) =>
     request<FinancialInstitutionOut>('/financial-institutions', { method: 'POST', body: JSON.stringify(data) }),
 
-  updateFinancialInstitution: (id: string, data: { long_name: string; short_name: string; logo_slug?: string | null }) =>
+  updateFinancialInstitution: (id: string, data: { long_name: string; short_name: string; logo_slug?: string | null; brand_color?: string | null }) =>
     request<FinancialInstitutionOut>(`/financial-institutions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  uploadFinancialInstitutionLogo: async (id: string, file: File): Promise<FinancialInstitutionOut> => {
+    const token = getToken()
+    const form = new FormData()
+    form.append('file', file, file.name)
+    const res = await fetch(`${BASE}/financial-institutions/${id}/logo`, {
+      method: 'POST',
+      body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (!res.ok) {
+      let detail: string | null = null
+      try {
+        const body = await res.json() as { detail?: string }
+        detail = body?.detail ?? null
+      } catch { /* not JSON */ }
+      throw new Error(detail ?? `HTTP ${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<FinancialInstitutionOut>
+  },
+
+  deleteFinancialInstitutionLogo: (id: string) =>
+    request<FinancialInstitutionOut>(`/financial-institutions/${id}/logo`, { method: 'DELETE' }),
 
   deactivateFinancialInstitution: (id: string) =>
     request<FinancialInstitutionOut>(`/financial-institutions/${id}/deactivate`, { method: 'PUT' }),

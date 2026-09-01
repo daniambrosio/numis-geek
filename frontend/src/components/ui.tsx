@@ -1,5 +1,6 @@
 import { Search, ArrowUpRight, ArrowDownRight, Sparkles, CornerDownLeft } from 'lucide-react'
 import { KLASS, fiTokenFor, lanTypeColor, type CollapsedClassCode } from '../lib/tokens'
+import { useFiLogosById, useFiLogosBySlug } from '../lib/fiLogos'
 
 /* ────────────────────────────────────────────────────────────
  * Reusable UI primitives — mirror prototype's components.
@@ -321,17 +322,37 @@ export function Trend({ value, suffix }: { value: number; suffix?: string }) {
   )
 }
 
+/** Logo da instituição. Renderiza a imagem enviada no cadastro (sysadmin →
+ *  Instituições Financeiras) quando existe; senão cai nas iniciais sobre a
+ *  cor de marca. `fiId` só é necessário quando a instituição não tem slug. */
 export function FILogo({
   slug,
   shortName,
   size = 'md',
+  fiId,
 }: {
   slug: string | null
   shortName: string
   size?: 'sm' | 'md' | 'lg'
+  fiId?: string | null
 }) {
-  const tok = fiTokenFor(slug, shortName)
+  const bySlug = useFiLogosBySlug()
+  const byId = useFiLogosById()
+  const entry = (fiId ? byId[fiId] : undefined) ?? (slug ? bySlug[slug] : undefined)
+  const tok = fiTokenFor(slug, shortName, entry?.brand_color)
   const px = size === 'lg' ? 'w-10 h-10 text-sm' : size === 'sm' ? 'w-6 h-6 text-[10px]' : 'w-8 h-8 text-xs'
+
+  if (entry?.data_url) {
+    return (
+      <div
+        className={`flex items-center justify-center rounded-md overflow-hidden shrink-0 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 ${px}`}
+        title={shortName}
+      >
+        <img src={entry.data_url} alt={shortName} className="w-full h-full object-contain p-0.5" />
+      </div>
+    )
+  }
+
   return (
     <div
       className={`flex items-center justify-center rounded-md font-semibold text-white shrink-0 ${px}`}

@@ -10,6 +10,7 @@ import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
 import { getComfort, toggleComfort } from '../lib/comfort'
 import { clearToken, jwtMatchesMe, type UserOut } from '../lib/api'
+import { resetFiLogos } from '../lib/fiLogos'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
 import PriceRefresh from './PriceRefresh'
 import VersionMismatchBanner from './VersionMismatchBanner'
@@ -161,6 +162,7 @@ export default function AppLayout({ user, children }: Props) {
 
   function handleLogout() {
     clearToken()
+    resetFiLogos()  // cache de logos é por sessão — próximo login recarrega
     navigate('/login')
   }
 

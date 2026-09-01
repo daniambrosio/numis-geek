@@ -368,7 +368,7 @@ export default function Dashboard() {
                 {topFis.map((f, i) => {
                   const fi = fiById.get(f.fi)
                   const pct = totalCurrent ? f.value / totalCurrent : 0
-                  const color = fi ? fiTokenFor(fi.logo_slug, fi.short_name).color : '#94a3b8'
+                  const color = fi ? fiTokenFor(fi.logo_slug, fi.short_name, fi.brand_color).color : '#94a3b8'
                   return (
                     <div
                       key={i}

@@ -619,7 +619,7 @@ export default function SnapshotDetail() {
     }
     return institutions
       .filter(fi => present.has(fi.id))
-      .map(fi => ({ id: fi.id, label: fi.short_name, color: fiTokenFor(fi.logo_slug, fi.short_name).color }))
+      .map(fi => ({ id: fi.id, label: fi.short_name, color: fiTokenFor(fi.logo_slug, fi.short_name, fi.brand_color).color }))
   }, [items, institutions, assetById])
 
   const [showAllPositions, setShowAllPositions] = useState(false)
