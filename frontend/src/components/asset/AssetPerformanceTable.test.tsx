@@ -9,8 +9,8 @@ const base: AssetPerformanceRow = {
   period_end_date: '2026-08-31', quantity: '100', unit_price: '32.50',
   market_value_native: '3250', market_value_brl: '3250', market_value_usd: '600',
   total_invested_brl: '3000', fx_rate_usd_brl: '5.4', pnl_brl: '250', pnl_pct: 0.0833,
-  aportes_native: '0', resgates_native: '0', aportes_brl: '0', resgates_brl: '0',
-  proventos_native: '45.5', proventos_brl: '45.5',
+  contributions_native: '0', withdrawals_native: '0', contributions_brl: '0', withdrawals_brl: '0',
+  income_native: '45.5', income_brl: '45.5',
   return_pct: 0.0312, return_brl_pct: 0.0312, return_null_reason: null,
 }
 
@@ -24,7 +24,7 @@ function mount(rows: AssetPerformanceRow[], over: Partial<{ currency: string; is
 
 describe('AssetPerformanceTable (spec 81)', () => {
   it('cabeçalhos canônicos e valores da linha', () => {
-    mount([base, { ...base, period_end_date: '2026-07-31', market_value_brl: '3000', return_pct: null, return_null_reason: 'FIRST_CLOSING', proventos_native: '0', proventos_brl: '0' }])
+    mount([base, { ...base, period_end_date: '2026-07-31', market_value_brl: '3000', return_pct: null, return_null_reason: 'FIRST_CLOSING', income_native: '0', income_brl: '0' }])
     for (const h of ['Período', 'Qtd', 'Preço unitário', 'Valor total (BRL)', 'Valor total (USD)', 'Investido', 'P&L', 'Proventos no mês', 'Retorno no mês', 'Δ MoM']) {
       expect(screen.getByText(h)).toBeInTheDocument()
     }

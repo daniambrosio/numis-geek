@@ -5,8 +5,9 @@
 
 Backfill: anexos de SNAPSHOT recebem o slot do extraction job mais recente
 que os referencia (institution_id + source_hint → purpose). Anexos sem job
-ficam NULL — eram exatamente os "perdidos" da UI; ficam visíveis num bucket
-sem instituição pra o usuário classificar.
+ficam NULL — eram exatamente os "perdidos" da UI; os 17 de prod foram
+classificados à mão em 2026-09-05 (triagem com preview + SQL cirúrgico).
+Uploads novos sempre gravam o slot, então não nascem mais órfãos.
 
 Revision ID: attachment_slot
 Revises: spec80_checking_bal

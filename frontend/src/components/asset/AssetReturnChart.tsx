@@ -9,8 +9,8 @@ import { fmtPct } from '../../lib/format'
 import { Card, SectionTitle } from '../ui'
 
 const PT_MONTHS = [
-  'jan', 'fev', 'mar', 'abr', 'mai', 'jun',
-  'jul', 'ago', 'set', 'out', 'nov', 'dez',
+  'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+  'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
 ]
 const W = 1100
 const H = 170
@@ -66,18 +66,24 @@ export default function AssetReturnChart({ rows, title = 'Retorno acumulado · p
   const yOf = (v: number) => PAD_TOP + plotH - ((v - minV) / (maxV - minV)) * plotH
   const yZero = yOf(0)
 
-  // Segmentos contínuos (quebram em null).
+  // Segmentos contínuos (quebram em null). Um mês válido isolado entre dois
+  // buracos vira um ponto, não some.
   const segments: string[] = []
+  const lonePoints: { x: number; y: number; date: string }[] = []
   let cur: string[] = []
+  let curFirst: { x: number; y: number; date: string } | null = null
+  const flush = () => {
+    if (cur.length > 1) segments.push(cur.join(' '))
+    else if (cur.length === 1 && curFirst) lonePoints.push(curFirst)
+    cur = []; curFirst = null
+  }
   points.forEach((p, i) => {
-    if (p.acc == null) {
-      if (cur.length > 1) segments.push(cur.join(' '))
-      cur = []
-      return
-    }
-    cur.push(`${cur.length === 0 ? 'M' : 'L'} ${xOf(i).toFixed(2)},${yOf(p.acc).toFixed(2)}`)
+    if (p.acc == null) { flush(); return }
+    const x = xOf(i), y = yOf(p.acc)
+    if (cur.length === 0) curFirst = { x, y, date: p.date }
+    cur.push(`${cur.length === 0 ? 'M' : 'L'} ${x.toFixed(2)},${y.toFixed(2)}`)
   })
-  if (cur.length > 1) segments.push(cur.join(' '))
+  flush()
 
   const ticks = [minV, minV + (maxV - minV) / 2, maxV]
   const hover = hoverIdx != null ? points[hoverIdx] : null
@@ -112,6 +118,9 @@ export default function AssetReturnChart({ rows, title = 'Retorno acumulado · p
             </g>
           ))}
 
+          {lonePoints.map(lp => (
+            <circle key={`lone-${lp.date}`} cx={lp.x} cy={lp.y} r="3" fill="#6366f1" data-testid="asset-return-lone-point" />
+          ))}
           {points.map((p, i) => p.acc == null ? (
             <circle key={p.date} cx={xOf(i)} cy={yZero} r="2.5" fill="none" stroke="currentColor" strokeOpacity="0.35" />
           ) : null)}

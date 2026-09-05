@@ -34,9 +34,7 @@ from numis_geek.models.portfolio_snapshot import (
 from numis_geek.models.target_allocation import (
     TargetAllocation, TargetAllocationDimension,
 )
-from numis_geek.services.asset_performance import (
-    APORTE_TYPES, RESGATE_TYPES, cash_flows_in_window,
-)
+from numis_geek.services.asset_performance import cash_flows_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +125,6 @@ class MarkowitzError(ValueError):
 
 
 # ── Step 1: build monthly returns ─────────────────────────────────────────────
-
-
-# Spec 81 — os tipos de fluxo e a soma por janela vivem em
-# services/asset_performance (fonte única com a página do ativo).
-# Ficam re-exportados aqui pra compat de import.
-_APORTE_TYPES = tuple(APORTE_TYPES)
-_RESGATE_TYPES = tuple(RESGATE_TYPES)
 
 
 def build_monthly_returns(

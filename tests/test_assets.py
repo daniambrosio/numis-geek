@@ -976,7 +976,7 @@ def test_performance_rows_desc_and_summary(client, seed):
     assert abs(feb["return_pct"] - 0.10) < 1e-9
     assert feb["pnl_brl"].startswith("800.00")                   # 3300 − 2500
     assert abs(feb["pnl_pct"] - 0.32) < 1e-9
-    assert feb["proventos_brl"] == "0"
+    assert feb["income_brl"] == "0"
     sm = body["summary"]
     assert sm["as_of"] == "2023-02-28"
     assert sm["return_12m_pct"] is None and sm["months_in_12m"] == 2
@@ -1118,3 +1118,37 @@ def test_patch_asset_audit_logged(client, seed):
         assert len(rows) >= 1
     finally:
         db.close()
+
+
+def test_patch_legacy_fixed_income_with_ticker_and_no_details(client, seed):
+    """Ativos importados do Notion: renda fixa COM ticker e SEM linha de
+    details viola as regras de criação. PATCH que não toca nisso (ex.: notes)
+    tem que passar; PATCH que introduz violação nova continua 422."""
+    from numis_geek.models.account import Currency as _Ccy
+    from numis_geek.models.asset import Asset as _Asset, AssetClass as _Cls
+    from datetime import datetime as _dt, timezone as _tz
+    db = TestSession()
+    try:
+        a = _Asset(
+            id=str(uuid.uuid4()), workspace_id=seed["ws_a"], account_id=seed["acc_xp_a"],
+            asset_class=_Cls.FIXED_INCOME, country="BR", name="CDB Legado 2027",
+            ticker="CDB-LEGADO", currency=_Ccy.BRL, is_active=True,
+            created_at=_dt.now(_tz.utc), updated_at=_dt.now(_tz.utc),
+        )
+        db.add(a); db.commit(); asset_id = a.id
+    finally:
+        db.close()
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"notes": "tese do CDB"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["notes"] == "tese do CDB"
+    assert r.json()["ticker"] == "CDB-LEGADO"          # intocado
+    assert r.json()["details"] is None
+    # violação NOVA ainda é rejeitada (CNPJ fora de FUND)
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"cnpj": "12.345.678/0001-00"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 422

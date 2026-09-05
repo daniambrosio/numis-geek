@@ -109,47 +109,67 @@ class AssetRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "AssetRequest":
-        cls = self.asset_class
-
-        # Ticker rules
-        if cls in TICKER_REQUIRED_CLASSES and not (self.ticker and self.ticker.strip()):
-            raise ValueError(f"ticker is required for asset_class {cls.value}")
-        if cls in TICKER_FORBIDDEN_CLASSES and self.ticker:
-            raise ValueError(f"ticker must be omitted for asset_class {cls.value}")
-
-        # CNPJ only for FUND
-        if self.cnpj and cls != AssetClass.FUND:
-            raise ValueError("cnpj is allowed only for asset_class FUND")
-
-        # Spec 80 — vínculo com conta corrente só faz sentido em "Saldo em Conta"
-        if self.linked_account_id and cls != AssetClass.CASH:
-            raise ValueError(
-                "linked_account_id is allowed only for asset_class CASH",
-            )
-
-        # Details presence vs class
-        needs_details = cls in (AssetClass.FIXED_INCOME, AssetClass.REAL_ESTATE, AssetClass.VEHICLE)
-        if needs_details and not self.details:
-            raise ValueError(f"details is required for asset_class {cls.value}")
-        if not needs_details and self.details:
-            raise ValueError(f"details must be omitted for asset_class {cls.value}")
-
-        # Validate the details payload itself
-        if cls == AssetClass.FIXED_INCOME:
-            FixedIncomeDetails(**self.details or {})
-        elif cls in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE):
-            PhysicalDetails(**self.details or {})
-            d = self.details or {}
-            if cls == AssetClass.REAL_ESTATE:
-                missing = [f for f in ("address", "city", "state", "country") if not d.get(f)]
-                if missing:
-                    raise ValueError(f"REAL_ESTATE requires fields: {', '.join(missing)}")
-            else:  # VEHICLE
-                missing = [f for f in ("make", "model", "year") if not d.get(f)]
-                if missing:
-                    raise ValueError(f"VEHICLE requires fields: {', '.join(missing)}")
-
+        violations = asset_rule_violations(
+            self.asset_class, ticker=self.ticker, cnpj=self.cnpj,
+            linked_account_id=self.linked_account_id, details=self.details,
+        )
+        if violations:
+            raise ValueError("; ".join(violations))
         return self
+
+
+def asset_rule_violations(
+    cls: AssetClass,
+    *,
+    ticker: str | None,
+    cnpj: str | None,
+    linked_account_id: str | None,
+    details: dict[str, Any] | None,
+) -> list[str]:
+    """Regras de consistência classe × campos. Devolve TODAS as violações
+    (não só a primeira) — o PATCH compara o conjunto antes/depois pra não
+    bloquear ativos legados que já nasceram fora da regra."""
+    out: list[str] = []
+
+    # Ticker rules
+    if cls in TICKER_REQUIRED_CLASSES and not (ticker and ticker.strip()):
+        out.append(f"ticker is required for asset_class {cls.value}")
+    if cls in TICKER_FORBIDDEN_CLASSES and ticker:
+        out.append(f"ticker must be omitted for asset_class {cls.value}")
+
+    # CNPJ only for FUND
+    if cnpj and cls != AssetClass.FUND:
+        out.append("cnpj is allowed only for asset_class FUND")
+
+    # Spec 80 — vínculo com conta corrente só faz sentido em "Saldo em Conta"
+    if linked_account_id and cls != AssetClass.CASH:
+        out.append("linked_account_id is allowed only for asset_class CASH")
+
+    # Details presence vs class
+    needs_details = cls in (AssetClass.FIXED_INCOME, AssetClass.REAL_ESTATE, AssetClass.VEHICLE)
+    if needs_details and not details:
+        out.append(f"details is required for asset_class {cls.value}")
+    if not needs_details and details:
+        out.append(f"details must be omitted for asset_class {cls.value}")
+
+    # Validate the details payload itself
+    if details:
+        try:
+            if cls == AssetClass.FIXED_INCOME:
+                FixedIncomeDetails(**details)
+            elif cls in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE):
+                PhysicalDetails(**details)
+                if cls == AssetClass.REAL_ESTATE:
+                    missing = [f for f in ("address", "city", "state", "country") if not details.get(f)]
+                    if missing:
+                        out.append(f"REAL_ESTATE requires fields: {', '.join(missing)}")
+                else:  # VEHICLE
+                    missing = [f for f in ("make", "model", "year") if not details.get(f)]
+                    if missing:
+                        out.append(f"VEHICLE requires fields: {', '.join(missing)}")
+        except ValidationError as exc:
+            out.append("details: " + "; ".join(e.get("msg", "") for e in exc.errors()))
+    return out
 
 
 class FixedIncomeOut(BaseModel):
@@ -356,6 +376,13 @@ def _apply_details(asset: Asset, body: AssetRequest, db: Session) -> None:
     if asset.physical and body.asset_class not in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE):
         db.delete(asset.physical)
         asset.physical = None
+
+    # Legado sem details (PATCH tolerante, ver patch_asset): não há o que
+    # aplicar — deixa a linha especializada como está.
+    if body.details is None and body.asset_class in (
+        AssetClass.FIXED_INCOME, AssetClass.REAL_ESTATE, AssetClass.VEHICLE,
+    ):
+        return
 
     if body.asset_class == AssetClass.FIXED_INCOME:
         details = FixedIncomeDetails(**(body.details or {}))
@@ -747,13 +774,33 @@ def patch_asset(
     )
     if not needs_details and "details" not in body.model_fields_set:
         merged["details"] = None
+    # Ativos legados (importados do Notion) podem violar regras de criação —
+    # ex.: renda fixa com ticker, ou sem linha de details. Um PATCH que não
+    # toca nesses campos não pode ser bloqueado por isso (senão nem o
+    # auto-save de notas funciona). Só rejeita violações que o PATCH
+    # introduziu; erros de campo (tamanho, formato) continuam 422.
+    def _rules(d: dict[str, Any]) -> set[str]:
+        return set(asset_rule_violations(
+            d["asset_class"], ticker=d["ticker"], cnpj=d["cnpj"],
+            linked_account_id=d["linked_account_id"], details=d["details"],
+        ))
+    introduced = _rules(merged) - _rules(current)
+    if introduced:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="; ".join(sorted(introduced)),
+        )
     try:
         full = AssetRequest.model_validate(merged)
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="; ".join(e.get("msg", "") for e in exc.errors()),
-        )
+        field_errors = [e for e in exc.errors() if e.get("loc")]
+        if field_errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="; ".join(e.get("msg", "") for e in field_errors),
+            )
+        # Só violações herdadas: aplica sem re-validar as regras de classe.
+        full = AssetRequest.model_construct(**merged)
     return _apply_asset_update(db, asset, full, current_user)
 
 
@@ -1131,12 +1178,12 @@ class AssetPerformanceRowOut(BaseModel):
     fx_rate_usd_brl: str | None
     pnl_brl: str | None
     pnl_pct: float | None
-    aportes_native: str
-    resgates_native: str
-    aportes_brl: str
-    resgates_brl: str
-    proventos_native: str
-    proventos_brl: str
+    contributions_native: str
+    withdrawals_native: str
+    contributions_brl: str
+    withdrawals_brl: str
+    income_native: str
+    income_brl: str
     return_pct: float | None
     return_brl_pct: float | None
     return_null_reason: str | None
@@ -1152,8 +1199,8 @@ class AssetPerformanceSummaryOut(BaseModel):
     since_inception_brl_pct: float | None
     months_in_12m: int
     months_in_ytd: int
-    proventos_12m_native: str
-    proventos_12m_brl: str
+    income_12m_native: str
+    income_12m_brl: str
 
 
 class AssetPerformanceOut(BaseModel):
@@ -1188,12 +1235,12 @@ def _perf_out(perf: AssetPerformance) -> AssetPerformanceOut:
                 fx_rate_usd_brl=_s(r.fx_rate_usd_brl),
                 pnl_brl=_s(r.pnl_brl),
                 pnl_pct=_f(r.pnl_pct),
-                aportes_native=str(r.aportes_native),
-                resgates_native=str(r.resgates_native),
-                aportes_brl=str(r.aportes_brl),
-                resgates_brl=str(r.resgates_brl),
-                proventos_native=str(r.proventos_native),
-                proventos_brl=str(r.proventos_brl),
+                contributions_native=str(r.contributions_native),
+                withdrawals_native=str(r.withdrawals_native),
+                contributions_brl=str(r.contributions_brl),
+                withdrawals_brl=str(r.withdrawals_brl),
+                income_native=str(r.income_native),
+                income_brl=str(r.income_brl),
                 return_pct=_f(r.return_pct),
                 return_brl_pct=_f(r.return_brl_pct),
                 return_null_reason=r.return_null_reason,
@@ -1210,8 +1257,8 @@ def _perf_out(perf: AssetPerformance) -> AssetPerformanceOut:
             since_inception_brl_pct=_f(s.since_inception_brl_pct),
             months_in_12m=s.months_in_12m,
             months_in_ytd=s.months_in_ytd,
-            proventos_12m_native=str(s.proventos_12m_native),
-            proventos_12m_brl=str(s.proventos_12m_brl),
+            income_12m_native=str(s.income_12m_native),
+            income_12m_brl=str(s.income_12m_brl),
         ),
     )
 

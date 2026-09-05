@@ -214,7 +214,7 @@ def test_cotado_brl_return_with_buy_and_dividend(world):
     # (1250 − 1000 − 200 + 0 + 30) / 1000 = 8%
     assert r.return_pct == D("0.08")
     assert r.return_brl_pct == D("0.08")
-    assert r.aportes_native == D("200") and r.proventos_native == D("30")
+    assert r.contributions_native == D("200") and r.income_native == D("30")
     assert r.pnl_brl == D("150") and r.pnl_pct == D("150") / D("1100")
     assert rows["2026-01-31"].pnl_brl == D("100")
 
@@ -242,8 +242,8 @@ def test_come_cotas_and_bonus_ignored(world):
     _mov(world, a, AssetMovementType.BONUS, "2026-02-16", 0)
     rows = _by_period(compute_asset_performance(world["db"], a.id))
     assert rows["2026-02-28"].return_pct == D("0.01")
-    assert rows["2026-02-28"].aportes_native == D("0")
-    assert rows["2026-02-28"].resgates_native == D("0")
+    assert rows["2026-02-28"].contributions_native == D("0")
+    assert rows["2026-02-28"].withdrawals_native == D("0")
 
 
 def test_usd_asset_native_vs_brl_return_uses_row_fx(world):
@@ -257,7 +257,7 @@ def test_usd_asset_native_vs_brl_return_uses_row_fx(world):
     r = rows["2026-02-28"]
     assert r.return_pct == D("0.01")                              # (1000−1000+10)/1000
     assert r.return_brl_pct == (D("6000") - D("5000") + D("55")) / D("5000")
-    assert r.proventos_brl == D("55")
+    assert r.income_brl == D("55")
 
 
 def test_usd_missing_fx_gives_missing_mv_but_brl_side_stays_none(world):
@@ -294,7 +294,7 @@ def test_option_premium_counts_as_provento_for_underlying(world):
     _item(world, s2, opt, mv_native=-20, mv_brl=-20)
     _mov(world, opt, AssetMovementType.SELL_OPEN, "2026-02-12", 50)
     rows = _by_period(compute_asset_performance(world["db"], stock.id))
-    assert rows["2026-02-28"].proventos_native == D("50")
+    assert rows["2026-02-28"].income_native == D("50")
     assert rows["2026-02-28"].return_pct == D("0.05")
     # a própria opção nunca tem retorno
     orows = _by_period(compute_asset_performance(world["db"], opt.id))
@@ -321,10 +321,10 @@ def test_movement_on_period_end_belongs_to_that_month(world):
     _mov(world, a, AssetMovementType.BUY, "2026-02-28", 100)      # dentro de fev
     _mov(world, a, AssetMovementType.BUY, "2026-01-31", 999)      # dentro de jan (1ª linha)
     rows = _by_period(compute_asset_performance(world["db"], a.id))
-    assert rows["2026-02-28"].aportes_native == D("100")
+    assert rows["2026-02-28"].contributions_native == D("100")
     assert rows["2026-02-28"].return_pct == D("0")
-    assert rows["2026-03-31"].aportes_native == D("0")
-    assert rows["2026-01-31"].aportes_native == D("999")          # janela do 1º mês
+    assert rows["2026-03-31"].contributions_native == D("0")
+    assert rows["2026-01-31"].contributions_native == D("999")          # janela do 1º mês
 
 
 def test_summary_12m_requires_12_rows_and_ytd(world):
@@ -374,3 +374,19 @@ def test_legacy_item_without_mv_falls_back_to_qty_times_unit_price(world):
     rows = _by_period(compute_asset_performance(world["db"], a.id))
     assert rows["2026-01-31"].market_value_native == D("1000")
     assert rows["2026-02-28"].return_pct == D("0.1")
+
+
+def test_summary_12m_window_by_month_not_by_date(world):
+    """28/fev após ano bissexto: janela por data deixava o 29/fev do ano
+    anterior entrar (13 linhas) e anulava o 12m."""
+    a = _asset(world)
+    months = [
+        "2024-02-29", "2024-03-31", "2024-04-30", "2024-05-31", "2024-06-30", "2024-07-31",
+        "2024-08-31", "2024-09-30", "2024-10-31", "2024-11-30", "2024-12-31", "2025-01-31",
+        "2025-02-28",
+    ]
+    for m in months:
+        s = _snap(world, m); _item(world, s, a, mv_native=1000, mv_brl=1000)
+    sm = compute_asset_performance(world["db"], a.id).summary
+    assert sm.months_in_12m == 12
+    assert sm.return_12m_pct == D("0")

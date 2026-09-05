@@ -156,8 +156,13 @@ export default function AssetDetail() {
 
   async function handleNotesSave(notes: string) {
     if (!asset) return
-    const updated = await api.patchAsset(asset.id, { notes: notes.trim() ? notes : null })
-    setAsset(updated)
+    try {
+      const updated = await api.patchAsset(asset.id, { notes: notes.trim() ? notes : null })
+      setAsset(updated)
+    } catch (e) {
+      showMsg('err', `Nota não salva: ${e instanceof Error ? e.message : 'erro'}`)
+      throw e
+    }
   }
 
   function handleAssetSaved(updated: AssetOut) {
@@ -422,6 +427,14 @@ export default function AssetDetail() {
     if (!me || !id) return
     setLoading(true)
     setError('')
+    // Spec 81 — navegação in-page entre ativos (opção → subjacente): zera os
+    // caches por aba, senão a aba mostra os dados do ativo anterior.
+    setPriceHistory(null)
+    setSnapshotHistory(null)
+    setPerformance(null)
+    setPerformanceError(null)
+    setAssetAttachments(null)
+    setSyntheticPremiums([])
     api.getAsset(id)
       .then(async a => {
         setAsset(a)

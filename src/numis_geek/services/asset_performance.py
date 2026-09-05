@@ -21,7 +21,6 @@ Uma linha por fechamento CLOSED em que o ativo tem item. O retorno do mês
 """
 from __future__ import annotations
 
-import calendar
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -70,12 +69,12 @@ class PerformanceRow:
     fx_rate_usd_brl: Decimal | None
     pnl_brl: Decimal | None
     pnl_pct: Decimal | None
-    aportes_native: Decimal
-    resgates_native: Decimal
-    aportes_brl: Decimal
-    resgates_brl: Decimal
-    proventos_native: Decimal
-    proventos_brl: Decimal
+    contributions_native: Decimal
+    withdrawals_native: Decimal
+    contributions_brl: Decimal
+    withdrawals_brl: Decimal
+    income_native: Decimal
+    income_brl: Decimal
     return_pct: Decimal | None
     return_brl_pct: Decimal | None
     return_null_reason: NullReason | None
@@ -92,8 +91,8 @@ class PerformanceSummary:
     since_inception_brl_pct: Decimal | None
     months_in_12m: int
     months_in_ytd: int
-    proventos_12m_native: Decimal
-    proventos_12m_brl: Decimal
+    income_12m_native: Decimal
+    income_12m_brl: Decimal
 
 
 @dataclass
@@ -107,7 +106,7 @@ class AssetPerformance:
         return_ytd_pct=None, return_ytd_brl_pct=None,
         since_inception_pct=None, since_inception_brl_pct=None,
         months_in_12m=0, months_in_ytd=0,
-        proventos_12m_native=_ZERO, proventos_12m_brl=_ZERO,
+        income_12m_native=_ZERO, income_12m_brl=_ZERO,
     ))
 
 
@@ -189,14 +188,6 @@ def chain_link(returns: Iterable[Decimal | None]) -> Decimal | None:
         acc *= Decimal("1") + r
         seen = True
     return acc - Decimal("1") if seen else None
-
-
-def _minus_months(d: date, months: int) -> date:
-    y, m = d.year, d.month - months
-    while m <= 0:
-        m += 12
-        y -= 1
-    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
 
 
 def _resolve_mv_native(
@@ -341,9 +332,9 @@ def compute_asset_performance(db: Session, asset_id: str) -> AssetPerformance:
             fx_rate_usd_brl=fx,
             pnl_brl=pnl_brl,
             pnl_pct=pnl_pct,
-            aportes_native=ap_n, resgates_native=rs_n,
-            aportes_brl=ap_b, resgates_brl=rs_b,
-            proventos_native=pv_n, proventos_brl=pv_b,
+            contributions_native=ap_n, withdrawals_native=rs_n,
+            contributions_brl=ap_b, withdrawals_brl=rs_b,
+            income_native=pv_n, income_brl=pv_b,
             return_pct=ret_native,
             return_brl_pct=ret_brl,
             return_null_reason=reason,
@@ -360,8 +351,10 @@ def _summarize(rows: list[PerformanceRow]) -> PerformanceSummary:
     if not rows:
         return AssetPerformance("", "", False).summary
     as_of = rows[-1].period_end_date
-    cutoff_12m = _minus_months(as_of, 12)
-    win_12m = [r for r in rows if r.period_end_date > cutoff_12m]
+    # Janela por (ano, mês), não por data: comparar datas deixava o 29/fev
+    # de ano bissexto entrar numa janela terminando em 28/fev (13 linhas).
+    as_of_idx = as_of.year * 12 + as_of.month
+    win_12m = [r for r in rows if 0 <= as_of_idx - (r.period_end_date.year * 12 + r.period_end_date.month) < 12]
     win_ytd = [r for r in rows if r.period_end_date.year == as_of.year]
     # Desde o início: pula a primeira aparição (FIRST_CLOSING é null por
     # construção); qualquer outro null invalida o acumulado.
@@ -380,6 +373,6 @@ def _summarize(rows: list[PerformanceRow]) -> PerformanceSummary:
         since_inception_brl_pct=_chain(after_first, "return_brl_pct"),
         months_in_12m=len(win_12m),
         months_in_ytd=len(win_ytd),
-        proventos_12m_native=sum((r.proventos_native for r in win_12m), _ZERO),
-        proventos_12m_brl=sum((r.proventos_brl for r in win_12m), _ZERO),
+        income_12m_native=sum((r.income_native for r in win_12m), _ZERO),
+        income_12m_brl=sum((r.income_brl for r in win_12m), _ZERO),
     )

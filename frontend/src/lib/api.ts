@@ -613,12 +613,12 @@ export interface AssetPerformanceRow {
   fx_rate_usd_brl: string | null
   pnl_brl: string | null
   pnl_pct: number | null
-  aportes_native: string
-  resgates_native: string
-  aportes_brl: string
-  resgates_brl: string
-  proventos_native: string
-  proventos_brl: string
+  contributions_native: string
+  withdrawals_native: string
+  contributions_brl: string
+  withdrawals_brl: string
+  income_native: string
+  income_brl: string
   return_pct: number | null
   return_brl_pct: number | null
   return_null_reason: AssetReturnNullReason | null
@@ -634,8 +634,8 @@ export interface AssetPerformanceSummary {
   since_inception_brl_pct: number | null
   months_in_12m: number
   months_in_ytd: number
-  proventos_12m_native: string
-  proventos_12m_brl: string
+  income_12m_native: string
+  income_12m_brl: string
 }
 
 export interface AssetPerformanceOut {
@@ -874,7 +874,8 @@ export const api = {
   deactivateFinancialInstitution: (id: string) =>
     request<FinancialInstitutionOut>(`/financial-institutions/${id}/deactivate`, { method: 'PUT' }),
 
-  listAccounts: () => request<AccountOut[]>('/accounts'),
+  listAccounts: (workspace_id?: string) =>
+    request<AccountOut[]>(`/accounts${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`),
 
   getAccount: async (id: string) => {
     const all = await request<AccountOut[]>('/accounts')

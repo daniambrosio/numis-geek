@@ -88,8 +88,8 @@ export default function AssetPerformanceTable({ rows, currency, isValueMode, ass
                 const mvUsd = num(r.market_value_usd)
                 const invested = num(r.total_invested_brl)
                 const pnl = num(r.pnl_brl)
-                const provNative = Number(r.proventos_native)
-                const provBrl = Number(r.proventos_brl)
+                const provNative = Number(r.income_native)
+                const provBrl = Number(r.income_brl)
                 // rows[idx + 1] é o mês cronologicamente anterior (lista desc).
                 const prevMv = num(rows[idx + 1]?.market_value_brl)
                 const delta = mvBrl != null && prevMv != null && prevMv > 0 ? (mvBrl - prevMv) / prevMv : null

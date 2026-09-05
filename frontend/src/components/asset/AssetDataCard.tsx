@@ -98,7 +98,9 @@ export default function AssetDataCard({
     setDraft(draftOf(asset))
     setEditing(true)
     if (accounts == null) {
-      api.listAccounts().then(setAccounts).catch(() => setAccounts([]))
+      // Sysadmin vendo ativo de outro workspace: as contas têm que ser as
+      // do workspace do ATIVO, não as do usuário.
+      api.listAccounts(asset.workspace_id).then(setAccounts).catch(() => setAccounts([]))
     }
   }
 
@@ -113,15 +115,20 @@ export default function AssetDataCard({
   const classChangedToDetails = classNeedsDetails && !NEEDS_DETAILS.includes(asset.asset_class)
   const patch = buildPatch(asset, draft, resolvedAccount?.id ?? null)
   const dirty = Object.keys(patch).length > 0
+  // Violações herdadas (ativo legado com ticker em renda fixa, etc.) não
+  // bloqueiam: o backend só rejeita o que o PATCH introduz. Só apontamos
+  // problemas em campos que o usuário mexeu.
+  const tickerTouched = draft.ticker.trim() !== (asset.ticker ?? '') || draft.asset_class !== asset.asset_class
+  const cnpjTouched = draft.cnpj.trim() !== (asset.cnpj ?? '') || draft.asset_class !== asset.asset_class
   const problems: string[] = []
   if (!draft.name.trim()) problems.push('nome obrigatório')
   if (tickerRequired && !draft.ticker.trim()) problems.push('ticker obrigatório pra esta classe')
-  if (tickerForbidden && draft.ticker.trim()) problems.push('esta classe não usa ticker')
-  if (draft.cnpj.trim() && draft.asset_class !== 'FUND') problems.push('CNPJ só em fundos')
+  if (tickerForbidden && draft.ticker.trim() && tickerTouched) problems.push('esta classe não usa ticker')
+  if (draft.cnpj.trim() && draft.asset_class !== 'FUND' && cnpjTouched) problems.push('CNPJ só em fundos')
   if (draft.fiId !== asset.financial_institution_id && accounts && !resolvedAccount) {
     problems.push('custodiante sem conta de investimento no workspace')
   }
-  if (classChangedToDetails) problems.push('mudar pra renda fixa/imóvel/veículo exige detalhes — use "Editar detalhes…"')
+  if (classChangedToDetails) problems.push('mudar pra renda fixa/imóvel/veículo exige detalhes — use "Formulário completo…"')
   const canSave = editing && dirty && problems.length === 0 && !saving
 
   async function save() {
@@ -168,15 +175,17 @@ export default function AssetDataCard({
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            {NEEDS_DETAILS.includes(asset.asset_class) && (
-              <button
-                type="button"
-                onClick={onEditDetails}
-                className="h-7 px-2.5 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              >
-                Editar detalhes…
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onEditDetails}
+              data-testid="asset-data-full-form"
+              title={NEEDS_DETAILS.includes(asset.asset_class)
+                ? 'Editar vencimento, indexador, taxa (ou endereço/placa) no formulário completo'
+                : 'Formulário completo — inclusive pra converter em renda fixa, imóvel ou veículo'}
+              className="h-7 px-2.5 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+            >
+              {NEEDS_DETAILS.includes(asset.asset_class) ? 'Editar detalhes…' : 'Formulário completo…'}
+            </button>
             <button
               type="button"
               onClick={startEditing}
@@ -213,7 +222,20 @@ export default function AssetDataCard({
           </label>
           <label className="grid gap-1">
             <span className="text-[10px] uppercase tracking-wider text-gray-500">Classe</span>
-            <select className={sel} value={draft.asset_class} onChange={e => setDraft({ ...draft, asset_class: e.target.value as AssetClass })} data-testid="asset-data-class">
+            <select
+              className={sel}
+              value={draft.asset_class}
+              onChange={e => {
+                const c = e.target.value as AssetClass
+                setDraft({
+                  ...draft,
+                  asset_class: c,
+                  ticker: TICKER_FORBIDDEN.includes(c) ? '' : draft.ticker,
+                  cnpj: c === 'FUND' ? draft.cnpj : '',
+                })
+              }}
+              data-testid="asset-data-class"
+            >
               {(Object.keys(CLASS_LABELS) as AssetClass[]).map(c => <option key={c} value={c}>{CLASS_LABELS[c]}</option>)}
             </select>
           </label>

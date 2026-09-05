@@ -85,9 +85,9 @@ export default function AssetPerformanceTab({
             />
             <KpiTile
               label="Proventos · 12m"
-              value={fmtMoney(Number(s.proventos_12m_native), ccy, { compact: true })}
-              intent={Number(s.proventos_12m_native) > 0 ? 'positive' : undefined}
-              sub={isUsd ? fmtBRL(Number(s.proventos_12m_brl), { compact: true }) : 'dividendos, JCP, aluguel, prêmios'}
+              value={fmtMoney(Number(s.income_12m_native), ccy, { compact: true })}
+              intent={Number(s.income_12m_native) > 0 ? 'positive' : undefined}
+              sub={isUsd ? fmtBRL(Number(s.income_12m_brl), { compact: true }) : 'dividendos, JCP, aluguel, prêmios'}
             />
           </div>
 
@@ -100,7 +100,7 @@ export default function AssetPerformanceTab({
         loading={snapshotHistoryLoading}
         assetId={assetId}
         movements={movements}
-        hideTable
+        hideTable={!performanceError}
         title="Valor da posição · fechamentos"
       />
 

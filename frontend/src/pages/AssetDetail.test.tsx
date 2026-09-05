@@ -323,15 +323,15 @@ describe('AssetDetail rentabilidade (spec 81 fase 5)', () => {
         period_end_date: '2026-08-31', quantity: '30', unit_price: '85',
         market_value_native: '2550', market_value_brl: '14025', market_value_usd: '2550',
         total_invested_brl: '17000', fx_rate_usd_brl: '5.5', pnl_brl: '-2975', pnl_pct: -0.175,
-        aportes_native: '0', resgates_native: '0', aportes_brl: '0', resgates_brl: '0',
-        proventos_native: '12.49', proventos_brl: '68.7',
+        contributions_native: '0', withdrawals_native: '0', contributions_brl: '0', withdrawals_brl: '0',
+        income_native: '12.49', income_brl: '68.7',
         return_pct: 0.0483, return_brl_pct: 0.061, return_null_reason: null,
       }],
       summary: {
         as_of: '2026-08-31', return_12m_pct: -0.167, return_12m_brl_pct: -0.12,
         return_ytd_pct: -0.1243, return_ytd_brl_pct: -0.09,
         since_inception_pct: -0.0113, since_inception_brl_pct: 0.02,
-        months_in_12m: 12, months_in_ytd: 8, proventos_12m_native: '41.7', proventos_12m_brl: '229',
+        months_in_12m: 12, months_in_ytd: 8, income_12m_native: '41.7', income_12m_brl: '229',
       },
     })
     renderPage('/assets/a1?tab=performance')

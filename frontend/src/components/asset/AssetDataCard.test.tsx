@@ -30,6 +30,8 @@ function mount(over: Partial<React.ComponentProps<typeof AssetDataCard>> = {}) {
     ...over,
   }
   render(<AssetDataCard {...props} />)
+  // listAccounts é chamado com o workspace do ativo
+  
   return props
 }
 
@@ -98,6 +100,30 @@ describe('AssetDataCard (spec 81)', () => {
     await waitFor(() => expect(screen.getByText('conta: BTG Inv')).toBeInTheDocument())
     fireEvent.click(screen.getByTestId('asset-data-save'))
     await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { account_id: 'acc-btg' }))
+  })
+
+  it('trocar classe limpa ticker/CNPJ proibidos e envia null', async () => {
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...asset, asset_class: 'PRIVATE_PENSION', ticker: null })
+    mount()
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    fireEvent.change(screen.getByTestId('asset-data-class'), { target: { value: 'REAL_ESTATE' } })
+    expect((screen.getByTestId('asset-data-ticker') as HTMLInputElement).value).toBe('')
+    expect(screen.getByTestId('asset-data-save')).toBeDisabled()          // exige detalhes
+    fireEvent.change(screen.getByTestId('asset-data-class'), { target: { value: 'PRIVATE_PENSION' } })
+    expect(screen.getByTestId('asset-data-save')).not.toBeDisabled()
+    fireEvent.click(screen.getByTestId('asset-data-save'))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { ticker: null, asset_class: 'PRIVATE_PENSION' }))
+  })
+
+  it('ativo legado (renda fixa com ticker) ainda pode editar o nome', async () => {
+    const legacy: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: 'CDB-LEGADO', details: null }
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...legacy, name: 'CDB renomeado' })
+    mount({ asset: legacy })
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    fireEvent.change(screen.getByTestId('asset-data-name'), { target: { value: 'CDB renomeado' } })
+    expect(screen.queryByTestId('asset-data-problems')).toBeNull()
+    fireEvent.click(screen.getByTestId('asset-data-save'))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { name: 'CDB renomeado' }))
   })
 
   it('Zerar ativo só aparece com permissão e chama onDeactivate', () => {
