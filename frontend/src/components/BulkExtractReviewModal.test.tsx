@@ -5,10 +5,27 @@ import userEvent from '@testing-library/user-event'
 import BulkExtractReviewModal from './BulkExtractReviewModal'
 import {
   api,
+  type BulkApplyDetailOut,
   type BulkExtractJobOut,
   type SnapshotPendencyOut,
   type FinancialInstitutionOut,
 } from '../lib/api'
+
+// Spec 57 tornou o modal server-authoritative: as três seções vêm de
+// `previewExtraction`, não de classificação no cliente. Sem esse mock o
+// componente renderiza tudo zerado — era por isso que estes testes estavam
+// vermelhos (corrigido 2026-09-05).
+const EMPTY_DETAIL: BulkApplyDetailOut = {
+  applied: [], matched_no_pendency: [], orphan: [],
+  pendency_not_in_extract: [], auto_skipped: [],
+}
+
+function mockPreview(detail: Partial<BulkApplyDetailOut>) {
+  return vi.spyOn(api, 'previewExtraction').mockResolvedValue({
+    applied_count: 0, skipped_count: 0, errors: [],
+    bulk_detail: { ...EMPTY_DETAIL, ...detail },
+  })
+}
 
 beforeEach(() => {
   vi.restoreAllMocks()
@@ -18,6 +35,7 @@ beforeEach(() => {
       logo_slug: 'xp', country: 'BR', is_active: true,
     } as FinancialInstitutionOut,
   ])
+  mockPreview({})
 })
 
 function makePendency(over: Partial<SnapshotPendencyOut> = {}): SnapshotPendencyOut {
@@ -44,11 +62,25 @@ function makeJob(positions: any[]): BulkExtractJobOut {
 }
 
 describe('BulkExtractReviewModal', () => {
-  it('renders three sections with counts', () => {
+  it('renders three sections with counts', async () => {
     const job = makeJob([
-      { ticker_normalized: 'PETR4', unit_price: 38.5 },     // matched
-      { ticker_normalized: 'ABEV3', unit_price: 12.0 },     // orphan
+      { ticker_normalized: 'PETR4', ticker_raw: 'PETR4', unit_price: 38.5 },  // matched
+      { ticker_normalized: 'ABEV3', ticker_raw: 'ABEV3', unit_price: 12.0 },  // orphan
     ])
+    mockPreview({
+      applied: [{
+        pendency_id: '1', asset_id: 'a-petr', ticker: 'PETR4',
+        asset_name: 'Petrobras', currency: 'BRL',
+        institution_short_name: 'XP',
+        new_price: '38.50', previous_price: '30.00',
+      }],
+      orphan: [{ ticker: 'ABEV3', unit_price: '12.00', currency: 'BRL' }],
+      pendency_not_in_extract: [{
+        pendency_id: '2', asset_id: 'a-aapl', ticker: 'AAPL',
+        asset_name: 'Apple', currency: 'USD',
+        institution_short_name: 'Avenue',
+      }],
+    })
     render(<BulkExtractReviewModal
       job={job}
       pendencies={[
@@ -58,13 +90,23 @@ describe('BulkExtractReviewModal', () => {
       onApplied={() => {}}
       onClose={() => {}}
     />)
-    expect(screen.getByTestId('bulk-section-matched')).toHaveTextContent(/Casadas \(1\)/)
+    await waitFor(() => expect(
+      screen.getByTestId('bulk-section-matched'),
+    ).toHaveTextContent(/Casadas \(1\)/))
     expect(screen.getByTestId('bulk-section-uncovered')).toHaveTextContent(/Pendências não cobertas \(1\)/)
     expect(screen.getByTestId('bulk-section-orphan')).toHaveTextContent(/Linhas órfãs \(1\)/)
   })
 
   it('Apply button calls confirmExtraction with institution_short_name when chosen', async () => {
-    const job = makeJob([{ ticker_normalized: 'PETR4', unit_price: 38.5 }])
+    const job = makeJob([{ ticker_normalized: 'PETR4', ticker_raw: 'PETR4', unit_price: 38.5 }])
+    mockPreview({
+      applied: [{
+        pendency_id: 'pen-1', asset_id: 'a-petr', ticker: 'PETR4',
+        asset_name: 'Petrobras', currency: 'BRL',
+        institution_short_name: 'XP',
+        new_price: '38.50', previous_price: '30.00',
+      }],
+    })
     vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
       applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
     })

@@ -175,10 +175,11 @@ def test_manual_source_generic_asset_emits_manual_source_pendency(db):
     assert "manual" in detail.lower()
 
 
-def test_manual_source_avenue_generic_emits_upload_required(db):
-    """MANUAL + ticker=NULL + FI 'Avenue' → UPLOAD_REQUIRED + UPLOAD_FILE.
-    Análogo ao "screenshot obrigatório" — o único caminho pra resolver a
-    pendency é subir o extrato/screenshot."""
+def test_manual_source_avenue_no_ticker_is_plain_manual(db):
+    """Regressão 2026-09-05 — MANUAL + ticker=NULL + FI 'Avenue' NÃO é mais
+    UPLOAD_REQUIRED. A heurística `_is_avenue_generic` só pegava 3 CDs a que
+    faltava pseudo-ticker (falso-positivo) e foi aposentada; a spec 48 já
+    cobre o extrato pelo bulk no topo do painel."""
     ws = _mk_ws(db, "avenue-ws")
     fi = _mk_fi(db, "Avenue")
     acc = _mk_account(db, ws, fi.id)
@@ -189,8 +190,8 @@ def test_manual_source_avenue_generic_emits_upload_required(db):
     det = detect_pendencies(db, asset, period_end=date.today())
     assert det is not None
     reason, action, _ = det
-    assert reason == PendencyReason.UPLOAD_REQUIRED
-    assert action == PendencyAction.UPLOAD_FILE
+    assert reason == PendencyReason.MANUAL_SOURCE
+    assert action == PendencyAction.EDIT_PRICE
 
 
 def test_null_price_source_no_pendency(db):
@@ -282,7 +283,7 @@ def test_manual_vs_automated_differ_for_same_snapshot(db):
     # Cheque shape: os campos que o caller vai persistir num
     # SnapshotPendency (kind=reason, asset_id, snapshot_id).
     reason, action, detail = det_manual
-    assert reason in {PendencyReason.MANUAL_SOURCE, PendencyReason.UPLOAD_REQUIRED}
+    assert reason == PendencyReason.MANUAL_SOURCE
     assert isinstance(action, PendencyAction)
     assert isinstance(detail, str) and detail  # non-empty
     # Caller monta o payload persistido com esses IDs:

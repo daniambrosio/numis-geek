@@ -13,7 +13,6 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from numis_geek.models.account import Account
 from numis_geek.models.asset import Asset, AssetClass, PriceSource
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.corporate_action import CorporateAction
@@ -36,7 +35,6 @@ _POSITION_CHANGING_MOVEMENT_TYPES = {
     AssetMovementType.EXERCISED,
     AssetMovementType.EXPIRED,
 }
-from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PendencyAction,
     PendencyReason,
@@ -129,24 +127,6 @@ class AffectedSnapshot:
 # ── Pendency detection ──────────────────────────────────────────────────────
 
 
-def _is_avenue_generic(db: Session, asset: Asset) -> bool:
-    """UPLOAD heuristic: assets that arrive without ticker via Avenue's
-    generic 'rendimento' feed are flagged as upload-required.
-
-    Cheap path: ticker IS NULL + asset's account is at an institution
-    whose short_name is 'Avenue'. Refine as we learn the data better.
-    """
-    if asset.ticker:
-        return False
-    acc = db.get(Account, asset.account_id) if asset.account_id else None
-    if not acc:
-        return False
-    fi = db.get(FinancialInstitution, acc.financial_institution_id)
-    if not fi:
-        return False
-    return (fi.short_name or "").lower() == "avenue"
-
-
 def detect_pendencies(
     db: Session,
     asset: Asset,
@@ -165,7 +145,7 @@ def detect_pendencies(
                                      movement e nunca pediam revisão)
     - NULL / no source + cotado class → skip (real estate, etc. sem preço
                                      configurado ficam silenciosos)
-    - MANUAL                      → MANUAL_SOURCE (or UPLOAD_REQUIRED via heuristic)
+    - MANUAL                      → MANUAL_SOURCE
     - Automated source + price OK (tier FRESH or STALE) → no pendency
     - Automated source + tier OLD → STALE_PRICE
     - Automated source + never refreshed (price_updated_at IS NULL) → API_FAILED
@@ -181,12 +161,13 @@ def detect_pendencies(
         return None
 
     if source is None or source == PriceSource.MANUAL:
-        if _is_avenue_generic(db, asset):
-            return (
-                PendencyReason.UPLOAD_REQUIRED,
-                PendencyAction.UPLOAD_FILE,
-                "Avenue generic feed — upload extract",
-            )
+        # 2026-09-05 — a heurística `_is_avenue_generic` (ticker IS NULL +
+        # FI "Avenue" → UPLOAD_REQUIRED) foi aposentada. Ela nasceu pro feed
+        # genérico de "rendimento" da Avenue, mas esse feed cria Distribution
+        # sem asset, não Asset; os únicos ativos que ela pegou em produção
+        # foram 3 CDs a que faltava pseudo-ticker (falso-positivo puro).
+        # A spec 48 já substituiu o upload por pendência pelo bulk extract no
+        # topo do painel, então toda fonte manual cai num único caminho.
         return (
             PendencyReason.MANUAL_SOURCE,
             PendencyAction.EDIT_PRICE,

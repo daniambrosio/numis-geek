@@ -402,14 +402,23 @@ function PendencyRow({
             <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} /> Retry
           </button>
         )}
-        {pendency.action_type === 'UPLOAD_FILE' && (
+        {/* 2026-09-05 — antes esse botão só aparecia em action_type
+            UPLOAD_FILE, que vinha da heurística `_is_avenue_generic`
+            (aposentada: marcava 3 CDs da Avenue por falso-positivo e mais
+            nada). Virou ícone secundário em TODA pendência manual: nenhum
+            ativo fica "marcado", e o modal de extração de 1 ativo
+            (screenshot de cotação, saldo FGTS, nota B3) segue acessível —
+            o bulk do topo só cobre extrato de posição. */}
+        {isManual && (
           <button
             onClick={() => setUploadOpen(true)}
             disabled={busy}
-            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 disabled:opacity-50"
+            title="Extrair de screenshot / extrato / nota"
+            aria-label="Extrair de screenshot, extrato ou nota"
+            className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[11px] text-gray-500 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-500/15 disabled:opacity-50"
             data-testid={`pendency-upload-${pendency.id}`}
           >
-            <Upload className="w-3 h-3" /> Upload extrato
+            <Upload className="w-3 h-3" />
           </button>
         )}
         {hasPrevious && (

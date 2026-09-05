@@ -50,6 +50,11 @@ class PendencyReason(str, enum.Enum):
     """Spec 35 — why an asset blocks the close."""
     API_FAILED = "API_FAILED"
     MANUAL_SOURCE = "MANUAL_SOURCE"
+    # Spec 35 — DEPRECATED em 2026-09-05. A heurística `_is_avenue_generic`
+    # (ticker IS NULL + FI "Avenue") só produzia falso-positivo, e a spec 48
+    # trocou o upload por pendência pelo bulk extract no topo do painel.
+    # Enum preservado pra backward-compat com rows antigas; nenhum snapshot
+    # novo gera pendency deste tipo.
     UPLOAD_REQUIRED = "UPLOAD_REQUIRED"
     STALE_PRICE = "STALE_PRICE"
     # Spec 52 — asset adicionado retroativamente a snapshot cujo
@@ -67,6 +72,9 @@ class PendencyAction(str, enum.Enum):
     """Spec 35 — how the user resolves a pendency."""
     RETRY_API = "RETRY_API"
     EDIT_PRICE = "EDIT_PRICE"
+    # DEPRECATED em 2026-09-05. Ver PendencyReason.UPLOAD_REQUIRED. O modal
+    # de extração de 1 ativo continua acessível — hoje por um botão-ícone em
+    # toda pendência manual, não por action_type.
     UPLOAD_FILE = "UPLOAD_FILE"
     # Spec 62 — DEPRECATED pela spec 65. Ver PendencyReason.SUSPICIOUS_DELTA.
     CONFIRM_DELTA = "CONFIRM_DELTA"

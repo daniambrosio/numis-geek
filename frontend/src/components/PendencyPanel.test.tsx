@@ -119,11 +119,25 @@ describe('PendencyPanel', () => {
     expect(screen.getByRole('button', { name: /Editar/ })).toBeInTheDocument()
   })
 
-  it('shows Upload button for UPLOAD_FILE action', () => {
+  it('shows the extract icon on every manual pendency (2026-09-05)', () => {
+    // Antes o botão dependia de action_type=UPLOAD_FILE, que vinha da
+    // heurística `_is_avenue_generic` (aposentada). Agora toda pendência
+    // manual tem o atalho pro modal de extração de 1 ativo.
     renderPanel({
-      pendencies: [makePendency({ action_type: 'UPLOAD_FILE', reason: 'UPLOAD_REQUIRED' })],
+      pendencies: [makePendency({ action_type: 'EDIT_PRICE', reason: 'MANUAL_SOURCE' })],
     })
-    expect(screen.getByRole('button', { name: /Upload/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /Extrair de screenshot/ }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not show the extract icon on API pendencies', () => {
+    renderPanel({
+      pendencies: [makePendency({ action_type: 'RETRY_API', reason: 'API_FAILED' })],
+    })
+    expect(
+      screen.queryByRole('button', { name: /Extrair de screenshot/ }),
+    ).not.toBeInTheDocument()
   })
 
   it('groups pendencies by financial institution with ungrouped last', () => {

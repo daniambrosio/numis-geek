@@ -70,6 +70,16 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   `pending_security_spec`: encryption + rotation + rate limit) e implementar. Achado
   de maior impacto do audit 2026-08-18.
 
+## Integridade de dados (prod)
+
+- [ ] `[claude]` **3 `extraction_job` órfãos apontam pra `portfolio_snapshot`
+  inexistente.** `PRAGMA foreign_key_check` no DB de produção acusa
+  `extraction_job|1|portfolio_snapshot|2`, `|2|` e `|3|`. Pré-existente (já
+  aparece no backup `.bak-before-cd-ticker-fix-20260905-122703`), não veio da
+  faxina de 2026-09-05. Provável snapshot deletado sem limpar os jobs. Decidir
+  entre `snapshot_id = NULL` ou apagar os jobs, e cobrir o caminho de deleção
+  de snapshot pra não recriar órfãos.
+
 ## Higiene barata (lote único)
 
 - [ ] `[claude]` Hints ComingSoon do `App.tsx` com numeração legada de spec (:57

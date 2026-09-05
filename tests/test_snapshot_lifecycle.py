@@ -140,7 +140,7 @@ def _seed(db, *, with_brapi_token: bool = True) -> dict:
         price_source=PriceSource.MANUAL,
         is_active=True, created_at=now, updated_at=now,
     )
-    avenue_generic = Asset(  # MANUAL + Avenue + no ticker → UPLOAD_REQUIRED
+    avenue_generic = Asset(  # MANUAL + Avenue + no ticker → MANUAL_SOURCE
         id=str(uuid.uuid4()), workspace_id=ws.id, account_id=acc_avenue.id,
         asset_class=AssetClass.FIXED_INCOME, country="US",
         name="Avenue Rendimentos", ticker=None,
@@ -246,13 +246,16 @@ def test_detect_manual_source(db):
     assert det[1] == PendencyAction.EDIT_PRICE
 
 
-def test_detect_upload_required_for_avenue_generic(db):
+def test_avenue_generic_no_longer_gets_upload_required(db):
+    """Regressão 2026-09-05 — a heurística `_is_avenue_generic` foi
+    aposentada. MANUAL + Avenue + ticker NULL agora cai no caminho único
+    MANUAL_SOURCE/EDIT_PRICE, igual a qualquer outra fonte manual."""
     w = _seed(db)
     asset = db.get(Asset, w["avenue_generic_id"])
     det = detect_pendencies(db, asset, period_end=PERIOD, now=NOW)
     assert det is not None
-    assert det[0] == PendencyReason.UPLOAD_REQUIRED
-    assert det[1] == PendencyAction.UPLOAD_FILE
+    assert det[0] == PendencyReason.MANUAL_SOURCE
+    assert det[1] == PendencyAction.EDIT_PRICE
 
 
 def test_detect_no_source_value_mode_generates_manual(db):
