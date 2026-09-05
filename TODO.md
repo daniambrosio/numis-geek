@@ -38,40 +38,42 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 - [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
   66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
 
-- [ ] `[claude]` **Spec nova: modo valor — `quantity` puramente informativa.** Proposta
-  do user (2026-09-05), e concordo: em ativo de modo valor a quantidade pode existir como
-  informação (nº de cotas do extrato), mas NADA de cálculo pode depender dela. Hoje ainda
-  vaza: `compute_position` acumula `running_qty` (= nº de aportes, ex.: PGBL Flexprev
-  qty=23, Tesouro Selic 2031 qty=5) e `asset_has_position` lê `qty != 0 or invested != 0`.
-  Ninguém quebra hoje, mas um ativo de modo valor com invested=0 e nº de aportes ≠ nº de
-  resgates fica preso no fechamento pra sempre. Fix: em modo valor, presença = `invested
-  != 0` (ou classe CASH), e `quantity_held` vira campo informativo, nunca base de decisão.
+- [ ] `[user]` `[claude]` **Spec nova: resgate em modo valor deve reduzir o custo
+  proporcionalmente.** É a única causa de invested negativo que sobrou. Hoje o SELL subtrai
+  o `gross` inteiro do invested — mas o resgate leva principal E rendimento, então resgatar
+  o que rendeu derruba o custo abaixo de zero. Casos vivos:
+  - `Tesouro Selic 2029` (−R$ 14.323,49 · mai–ago/26): histórico completo — aportes de
+    R$ 179.830,65 (abr/23, abr/24, set/24), resgates de R$ 144.000 (10/07/25) e
+    R$ 50.154,14 (19/05/26), ainda R$ 43.087,70 em carteira.
+  - `FGTS - Carrefour` (−R$ 1.390,46 · jun–ago/26): resíduo pós saldo de abertura, do saque
+    aniversário de R$ 4.466,45 sobre um saldo de ~R$ 4.550.
+  Regra proposta: `basis -= basis × (gross_resgate / MV_na_data_do_resgate)`, com o MV vindo
+  do último fechamento antes do resgate. É o que o Notion legado fazia (LFT mar/2028:
+  resgate de ~10% do saldo → 4.838,535 × 0,9 = 4.354,68). Simulação com essa regra:
+  Selic 2029 → 144.000/225.000 = 64% ⇒ basis 64.739,03; depois 50.154,14/91.037,98 = 55,1%
+  ⇒ **basis 29.074,26** contra valor de R$ 43.087,70. Carrefour → **~R$ 58** contra
+  valor R$ 86,17. Casa com o item "SELL parcial deve reduzir basis proporcionalmente" logo
+  acima — provavelmente é UMA spec só, cobrindo cotado e modo valor.
 
-- [ ] `[claude]` **Spec nova: resgate em modo valor deve reduzir o custo proporcionalmente.**
-  Hoje SELL subtrai o `gross` inteiro do invested — mas o resgate carrega rendimento além
-  do principal, então um resgate total deixa invested NEGATIVO. Caso limpo: `Tesouro Selic
-  2029` tem histórico completo (aportes R$ 179.830,65 em 2023-04/2024-04/2024-09), resgates
-  de R$ 144.000 + R$ 50.154,14 e ainda R$ 43.087,70 em carteira → invested −R$ 14.323,49.
-  O Notion legado fazia proporcional (LFT mar/2028: resgate de ~10% do saldo → basis
-  4.838,535 × 0,9 = 4.354,68). Regra proposta: `basis -= basis × (gross_resgate / MV_na_data)`,
-  com o MV vindo do último snapshot fechado. Casa com o item "SELL parcial deve reduzir
-  basis proporcionalmente" logo acima — provavelmente é UMA spec só, cobrindo cotado e
-  modo valor.
+- [x] ~~**Saldo de abertura de FGTS e Wise.**~~ FEITO em 2026-09-05 por decisão do user:
+  BUY de abertura no 1º dia do primeiro mês acompanhado, com o valor do fechamento desse
+  mês (investido == valor no primeiro fechamento, rentabilidade começa do zero).
+  FGTS - Carrefour R$ 35.172,00 (01/12/2024) · FGTS - Meli R$ 504.635,36 (01/12/2024) ·
+  Saldo em Conta (Wise) R$ 6.050,00 (01/12/2025). A decisão está anotada no campo `notes`
+  de cada ativo. Meli (R$ 523.205,02) e Wise (R$ 1.450,00) ficaram positivos; Carrefour
+  ainda −R$ 1.390,46, que só o resgate proporcional resolve.
+  Backup `numis_geek.db.bak-before-opening-balances-20260905-152132`.
 
-- [ ] `[user]` **Saldo de abertura de FGTS.** `FGTS - Carrefour` (−R$ 36.562,46 em 14 meses)
-  e `FGTS - Meli` (−R$ 1.083,91 em jun/26) ficam negativos porque o saldo que já existia
-  quando o acompanhamento começou nunca foi lançamento — nem aqui, nem no Notion (lá o
-  FGTS era saldo mensal, não aporte). Evidência: Meli tinha MV R$ 504.635,36 em dez/24 e o
-  primeiro lançamento é um BUY de R$ 11.711,36 em set/25; Carrefour tinha MV R$ 35.172,00
-  em dez/24 e o primeiro lançamento é um SELL. Não é falha do import. Fix: lançar um BUY
-  de saldo de abertura na data de início do acompanhamento (dez/2024), com o valor do
-  extrato do FGTS. Só o user tem esse número.
-
-- [ ] `[user]` **`Saldo em Conta (Wise)` — SELL de R$ 4.600 (2026-07-10) num ativo CASH.**
-  Ativos "Saldo em Conta" não têm aportes por design (o saldo é digitado a cada
-  fechamento); os outros 5 têm invested = 0. Esse SELL deixa invested −R$ 4.600 em jul e
-  ago/26. Provavelmente era uma transferência, que deveria ser Transaction e não
-  AssetMovement. Confirmar e remover/reclassificar o lançamento.
+- [ ] `[user]` **"Saldo em Conta não tem aporte por design" — revisar.** O Wise mostrou que
+  conta com câmbio tem sim aportes. A regra atual (CASH sempre presente no fechamento,
+  saldo digitado, invested 0) foi mantida, mas com saldo de abertura por cima. Rever quando
+  a trilha de câmbio for tratada.
+- [ ] `[user]` **Nubank — conta reativada, não está no sistema.** A instituição financeira
+  `Nubank` existe e está ativa, mas **não tem nenhuma conta cadastrada** — logo, nenhum
+  ativo, logo nada no fechamento de 2026. Não é bug: o cadastro nunca foi feito. Pra
+  incluir: criar a(s) conta(s) (investimento e/ou corrente) e os ativos — 2 investimentos
+  + saldo em conta —, e lançar o saldo de abertura no mesmo padrão de FGTS/Wise.
+  Faltam do user: nome/tipo da conta, nome e classe dos 2 investimentos, e os valores.
 
 - [ ] `[user]` `[claude]` **`Terreno Paranapanema` em set/25 — item incoerente.** Único item
   pulado pela correção ampla: o terreno foi vendido em 2025-09-30 (SELL R$ 50.000, basis
