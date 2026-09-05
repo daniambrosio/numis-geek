@@ -328,6 +328,20 @@ export interface AssetOut {
   details: FixedIncomeDetails | PhysicalDetails | null
 }
 
+/** Spec 81 — PATCH parcial: só os campos presentes mudam; null explícito limpa. */
+export interface AssetPatchRequest {
+  asset_class?: AssetClass
+  account_id?: string
+  country?: string
+  name?: string
+  currency?: 'BRL' | 'USD'
+  ticker?: string | null
+  cnpj?: string | null
+  notes?: string | null
+  details?: Record<string, unknown> | null
+  linked_account_id?: string | null
+}
+
 export interface AssetRequest {
   asset_class: AssetClass
   account_id: string
@@ -966,6 +980,8 @@ export const api = {
   createAsset: (data: AssetRequest) =>
     request<AssetOut>('/assets', { method: 'POST', body: JSON.stringify(data) }),
 
+  patchAsset: (id: string, data: AssetPatchRequest) =>
+    request<AssetOut>(`/assets/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   updateAsset: (id: string, data: AssetRequest) =>
     request<AssetOut>(`/assets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 

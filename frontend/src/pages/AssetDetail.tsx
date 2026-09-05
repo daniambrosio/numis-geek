@@ -15,6 +15,7 @@ import {
   type AssetPriceHistoryPeriod,
   type AssetRequest,
   type AssetSnapshotHistoryOut,
+  type AttachmentOut,
   type DistributionOut,
   type DistributionRequest,
   type FinancialInstitutionOut,
@@ -109,6 +110,10 @@ export default function AssetDetail() {
   const [performance, setPerformance] = useState<AssetPerformanceOut | null>(null)
   const [performanceLoading, setPerformanceLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState<string | null>(null)
+  // Spec 81 — Documentos & dados: anexos do ativo (lazy) + auto-edit vindo do header.
+  const [assetAttachments, setAssetAttachments] = useState<AttachmentOut[] | null>(null)
+  const [docsAutoEdit, setDocsAutoEdit] = useState(false)
+  const [confirmDeactivateAsset, setConfirmDeactivateAsset] = useState(false)
 
   // Lançamentos sub-flow: side panel + composer + deactivate + spec 51 reconciliation
   const [selectedMovement, setSelectedMovement] = useState<AssetMovementOut | null>(null)
@@ -134,7 +139,53 @@ export default function AssetDetail() {
   useEscapeKey(() => {
     if (confirmDeactivate) setConfirmDeactivate(null)
     if (confirmDeactivateDist) setConfirmDeactivateDist(null)
+    if (confirmDeactivateAsset) setConfirmDeactivateAsset(false)
   })
+
+  function showMsg(kind: 'ok' | 'err', text: string) {
+    setPriceMsg({ kind, text })
+    window.setTimeout(() => setPriceMsg(null), 4000)
+  }
+
+  async function refreshAssetAttachments() {
+    if (!asset) return
+    try {
+      setAssetAttachments(await api.listAttachments('asset', asset.id))
+    } catch { /* fail-soft */ }
+  }
+
+  async function handleNotesSave(notes: string) {
+    if (!asset) return
+    const updated = await api.patchAsset(asset.id, { notes: notes.trim() ? notes : null })
+    setAsset(updated)
+  }
+
+  function handleAssetSaved(updated: AssetOut) {
+    const fiChanged = updated.account_id !== asset?.account_id
+    setAsset(updated)
+    showMsg('ok', 'Dados do ativo salvos.')
+    if (fiChanged) {
+      api.getAccount(updated.account_id)
+        .then(acc => {
+          setAccount(acc)
+          setFi(institutions.find(f => f.id === acc.financial_institution_id) ?? null)
+        })
+        .catch(() => { /* fail-soft */ })
+    }
+  }
+
+  async function handleAssetDeactivate() {
+    if (!asset) return
+    try {
+      const updated = await api.deactivateAsset(asset.id)
+      setAsset(updated)
+      showMsg('ok', 'Ativo zerado.')
+    } catch (e) {
+      showMsg('err', e instanceof Error ? e.message : 'Erro ao zerar o ativo')
+    } finally {
+      setConfirmDeactivateAsset(false)
+    }
+  }
 
   function openNewDistribution() {
     setEditingDistribution(undefined)
@@ -439,6 +490,16 @@ export default function AssetDetail() {
     return () => { cancelled = true }
   }, [me, id, tab, snapshotHistory])
 
+  // Spec 81 — anexos do ativo, lazy na aba Documentos.
+  useEffect(() => {
+    if (!me || !id || tab !== 'docs' || assetAttachments) return
+    let cancelled = false
+    api.listAttachments('asset', id)
+      .then(list => { if (!cancelled) setAssetAttachments(list) })
+      .catch(() => { if (!cancelled) setAssetAttachments([]) })
+    return () => { cancelled = true }
+  }, [me, id, tab, assetAttachments])
+
   // Spec 81 — performance (retorno total mês a mês), lazy por aba. Fechamentos
   // são congelados, então o cache no shell não fica stale com lançamentos novos.
   useEffect(() => {
@@ -593,7 +654,8 @@ export default function AssetDetail() {
                 <Edit2 className="w-3.5 h-3.5" /> Editar preço
               </button>
               <button
-                onClick={() => setEditAssetOpen(true)}
+                onClick={() => { setDocsAutoEdit(true); setTab('docs') }}
+                data-testid="header-edit-asset"
                 title="Editar dados do ativo (classe, nome, ticker, custodiante…)"
                 className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
               >
@@ -761,10 +823,21 @@ export default function AssetDetail() {
             asset={asset}
             fi={fi}
             account={account}
+            institutions={institutions}
+            canDeactivate={me.role !== 'member'}
             costBRL={costBRL}
             receivedBRL={distSumBRL}
             movementsCount={movements.length}
             lastMovementDate={lastMovementDate}
+            autoEdit={docsAutoEdit}
+            onAutoEditConsumed={() => setDocsAutoEdit(false)}
+            onSaved={handleAssetSaved}
+            onError={(msg) => showMsg('err', msg)}
+            onEditDetails={() => setEditAssetOpen(true)}
+            onDeactivate={() => setConfirmDeactivateAsset(true)}
+            attachments={assetAttachments ?? []}
+            onAttachmentsChanged={refreshAssetAttachments}
+            onNotesSave={handleNotesSave}
           />
         )}
       </div>
@@ -885,6 +958,24 @@ export default function AssetDetail() {
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDeactivateDist(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
               <button onClick={() => handleDistributionDeactivate(confirmDeactivateDist)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Apagar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeactivateAsset && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Zerar ativo?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+              <strong>{asset.ticker || asset.name}</strong> sai das listas e dos próximos fechamentos.
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
+              Lançamentos, proventos e histórico de fechamentos ficam preservados.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDeactivateAsset(false)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+              <button onClick={() => void handleAssetDeactivate()} data-testid="confirm-deactivate-asset" className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Zerar</button>
             </div>
           </div>
         </div>

@@ -1,60 +1,68 @@
-/* Spec 81 — aba "Documentos & dados". Fase 3: o card Detalhes (read-only).
- * Fase 6 troca por AssetDataCard (edição inline) + NotesAttachmentsCard. */
+/* Spec 81 — aba "Documentos & dados": card de dados com edição inline e
+ * notas + anexos do ativo (NotesAttachmentsCard com sourceType='asset'). */
 import type { ReactNode } from 'react'
 
-import type { AccountOut, AssetOut, FinancialInstitutionOut } from '../../lib/api'
-import { fmtDate } from '../../lib/format'
-import { fmtBRL } from '../../lib/money'
-import { collapsedOf } from '../../lib/tokens'
-import { Card, CcyPill, ClassBadge, SectionTitle } from '../ui'
-import CountryFlag from './CountryFlag'
+import type {
+  AccountOut, AssetOut, AttachmentOut, FinancialInstitutionOut,
+} from '../../lib/api'
+import NotesAttachmentsCard from '../NotesAttachmentsCard'
+import AssetDataCard from './AssetDataCard'
 
 interface Props {
   asset: AssetOut
   fi: FinancialInstitutionOut | null
   account: AccountOut | null
+  institutions: FinancialInstitutionOut[]
+  canDeactivate: boolean
   costBRL: number | null
   receivedBRL: number
   movementsCount: number
   lastMovementDate?: string
+  autoEdit?: boolean
+  onAutoEditConsumed?: () => void
+  onSaved: (asset: AssetOut) => void
+  onError: (msg: string) => void
+  onEditDetails: () => void
+  onDeactivate: () => void
+  attachments: AttachmentOut[]
+  onAttachmentsChanged: () => void | Promise<void>
+  onNotesSave: (notes: string) => Promise<void>
 }
 
 export default function AssetDocsTab({
-  asset, fi, account, costBRL, receivedBRL, movementsCount, lastMovementDate,
+  asset, fi, account, institutions, canDeactivate,
+  costBRL, receivedBRL, movementsCount, lastMovementDate,
+  autoEdit, onAutoEditConsumed, onSaved, onError, onEditDetails, onDeactivate,
+  attachments, onAttachmentsChanged, onNotesSave,
 }: Props) {
-  const klass = collapsedOf(asset.asset_class)
   return (
     <div className="space-y-6" data-testid="asset-tab-panel-docs">
-      <Card>
-        <SectionTitle>Detalhes</SectionTitle>
-        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-[12px]">
-          <Detail label="Ticker" value={asset.ticker || '—'} mono />
-          <Detail label="CNPJ" value={asset.cnpj || '—'} mono />
-          <Detail label="Classe">
-            <ClassBadge klass={klass} size="xs" withDot={false} />
-          </Detail>
-          <Detail label="País">
-            <span className="inline-flex items-center gap-1.5">
-              <CountryFlag country={asset.country} />
-              <span>{asset.country === 'BR' ? 'Brasil' : asset.country === 'US' ? 'EUA' : asset.country}</span>
-            </span>
-          </Detail>
-          <Detail label="Moeda">
-            <CcyPill ccy={asset.currency} />
-          </Detail>
-          <Detail label="Custodiante" value={fi?.short_name || '—'} />
-          <Detail label="Conta" value={account?.name || '—'} />
-          <Detail label="Status">
-            {asset.is_active
-              ? <span className="text-emerald-500 dark:text-emerald-400">Ativo</span>
-              : <span className="text-gray-500">Zerado</span>}
-          </Detail>
-          <Detail label="Total investido" value={fmtBRL(costBRL, { compact: true })} tnum money />
-          <Detail label="Total recebido" value={fmtBRL(receivedBRL, { compact: true })} tnum money tone="positive" />
-          <Detail label="Lançamentos" value={String(movementsCount)} tnum />
-          <Detail label="Último lançamento" value={lastMovementDate ? fmtDate(lastMovementDate) : '—'} tnum />
-        </dl>
-      </Card>
+      <AssetDataCard
+        asset={asset}
+        fi={fi}
+        account={account}
+        institutions={institutions}
+        canDeactivate={canDeactivate}
+        costBRL={costBRL}
+        receivedBRL={receivedBRL}
+        movementsCount={movementsCount}
+        lastMovementDate={lastMovementDate}
+        autoEdit={autoEdit}
+        onAutoEditConsumed={onAutoEditConsumed}
+        onSaved={onSaved}
+        onError={onError}
+        onEditDetails={onEditDetails}
+        onDeactivate={onDeactivate}
+      />
+      <NotesAttachmentsCard
+        notes={asset.notes ?? ''}
+        onNotesSave={onNotesSave}
+        sourceType="asset"
+        sourceId={asset.id}
+        attachments={attachments}
+        onAttachmentsChanged={onAttachmentsChanged}
+        label="Notas & documentos do ativo"
+      />
     </div>
   )
 }

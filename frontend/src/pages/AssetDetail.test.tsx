@@ -351,3 +351,45 @@ describe('AssetDetail rentabilidade (spec 81 fase 5)', () => {
     expect(screen.getByTestId('asset-tab-panel-performance')).toBeInTheDocument()
   })
 })
+
+describe('AssetDetail documentos & dados (spec 81 fase 6)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('aba Documentos monta notas/anexos do ativo e busca os anexos com sourceType asset', async () => {
+    mockBoringDeps()
+    const la = vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    renderPage('/assets/a1?tab=docs')
+    await waitFor(() => expect(screen.getByTestId('notes-attachments-card')).toBeInTheDocument())
+    expect(la).toHaveBeenCalledWith('asset', 'a1')
+    expect(screen.getByText('Notas & documentos do ativo')).toBeInTheDocument()
+    expect(screen.getByText('Dados do ativo')).toBeInTheDocument()
+  })
+
+  it('"Editar ativo" no header abre a aba Documentos já em edição', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    vi.spyOn(api, 'listAccounts').mockResolvedValue([account])
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('header-edit-asset')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('header-edit-asset'))
+    await waitFor(() => expect(screen.getByTestId('asset-data-form')).toBeInTheDocument())
+    expect(screen.getByTestId('probe-search')).toHaveTextContent('?tab=docs')
+  })
+
+  it('salvar nota usa PATCH com notes', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...asset(), notes: 'tese' })
+    vi.useFakeTimers()
+    try {
+      renderPage('/assets/a1?tab=docs')
+      await vi.waitFor(() => expect(screen.getByPlaceholderText(/Adicionar nota/)).toBeInTheDocument())
+      fireEvent.change(screen.getByPlaceholderText(/Adicionar nota/), { target: { value: 'tese' } })
+      await vi.advanceTimersByTimeAsync(900)
+      expect(patch).toHaveBeenCalledWith('a1', { notes: 'tese' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
