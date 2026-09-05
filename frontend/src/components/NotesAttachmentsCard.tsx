@@ -104,7 +104,15 @@ export default function NotesAttachmentsCard({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Last value the server acknowledged (or the last prop we accepted). */
   const lastSavedRef = useRef(notes)
+  /** Latest value typed by the user — the save loop always reads from
+   *  here so a PUT that lands late never resurrects stale text. */
+  const latestRef = useRef(notes)
+  /** True while a PUT is in flight; the loop never runs two at once. */
+  const savingRef = useRef(false)
+  const onNotesSaveRef = useRef(onNotesSave)
+  useEffect(() => { onNotesSaveRef.current = onNotesSave }, [onNotesSave])
   const rootRef = useRef<HTMLDivElement>(null)
   /** Last few content-hashes of uploaded files so a repeated ⌘V on the
    *  same clipboard contents is ignored within a short window. The user
@@ -112,33 +120,69 @@ export default function NotesAttachmentsCard({
    *  this guards the gap until the spinner row shows up. */
   const recentHashesRef = useRef<{ hash: string; at: number }[]>([])
 
-  // Sync down when the parent reloads with fresh notes.
+  // Sync down when the parent swaps to another entity (sourceId) or
+  // reloads with notes that did NOT originate from our own save. While
+  // the user has unsaved keystrokes (latest !== lastSaved) the prop is
+  // ignored — otherwise the echo of our own PUT (which carries the text
+  // as it was 800 ms ago) would clobber whatever was typed since.
+  const prevSourceRef = useRef(sourceId)
   useEffect(() => {
+    const switched = prevSourceRef.current !== sourceId
+    prevSourceRef.current = sourceId
+    const dirty = latestRef.current !== lastSavedRef.current
+    if (!switched && (dirty || savingRef.current || notes === lastSavedRef.current)) return
+    if (switched && debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
     setLocalNotes(notes)
     lastSavedRef.current = notes
-  }, [notes])
+    latestRef.current = notes
+  }, [notes, sourceId])
+
+  /** Persist `latestRef` if it differs from what the server has. Runs
+   *  one PUT at a time; if more keystrokes arrive while a PUT is in
+   *  flight, loops once more when it lands. */
+  async function flushNotes(): Promise<void> {
+    if (savingRef.current) return
+    if (latestRef.current === lastSavedRef.current) return
+    savingRef.current = true
+    setSavingNotes(true)
+    try {
+      while (latestRef.current !== lastSavedRef.current) {
+        const next = latestRef.current
+        try {
+          await onNotesSaveRef.current(next)
+          lastSavedRef.current = next
+        } catch {
+          // Silent — the parent should surface its own error. Keep the
+          // typed value so the user doesn't lose it; stop retrying until
+          // the next keystroke.
+          break
+        }
+      }
+    } finally {
+      savingRef.current = false
+      setSavingNotes(false)
+    }
+  }
 
   function scheduleNoteSave(next: string) {
     setLocalNotes(next)
+    latestRef.current = next
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      if (next === lastSavedRef.current) return
-      setSavingNotes(true)
-      try {
-        await onNotesSave(next)
-        lastSavedRef.current = next
-      } catch {
-        // Silent — the parent should surface its own error. Keep the
-        // typed value so the user doesn't lose it.
-      } finally {
-        setSavingNotes(false)
-      }
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null
+      void flushNotes()
     }, 800)
   }
 
-  // Flush pending notes save when the component unmounts.
+  // Flush pending notes save when the component unmounts (closing the
+  // panel within the debounce window must not drop the text).
   useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
+    if (!savingRef.current && latestRef.current !== lastSavedRef.current) {
+      const next = latestRef.current
+      lastSavedRef.current = next
+      void onNotesSaveRef.current(next).catch(() => {})
+    }
   }, [])
 
   /** Cheap content hash so two identical pastes in a row are caught.
