@@ -26,6 +26,7 @@ from numis_geek.models.extraction_job import (
     ExtractionSourceHint,
     ExtractionStatus,
 )
+from numis_geek.models.attachment import Attachment, AttachmentPurpose
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.portfolio_snapshot import (
     PortfolioSnapshot,
@@ -1226,6 +1227,7 @@ def bulk_income_per_fi(
     fi = db.get(FinancialInstitution, fi_id)
     if not fi:
         raise HTTPException(status_code=404, detail="Institution not found")
+    _tag_attachment_slot(db, body.attachment_id, fi_id, AttachmentPurpose.INCOME)
     try:
         job = extraction_service.create_and_run(
             db,
@@ -1249,6 +1251,19 @@ def bulk_income_per_fi(
         "institution_id": job.institution_id,
         "institution_short_name": fi.short_name,
     }
+
+
+def _tag_attachment_slot(
+    db: Session, attachment_id: str, fi_id: str, purpose: AttachmentPurpose,
+) -> None:
+    """Anexos antigos (subidos antes de 2026-09-05) não têm slot. Extrair
+    num bloco por FI é a evidência de onde ele pertence — grava, se vazio,
+    pra ele não voltar a sumir da UI."""
+    att = db.get(Attachment, attachment_id)
+    if att is None or att.institution_id is not None:
+        return
+    att.institution_id = fi_id
+    att.purpose = purpose
 
 
 # ── Spec 58 — bulk extract scoped to one FI ─────────────────────────────────
@@ -1283,6 +1298,7 @@ def bulk_extract_per_fi(
     fi = db.get(FinancialInstitution, fi_id)
     if not fi:
         raise HTTPException(status_code=404, detail="Institution not found")
+    _tag_attachment_slot(db, body.attachment_id, fi_id, AttachmentPurpose.POSITIONS)
     try:
         job = extraction_service.create_and_run(
             db,

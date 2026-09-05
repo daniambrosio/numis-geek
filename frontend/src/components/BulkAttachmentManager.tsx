@@ -112,23 +112,31 @@ export default function BulkAttachmentManager({
     return m
   }, [jobs, institutionId, expectedHint])
 
-  // Spec 58 — only show attachments with a job at this FI when scoped.
-  // Otherwise per-FI groups would all show the same global attachment list.
-  // 2026-06-09: também mostra anexos uploaded nesta sessão neste slot,
-  // já que o upload não dispara mais auto-extract.
+  // Spec 58 — quando scoped, mostra os anexos deste slot (FI + purpose).
+  // 2026-09-05: o slot agora é persistido no anexo no upload — antes o
+  // filtro exigia um extraction job, e um arquivo subido sem clicar em
+  // "Extrair" sumia de todos os blocos após refresh (ficava "perdido" no
+  // servidor). Fallback pelo job cobre anexos antigos sem slot gravado;
+  // `uploadedHere` cobre a janela entre upload e refresh.
   // Legacy unscoped mode (institutionId=null) shows everything.
   const visibleAttachments = useMemo(() => {
     if (!institutionId) return attachments
-    return attachments.filter(
-      att => jobByAttachmentId.has(att.id) || uploadedHere.has(att.id),
-    )
-  }, [attachments, jobByAttachmentId, institutionId, uploadedHere])
+    return attachments.filter(att => {
+      if (att.institution_id) {
+        return att.institution_id === institutionId && (att.purpose ?? 'positions') === purpose
+      }
+      return jobByAttachmentId.has(att.id) || uploadedHere.has(att.id)
+    })
+  }, [attachments, jobByAttachmentId, institutionId, purpose, uploadedHere])
 
   const handleFile = useCallback(async (file: File) => {
     setError(null)
     setUploading(true)
     try {
-      const att = await api.uploadAttachment('snapshot', snapshotId, file)
+      const att = await api.uploadAttachment(
+        'snapshot', snapshotId, file,
+        institutionId ? { institution_id: institutionId, purpose } : undefined,
+      )
       // 2026-06-09: NÃO dispara extração automática mais. Antes o
       // upload com institutionId implicava "extrair via LLM" na hora,
       // o que gastava tokens à toa pra anexos puramente informacionais
@@ -145,7 +153,7 @@ export default function BulkAttachmentManager({
     } finally {
       setUploading(false)
     }
-  }, [snapshotId, refresh])
+  }, [snapshotId, refresh, institutionId, purpose])
 
   // CMD-V só responde quando o cursor está sobre o dropzone deste
   // manager (hook compartilhado usePasteFiles). Sem isso, todos os

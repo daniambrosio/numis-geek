@@ -190,6 +190,7 @@ def seed():
     sysadmin_token = AuthService(db).login("att_sysadmin@test.internal", "syspass")
 
     out = {
+        "fi_id": fi.id,
         "ws_a": ws_a.id,
         "ws_b": ws_b.id,
         "asset_a": asset_a.id,
@@ -462,3 +463,84 @@ def test_delete_for_rejects_cross_workspace_storage_key():
     att = _stub_attachment("ws-A", "ws-B/file.png")
     with pytest.raises(ValueError):
         attachment_storage.delete_for(att)
+
+
+# ── 2026-09-05 — slot de origem (institution_id + purpose) ─────────────────
+
+
+def test_upload_with_slot_persists_institution_and_purpose(client, seed):
+    """Anexo subido num bloco por FI grava o slot — antes só o extraction
+    job sabia a FI, e um arquivo sem "Extrair" sumia da UI após refresh."""
+    r = client.post(
+        "/api/attachments",
+        data={
+            "source_type": "asset", "source_id": seed["asset_a"],
+            "institution_id": seed["fi_id"], "purpose": "income",
+        },
+        files={"file": ("proventos.csv", io.BytesIO(b"a,b\n1,2\n"), "text/csv")},
+        headers=auth(seed["admin_a_token"]),
+    )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["institution_id"] == seed["fi_id"]
+    assert data["purpose"] == "income"
+
+    listed = client.get(
+        "/api/attachments",
+        params={"source_type": "asset", "source_id": seed["asset_a"]},
+        headers=auth(seed["admin_a_token"]),
+    )
+    row = next(a for a in listed.json() if a["id"] == data["id"])
+    assert row["institution_id"] == seed["fi_id"]
+    assert row["purpose"] == "income"
+
+
+def test_upload_without_slot_keeps_nulls(client, seed):
+    r = client.post(
+        "/api/attachments",
+        data={"source_type": "asset", "source_id": seed["asset_a"]},
+        files={"file": ("x.png", io.BytesIO(png_bytes()), "image/png")},
+        headers=auth(seed["admin_a_token"]),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["institution_id"] is None
+    assert r.json()["purpose"] is None
+
+
+def test_upload_half_slot_rejected(client, seed):
+    r = client.post(
+        "/api/attachments",
+        data={
+            "source_type": "asset", "source_id": seed["asset_a"],
+            "institution_id": seed["fi_id"],
+        },
+        files={"file": ("x.png", io.BytesIO(png_bytes()), "image/png")},
+        headers=auth(seed["admin_a_token"]),
+    )
+    assert r.status_code == 422
+
+
+def test_upload_slot_unknown_institution_404(client, seed):
+    r = client.post(
+        "/api/attachments",
+        data={
+            "source_type": "asset", "source_id": seed["asset_a"],
+            "institution_id": str(uuid.uuid4()), "purpose": "positions",
+        },
+        files={"file": ("x.png", io.BytesIO(png_bytes()), "image/png")},
+        headers=auth(seed["admin_a_token"]),
+    )
+    assert r.status_code == 404
+
+
+def test_upload_slot_invalid_purpose_422(client, seed):
+    r = client.post(
+        "/api/attachments",
+        data={
+            "source_type": "asset", "source_id": seed["asset_a"],
+            "institution_id": seed["fi_id"], "purpose": "whatever",
+        },
+        files={"file": ("x.png", io.BytesIO(png_bytes()), "image/png")},
+        headers=auth(seed["admin_a_token"]),
+    )
+    assert r.status_code == 422

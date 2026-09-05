@@ -19,9 +19,11 @@ from numis_geek.models.asset_movement import AssetMovement
 from numis_geek.models.attachment import (
     Attachment,
     AttachmentKind,
+    AttachmentPurpose,
     AttachmentSourceType,
 )
 from numis_geek.models.distribution import Distribution
+from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.user import User, UserRole
 from numis_geek.services import attachment_storage
 from numis_geek.services.audit import AuditService
@@ -44,6 +46,9 @@ class AttachmentOut(BaseModel):
     uploaded_at: str
     uploaded_by: str | None
     is_active: bool
+    # Slot de origem (anexos de SNAPSHOT subidos num bloco por FI).
+    institution_id: str | None = None
+    purpose: str | None = None
 
     @classmethod
     def from_orm(cls, a: Attachment) -> "AttachmentOut":
@@ -59,6 +64,8 @@ class AttachmentOut(BaseModel):
             uploaded_at=a.uploaded_at.isoformat(),
             uploaded_by=a.uploaded_by,
             is_active=a.is_active,
+            institution_id=a.institution_id,
+            purpose=a.purpose.value if a.purpose else None,
         )
 
 
@@ -90,6 +97,36 @@ def _parse_source_type(value: str) -> AttachmentSourceType:
             detail=f"Invalid source_type '{value}'. Must be one of: "
             f"{[t.value for t in AttachmentSourceType]}.",
         )
+
+
+def _parse_slot(
+    db: Session, institution_id: str | None, purpose: str | None,
+) -> tuple[str | None, AttachmentPurpose | None]:
+    """Valida o par (institution_id, purpose). Ambos ou nenhum — um slot
+    pela metade é o mesmo bug de antes com outra cara."""
+    institution_id = (institution_id or "").strip() or None
+    purpose = (purpose or "").strip() or None
+    if institution_id is None and purpose is None:
+        return None, None
+    if institution_id is None or purpose is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="institution_id and purpose must be provided together.",
+        )
+    try:
+        purpose_enum = AttachmentPurpose(purpose.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid purpose '{purpose}'.",
+        )
+    fi = db.get(FinancialInstitution, institution_id)
+    if fi is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    return fi.id, purpose_enum
 
 
 def _verify_source_access(
@@ -135,11 +172,16 @@ async def upload_attachment(
     source_type: str = Form(...),
     source_id: str = Form(...),
     file: UploadFile = File(...),
+    # Slot de origem — obrigatório pra anexos de SNAPSHOT subidos num
+    # bloco por FI; sem ele o arquivo sumia da UI após refresh.
+    institution_id: str | None = Form(None),
+    purpose: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
     source_enum = _parse_source_type(source_type)
     workspace_id = _verify_source_access(db, source_enum, source_id, current_user)
+    slot_fi, slot_purpose = _parse_slot(db, institution_id, purpose)
 
     payload = await file.read()
     mime = file.content_type or ""
@@ -168,6 +210,8 @@ async def upload_attachment(
         storage_key=saved.storage_key,
         uploaded_at=datetime.now(timezone.utc),
         uploaded_by=current_user.user_id,
+        institution_id=slot_fi,
+        purpose=slot_purpose,
     )
     db.add(att)
     db.flush()
@@ -183,6 +227,8 @@ async def upload_attachment(
             "source_id": source_id,
             "filename": att.filename,
             "size_bytes": att.size_bytes,
+            "institution_id": slot_fi,
+            "purpose": slot_purpose.value if slot_purpose else None,
         },
     )
     return AttachmentOut.from_orm(att)

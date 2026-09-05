@@ -34,6 +34,7 @@ from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass, PriceSource
 from numis_geek.models.attachment import (
     Attachment, AttachmentKind, AttachmentSourceType,
+    AttachmentPurpose,
 )
 from numis_geek.models.distribution import Distribution
 from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus
@@ -485,6 +486,16 @@ def test_bulk_extract_per_fi_creates_scoped_job(client, seed):
     row = next(j for j in listed.json() if j["id"] == body["id"])
     assert row["institution_short_name"] == "XP"
     assert row["source_hint"] == "BROKER_POSITION"
+
+    # 2026-09-05 — extrair num bloco por FI grava o slot no anexo (anexos
+    # antigos sem slot deixam de sumir da UI depois disso).
+    db = TestSession()
+    try:
+        att = db.get(Attachment, att_id)
+        assert att.institution_id == seed["fi_xp_id"]
+        assert att.purpose == AttachmentPurpose.POSITIONS
+    finally:
+        db.close()
 
 
 def test_bulk_extract_per_fi_unknown_fi_returns_404(client, seed):

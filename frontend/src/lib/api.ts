@@ -1235,11 +1235,18 @@ export const api = {
     const qs = new URLSearchParams({ source_type, source_id })
     return request<AttachmentOut[]>(`/attachments?${qs}`)
   },
-  uploadAttachment: async (source_type: AttachmentSourceType, source_id: string, file: File): Promise<AttachmentOut> => {
+  uploadAttachment: async (
+    source_type: AttachmentSourceType, source_id: string, file: File,
+    slot?: { institution_id: string; purpose: 'positions' | 'income' },
+  ): Promise<AttachmentOut> => {
     const token = getToken()
     const form = new FormData()
     form.append('source_type', source_type)
     form.append('source_id', source_id)
+    if (slot) {
+      form.append('institution_id', slot.institution_id)
+      form.append('purpose', slot.purpose)
+    }
     form.append('file', file, file.name)
     const res = await fetch(`${BASE}/attachments`, {
       method: 'POST',
@@ -1655,6 +1662,9 @@ export interface AttachmentOut {
   uploaded_at: string
   uploaded_by: string | null
   is_active: boolean
+  // 2026-09-05 — slot de origem de anexos de SNAPSHOT (bloco por FI).
+  institution_id?: string | null
+  purpose?: 'positions' | 'income' | null
 }
 
 // ── Portfolio (Spec 20) ──────────────────────────────────────────────────────

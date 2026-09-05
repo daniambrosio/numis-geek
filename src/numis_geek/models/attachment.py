@@ -35,6 +35,14 @@ class AttachmentKind(str, enum.Enum):
     OTHER = "other"
 
 
+class AttachmentPurpose(str, enum.Enum):
+    """Pra que o anexo de fechamento foi subido (spec 58 — slot por FI).
+    POSITIONS = extrato de posições (atualiza preços / resolve pendências);
+    INCOME = extrato de proventos (cria Distribution)."""
+    POSITIONS = "positions"
+    INCOME = "income"
+
+
 class Attachment(Base):
     __tablename__ = "attachment"
 
@@ -66,6 +74,18 @@ class Attachment(Base):
         String(36), ForeignKey("user.id"), nullable=True
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # 2026-09-05 — slot de origem de anexos de SNAPSHOT. Antes o anexo só
+    # sabia o fechamento; o bloco por FI na tela filtrava pelo extraction
+    # job, então um arquivo subido sem clicar em "Extrair" sumia da UI após
+    # refresh (14 de 59 anexos em prod estavam nessa condição). Nullable:
+    # anexos de asset/movement/distribution não têm slot.
+    institution_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("financial_institution.id"), nullable=True
+    )
+    purpose: Mapped[AttachmentPurpose | None] = mapped_column(
+        Enum(AttachmentPurpose), nullable=True
+    )
 
     __table_args__ = (
         Index("ix_attachment_source", "source_type", "source_id"),
