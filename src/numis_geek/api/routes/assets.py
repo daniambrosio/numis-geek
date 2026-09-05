@@ -100,6 +100,8 @@ class AssetRequest(BaseModel):
     external_source: ExternalSource | None = None
     workspace_id: str | None = None  # only honored when caller is sysadmin
     details: dict[str, Any] | None = None
+    # Spec 80 — conta corrente que é a fonte de verdade do saldo deste ativo.
+    linked_account_id: str | None = Field(default=None, max_length=36)
 
     @model_validator(mode="after")
     def _validate(self) -> "AssetRequest":
@@ -114,6 +116,12 @@ class AssetRequest(BaseModel):
         # CNPJ only for FUND
         if self.cnpj and cls != AssetClass.FUND:
             raise ValueError("cnpj is allowed only for asset_class FUND")
+
+        # Spec 80 — vínculo com conta corrente só faz sentido em "Saldo em Conta"
+        if self.linked_account_id and cls != AssetClass.CASH:
+            raise ValueError(
+                "linked_account_id is allowed only for asset_class CASH",
+            )
 
         # Details presence vs class
         needs_details = cls in (AssetClass.FIXED_INCOME, AssetClass.REAL_ESTATE, AssetClass.VEHICLE)
@@ -516,6 +524,38 @@ def _resolve_account(db: Session, account_id: str, workspace_id: str) -> Account
     return account
 
 
+def _resolve_linked_account(
+    db: Session, linked_account_id: str | None, workspace_id: str, *, asset_id: str | None = None,
+):
+    """Spec 80 — valida o vínculo ativo CASH ↔ conta corrente.
+
+    A conta tem que ser do mesmo workspace, `account_type=checking`, e não pode
+    já estar espelhada por outro ativo (uma conta corrente tem um saldo só).
+    """
+    if not linked_account_id:
+        return None
+    acc = db.get(Account, linked_account_id)
+    if acc is None or acc.workspace_id != workspace_id or not acc.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Linked account not found.",
+        )
+    if acc.account_type != AccountType.checking:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Linked account must be a checking account.",
+        )
+    q = db.query(Asset).filter(Asset.linked_account_id == linked_account_id)
+    if asset_id is not None:
+        q = q.filter(Asset.id != asset_id)
+    if q.first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Checking account is already mirrored by another asset.",
+        )
+    return acc
+
+
 @router.post("", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
 def create_asset(
     body: AssetRequest,
@@ -534,6 +574,7 @@ def create_asset(
         ticker=body.ticker,
         account_id=body.account_id,
     )
+    _resolve_linked_account(db, body.linked_account_id, workspace_id)
 
     now = datetime.now(timezone.utc)
     asset = Asset(
@@ -551,6 +592,7 @@ def create_asset(
         notes=body.notes,
         external_id=body.external_id,
         external_source=body.external_source,
+        linked_account_id=body.linked_account_id,
         is_active=True,
         created_at=now,
         updated_at=now,
@@ -595,7 +637,11 @@ def update_asset(
         account_id=body.account_id,
         exclude_id=asset.id,
     )
+    _resolve_linked_account(
+        db, body.linked_account_id, asset.workspace_id, asset_id=asset.id,
+    )
 
+    asset.linked_account_id = body.linked_account_id
     asset.account_id = account.id
     asset.asset_class = body.asset_class
     asset.country = body.country.upper()

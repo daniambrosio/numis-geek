@@ -122,6 +122,7 @@ def test_create_account_checking(client, seed):
         "financial_institution_id": seed["fi_id"],
         "currency": "BRL",
         "opening_balance": "1000.00",
+        "opening_balance_date": "2026-08-31",
     }, headers=auth_header(seed["admin_token"]))
     assert r.status_code == 201
     data = r.json()
@@ -129,7 +130,21 @@ def test_create_account_checking(client, seed):
     assert data["account_type"] == "checking"
     assert data["currency"] == "BRL"
     assert data["opening_balance"] == 1000.0
+    assert data["opening_balance_date"] == "2026-08-31"
     assert data["is_active"] is True
+
+
+def test_create_checking_without_opening_balance_date_is_rejected(seed, client):
+    """Spec 80 — saldo de abertura sem data é ambíguo: o saldo derivado
+    precisa saber a partir de quando somar transações."""
+    r = client.post("/api/accounts", json={
+        "name": "Sem data",
+        "account_type": "checking",
+        "financial_institution_id": seed["fi_id"],
+        "currency": "BRL",
+        "opening_balance": "1000.00",
+    }, headers=auth_header(seed["admin_token"]))
+    assert r.status_code == 422
 
 
 def test_create_account_investment(client, seed):

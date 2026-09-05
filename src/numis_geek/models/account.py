@@ -1,9 +1,9 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from numis_geek.db.base import Base
@@ -29,6 +29,9 @@ class Account(Base):
     account_type: Mapped[AccountType] = mapped_column(Enum(AccountType), nullable=False)
     currency: Mapped[Currency] = mapped_column(Enum(Currency), nullable=False)
     opening_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    # Spec 80 — a partir de quando o saldo derivado soma transações. Sem data,
+    # `opening_balance` é ambíguo.
+    opening_balance_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     account_info: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

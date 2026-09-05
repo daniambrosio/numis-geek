@@ -67,6 +67,14 @@ class Asset(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Spec 80 — ativo CASH "Saldo em Conta" que espelha uma conta corrente. O
+    # saldo dessa conta é derivado do ledger (opening_balance + Σ transactions),
+    # e a spec 70 troca a origem do valor do fechamento pra esse vínculo. Só
+    # ativo CASH pode ter vínculo, e só com conta account_type=checking.
+    linked_account_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("account.id"), nullable=True
+    )
+
     # Options (asset_class=OPTION). All NULL for non-option assets.
     underlying_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("asset.id"), nullable=True
@@ -91,6 +99,13 @@ class Asset(Base):
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     __table_args__ = (
+        Index(
+            "ux_asset_linked_account",
+            "linked_account_id",
+            unique=True,
+            sqlite_where=text("linked_account_id IS NOT NULL"),
+            postgresql_where=text("linked_account_id IS NOT NULL"),
+        ),
         Index(
             "ix_asset_external",
             "external_source",

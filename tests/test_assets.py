@@ -140,12 +140,32 @@ def seed():
         db.add(a)
         return a
 
+    def _make_checking(ws_id, fi_id, name, currency="BRL"):
+        from numis_geek.models.account import Account, AccountType, Currency
+        from datetime import timezone
+        a = Account(
+            id=str(uuid.uuid4()),
+            workspace_id=ws_id,
+            financial_institution_id=fi_id,
+            name=name,
+            account_type=AccountType.checking,
+            currency=Currency(currency),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(a)
+        return a
+
     acc_xp_a = _make_acc(ws_a.id, fi_xp.id, "XP Inv A")
+    acc_checking_a = _make_checking(ws_a.id, fi_xp.id, "XP Corrente A")
+    acc_checking2_a = _make_checking(ws_a.id, fi_xp.id, "XP Corrente A2")
     acc_avenue_a = _make_acc(ws_a.id, fi_avenue.id, "Avenue Inv A", currency="USD")
     acc_particular_a = _make_acc(ws_a.id, fi_particular.id, "Patrimônio pessoal A")
     acc_xp_b = _make_acc(ws_b.id, fi_xp.id, "XP Inv B")
     db.commit()
     db.refresh(acc_xp_a); db.refresh(acc_avenue_a); db.refresh(acc_particular_a); db.refresh(acc_xp_b)
+    db.refresh(acc_checking_a); db.refresh(acc_checking2_a)
 
     # Capture all IDs before db.close() to avoid DetachedInstanceError.
     out = {
@@ -156,6 +176,7 @@ def seed():
         "fi_inactive": fi_inactive.id, "fi_particular": fi_particular.id,
         "acc_xp_a": acc_xp_a.id, "acc_avenue_a": acc_avenue_a.id,
         "acc_particular_a": acc_particular_a.id, "acc_xp_b": acc_xp_b.id,
+        "acc_checking_a": acc_checking_a.id, "acc_checking2_a": acc_checking2_a.id,
     }
     out["admin_token_a"] = AuthService(db).login("ast_admin_a@test.com", "adminpass")
     out["member_token_a"] = AuthService(db).login("ast_member_a@test.com", "memberpass")
@@ -867,3 +888,53 @@ def test_get_asset_returns_details(client, seed):
     body = r_get.json()
     assert body["details"]["indexer"] == "IPCA"
     assert body["details"]["rate"] == 6.5
+
+
+# ── Spec 80 — vínculo ativo CASH ↔ conta corrente ────────────────────────────
+
+def _cash_payload(seed, **over):
+    body = {
+        "asset_class": "CASH", "country": "BR",
+        "account_id": seed["acc_xp_a"],
+        "name": "Saldo em Conta (XP)",
+        "currency": "BRL",
+    }
+    body.update(over)
+    return body
+
+
+def test_cash_asset_can_mirror_a_checking_account(client, seed):
+    r = client.post("/api/assets", json=_cash_payload(
+        seed, name="Saldo espelho", linked_account_id=seed["acc_checking_a"],
+    ), headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+
+
+def test_linked_account_must_be_checking(client, seed):
+    """A conta espelhada é a fonte do saldo — conta de investimento não tem
+    ledger, então não pode ser a fonte."""
+    r = client.post("/api/assets", json=_cash_payload(
+        seed, name="Saldo inválido", linked_account_id=seed["acc_xp_a"],
+    ), headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 422
+
+
+def test_link_only_allowed_for_cash_assets(client, seed):
+    r = client.post("/api/assets", json={
+        "asset_class": "STOCK", "country": "BR",
+        "account_id": seed["acc_xp_a"], "name": "Petrobras", "ticker": "PETR4",
+        "currency": "BRL", "linked_account_id": seed["acc_checking_a"],
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 422
+
+
+def test_checking_account_can_be_mirrored_only_once(client, seed):
+    """Uma conta corrente tem um saldo só."""
+    first = client.post("/api/assets", json=_cash_payload(
+        seed, name="Espelho 1", linked_account_id=seed["acc_checking2_a"],
+    ), headers=auth(seed["admin_token_a"]))
+    assert first.status_code == 201
+    second = client.post("/api/assets", json=_cash_payload(
+        seed, name="Espelho 2", linked_account_id=seed["acc_checking2_a"],
+    ), headers=auth(seed["admin_token_a"]))
+    assert second.status_code == 422

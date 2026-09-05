@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
@@ -29,6 +29,7 @@ class AccountOut(BaseModel):
     account_type: str
     currency: str
     opening_balance: float | None
+    opening_balance_date: str | None
     account_info: str | None
     is_active: bool
     created_at: str
@@ -44,6 +45,10 @@ class AccountOut(BaseModel):
             account_type=account.account_type.value,
             currency=account.currency.value,
             opening_balance=float(account.opening_balance) if account.opening_balance is not None else None,
+            opening_balance_date=(
+                account.opening_balance_date.isoformat()
+                if account.opening_balance_date is not None else None
+            ),
             account_info=account.account_info,
             is_active=account.is_active,
             created_at=account.created_at.isoformat(),
@@ -56,7 +61,19 @@ class AccountRequest(BaseModel):
     financial_institution_id: str
     currency: Currency
     opening_balance: Decimal | None = None
+    # Spec 80 — a partir de quando o saldo derivado soma transações.
+    # Obrigatória quando há saldo de abertura: sem data o valor é ambíguo.
+    opening_balance_date: date | None = None
     account_info: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AccountRequest":
+        if self.account_type == AccountType.checking and self.opening_balance is not None:
+            if self.opening_balance_date is None:
+                raise ValueError(
+                    "opening_balance_date is required when opening_balance is set",
+                )
+        return self
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -249,6 +266,9 @@ def create_account(
         account_type=body.account_type,
         currency=body.currency,
         opening_balance=body.opening_balance if body.account_type == AccountType.checking else None,
+        opening_balance_date=(
+            body.opening_balance_date if body.account_type == AccountType.checking else None
+        ),
         account_info=body.account_info,
         is_active=True,
         created_at=now,
@@ -288,6 +308,9 @@ def update_account(
     account.financial_institution_id = body.financial_institution_id
     account.currency = body.currency
     account.opening_balance = body.opening_balance if body.account_type == AccountType.checking else None
+    account.opening_balance_date = (
+        body.opening_balance_date if body.account_type == AccountType.checking else None
+    )
     account.account_info = body.account_info
     account.updated_at = datetime.now(timezone.utc)
     account.updated_by = current_user.user_id
