@@ -34,9 +34,31 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   snapshot (`services/snapshot.py:477`) e rebaixa CLOSED→IN_REVIEW; o PendencyPanel
   exibe o detail cru dessas pendencies. Sem o cleanup, Ago/26 cria pendencies com
   JSON cru no painel.
-- [ ] `[user]` `[claude]` **Specs 64 e 66 em Draft — retomar entrevista/implementação.**
-  64 = value-mode SELL zera posição indevidamente em `compute_position` (caso LFT
-  mar/2028; Gap 5 da memory do matcher). 66 = crypto rewards pagos em cripto (in-kind).
+- [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
+  66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
+
+- [ ] `[user]` `[claude]` **Correção ampla do `invested` congelado nos meses fechados
+  (pós spec 64).** Sobraram **210 itens em 17 ativos** cujo `total_invested_brl` congelado
+  diverge do recomputado. Duas famílias, com decisões diferentes:
+  - **(a) modo valor com invested legado errado** — Tesouro Selic 2031 (Δ até
+    R$ 979.482,90 · set/25–jun/26), Tesouro Renda+ 2065 XP (R$ 484.262,40),
+    Tesouro Selic 2029 (R$ 179.830,65), Tesouro Renda+ 2065 Itaú, CDB Banco Original,
+    BTG Pactual REHF FII, FGTS - Eletrobras, FGTS - Carrefour, Trend Investback.
+    Valores congelados por versões antigas do algoritmo (ex.: 2031 com −R$ 297.470 em
+    jun/26). Corrigir via SQL cirúrgico, nunca reopen.
+  - **(b) cotados que divergem por causa do fix de bonificação `d2b14f6`** — ITSA4,
+    KLBN11, AURE3, EGIE3, BHIA3, ITUB4, Bitcoin. **NÃO corrigir sem decisão explícita:**
+    o TODO do degrau de PM já registrou que snapshots ≤ jul/26 não recomputam e que
+    o degrau em ago/26 é esperado.
+
+- [ ] `[user]` `[claude]` **Semântica de `invested` negativo em modo valor.** Pós spec 64,
+  `Tesouro Selic 2029` (−R$ 14.323), `FGTS - Carrefour` (−R$ 36.562), `FGTS - Meli`
+  (jun/26 −R$ 1.083) e `Saldo em Conta (Wise)` (−R$ 4.600) ficam com invested negativo.
+  Causa: em modo valor o SELL subtrai o gross do resgate, que carrega rendimento
+  acumulado além do principal, e boa parte do histórico de aportes nunca entrou no
+  sistema (base começa no import do Notion). Decidir se `invested` continua sendo
+  "Σ aportes − Σ resgates" (podendo ir a negativo) ou se vira custo fiscal com redução
+  proporcional — casa com o item da spec de SELL parcial reduzindo basis.
 - [ ] `[user]` `[claude]` **Specs 68/69 — deltas do Done a decidir (audit 2026-08-18):**
   4 páginas sem `.test.tsx` próprio (CreditCards, CreditCardDetail — incl. fluxo
   "Fechar fatura" —, Categories, Parties) apesar de os deliverables prometerem testes;
