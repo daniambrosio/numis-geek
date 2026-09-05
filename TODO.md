@@ -38,22 +38,32 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 - [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
   66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
 
-- [ ] `[user]` `[claude]` **Spec nova: resgate em modo valor deve reduzir o custo
-  proporcionalmente.** É a única causa de invested negativo que sobrou. Hoje o SELL subtrai
-  o `gross` inteiro do invested — mas o resgate leva principal E rendimento, então resgatar
-  o que rendeu derruba o custo abaixo de zero. Casos vivos:
-  - `Tesouro Selic 2029` (−R$ 14.323,49 · mai–ago/26): histórico completo — aportes de
-    R$ 179.830,65 (abr/23, abr/24, set/24), resgates de R$ 144.000 (10/07/25) e
-    R$ 50.154,14 (19/05/26), ainda R$ 43.087,70 em carteira.
-  - `FGTS - Carrefour` (−R$ 1.390,46 · jun–ago/26): resíduo pós saldo de abertura, do saque
-    aniversário de R$ 4.466,45 sobre um saldo de ~R$ 4.550.
-  Regra proposta: `basis -= basis × (gross_resgate / MV_na_data_do_resgate)`, com o MV vindo
-  do último fechamento antes do resgate. É o que o Notion legado fazia (LFT mar/2028:
-  resgate de ~10% do saldo → 4.838,535 × 0,9 = 4.354,68). Simulação com essa regra:
-  Selic 2029 → 144.000/225.000 = 64% ⇒ basis 64.739,03; depois 50.154,14/91.037,98 = 55,1%
-  ⇒ **basis 29.074,26** contra valor de R$ 43.087,70. Carrefour → **~R$ 58** contra
-  valor R$ 86,17. Casa com o item "SELL parcial deve reduzir basis proporcionalmente" logo
-  acima — provavelmente é UMA spec só, cobrindo cotado e modo valor.
+- [x] ~~**Spec 79 — resgate reduz o custo proporcionalmente.**~~ FEITA em 2026-09-05
+  (`832d45b`). Modo valor: custo cai pela fração que saiu da posição, com o valor de
+  referência vindo do último fechamento CLOSED anterior + os fluxos desde então; piso em 0.
+  Modo cotado: SELL reduz `basis_qty`/`basis_cost_*` proporcionalmente — conserta o PM que
+  carregava para sempre as ações vendidas no denominador (compra após venda) e o BONUS
+  pós-venda-parcial (Klabin). 125 itens congelados em 12 ativos recomputados.
+  Validação externa: LFT mar/2028 dá 4.349,30 contra 4.354,68 do Notion legado.
+  Backup `numis_geek.db.bak-before-spec79-20260905-154759`.
+
+- [ ] `[user]` **`Tesouro Selic 2031` — o ativo não fecha, independente da spec 79.**
+  Σ aportes − Σ resgates = R$ 592.194,64 contra valor de mercado de R$ 277.319,70 em ago/26
+  — prejuízo impossível num Selic. **Segurado fora do recompute da spec 79** (daria
+  411.408,40) até entender o dado. Dois indícios:
+  - o fechamento de jan/26 traz R$ 426.941,23 e não inclui o aporte de R$ 599.840,00 de
+    30/01/2026 (o de fev/26 já inclui) — valor do fechamento provavelmente digitado antes
+    do aporte;
+  - 25/03/2026 tem um par espelhado: BUY gross 407.963,77 / net 408.728,10 e SELL gross
+    408.728,10 / net 407.963,77. Parece uma rolagem lançada como duas pernas. Se for,
+    provavelmente deveria ser um lançamento só (ou nenhum).
+
+- [ ] `[user]` **`FGTS - Carrefour` — saque com data descompassada do extrato.**
+  O saque de R$ 30.660,98 está lançado em 02/06/2025, mas o fechamento de 31/05/2025 já
+  mostrava R$ 3.747,92: o saldo caiu antes da data do lançamento. Pela regra da spec 79 a
+  fração dá > 100% e zera o custo, então **segurei fora do recompute** (ficou em
+  −R$ 1.390,46, o único invested negativo que sobrou). Decidir: corrigir a data do saque
+  para maio/2025, ou corrigir o valor do fechamento de maio.
 
 - [x] ~~**Saldo de abertura de FGTS e Wise.**~~ FEITO em 2026-09-05 por decisão do user:
   BUY de abertura no 1º dia do primeiro mês acompanhado, com o valor do fechamento desse
