@@ -4,18 +4,6 @@ Arquivo vivo de pendências que atravessam sessões de trabalho. Convenções:
 `[user]` = ação do Daniel · `[claude]` = ação do Claude na próxima sessão pertinente ·
 item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
-## Anexos de fechamento sem slot (pós-fix 8875a1e, 2026-09-05)
-
-- [ ] `[user]` **17 anexos de fechamento em prod sem instituição/finalidade** (mai/26: 6,
-  jun/26: 3, jul/26: 6, ago/26: 2 — `PosicaoDetalhada (5).xlsx` e `Caixa Screenshot
-  2026-09-01 at 10.01.45.png`). Ficam invisíveis em todos os blocos por FI. Decidir:
-  (a) bucket "Sem instituição" na página do fechamento com dropdown FI + finalidade
-  (Claude implementa; endpoint PATCH /attachments/{id}), ou (b) mandar o mapeamento
-  arquivo→FI/finalidade e Claude aplica via SQL cirúrgico. Lista completa: query
-  `attachment.source_type='SNAPSHOT' AND institution_id IS NULL`.
-- [ ] `[claude]` Após decisão acima, revisar se anexos de meses CLOSED devem aparecer
-  no bloco por FI mesmo sem extração (hoje o bloco só existe na página do fechamento).
-
 ## Fechamento e cost basis (pós-fix bonificação d2b14f6)
 
 - [x] ~~**Fechamento Ago/26 — degrau de PM/invested.**~~ RESOLVIDO em 2026-09-05 por
