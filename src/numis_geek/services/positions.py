@@ -52,7 +52,12 @@ from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 
 
 class Position(TypedDict):
+    # Spec 78 — em modo valor `quantity_held` é sempre 0: não é "zero papéis",
+    # é "não controlamos quantidade nesse ativo". A posição é o valor
+    # (`total_invested_brl` / `current_value`). Só em modo cotado a quantidade
+    # é posição e entra em cálculo.
     quantity_held: Decimal
+    is_value_mode: bool
     average_cost: Decimal
     average_cost_brl: Decimal
     total_invested_brl: Decimal
@@ -123,6 +128,14 @@ def asset_has_position(pos: "Position", asset: Asset | None = None) -> bool:
         return True
     qty = pos.get("quantity_held") or Decimal("0")
     invested = pos.get("total_invested_brl") or Decimal("0")
+    # Spec 78 — em modo valor a quantidade é ruído (nº de lançamentos, não de
+    # papéis): presença é o valor. Sem isso um ativo com invested zerado e
+    # nº de aportes ≠ nº de resgates fica preso no fechamento pra sempre.
+    is_value_mode = pos.get("is_value_mode")
+    if is_value_mode is None and asset is not None and asset.asset_class is not None:
+        is_value_mode = asset.asset_class not in _COTADO_CLASSES
+    if is_value_mode:
+        return invested != 0
     return qty != 0 or invested != 0
 
 
@@ -370,15 +383,16 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     # Fix: pra modo valor tratamos qty=1 pro cálculo do current_value,
     # deixando running_qty como está pra que TTM/DY continuem consistentes.
     effective_qty = running_qty
-    is_value_mode = bool(
-        asset and asset.asset_class and asset.asset_class not in _COTADO_CLASSES
-    )
-    if is_value_mode:
+    if is_value_mode_asset:
         # Bug 2026-07-05 audit — pré-fix, FULL_REDEMPTION zerava running_qty
         # e non_cotado_basis_brl mas effective_qty=1 permanecia, fazendo
         # current_value = current_price aparecer pra posições zeradas.
         # Fix: só forçar qty=1 se ainda há posição real.
-        has_position = running_qty != 0 or non_cotado_basis_brl != 0
+        # Spec 78 — running_qty em modo valor é o nº de lançamentos, não
+        # posição: presença é o basis. (Pré-spec 78 o `running_qty != 0`
+        # mantinha vivo um ativo já zerado só porque sobrou um aporte a mais
+        # que resgates.)
+        has_position = non_cotado_basis_brl != 0
         effective_qty = Decimal("1") if has_position else Decimal("0")
         # Bug 2026-07-05 audit — asset.current_price de value-mode com
         # price_source=MANUAL fica stale (ex: Fundo Verde BTG current_price
@@ -415,7 +429,7 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         # current_price é o VALOR TOTAL DA POSIÇÃO (~R$500k). A razão
         # (current-avg)/avg dá +2000%+ falso positivo no Top Movers. Só
         # calcula variação em modo cotado, onde ambos são per-unit.
-        if average_cost > 0 and not is_value_mode:
+        if average_cost > 0 and not is_value_mode_asset:
             variation = (current_price - average_cost) / average_cost
         if total_invested_brl > 0 and current_value_brl is not None:
             paper_gain_brl = current_value_brl - total_invested_brl
@@ -444,7 +458,9 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
             yield_on_cost = ttm_dividends_native / invested_native
 
     return Position(
-        quantity_held=running_qty,
+        # Spec 78 — modo valor não expõe quantidade (seria o nº de lançamentos).
+        quantity_held=Decimal("0") if is_value_mode_asset else running_qty,
+        is_value_mode=is_value_mode_asset,
         average_cost=average_cost,
         average_cost_brl=average_cost_brl,
         total_invested_brl=total_invested_brl,

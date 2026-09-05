@@ -76,7 +76,7 @@ function mockBoringDeps() {
   vi.spyOn(api, 'listFinancialInstitutions').mockResolvedValue([fi])
   vi.spyOn(api, 'getAccount').mockResolvedValue(account)
   vi.spyOn(api, 'getAssetPosition').mockResolvedValue({
-    asset_id: 'a1', quantity_held: 30, average_cost: 108.20,
+    asset_id: 'a1', is_value_mode: false, quantity_held: 30, average_cost: 108.20,
     average_cost_brl: 108.20 * 5.5, total_invested_brl: 17000,
     total_received_brl: 97, ttm_dividends_native: 0, currency: 'USD',
     current_price: 85, current_value: 30 * 85,

@@ -568,13 +568,23 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
               <p className="text-xs text-gray-400">Carregando posição…</p>
             ) : position ? (
               <div className="grid grid-cols-2 gap-3 text-sm">
+                {/* Spec 78 — modo valor: a posição é o valor, quantidade e
+                    custo médio não têm semântica. */}
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Quantidade</p>
-                  <p className="font-mono text-gray-900 dark:text-white">{position.quantity_held.toLocaleString('pt-BR', { maximumFractionDigits: 8 })}</p>
+                  <p className="font-mono text-gray-900 dark:text-white">
+                    {position.is_value_mode
+                      ? '—'
+                      : position.quantity_held.toLocaleString('pt-BR', { maximumFractionDigits: 8 })}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Custo médio ({position.currency})</p>
-                  <p className="font-mono text-gray-900 dark:text-white">{position.average_cost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}</p>
+                  <p className="font-mono text-gray-900 dark:text-white">
+                    {position.is_value_mode
+                      ? '—'
+                      : position.average_cost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Investido (BRL)</p>

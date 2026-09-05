@@ -520,9 +520,11 @@ export default function AssetDetail() {
   // price × qty, o que inflava N× pra FUND/PREV/FGTS/RE onde qty=N
   // aportes. Fallback pra price × qty só quando a API não devolve
   // (asset sem posição no fluxo antigo).
+  // Spec 78 — o fallback price × qty só faz sentido em modo cotado: em modo
+  // valor qty não é posição (era o nº de lançamentos) e hoje vem 0.
   const value = position?.current_value != null
     ? Number(position.current_value)
-    : (price != null && qty ? price * qty : null)
+    : (!position?.is_value_mode && price != null && qty ? price * qty : null)
   // `cost` fica em NATIVE currency pra bater com `value` no P&L. Em
   // modo cotado, avg × qty já é o correto. Em value-mode, position
   // devolve rentabilidade% pronta (o backend soma non_cotado_basis_brl

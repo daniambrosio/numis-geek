@@ -621,6 +621,9 @@ export interface AffectedSnapshotOut {
 
 export interface PositionOut {
   asset_id: string
+  // Spec 78 — em modo valor quantity_held e average_cost não têm semântica
+  // (a posição é o valor). Renderizar "—", nunca o número.
+  is_value_mode: boolean
   quantity_held: number
   average_cost: number
   average_cost_brl: number

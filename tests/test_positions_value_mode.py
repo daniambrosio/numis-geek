@@ -114,8 +114,10 @@ def test_variation_is_none_in_value_mode(world):
     # current_value = 1 × current_price (não N × current_price)
     assert pos["current_value"] == Decimal("500000")
     assert pos["current_value_brl"] == Decimal("500000")
-    # sanity: quantity_held reflete os N aportes (running_qty), não zeramos
-    assert pos["quantity_held"] == Decimal("5")
+    # Spec 78 — quantity_held em modo valor é 0: o antigo "5" era o nº de
+    # lançamentos, não posição. A posição é o valor.
+    assert pos["quantity_held"] == Decimal("0")
+    assert pos["is_value_mode"] is True
 
 
 def test_variation_calculated_in_cotado_mode(world):
@@ -159,8 +161,8 @@ def test_regression_23_aportes_does_not_inflate_current_value(world):
     assert pos["current_value"] == Decimal("500000")  # NÃO 23 × 500k
     assert pos["variation"] is None                     # NÃO +2280%
     # rentabilidade ainda calcula corretamente: (500k - 23×21k) / 23×21k = 0.0352
-    # (basis vai pro caminho cotado porque qty=1 é preservada — running_qty=23,
-    # basis_qty=23, avg_cost_brl=21k, total_invested_brl=23×21k=483k)
+    # (spec 64: os 23 aportes entram no basis non_cotado — Σ gross = 483k;
+    # antes iam pelo caminho cotado com basis_qty=23 e avg 21k, mesmo total)
     assert pos["total_invested_brl"] == Decimal("483000")
     expected_rent = (Decimal("500000") - Decimal("483000")) / Decimal("483000")
     assert abs(pos["rentabilidade"] - expected_rent) < Decimal("0.001")
@@ -521,6 +523,91 @@ def _add_cotado_movement(db, ws_id, asset_id, qty, unit, event_date, mtype):
         currency=Currency.BRL,
     ))
     db.commit()
+
+
+def test_value_mode_quantity_held_is_always_zero(world):
+    """Spec 78 — em modo valor `quantity_held` não expõe o nº de lançamentos.
+
+    Um FUND com 3 aportes e 1 resgate devolvia running_qty=2 ("2 quê?").
+    A posição é o valor; quantidade não se aplica.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=25_000,
+    )
+    for i, g in enumerate((10_000, 7_500, 5_000)):
+        _add_value_mode_movement(
+            world["db"], world["ws_id"], a.id,
+            gross=g, event_date=date(2026, 1, 1 + i),
+        )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=2_500, event_date=date(2026, 2, 1),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("0")
+    assert pos["is_value_mode"] is True
+    # a posição continua existindo — pelo valor, não pela quantidade
+    assert pos["total_invested_brl"] == Decimal("20000")
+    assert asset_has_position(pos, a) is True
+
+
+def test_value_mode_zero_invested_leaves_the_fechamento(world):
+    """Spec 78 — o vazamento que a regra fecha: invested zerado mas nº de
+    aportes ≠ nº de resgates mantinha o ativo preso no fechamento pra sempre.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=0,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=10_000, event_date=date(2026, 1, 1),
+    )
+    # dois resgates parciais que somam o aporte inteiro → invested 0,
+    # running_qty = 1 − 2 = −1
+    for i, g in enumerate((6_000, 4_000)):
+        _add_value_mode_movement(
+            world["db"], world["ws_id"], a.id,
+            gross=g, event_date=date(2026, 2, 1 + i),
+            mtype=AssetMovementType.SELL,
+        )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("0")
+    assert pos["quantity_held"] == Decimal("0")
+    assert asset_has_position(pos, a) is False
+    # e sem posição não sobra current_value fantasma
+    assert pos["current_value"] is None
+
+
+def test_cash_stays_in_the_fechamento_even_with_zero_invested(world):
+    """Spec 78 não pode derrubar os 'Saldo em Conta': CASH é saldo digitado
+    por fechamento, sem lançamento nenhum."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.CASH, current_price=0,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("0")
+    assert asset_has_position(pos, a) is True
+
+
+def test_cotado_quantity_still_drives_position(world):
+    """Spec 78 — sem regressão: em modo cotado a quantidade continua sendo
+    posição e continua decidindo presença."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.STOCK, current_price=30,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 10, 25, date(2026, 1, 1),
+        AssetMovementType.BUY,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("10")
+    assert pos["is_value_mode"] is False
+    assert asset_has_position(pos, a) is True
 
 
 def test_cotado_sell_all_still_closes_position(world):

@@ -632,6 +632,9 @@ def update_asset(
 class PositionOut(BaseModel):
     asset_id: str
     quantity_held: float
+    # Spec 78 — em modo valor quantity_held/average_cost não têm semântica
+    # (a posição é o valor). A UI usa esta flag pra renderizar "—".
+    is_value_mode: bool = False
     average_cost: float
     average_cost_brl: float
     total_invested_brl: float
@@ -816,6 +819,7 @@ def get_asset_position(
     return PositionOut(
         asset_id=asset_id,
         quantity_held=float(pos["quantity_held"]),
+        is_value_mode=bool(pos.get("is_value_mode")),
         average_cost=float(pos["average_cost"]),
         average_cost_brl=float(pos["average_cost_brl"]),
         total_invested_brl=float(pos["total_invested_brl"]),

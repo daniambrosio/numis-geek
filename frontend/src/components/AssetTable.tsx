@@ -347,8 +347,10 @@ function Row({
   // não tem preço unitário nem qty semânticos (qty=1 sempre; unit_price
   // é VALOR TOTAL). Renderizar Qtd/Atual per-share nesses ativos é
   // ruído — só faz sentido em modo cotado.
+  // Spec 78: a flag vem do backend; a lista local fica só como fallback
+  // enquanto a posição não carregou.
   const _COTADO_CLASSES = new Set(['STOCK', 'REIT', 'ETF', 'OPTION', 'CRYPTO'])
-  const isValueMode = !_COTADO_CLASSES.has(asset.asset_class)
+  const isValueMode = position?.is_value_mode ?? !_COTADO_CLASSES.has(asset.asset_class)
 
   return (
     <tr

@@ -101,8 +101,16 @@ export default function AssetDetailPanel({ asset, fi, onClose, onEdit, onDeactiv
 
           {/* KPIs */}
           <div className="grid grid-cols-2 gap-3">
-            <Kpi label="Posição" value={loading ? '…' : fmtNumber(position?.quantity_held ?? null)} />
-            <Kpi label={`Preço médio (${asset.currency})`} value={loading ? '…' : fmtNumber(position?.average_cost ?? null, 4)} />
+            {/* Spec 78 — em modo valor a posição é o valor, não a quantidade:
+                quantity_held e average_cost não têm semântica. */}
+            <Kpi
+              label="Posição"
+              value={loading ? '…' : position?.is_value_mode ? '—' : fmtNumber(position?.quantity_held ?? null)}
+            />
+            <Kpi
+              label={`Preço médio (${asset.currency})`}
+              value={loading ? '…' : position?.is_value_mode ? '—' : fmtNumber(position?.average_cost ?? null, 4)}
+            />
             <Kpi label="Total investido (BRL)" money value={loading ? '…' : fmtMoney(position?.total_invested_brl ?? null, 'BRL')} />
             <Kpi label="Total recebido (BRL)" money value={loading ? '…' : fmtMoney(position?.total_received_brl ?? null, 'BRL')} />
             <Kpi
