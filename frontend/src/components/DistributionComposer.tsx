@@ -29,6 +29,8 @@ const TYPE_ORDER: DistributionType[] = ['DIVIDEND', 'INTEREST', 'JCP', 'SECURITI
 
 interface Props {
   initial?: DistributionOut
+  /** Spec 81 — página do ativo: FI, ativo e moeda já vêm preenchidos. */
+  preselectedAsset?: AssetOut
   institutions: FinancialInstitutionOut[]
   assets: AssetOut[]
   onSave: (data: DistributionRequest) => Promise<DistributionOut | void>
@@ -46,18 +48,20 @@ const fmtMoney = (n: number, ccy: 'BRL' | 'USD', opts: { sign?: boolean } = {}) 
 }
 
 export default function DistributionComposer({
-  initial, institutions, assets, onSave, onClose,
+  initial, preselectedAsset, institutions, assets, onSave, onClose,
   persistedAttachments, onUploadDrafts, onRemovePersistedAttachment,
 }: Props) {
   const [type, setType] = useState<DistributionType>(initial?.type ?? 'DIVIDEND')
   const [fiId, setFiId] = useState<string>(
-    initial?.financial_institution_id ?? institutions[0]?.id ?? '',
+    initial?.financial_institution_id
+      ?? preselectedAsset?.financial_institution_id
+      ?? institutions[0]?.id ?? '',
   )
-  const [assetId, setAssetId] = useState<string>(initial?.asset_id ?? '')
+  const [assetId, setAssetId] = useState<string>(initial?.asset_id ?? preselectedAsset?.id ?? '')
   const [eventDate, setEventDate] = useState(initial?.event_date ?? new Date().toISOString().slice(0, 10))
   const [gross, setGross] = useState(initial?.gross_amount != null ? String(initial.gross_amount) : '')
   const [tax, setTax] = useState(initial?.tax != null ? String(initial.tax) : '')
-  const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? 'BRL')
+  const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? preselectedAsset?.currency ?? 'BRL')
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')

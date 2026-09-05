@@ -15,7 +15,9 @@ import {
   type AssetRequest,
   type AssetSnapshotHistoryOut,
   type DistributionOut,
+  type DistributionRequest,
   type FinancialInstitutionOut,
+  type SyntheticPremiumOut,
   type PositionOut,
   type UserOut,
 } from '../lib/api'
@@ -33,6 +35,8 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
 import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import AppLayout from '../components/AppLayout'
 import AssetModal from '../components/AssetModal'
+import DistributionComposer from '../components/DistributionComposer'
+import DistributionDetailPanel from '../components/DistributionDetailPanel'
 import KpiTile from '../components/KpiTile'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import ManualPriceModal from '../components/ManualPriceModal'
@@ -83,6 +87,7 @@ export default function AssetDetail() {
   const [position, setPosition] = useState<PositionOut | null>(null)
   const [movements, setMovements] = useState<AssetMovementOut[]>([])
   const [distributions, setDistributions] = useState<DistributionOut[]>([])
+  const [syntheticPremiums, setSyntheticPremiums] = useState<SyntheticPremiumOut[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [optionModalOpen, setOptionModalOpen] = useState(false)
@@ -114,8 +119,82 @@ export default function AssetDetail() {
     triggerEventId: string
     triggerEventType: string
   } | null>(null)
-  // Sub-modals já tratam ESC. O hook só fecha o inline confirm.
-  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
+  // Proventos sub-flow (spec 81): painel + composer + deactivate.
+  const [selectedDistribution, setSelectedDistribution] = useState<DistributionOut | null>(null)
+  const [editingDistribution, setEditingDistribution] = useState<DistributionOut | undefined>(undefined)
+  const [distributionComposerOpen, setDistributionComposerOpen] = useState(false)
+  const [editingDistAttachments, setEditingDistAttachments] = useState<PersistedAttachment[]>([])
+  const [confirmDeactivateDist, setConfirmDeactivateDist] = useState<DistributionOut | null>(null)
+  // Sub-modals já tratam ESC. O hook só fecha os inline confirms.
+  useEscapeKey(() => {
+    if (confirmDeactivate) setConfirmDeactivate(null)
+    if (confirmDeactivateDist) setConfirmDeactivateDist(null)
+  })
+
+  function openNewDistribution() {
+    setEditingDistribution(undefined)
+    setEditingDistAttachments([])
+    setDistributionComposerOpen(true)
+  }
+
+  const sortByDateDesc = <T extends { event_date: string }>(xs: T[]) =>
+    [...xs].sort((a, b) => b.event_date.localeCompare(a.event_date))
+
+  async function handleDistributionSave(data: DistributionRequest) {
+    if (editingDistribution) {
+      const updated = await api.updateDistribution(editingDistribution.id, data)
+      setDistributions(prev => sortByDateDesc(prev.map(d => d.id === updated.id ? updated : d)))
+      if (selectedDistribution?.id === updated.id) setSelectedDistribution(updated)
+      return updated
+    }
+    const created = await api.createDistribution(data)
+    setDistributions(prev => sortByDateDesc([created, ...prev]))
+    return created
+  }
+
+  async function handleDistributionUploadDrafts(entityId: string, drafts: AttachmentDraft[]) {
+    const results = await Promise.allSettled(
+      drafts.map(d => api.uploadAttachment('distribution', entityId, d.file)),
+    )
+    const failed = results
+      .map((r, i) => ({ r, name: drafts[i].name }))
+      .filter(x => x.r.status === 'rejected')
+    if (failed.length) {
+      throw new Error(failed
+        .map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message ?? 'erro desconhecido'}`)
+        .join(' · '))
+    }
+  }
+
+  async function reloadDistAttachments(distId: string) {
+    try {
+      const list = await api.listAttachments('distribution', distId)
+      setEditingDistAttachments(list.map(a => ({
+        id: a.id, filename: a.filename, size_bytes: a.size_bytes,
+        mime_type: a.mime_type, kind: a.kind,
+      })))
+    } catch {
+      setEditingDistAttachments([])
+    }
+  }
+
+  async function handleDistributionRemoveAttachment(attachmentId: string) {
+    await api.deleteAttachment(attachmentId)
+    if (editingDistribution) await reloadDistAttachments(editingDistribution.id)
+  }
+
+  async function openDistributionEdit(d: DistributionOut) {
+    setEditingDistribution(d)
+    setDistributionComposerOpen(true)
+    await reloadDistAttachments(d.id)
+  }
+
+  async function handleDistributionDeactivate(d: DistributionOut) {
+    await api.deactivateDistribution(d.id)
+    setDistributions(prev => prev.filter(x => x.id !== d.id))
+    if (selectedDistribution?.id === d.id) setSelectedDistribution(null)
+    setConfirmDeactivateDist(null)
+  }
 
   async function handleRefreshPrice() {
     if (!asset || refreshingPrice) return
@@ -309,13 +388,15 @@ export default function AssetDetail() {
         api.getAssetPosition(id).catch(() => null),
         api.listAssetMovementsForAsset(id, { page: 1, page_size: 200, include_inactive: false })
           .then(p => p.items).catch(() => [] as AssetMovementOut[]),
-        api.listDistributionsForAsset(id, { page: 1, page_size: 200, include_inactive: false })
-          .then(p => p.items).catch(() => [] as DistributionOut[]),
+        api.listDistributionsForAsset(id, {
+          page: 1, page_size: 200, include_inactive: false, include_synthetic: true,
+        }).catch(() => ({ items: [] as DistributionOut[], synthetic_premiums: [] as SyntheticPremiumOut[] })),
       ]))
-      .then(([pos, movs, dists]) => {
+      .then(([pos, movs, distPage]) => {
         setPosition(pos)
         setMovements([...movs].sort((a, b) => b.event_date.localeCompare(a.event_date)))
-        setDistributions([...dists].sort((a, b) => b.event_date.localeCompare(a.event_date)))
+        setDistributions([...distPage.items].sort((a, b) => b.event_date.localeCompare(a.event_date)))
+        setSyntheticPremiums(distPage.synthetic_premiums ?? [])
       })
       .catch(e => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
@@ -329,19 +410,6 @@ export default function AssetDetail() {
     }, 0),
     [distributions],
   )
-  // Spec 42/45 hotfix — proventos total na moeda nativa do ativo
-  // Spec 50 parte 2 — total USD pro footer da tabela de Proventos.
-  const distSumUSD = useMemo(
-    () => distributions.reduce((s, d) => {
-      const fx = d.fx_rate || 0
-      const usd = d.currency === 'USD'
-        ? d.net_amount
-        : (fx > 0 ? d.net_amount / fx : 0)
-      return s + usd
-    }, 0),
-    [distributions],
-  )
-
   // Spec 46 — real price history fetched per (asset, period). Spec 81: só na
   // aba Visão geral (é a aba padrão; as outras não usam).
   useEffect(() => {
@@ -428,7 +496,7 @@ export default function AssetDetail() {
     { id: 'overview', label: 'Visão geral' },
     { id: 'performance', label: 'Fechamentos & rentabilidade' },
     { id: 'movements', label: 'Lançamentos', count: movements.length },
-    { id: 'distributions', label: 'Proventos', count: distributions.length },
+    { id: 'distributions', label: 'Proventos', count: distributions.length + syntheticPremiums.length },
     { id: 'docs', label: 'Documentos & dados' },
   ]
   function openNewMovement() {
@@ -512,7 +580,11 @@ export default function AssetDetail() {
               >
                 <Edit2 className="w-3.5 h-3.5" /> Editar ativo
               </button>
-              <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <button
+                onClick={openNewDistribution}
+                data-testid="header-new-distribution"
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
                 <Coins className="w-3.5 h-3.5" /> + Provento
               </button>
               <button
@@ -656,8 +728,9 @@ export default function AssetDetail() {
         {tab === 'distributions' && (
           <AssetDistributionsTab
             distributions={distributions}
-            totalBRL={distSumBRL}
-            totalUSD={distSumUSD}
+            syntheticPremiums={syntheticPremiums}
+            onRowClick={setSelectedDistribution}
+            onNew={openNewDistribution}
           />
         )}
 
@@ -740,6 +813,59 @@ export default function AssetDetail() {
           onUploadDrafts={handleMovementUploadDrafts}
           onRemovePersistedAttachment={handleMovementRemoveAttachment}
         />
+      )}
+
+      {selectedDistribution && (
+        <DistributionDetailPanel
+          key={selectedDistribution.id}
+          distribution={selectedDistribution}
+          asset={asset}
+          fi={fi}
+          onClose={() => setSelectedDistribution(null)}
+          onEdit={() => { void openDistributionEdit(selectedDistribution) }}
+          onDeactivate={() => setConfirmDeactivateDist(selectedDistribution)}
+          onUpdated={(d) => {
+            setDistributions(prev => prev.map(x => x.id === d.id ? d : x))
+            setSelectedDistribution(d)
+          }}
+        />
+      )}
+
+      {distributionComposerOpen && (
+        <DistributionComposer
+          initial={editingDistribution}
+          preselectedAsset={asset}
+          institutions={institutions}
+          assets={[asset]}
+          onSave={handleDistributionSave}
+          onClose={() => {
+            setDistributionComposerOpen(false)
+            setEditingDistribution(undefined)
+            setEditingDistAttachments([])
+          }}
+          persistedAttachments={editingDistribution ? editingDistAttachments : undefined}
+          onUploadDrafts={handleDistributionUploadDrafts}
+          onRemovePersistedAttachment={handleDistributionRemoveAttachment}
+        />
+      )}
+
+      {confirmDeactivateDist && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Apagar provento?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+              <strong>{confirmDeactivateDist.type_label}</strong> de{' '}
+              <strong>{asset.ticker || asset.name}</strong> será apagado.
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
+              Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDeactivateDist(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+              <button onClick={() => handleDistributionDeactivate(confirmDeactivateDist)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Apagar</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {reconciliation && (

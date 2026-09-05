@@ -273,3 +273,40 @@ describe('AssetDetail abas (spec 81)', () => {
     await waitFor(() => expect(screen.getByText(/Novo lançamento/i)).toBeInTheDocument())
   })
 })
+
+describe('AssetDetail proventos (spec 81 fase 4)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  const distribution = {
+    id: 'd1', workspace_id: 'ws1', financial_institution_id: 'fi1', financial_institution_name: 'Avenue',
+    asset_id: 'a1', asset_name: 'Abbott Laboratories', asset_ticker: 'ABT',
+    type: 'DIVIDEND' as const, type_label: 'Dividendo', event_date: '2026-08-10',
+    gross_amount: 12.32, tax: 3.7, net_amount: 8.62, currency: 'USD' as const, fx_rate: 5.5,
+    notes: null, external_id: null, external_source: null, is_active: true,
+    created_at: '2026-08-10T00:00:00Z', updated_at: '2026-08-10T00:00:00Z',
+  }
+
+  it('row de provento abre o DistributionDetailPanel', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'listDistributionsForAsset').mockResolvedValue({
+      items: [distribution], synthetic_premiums: [], total: 1, page: 1, page_size: 200,
+    })
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    renderPage('/assets/a1?tab=distributions')
+    await waitFor(() => expect(screen.getByTestId('distribution-row-d1')).toBeInTheDocument())
+    expect(api.listDistributionsForAsset).toHaveBeenCalledWith('a1', expect.objectContaining({ include_synthetic: true }))
+    fireEvent.click(screen.getByTestId('distribution-row-d1'))
+    await waitFor(() => expect(screen.getByText('Editar')).toBeInTheDocument())
+  })
+
+  it('"+ Provento" abre o composer com o ativo pré-selecionado', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('header-new-distribution')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('header-new-distribution'))
+    await waitFor(() => expect(screen.getByText('Novo Provento')).toBeInTheDocument())
+    const assetSelect = screen.getAllByRole('combobox').find(el => (el as HTMLSelectElement).value === 'a1')
+    expect(assetSelect).toBeTruthy()
+  })
+})

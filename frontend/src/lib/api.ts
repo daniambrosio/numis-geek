@@ -978,11 +978,12 @@ export const api = {
   deactivateAssetMovement: (id: string) =>
     request<AssetMovementOut>(`/asset-movements/${id}/deactivate`, { method: 'PUT' }),
 
-  listDistributionsForAsset: (asset_id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean }) => {
+  listDistributionsForAsset: (asset_id: string, params?: { page?: number; page_size?: number; include_inactive?: boolean; include_synthetic?: boolean }) => {
     const qs = new URLSearchParams({ asset_id })
     if (params?.page) qs.set('page', String(params.page))
     if (params?.page_size) qs.set('page_size', String(params.page_size))
     if (params?.include_inactive) qs.set('include_inactive', 'true')
+    if (params?.include_synthetic) qs.set('include_synthetic', 'true')
     return request<DistributionListPage>(`/distributions?${qs}`)
   },
 
