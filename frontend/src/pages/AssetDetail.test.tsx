@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import AssetDetail from './AssetDetail'
 import {
@@ -60,9 +60,21 @@ function priceHistory(points: { date: string; unit_price: string }[]): AssetPric
   return { asset_id: 'a1', currency: 'USD', period: '24m', points }
 }
 
-function renderPage() {
+function LocationProbe() {
+  const loc = useLocation()
+  const navigate = useNavigate()
+  return (
+    <div>
+      <span data-testid="probe-search">{loc.search}</span>
+      <button data-testid="probe-back" onClick={() => navigate(-1)}>back</button>
+    </div>
+  )
+}
+
+function renderPage(entry = '/assets/a1') {
   return render(
-    <MemoryRouter initialEntries={['/assets/a1']}>
+    <MemoryRouter initialEntries={[entry]}>
+      <LocationProbe />
       <Routes>
         <Route path="/assets/:id" element={<AssetDetail />} />
       </Routes>
@@ -122,7 +134,9 @@ describe('AssetDetail click no lançamento — Spec sessão 2026-06-06', () => {
 
     renderPage()
 
-    // Aguarda a tabela aparecer
+    // Spec 81 — a tabela vive na aba Lançamentos
+    await waitFor(() => expect(screen.getByTestId('asset-tab-movements')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('asset-tab-movements'))
     await waitFor(() => expect(screen.getByText('Compra')).toBeInTheDocument())
 
     // Clica no row da tabela (o td "Compra" está dentro do tr)
@@ -197,5 +211,65 @@ describe('AssetDetail KPIs (spec 81 — sem PTAX hardcoded)', () => {
     // position: current_value = 30×85, current_value_brl = 30×85×5.5 → fx 5,5
     await waitFor(() => expect(screen.getByTestId('price-brl')).toBeInTheDocument())
     expect(screen.getByTestId('price-brl')).toHaveTextContent('467,50')
+  })
+})
+
+
+describe('AssetDetail abas (spec 81)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('abre em Visão geral por padrão e sem ?tab na URL', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('asset-tab-panel-overview')).toBeInTheDocument())
+    expect(screen.getByTestId('asset-tab-overview')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('asset-tab-panel-movements')).toBeNull()
+    expect(screen.getByTestId('probe-search')).toHaveTextContent('')
+  })
+
+  it('?tab=movements abre a aba Lançamentos com a contagem', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'listAssetMovementsForAsset').mockResolvedValue({
+      items: [movement], total: 1, page: 1, page_size: 200,
+    })
+    const ph = vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    renderPage('/assets/a1?tab=movements')
+    await waitFor(() => expect(screen.getByTestId('asset-tab-panel-movements')).toBeInTheDocument())
+    expect(screen.getByTestId('asset-tab-movements')).toHaveTextContent('1')
+    expect(screen.queryByTestId('asset-tab-panel-overview')).toBeNull()
+    // price history não é buscado fora da Visão geral (fetch preguiçoso)
+    expect(ph).not.toHaveBeenCalled()
+  })
+
+  it('clicar numa aba muda a URL e voltar restaura a aba anterior', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    vi.spyOn(api, 'getAssetSnapshotHistory').mockResolvedValue({ asset_id: 'a1', currency: 'USD', items: [] })
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('asset-tab-performance')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('asset-tab-performance'))
+    await waitFor(() => expect(screen.getByTestId('probe-search')).toHaveTextContent('?tab=performance'))
+    expect(screen.getByTestId('asset-tab-panel-performance')).toBeInTheDocument()
+    expect(api.getAssetSnapshotHistory).toHaveBeenCalledWith('a1')
+    fireEvent.click(screen.getByTestId('probe-back'))
+    await waitFor(() => expect(screen.getByTestId('asset-tab-panel-overview')).toBeInTheDocument())
+  })
+
+  it('tab desconhecida cai em Visão geral', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    renderPage('/assets/a1?tab=whatever')
+    await waitFor(() => expect(screen.getByTestId('asset-tab-panel-overview')).toBeInTheDocument())
+  })
+
+  it('botão Lançamento do header abre o composer', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    vi.spyOn(api, 'listAssets').mockResolvedValue([])
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('header-new-movement')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('header-new-movement'))
+    await waitFor(() => expect(screen.getByText(/Novo lançamento/i)).toBeInTheDocument())
   })
 })

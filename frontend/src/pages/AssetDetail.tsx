@@ -1,8 +1,8 @@
 /* Full asset detail page — mirrors prototypes/index.html `AtivoDetailPage`
  * (line 3274). Same structure, classes, spacing and helpers. */
 import { useEffect, useMemo, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Coins, Edit2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, Coins, Edit2, Plus, RefreshCw } from 'lucide-react'
 import {
   api,
   type AccountOut,
@@ -19,8 +19,8 @@ import {
   type PositionOut,
   type UserOut,
 } from '../lib/api'
-import { fmtDate, fmtMonthYY, fmtNum, fmtPct } from '../lib/format'
-import { fmtBRL, fmtMoney, fmtUSD } from '../lib/money'
+import { fmtNum, fmtPct } from '../lib/format'
+import { fmtBRL, fmtMoney } from '../lib/money'
 import { SOURCE_LABEL, TIER_COLOR, formatRelative } from '../lib/price'
 import { useEscapeKey } from '../lib/useEscapeKey'
 
@@ -32,77 +32,30 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
 }
 import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import AppLayout from '../components/AppLayout'
-import AssetDistributionsChart from '../components/AssetDistributionsChart'
 import AssetModal from '../components/AssetModal'
-import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
 import KpiTile from '../components/KpiTile'
-import ValuationCard from '../components/ValuationCard'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import ManualPriceModal from '../components/ManualPriceModal'
 import MovementComposer from '../components/MovementComposer'
 import { type AttachmentDraft, type PersistedAttachment } from '../components/NotesAttachmentsField'
-import OpenOptionsCard from '../components/OpenOptionsCard'
-import OptionContextCard from '../components/OptionContextCard'
 import OptionModal from '../components/OptionModal'
-import Sparkline from '../components/Sparkline'
-import {
-  Card, CcyPill, ClassBadge, FILogo, GroupingToggle, SectionTitle,
-} from '../components/ui'
+import { Card, CcyPill, ClassBadge, FILogo } from '../components/ui'
+import AssetDistributionsTab from '../components/asset/AssetDistributionsTab'
+import AssetDocsTab from '../components/asset/AssetDocsTab'
+import AssetMovementsTab from '../components/asset/AssetMovementsTab'
+import AssetOverviewTab from '../components/asset/AssetOverviewTab'
+import AssetPerformanceTab from '../components/asset/AssetPerformanceTab'
+import AssetTabs, { type AssetTabDef } from '../components/asset/AssetTabs'
+import CountryFlag from '../components/asset/CountryFlag'
 import { KLASS, collapsedOf } from '../lib/tokens'
 
 // ── Formatters: lib/money.ts + lib/format.ts (spec 81) ──────────────────────
 
-function CountryFlag({ country }: { country: string }) {
-  const flag = country === 'BR' ? '🇧🇷' : country === 'US' ? '🇺🇸' : '🌐'
-  return <span className="text-[11px] leading-none">{flag}</span>
-}
-
-// ── Spec 46 — price chart axis helper ───────────────────────────────────────
-
-const PERIOD_LABEL: Record<AssetPriceHistoryPeriod, string> = {
-  '6m':  '6 meses',
-  '12m': '12 meses',
-  '24m': '24 meses',
-  'all': 'tudo',
-}
-
-function PriceChartAxis({ points }: { points: { date: string }[] }) {
-  // Pick 4 evenly spaced anchors out of the series + "hoje" at the end.
-  const n = points.length
-  if (n < 2) return null
-  const idxs = [0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4)]
-  const anchors = idxs.map(i => fmtMonthYY(points[i].date))
-  return (
-    <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500">
-      {anchors.map((a, i) => <span key={i}>{a}</span>)}
-      <span className="text-indigo-500 dark:text-indigo-400">hoje</span>
-    </div>
-  )
-}
-
-
-// ── Type label mappings (prototype-faithful) ─────────────────────────────────
-
-const TYPE_MOVEMENT_PALETTE: Record<string, string> = {
-  BUY: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
-  SELL: 'bg-red-500/15 text-red-500 dark:text-red-400',
-  BONUS: 'bg-emerald-500/15 text-emerald-500 dark:text-emerald-400',
-  SUBSCRIPTION: 'bg-violet-500/15 text-violet-500 dark:text-violet-400',
-  COME_COTAS: 'bg-amber-500/15 text-amber-500 dark:text-amber-400',
-  FULL_REDEMPTION: 'bg-teal-500/15 text-teal-500 dark:text-teal-400',
-  SELL_OPEN: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
-  BUY_TO_OPEN: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
-  BUY_TO_CLOSE: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
-  SELL_TO_CLOSE: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
-  EXERCISED: 'bg-amber-500/15 text-amber-500 dark:text-amber-400',
-  EXPIRED: 'bg-gray-500/15 text-gray-500 dark:text-gray-400',
-}
-
-const TYPE_DISTRIBUTION_PALETTE: Record<string, string> = {
-  DIVIDEND: 'bg-amber-500/15 text-amber-500 dark:text-amber-400',
-  INTEREST: 'bg-cyan-500/15 text-cyan-500 dark:text-cyan-400',
-  JCP: 'bg-emerald-500/15 text-emerald-500 dark:text-emerald-400',
-  SECURITIES_LENDING: 'bg-orange-500/15 text-orange-500 dark:text-orange-400',
+// Spec 81 — abas (ids em EN na URL, labels em PT)
+const TAB_IDS = ['overview', 'performance', 'movements', 'distributions', 'docs'] as const
+type TabId = typeof TAB_IDS[number]
+function parseTab(raw: string | null): TabId {
+  return (TAB_IDS as readonly string[]).includes(raw ?? '') ? (raw as TabId) : 'overview'
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -115,6 +68,14 @@ export default function AssetDetail() {
   const backLabel = location.state?.fromLabel
     ? `Voltar pra ${location.state.fromLabel}`
     : 'Voltar pra Ativos'
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = parseTab(searchParams.get('tab'))
+  function setTab(next: TabId) {
+    if (next === tab) return
+    const sp = new URLSearchParams(searchParams)
+    if (next === 'overview') sp.delete('tab'); else sp.set('tab', next)
+    setSearchParams(sp)   // sem replace: back button volta de aba
+  }
   const [me, setMe] = useState<UserOut | null>(null)
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [fi, setFi] = useState<FinancialInstitutionOut | null>(null)
@@ -381,19 +342,21 @@ export default function AssetDetail() {
     [distributions],
   )
 
-  // Spec 46 — real price history fetched per (asset, period).
+  // Spec 46 — real price history fetched per (asset, period). Spec 81: só na
+  // aba Visão geral (é a aba padrão; as outras não usam).
   useEffect(() => {
-    if (!me || !id) return
+    if (!me || !id || tab !== 'overview') return
     let cancelled = false
     api.getAssetPriceHistory(id, pricePeriod)
       .then(h => { if (!cancelled) setPriceHistory(h) })
       .catch(() => { if (!cancelled) setPriceHistory(null) })
     return () => { cancelled = true }
-  }, [me, id, pricePeriod])
+  }, [me, id, pricePeriod, tab])
 
-  // Spec 50 — snapshot history (tabela de fechamentos + sparkline).
+  // Spec 50 — snapshot history (tabela de fechamentos + sparkline). Spec 81:
+  // carrega quando a aba Fechamentos abre; cacheado no shell depois disso.
   useEffect(() => {
-    if (!me || !id) return
+    if (!me || !id || tab !== 'performance' || snapshotHistory) return
     let cancelled = false
     setSnapshotHistoryLoading(true)
     api.getAssetSnapshotHistory(id)
@@ -401,12 +364,7 @@ export default function AssetDetail() {
       .catch(() => { if (!cancelled) setSnapshotHistory(null) })
       .finally(() => { if (!cancelled) setSnapshotHistoryLoading(false) })
     return () => { cancelled = true }
-  }, [me, id])
-
-  const priceSeries = useMemo(
-    () => priceHistory?.points.map(p => Number(p.unit_price)) ?? [],
-    [priceHistory],
-  )
+  }, [me, id, tab, snapshotHistory])
 
   if (!me) return null
 
@@ -465,6 +423,19 @@ export default function AssetDetail() {
   const yoc = (costBRL && costBRL > 0) ? distSumBRL / costBRL : null
   const dy = (valueBRL && valueBRL > 0) ? distSumBRL / valueBRL : null
   const lastMovementDate = movements[0]?.event_date
+
+  const tabs: AssetTabDef<TabId>[] = [
+    { id: 'overview', label: 'Visão geral' },
+    { id: 'performance', label: 'Fechamentos & rentabilidade' },
+    { id: 'movements', label: 'Lançamentos', count: movements.length },
+    { id: 'distributions', label: 'Proventos', count: distributions.length },
+    { id: 'docs', label: 'Documentos & dados' },
+  ]
+  function openNewMovement() {
+    setEditingMovement(undefined)
+    setEditingAttachments([])
+    setMovementComposerOpen(true)
+  }
 
   return (
     <AppLayout user={me}>
@@ -544,7 +515,11 @@ export default function AssetDetail() {
               <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                 <Coins className="w-3.5 h-3.5" /> + Provento
               </button>
-              <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+              <button
+                onClick={openNewMovement}
+                data-testid="header-new-movement"
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
+              >
                 <Plus className="w-3.5 h-3.5" /> Lançamento
               </button>
               {asset.asset_class !== 'OPTION' && (
@@ -638,232 +613,65 @@ export default function AssetDetail() {
           </div>
         </Card>
 
-        {/* Underlying context — OPTION assets only (Spec 34) */}
-        {asset.asset_class === 'OPTION' && underlying && (
-          <OptionContextCard
-            option={asset}
-            underlying={underlying}
-            position={position}
-          />
-        )}
-
-        {/* Price chart (Spec 46) — real history from snapshots */}
-        {priceSeries.length >= 2 && priceHistory && (
-          <Card>
-            <SectionTitle action={
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-gray-500">
-                  {priceHistory.points.length} fechamentos · {priceHistory.currency}
-                </span>
-                <GroupingToggle
-                  value={pricePeriod}
-                  onChange={(v) => setPricePeriod(v as AssetPriceHistoryPeriod)}
-                  options={[
-                    { id: '6m',  label: '6M'   },
-                    { id: '12m', label: '12M'  },
-                    { id: '24m', label: '24M'  },
-                    { id: 'all', label: 'Tudo' },
-                  ]}
-                />
-              </div>
-            }>
-              Preço · {PERIOD_LABEL[pricePeriod]}
-            </SectionTitle>
-            <div className="overflow-hidden -mx-2">
-              <Sparkline data={priceSeries} w={1200} h={180} color={klassColor} />
-            </div>
-            <PriceChartAxis points={priceHistory.points} />
-          </Card>
-        )}
-
-        {/* Spec 61b — Valuation card (fundamentalista por classe) */}
-        <ValuationCard assetId={asset.id} canRefresh={me?.role !== 'member'} />
-
-        {/* Spec 50 — Fechamentos por ativo */}
-        <AssetSnapshotsCard
-          history={snapshotHistory}
-          loading={snapshotHistoryLoading}
-          assetId={asset.id}
-          movements={movements}
+        {/* Spec 81 — abas */}
+        <AssetTabs<TabId>
+          tabs={tabs}
+          value={tab}
+          onChange={setTab}
         />
 
-        {/* Lançamentos full table */}
-        <Card>
-          <SectionTitle action={
-            <button
-              onClick={() => { setEditingMovement(undefined); setEditingAttachments([]); setMovementComposerOpen(true) }}
-              className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors"
-            >
-              <Plus className="w-3 h-3" /> Novo lançamento
-            </button>
-          }>
-            Lançamentos · {movements.length}
-          </SectionTitle>
-          {movements.length === 0 ? (
-            <div className="text-[12px] text-gray-500 italic py-6 text-center">Sem lançamentos cadastrados.</div>
-          ) : (
-            <div className="overflow-x-auto -mx-1">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                    <th className="text-left font-medium px-2 py-2">Data</th>
-                    <th className="text-left font-medium px-2 py-2">Tipo</th>
-                    <th className="text-right font-medium px-2 py-2">Qtd</th>
-                    <th className="text-right font-medium px-2 py-2">Preço</th>
-                    <th className="text-right font-medium px-2 py-2">Taxa</th>
-                    <th className="text-right font-medium px-2 py-2">Net</th>
-                    <th className="px-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {movements.map(m => {
-                    const typeCls = TYPE_MOVEMENT_PALETTE[m.type] || 'bg-gray-500/15 text-gray-500'
-                    return (
-                      <tr
-                        key={m.id}
-                        onClick={() => setSelectedMovement(m)}
-                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer"
-                      >
-                        <td className="px-2 py-2 tnum text-gray-400">{fmtDate(m.event_date)}</td>
-                        <td className="px-2">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${typeCls}`}>
-                            {m.type_label}
-                          </span>
-                        </td>
-                        <td className="px-2 text-right tnum">
-                          {m.quantity != null
-                            ? (m.quantity < 1 ? m.quantity.toFixed(4) : fmtNum(m.quantity, m.quantity < 100 ? 2 : 0))
-                            : '—'}
-                        </td>
-                        <td className="px-2 text-right tnum money text-gray-400">{m.unit_price != null ? fmtMoney(m.unit_price, m.currency) : '—'}</td>
-                        <td className="px-2 text-right tnum money text-gray-500">{m.fee ? fmtMoney(m.fee, m.currency) : '—'}</td>
-                        <td className="px-2 text-right">
-                          <div className={`tnum money font-medium ${m.net_amount < 0 ? 'text-red-500 dark:text-red-400' : m.net_amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500'}`}>
-                            {fmtMoney(m.net_amount, m.currency, { sign: true })}
-                          </div>
-                        </td>
-                        <td className="px-2 text-gray-500"><MoreHorizontal className="w-4 h-4" /></td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* Proventos full table */}
-        <Card>
-          <SectionTitle action={
-            <span className="text-[11px] tnum text-gray-500">
-              Total{' '}
-              <span className="money text-emerald-500 dark:text-emerald-400 font-medium">
-                {fmtBRL(distSumBRL, { compact: true })}
-              </span>
-              <span className="mx-1 text-gray-400">·</span>
-              <span className="money text-emerald-500 dark:text-emerald-400 font-medium">
-                {fmtUSD(distSumUSD, { compact: true })}
-              </span>
-            </span>
-          }>
-            Proventos · {distributions.length}
-          </SectionTitle>
-          {distributions.length === 0 ? (
-            <div className="text-[12px] text-gray-500 italic py-6 text-center">Sem proventos cadastrados.</div>
-          ) : (
-            <div className="overflow-x-auto -mx-1">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                    <th className="text-left font-medium px-2 py-2">Data</th>
-                    <th className="text-left font-medium px-2 py-2">Tipo</th>
-                    <th className="text-right font-medium px-2 py-2">Bruto</th>
-                    <th className="text-right font-medium px-2 py-2">IR</th>
-                    <th className="text-right font-medium px-2 py-2">Líquido</th>
-                    <th className="text-right font-medium px-2 py-2">USD</th>
-                    <th className="px-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {distributions.map(d => {
-                    const typeCls = TYPE_DISTRIBUTION_PALETTE[d.type] || 'bg-gray-500/15 text-gray-500'
-                    const fx = d.fx_rate || 0
-                    const usdNet = d.currency === 'USD'
-                      ? d.net_amount
-                      : (fx > 0 ? d.net_amount / fx : null)
-                    return (
-                      <tr key={d.id} className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
-                        <td className="px-2 py-2 tnum text-gray-400">{fmtDate(d.event_date)}</td>
-                        <td className="px-2">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${typeCls}`}>
-                            {d.type_label}
-                          </span>
-                        </td>
-                        <td className="px-2 text-right tnum money text-gray-400">{fmtMoney(d.gross_amount, d.currency)}</td>
-                        <td className="px-2 text-right tnum money text-amber-500 dark:text-amber-400">{d.tax && d.tax > 0 ? '−' + fmtMoney(d.tax, d.currency) : '—'}</td>
-                        <td className="px-2 text-right">
-                          <div className="tnum money font-medium text-emerald-500 dark:text-emerald-400">{fmtMoney(d.net_amount, d.currency, { sign: true })}</div>
-                        </td>
-                        <td className="px-2 text-right tnum money text-gray-500 dark:text-gray-400" title={fx > 0 ? `PTAX ${fx.toFixed(4)}` : 'sem fx_rate'}>
-                          {usdNet == null ? '—' : fmtUSD(usdNet)}
-                        </td>
-                        <td className="px-2 text-gray-500"><MoreHorizontal className="w-4 h-4" /></td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* Spec 50 parte 2 — gráfico de proventos mensais */}
-        {distributions.length >= 2 && (
-          <AssetDistributionsChart distributions={distributions} />
-        )}
-
-        {/* Open options card */}
-        {asset.asset_class !== 'OPTION' && (
-          <OpenOptionsCard
-            key={optionsRefresh}
-            underlyingId={asset.id}
-            underlyingTicker={asset.ticker || asset.name}
-            onAction={() => setOptionsRefresh(n => n + 1)}
+        {tab === 'overview' && (
+          <AssetOverviewTab
+            asset={asset}
+            me={me}
+            underlying={underlying}
+            position={position}
+            priceHistory={priceHistory}
+            pricePeriod={pricePeriod}
+            onPricePeriodChange={setPricePeriod}
+            klassColor={klassColor}
+            optionsRefresh={optionsRefresh}
+            onOptionsAction={() => setOptionsRefresh(n => n + 1)}
             onAddOption={() => setOptionModalOpen(true)}
           />
         )}
 
-        {/* Detalhes / metadata */}
-        <Card>
-          <SectionTitle>Detalhes</SectionTitle>
-          <dl className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-[12px]">
-            <Detail label="Ticker" value={asset.ticker || '—'} mono />
-            <Detail label="CNPJ" value={asset.cnpj || '—'} mono />
-            <Detail label="Classe">
-              <ClassBadge klass={klass} size="xs" withDot={false} />
-            </Detail>
-            <Detail label="País">
-              <span className="inline-flex items-center gap-1.5">
-                <CountryFlag country={asset.country} />
-                <span>{asset.country === 'BR' ? 'Brasil' : asset.country === 'US' ? 'EUA' : asset.country}</span>
-              </span>
-            </Detail>
-            <Detail label="Moeda">
-              <CcyPill ccy={ccy} />
-            </Detail>
-            <Detail label="Custodiante" value={fi?.short_name || '—'} />
-            <Detail label="Conta" value={account?.name || '—'} />
-            <Detail label="Status">
-              {asset.is_active
-                ? <span className="text-emerald-500 dark:text-emerald-400">Ativo</span>
-                : <span className="text-gray-500">Zerado</span>}
-            </Detail>
-            <Detail label="Total investido" value={fmtBRL(costBRL, { compact: true })} tnum money />
-            <Detail label="Total recebido" value={fmtBRL(distSumBRL, { compact: true })} tnum money tone="positive" />
-            <Detail label="Lançamentos" value={String(movements.length)} tnum />
-            <Detail label="Último lançamento" value={lastMovementDate ? fmtDate(lastMovementDate) : '—'} tnum />
-          </dl>
-        </Card>
+        {tab === 'performance' && (
+          <AssetPerformanceTab
+            assetId={asset.id}
+            snapshotHistory={snapshotHistory}
+            snapshotHistoryLoading={snapshotHistoryLoading}
+            movements={movements}
+          />
+        )}
+
+        {tab === 'movements' && (
+          <AssetMovementsTab
+            movements={movements}
+            onRowClick={setSelectedMovement}
+            onNew={openNewMovement}
+          />
+        )}
+
+        {tab === 'distributions' && (
+          <AssetDistributionsTab
+            distributions={distributions}
+            totalBRL={distSumBRL}
+            totalUSD={distSumUSD}
+          />
+        )}
+
+        {tab === 'docs' && (
+          <AssetDocsTab
+            asset={asset}
+            fi={fi}
+            account={account}
+            costBRL={costBRL}
+            receivedBRL={distSumBRL}
+            movementsCount={movements.length}
+            lastMovementDate={lastMovementDate}
+          />
+        )}
       </div>
 
       {optionModalOpen && (
@@ -966,28 +774,5 @@ export default function AssetDetail() {
         </div>
       )}
     </AppLayout>
-  )
-}
-
-function Detail({
-  label, value, children, mono, tnum, money, tone,
-}: {
-  label: string
-  value?: string
-  children?: React.ReactNode
-  mono?: boolean
-  tnum?: boolean
-  money?: boolean
-  tone?: 'positive' | 'negative'
-}) {
-  const toneCls = tone === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
-    : tone === 'negative' ? 'text-red-500 dark:text-red-400'
-    : 'text-gray-900 dark:text-white'
-  const cls = `mt-0.5 ${mono ? 'font-mono' : ''} ${tnum ? 'tnum' : ''} ${money ? 'money' : ''} ${toneCls}`.trim()
-  return (
-    <div>
-      <dt className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">{label}</dt>
-      <dd className={cls}>{children ?? value}</dd>
-    </div>
   )
 }
