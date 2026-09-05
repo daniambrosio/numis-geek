@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import {
   api,
@@ -617,9 +617,19 @@ function Row({
         <div className="flex items-center gap-2">
           <span className="w-1 h-5 rounded-full" style={{ background: klassColor }} />
           <div className="min-w-0">
-            <div className={`font-mono font-medium text-gray-900 dark:text-white ${inactive ? 'line-through' : ''}`}>
-              {asset?.ticker || asset?.name || '—'}
-            </div>
+            {asset ? (
+              <Link
+                to={`/assets/${asset.id}`}
+                state={{ from: '/asset-movements', fromLabel: 'Lançamentos' }}
+                onClick={e => e.stopPropagation()}
+                data-testid={`movement-asset-link-${l.id}`}
+                className={`font-mono font-medium text-gray-900 dark:text-white hover:text-indigo-500 dark:hover:text-indigo-300 ${inactive ? 'line-through' : ''}`}
+              >
+                {asset.ticker || asset.name}
+              </Link>
+            ) : (
+              <div className="font-mono font-medium text-gray-900 dark:text-white">—</div>
+            )}
             {asset?.ticker && asset?.name && (
               <div className="text-[11px] text-gray-500 truncate max-w-[200px]">{asset.name}</div>
             )}

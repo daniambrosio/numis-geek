@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import {
   api,
@@ -407,9 +407,14 @@ export default function Distributions() {
                                 <div className="min-w-0">
                                   {a ? (
                                     <>
-                                      <div className="font-mono font-medium flex items-center gap-1.5 text-gray-900 dark:text-gray-100">
+                                      <Link
+                                        to={`/assets/${a.id}`}
+                                        state={{ from: '/distributions', fromLabel: 'Proventos' }}
+                                        onClick={e => e.stopPropagation()}
+                                        className="font-mono font-medium flex items-center gap-1.5 text-gray-900 dark:text-gray-100 hover:text-indigo-500 dark:hover:text-indigo-300"
+                                      >
                                         {a.ticker || a.name}
-                                      </div>
+                                      </Link>
                                       <div className="text-[11px] text-gray-500 truncate max-w-[260px]">
                                         {a.name} <span className="text-gray-400 dark:text-gray-600">· {fi?.short_name}</span>
                                       </div>

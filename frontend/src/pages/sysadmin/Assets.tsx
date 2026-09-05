@@ -9,8 +9,6 @@ import AppLayout from '../../components/AppLayout'
 import AssetFilterBar from '../../components/AssetFilterBar'
 import AssetModal from '../../components/AssetModal'
 import AssetTable from '../../components/AssetTable'
-import AssetDetailPanel from '../../components/AssetDetailPanel'
-import { useEscapeKey } from '../../lib/useEscapeKey'
 import { Card, PageHeader } from '../../components/ui'
 import { collapsedOf, fiTokenFor } from '../../lib/tokens'
 
@@ -33,9 +31,6 @@ export default function SysadminAssets() {
   const [loadError, setLoadError] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AssetOut | undefined>(undefined)
-  const [confirmDeactivate, setConfirmDeactivate] = useState<AssetOut | null>(null)
-  useEscapeKey(() => { if (confirmDeactivate) setConfirmDeactivate(null) })
-  const [selected, setSelected] = useState<AssetOut | null>(null)
 
   // Filters
   const [workspaceFilter, setWorkspaceFilter] = useState('')
@@ -100,12 +95,6 @@ export default function SysadminAssets() {
       .finally(() => setLoading(false))
   }, [me, workspaceFilter, includeInactive, search])
 
-  const fiById = useMemo(() => {
-    const m = new Map<string, FinancialInstitutionOut>()
-    for (const fi of institutions) m.set(fi.id, fi)
-    return m
-  }, [institutions])
-
   const filtered = useMemo(() => {
     let xs = assets
     if (klassSel.length) xs = xs.filter(a => klassSel.includes(collapsedOf(a.asset_class)))
@@ -131,23 +120,10 @@ export default function SysadminAssets() {
     if (editing) {
       const updated = await api.updateAsset(editing.id, data)
       setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))
-      if (selected?.id === updated.id) setSelected(updated)
     } else {
       const created = await api.createAsset(data)
       setAssets(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
     }
-  }
-
-  async function handleDeactivate(asset: AssetOut) {
-    await api.deactivateAsset(asset.id)
-    if (includeInactive) {
-      setAssets(prev => prev.map(a => a.id === asset.id ? { ...a, is_active: false } : a))
-      if (selected?.id === asset.id) setSelected({ ...asset, is_active: false })
-    } else {
-      setAssets(prev => prev.filter(a => a.id !== asset.id))
-      if (selected?.id === asset.id) setSelected(null)
-    }
-    setConfirmDeactivate(null)
   }
 
   if (!me) return null
@@ -220,24 +196,17 @@ export default function SysadminAssets() {
             positions={positions}
             institutions={institutions}
             grouping={grouping}
-            onRowClick={setSelected}
+            // Spec 81 — página completa do ativo, como no /assets do admin.
+            // O drawer AssetDetailPanel foi aposentado.
+            onRowClick={(a) => navigate(`/assets/${a.id}`, {
+              state: { from: '/sysadmin/assets', fromLabel: 'Ativos' },
+            })}
             onAssetUpdated={(updated) =>
               setAssets(prev => prev.map(a => a.id === updated.id ? updated : a))
             }
           />
         )}
       </div>
-
-      {selected && (
-        <AssetDetailPanel
-          key={selected.id}
-          asset={selected}
-          fi={fiById.get(selected.financial_institution_id) ?? null}
-          onClose={() => setSelected(null)}
-          onEdit={() => { setEditing(selected); setModalOpen(true) }}
-          onDeactivate={() => setConfirmDeactivate(selected)}
-        />
-      )}
 
       {modalOpen && institutions.length > 0 && (
         <AssetModal
@@ -250,24 +219,6 @@ export default function SysadminAssets() {
         />
       )}
 
-      {confirmDeactivate && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-xl p-6">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Desativar ativo?</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-              <strong>{confirmDeactivate.name}</strong> será desativado e não aparecerá mais nas listas.
-            </p>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setConfirmDeactivate(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                Cancelar
-              </button>
-              <button onClick={() => handleDeactivate(confirmDeactivate)} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">
-                Desativar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </AppLayout>
   )
 }
