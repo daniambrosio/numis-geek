@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,10 @@ from numis_geek.models.portfolio_snapshot import (
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
 from numis_geek.services.audit import AuditService
+from numis_geek.services.asset_performance import (
+    AssetPerformance,
+    compute_asset_performance,
+)
 from numis_geek.services.auth import UserContext
 from numis_geek.services.positions import compute_position
 from numis_geek.services.price_freshness import freshness_tier
@@ -202,6 +206,9 @@ class AssetOut(BaseModel):
     created_at: str
     updated_at: str
     details: dict[str, Any] | None = None
+    # Spec 80 — conta corrente que alimenta o saldo (só CASH). Spec 81
+    # passou a devolver: antes era aceito no PUT e nunca lido de volta.
+    linked_account_id: str | None = None
 
     @classmethod
     def from_orm(
@@ -212,32 +219,7 @@ class AssetOut(BaseModel):
         fi_id: str,
         workspace_name: str | None = None,
     ) -> "AssetOut":
-        details: dict[str, Any] | None = None
-        if asset.asset_class == AssetClass.FIXED_INCOME and asset.fixed_income:
-            fi_row = asset.fixed_income
-            details = FixedIncomeOut(
-                issuer=fi_row.issuer,
-                issue_date=fi_row.issue_date.isoformat() if fi_row.issue_date else None,
-                maturity_date=fi_row.maturity_date.isoformat(),
-                indexer=fi_row.indexer.value,
-                rate=float(fi_row.rate),
-                face_value=float(fi_row.face_value) if fi_row.face_value is not None else None,
-            ).model_dump()
-        elif asset.asset_class in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE) and asset.physical:
-            p = asset.physical
-            details = PhysicalOut(
-                address=p.address,
-                city=p.city,
-                state=p.state,
-                country=p.country,
-                area_m2=float(p.area_m2) if p.area_m2 is not None else None,
-                registration_number=p.registration_number,
-                make=p.make,
-                model=p.model,
-                year=p.year,
-                license_plate=p.license_plate,
-                chassis=p.chassis,
-            ).model_dump()
+        details = _current_details(asset)
         return cls(
             id=asset.id,
             workspace_id=asset.workspace_id,
@@ -268,7 +250,40 @@ class AssetOut(BaseModel):
             created_at=asset.created_at.isoformat(),
             updated_at=asset.updated_at.isoformat(),
             details=details,
+            linked_account_id=asset.linked_account_id,
         )
+
+
+def _current_details(asset: Asset) -> dict[str, Any] | None:
+    """Serializa a linha especializada (renda fixa / físico) do jeito que
+    AssetOut devolve — também é o "estado atual" que o PATCH mescla."""
+    details: dict[str, Any] | None = None
+    if asset.asset_class == AssetClass.FIXED_INCOME and asset.fixed_income:
+        fi_row = asset.fixed_income
+        details = FixedIncomeOut(
+            issuer=fi_row.issuer,
+            issue_date=fi_row.issue_date.isoformat() if fi_row.issue_date else None,
+            maturity_date=fi_row.maturity_date.isoformat(),
+            indexer=fi_row.indexer.value,
+            rate=float(fi_row.rate),
+            face_value=float(fi_row.face_value) if fi_row.face_value is not None else None,
+        ).model_dump()
+    elif asset.asset_class in (AssetClass.REAL_ESTATE, AssetClass.VEHICLE) and asset.physical:
+        p = asset.physical
+        details = PhysicalOut(
+            address=p.address,
+            city=p.city,
+            state=p.state,
+            country=p.country,
+            area_m2=float(p.area_m2) if p.area_m2 is not None else None,
+            registration_number=p.registration_number,
+            make=p.make,
+            model=p.model,
+            year=p.year,
+            license_plate=p.license_plate,
+            chassis=p.chassis,
+        ).model_dump()
+    return details
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -615,16 +630,10 @@ def create_asset(
     )
 
 
-@router.put("/{asset_id}", response_model=AssetOut)
-def update_asset(
-    asset_id: str,
-    body: AssetRequest,
-    db: Session = Depends(get_db),
-    current_user: UserContext = Depends(get_current_user),
-):
-    asset = _get_or_404(db, asset_id)
-    _check_workspace_access(asset, current_user)
-
+def _apply_asset_update(
+    db: Session, asset: Asset, body: AssetRequest, current_user: UserContext,
+) -> AssetOut:
+    """Corpo comum de PUT (corpo inteiro) e PATCH (mesclado)."""
     account = _resolve_account(db, body.account_id, asset.workspace_id)
     fi = db.get(FinancialInstitution, account.financial_institution_id)
     if not fi or not fi.is_active:
@@ -673,6 +682,79 @@ def update_asset(
         account_name=account.name, fi_id=fi.id,
         workspace_name=ws_name,
     )
+
+
+@router.put("/{asset_id}", response_model=AssetOut)
+def update_asset(
+    asset_id: str,
+    body: AssetRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+    return _apply_asset_update(db, asset, body, current_user)
+
+
+class AssetPatchRequest(BaseModel):
+    """Spec 81 — edição parcial (card "Dados do ativo" inline). Só os
+    campos presentes no JSON mudam; `null` explícito limpa (ticker, cnpj,
+    notes, linked_account_id). Preço não entra aqui — é PATCH /price."""
+    model_config = ConfigDict(extra="forbid")
+
+    asset_class: AssetClass | None = None
+    account_id: str | None = None
+    country: str | None = Field(default=None, min_length=2, max_length=2)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    currency: Currency | None = None
+    ticker: str | None = Field(default=None, max_length=64)
+    cnpj: str | None = Field(default=None, max_length=18)
+    notes: str | None = None
+    details: dict[str, Any] | None = None
+    linked_account_id: str | None = Field(default=None, max_length=36)
+
+
+@router.patch("/{asset_id}", response_model=AssetOut)
+def patch_asset(
+    asset_id: str,
+    body: AssetPatchRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+
+    current: dict[str, Any] = {
+        "asset_class": asset.asset_class,
+        "account_id": asset.account_id,
+        "country": asset.country,
+        "name": asset.name,
+        "currency": asset.currency,
+        "ticker": asset.ticker,
+        "cnpj": asset.cnpj,
+        "current_price": asset.current_price,
+        "notes": asset.notes,
+        "external_id": asset.external_id,
+        "external_source": asset.external_source,
+        "details": _current_details(asset),
+        "linked_account_id": asset.linked_account_id,
+    }
+    merged = {**current, **body.model_dump(exclude_unset=True)}
+    # Trocar de classe pra uma que não usa details: descarta os antigos em
+    # vez de estourar "details must be omitted".
+    needs_details = merged["asset_class"] in (
+        AssetClass.FIXED_INCOME, AssetClass.REAL_ESTATE, AssetClass.VEHICLE,
+    )
+    if not needs_details and "details" not in body.model_fields_set:
+        merged["details"] = None
+    try:
+        full = AssetRequest.model_validate(merged)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="; ".join(e.get("msg", "") for e in exc.errors()),
+        )
+    return _apply_asset_update(db, asset, full, current_user)
 
 
 class PositionOut(BaseModel):
@@ -1033,6 +1115,120 @@ def asset_snapshot_history(
             for (ped, fx, qty, up, mvn, mvb, mvu, tib) in rows
         ],
     )
+
+
+# ── Spec 81 — rentabilidade mês a mês (retorno total) ────────────────────
+
+
+class AssetPerformanceRowOut(BaseModel):
+    period_end_date: str
+    quantity: str
+    unit_price: str | None
+    market_value_native: str | None
+    market_value_brl: str | None
+    market_value_usd: str | None
+    total_invested_brl: str | None
+    fx_rate_usd_brl: str | None
+    pnl_brl: str | None
+    pnl_pct: float | None
+    aportes_native: str
+    resgates_native: str
+    aportes_brl: str
+    resgates_brl: str
+    proventos_native: str
+    proventos_brl: str
+    return_pct: float | None
+    return_brl_pct: float | None
+    return_null_reason: str | None
+
+
+class AssetPerformanceSummaryOut(BaseModel):
+    as_of: str | None
+    return_12m_pct: float | None
+    return_12m_brl_pct: float | None
+    return_ytd_pct: float | None
+    return_ytd_brl_pct: float | None
+    since_inception_pct: float | None
+    since_inception_brl_pct: float | None
+    months_in_12m: int
+    months_in_ytd: int
+    proventos_12m_native: str
+    proventos_12m_brl: str
+
+
+class AssetPerformanceOut(BaseModel):
+    asset_id: str
+    currency: str
+    is_value_mode: bool
+    items: list[AssetPerformanceRowOut]   # cronológica desc (como snapshot-history)
+    summary: AssetPerformanceSummaryOut
+
+
+def _perf_out(perf: AssetPerformance) -> AssetPerformanceOut:
+    def _s(x: object) -> str | None:
+        return None if x is None else str(x)
+
+    def _f(x: object) -> float | None:
+        return None if x is None else float(x)
+
+    s = perf.summary
+    return AssetPerformanceOut(
+        asset_id=perf.asset_id,
+        currency=perf.currency,
+        is_value_mode=perf.is_value_mode,
+        items=[
+            AssetPerformanceRowOut(
+                period_end_date=r.period_end_date.isoformat(),
+                quantity=str(r.quantity),
+                unit_price=_s(r.unit_price),
+                market_value_native=_s(r.market_value_native),
+                market_value_brl=_s(r.market_value_brl),
+                market_value_usd=_s(r.market_value_usd),
+                total_invested_brl=_s(r.total_invested_brl),
+                fx_rate_usd_brl=_s(r.fx_rate_usd_brl),
+                pnl_brl=_s(r.pnl_brl),
+                pnl_pct=_f(r.pnl_pct),
+                aportes_native=str(r.aportes_native),
+                resgates_native=str(r.resgates_native),
+                aportes_brl=str(r.aportes_brl),
+                resgates_brl=str(r.resgates_brl),
+                proventos_native=str(r.proventos_native),
+                proventos_brl=str(r.proventos_brl),
+                return_pct=_f(r.return_pct),
+                return_brl_pct=_f(r.return_brl_pct),
+                return_null_reason=r.return_null_reason,
+            )
+            for r in reversed(perf.rows)
+        ],
+        summary=AssetPerformanceSummaryOut(
+            as_of=s.as_of.isoformat() if s.as_of else None,
+            return_12m_pct=_f(s.return_12m_pct),
+            return_12m_brl_pct=_f(s.return_12m_brl_pct),
+            return_ytd_pct=_f(s.return_ytd_pct),
+            return_ytd_brl_pct=_f(s.return_ytd_brl_pct),
+            since_inception_pct=_f(s.since_inception_pct),
+            since_inception_brl_pct=_f(s.since_inception_brl_pct),
+            months_in_12m=s.months_in_12m,
+            months_in_ytd=s.months_in_ytd,
+            proventos_12m_native=str(s.proventos_12m_native),
+            proventos_12m_brl=str(s.proventos_12m_brl),
+        ),
+    )
+
+
+@router.get("/{asset_id}/performance", response_model=AssetPerformanceOut)
+def asset_performance(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 81 — uma linha por fechamento CLOSED com retorno total do mês
+    (ajustado por aportes/resgates, incluindo proventos), P&L contra o
+    investido congelado e acumulados 12m / no ano / desde o início.
+    Ver services/asset_performance.py pra semântica dos nulls."""
+    asset = _get_or_404(db, asset_id)
+    _check_workspace_access(asset, current_user)
+    return _perf_out(compute_asset_performance(db, asset_id))
 
 
 @router.get("/{asset_id}/asset-movements", response_model=AssetMovementListPage)

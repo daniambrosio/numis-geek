@@ -34,6 +34,9 @@ from numis_geek.models.portfolio_snapshot import (
 from numis_geek.models.target_allocation import (
     TargetAllocation, TargetAllocationDimension,
 )
+from numis_geek.services.asset_performance import (
+    APORTE_TYPES, RESGATE_TYPES, cash_flows_in_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,15 +129,11 @@ class MarkowitzError(ValueError):
 # ── Step 1: build monthly returns ─────────────────────────────────────────────
 
 
-_APORTE_TYPES = (
-    AssetMovementType.BUY,
-    AssetMovementType.SUBSCRIPTION,
-)
-_RESGATE_TYPES = (
-    AssetMovementType.SELL,
-    AssetMovementType.FULL_REDEMPTION,
-    AssetMovementType.COME_COTAS,
-)
+# Spec 81 — os tipos de fluxo e a soma por janela vivem em
+# services/asset_performance (fonte única com a página do ativo).
+# Ficam re-exportados aqui pra compat de import.
+_APORTE_TYPES = tuple(APORTE_TYPES)
+_RESGATE_TYPES = tuple(RESGATE_TYPES)
 
 
 def build_monthly_returns(
@@ -155,6 +154,7 @@ def build_monthly_returns(
         .filter(
             PortfolioSnapshot.workspace_id == workspace_id,
             PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshot.is_active.is_(True),
         )
         .order_by(PortfolioSnapshot.period_end_date)
         .all()
@@ -191,7 +191,10 @@ def build_monthly_returns(
     movs_by_asset: dict[str, list[AssetMovement]] = {}
     movs = db.query(AssetMovement).join(
         Asset, AssetMovement.asset_id == Asset.id,
-    ).filter(Asset.workspace_id == workspace_id).all()
+    ).filter(
+        Asset.workspace_id == workspace_id,
+        AssetMovement.is_active.is_(True),
+    ).all()
     for m in movs:
         movs_by_asset.setdefault(m.asset_id, []).append(m)
 
@@ -225,18 +228,13 @@ def build_monthly_returns(
             if prev_mv <= 0:
                 prev_date, prev_mv = cur_date, cur_mv
                 continue
-            # Net cash flow (BRL) in (prev_date, cur_date]
-            net_flow_brl = 0.0
-            for m in movs_by_asset.get(asset.id, []):
-                if not (prev_date < m.event_date <= cur_date):
-                    continue
-                if m.net_amount is None:
-                    continue
-                amt_brl = float(m.net_amount) * float(m.fx_rate or Decimal("1"))
-                if m.type in _APORTE_TYPES:
-                    net_flow_brl += amt_brl
-                elif m.type in _RESGATE_TYPES:
-                    net_flow_brl -= amt_brl
+            # Net cash flow (BRL) in (prev_date, cur_date]. Spec 81: mesma
+            # regra da página do ativo — COME_COTAS fora (net_amount = -tax
+            # já refletido no mv), fx só multiplica linha USD.
+            aportes, resgates = cash_flows_in_window(
+                movs_by_asset.get(asset.id, []), prev_date, cur_date, in_brl=True,
+            )
+            net_flow_brl = float(aportes - resgates)
             r = (cur_mv - net_flow_brl) / prev_mv - 1.0
             returns.append(r)
             months.append(cur_date)

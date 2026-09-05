@@ -321,3 +321,30 @@ def test_optimize_no_eligible_assets_raises(db):
     )
     with pytest.raises(MarkowitzError, match="elegíveis|elegível"):
         optimize_portfolio(db, inp)
+
+
+# ── Spec 81 — fluxos compartilhados com services/asset_performance ──────────
+
+
+def test_come_cotas_not_double_penalized_and_inactive_ignored(db):
+    """COME_COTAS grava net_amount = -tax (asset_movements.py). Antes o
+    markowitz subtraía isso como resgate, penalizando o imposto duas vezes
+    (já está no mv). Também ignorava is_active."""
+    ws, acc = _setup_workspace(db)
+    a = _add_asset(db, ws, acc, name="F", ticker="F", asset_class=AssetClass.FUND)
+    values = [1000.0] * 14
+    snaps = _add_snapshots_with_items(db, ws, n_months=14, items={a.id: values})
+    # come-cotas no 2º mês e um BUY inativo no 3º
+    _add_movement(
+        db, a, type_=AssetMovementType.COME_COTAS,
+        event_date=snaps[1].period_end_date, net_amount=-5,
+    )
+    m = _add_movement(
+        db, a, type_=AssetMovementType.BUY,
+        event_date=snaps[2].period_end_date, net_amount=500,
+    )
+    m.is_active = False
+    db.flush()
+    eligible, excluded, _ = build_monthly_returns(db, ws.id, min_months=12)
+    ar = next(x for x in eligible if x.asset_id == a.id)
+    assert all(abs(r) < 1e-12 for r in ar.monthly_returns)

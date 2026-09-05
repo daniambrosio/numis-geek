@@ -938,3 +938,183 @@ def test_checking_account_can_be_mirrored_only_once(client, seed):
         seed, name="Espelho 2", linked_account_id=seed["acc_checking2_a"],
     ), headers=auth(seed["admin_token_a"]))
     assert second.status_code == 422
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spec 81 — linked_account_id no Out, GET /performance, PATCH parcial
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_asset_out_includes_linked_account_id(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="LNK1")
+    r = client.get(f"/api/assets/{asset_id}", headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 200
+    assert "linked_account_id" in r.json()
+    assert r.json()["linked_account_id"] is None
+
+
+def test_performance_rows_desc_and_summary(client, seed):
+    """Períodos únicos em 2023 pra não colidir com outros testes."""
+    asset_id = _create_test_asset(client, seed, ticker="PF1")
+    _seed_snapshot_with_full_item(
+        seed["ws_a"], asset_id, "2023-01-31",
+        market_value_native="3000.00", market_value_brl="3000.00",
+    )
+    _seed_snapshot_with_full_item(
+        seed["ws_a"], asset_id, "2023-02-28",
+        market_value_native="3300.00", market_value_brl="3300.00",
+    )
+    r = client.get(f"/api/assets/{asset_id}/performance", headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["asset_id"] == asset_id and body["currency"] == "BRL"
+    assert body["is_value_mode"] is False
+    dates = [it["period_end_date"] for it in body["items"]]
+    assert dates == ["2023-02-28", "2023-01-31"]
+    feb, jan = body["items"]
+    assert jan["return_pct"] is None and jan["return_null_reason"] == "FIRST_CLOSING"
+    assert abs(feb["return_pct"] - 0.10) < 1e-9
+    assert feb["pnl_brl"].startswith("800.00")                   # 3300 − 2500
+    assert abs(feb["pnl_pct"] - 0.32) < 1e-9
+    assert feb["proventos_brl"] == "0"
+    sm = body["summary"]
+    assert sm["as_of"] == "2023-02-28"
+    assert sm["return_12m_pct"] is None and sm["months_in_12m"] == 2
+    assert abs(sm["since_inception_pct"] - 0.10) < 1e-9
+
+
+def test_performance_excludes_in_review(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PF2")
+    _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2023-05-31")
+    _seed_snapshot_with_full_item(seed["ws_a"], asset_id, "2023-06-30", status="IN_REVIEW")
+    r = client.get(f"/api/assets/{asset_id}/performance", headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 200
+    assert [it["period_end_date"] for it in r.json()["items"]] == ["2023-05-31"]
+
+
+def test_performance_cross_workspace_returns_404(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PF3")
+    r = client.get(f"/api/assets/{asset_id}/performance", headers=auth(seed["admin_token_b"]))
+    assert r.status_code == 404
+
+
+def test_performance_sysadmin_can_read(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PF4")
+    r = client.get(f"/api/assets/{asset_id}/performance", headers=auth(seed["sysadmin_token"]))
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+def test_patch_asset_single_field(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT1")
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"name": "Renomeado"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "Renomeado"
+    assert body["ticker"] == "PT1"                                # intocado
+    assert body["account_id"] == seed["acc_xp_a"]
+
+
+def test_patch_asset_clears_notes_with_null(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT2")
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"notes": "tese"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200 and r.json()["notes"] == "tese"
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"notes": None},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200 and r.json()["notes"] is None
+    # PATCH sem `notes` não mexe em notes
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"notes": "de novo"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"name": "X"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.json()["notes"] == "de novo"
+
+
+def test_patch_asset_ticker_conflict_409(client, seed):
+    a = _create_test_asset(client, seed, ticker="PT3A")
+    _create_test_asset(client, seed, ticker="PT3B")
+    r = client.patch(
+        f"/api/assets/{a}", json={"ticker": "PT3B"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 409
+
+
+def test_patch_asset_invalid_class_change_422(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT4")
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"asset_class": "FIXED_INCOME", "ticker": None},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 422
+    assert "details is required" in r.json()["detail"]
+
+
+def test_patch_asset_unknown_field_422(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT5")
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"current_price": 10},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 422
+
+
+def test_patch_asset_cross_workspace_404(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT6")
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"name": "hack"},
+        headers=auth(seed["admin_token_b"]),
+    )
+    assert r.status_code == 404
+
+
+def test_patch_asset_preserves_details(client, seed):
+    r = client.post("/api/assets", json={
+        "asset_class": "FIXED_INCOME", "country": "BR",
+        "account_id": seed["acc_xp_a"],
+        "name": "CDB Patch 2029", "currency": "BRL",
+        "details": {
+            "issuer": "Banco Patch", "issue_date": "2024-01-10",
+            "maturity_date": "2029-01-10", "indexer": "CDI", "rate": 105.0,
+            "face_value": 1000.0,
+        },
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    asset_id = r.json()["id"]
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"name": "CDB Patch 2029 (renomeado)"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"].endswith("(renomeado)")
+    assert body["details"]["maturity_date"] == "2029-01-10"
+    assert body["details"]["issuer"] == "Banco Patch"
+
+
+def test_patch_asset_audit_logged(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="PT7")
+    client.patch(
+        f"/api/assets/{asset_id}", json={"name": "Auditado"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    db = TestSession()
+    try:
+        rows = db.query(AuditLog).filter(
+            AuditLog.resource_id == asset_id, AuditLog.action == "asset.updated",
+        ).all()
+        assert len(rows) >= 1
+    finally:
+        db.close()
