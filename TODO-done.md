@@ -1,12 +1,15 @@
 # TODO — concluídos e dropados
 
+Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não fila.
+
+## Setembro 2026
+
 - [x] **2026-09-05 — 17 anexos de fechamento sem instituição/finalidade em prod.** Triagem
   via artifact (preview + inferência do Claude, confirmada pelo user sem correções) e SQL
   cirúrgico: 59/59 anexos SNAPSHOT com slot, 0 órfãos. Backup
   `data/numis_geek.db.bak-before-orphan-slots-20260905`. Causa raiz corrigida em 8875a1e
   (slot gravado no upload).
 
-Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não fila.
 
 ## Faxina 2026-08-18
 
