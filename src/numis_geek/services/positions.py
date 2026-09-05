@@ -176,6 +176,40 @@ def _last_closed_snapshot_value(
     return (row[0], row[1])
 
 
+def _market_value_brl_before(
+    db: Session, asset_id: str, before: date,
+) -> tuple[Decimal, date] | None:
+    """Spec 79 — valor de mercado do ativo no último fechamento CLOSED
+    ESTRITAMENTE anterior a `before`, junto com a data desse fechamento.
+
+    Usado pra dimensionar a fração da posição que um resgate levou embora.
+    `period_end_date < before` (e não `<=`) porque o fechamento do próprio dia
+    já reflete o resgate. A data volta junto porque o caller precisa somar os
+    aportes/resgates ocorridos ENTRE o fechamento e a data do resgate — sem
+    isso, um aporte e um resgate no mesmo dia (rolagem de título) dividem pelo
+    valor antigo e comem custo demais.
+    """
+    row = (
+        db.query(
+            PortfolioSnapshotItem.market_value_brl,
+            PortfolioSnapshot.period_end_date,
+        )
+        .join(PortfolioSnapshot, PortfolioSnapshot.id == PortfolioSnapshotItem.snapshot_id)
+        .filter(
+            PortfolioSnapshotItem.asset_id == asset_id,
+            PortfolioSnapshot.status == SnapshotStatus.CLOSED,
+            PortfolioSnapshot.is_active == True,  # noqa: E712
+            PortfolioSnapshot.period_end_date < before,
+            PortfolioSnapshotItem.market_value_brl.isnot(None),
+        )
+        .order_by(PortfolioSnapshot.period_end_date.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    return (row[0], row[1])
+
+
 def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -> Position:
     """Compute current position for an asset.
 
@@ -232,6 +266,11 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     is_value_mode_asset = bool(
         asset and asset.asset_class and asset.asset_class not in _COTADO_CLASSES
     )
+
+    # Spec 79 — (data, fluxo BRL assinado) de cada linha de modo valor já
+    # processada, pra ajustar o valor de mercado de referência de um resgate
+    # pelos aportes/resgates ocorridos depois do último fechamento.
+    value_mode_flows: list[tuple[date, Decimal]] = []
 
     running_qty = Decimal("0")
     basis_qty = Decimal("0")          # qty contributing to native PM (cotado BUY/SUBSCRIPTION)
@@ -297,7 +336,9 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         # ── Basis update ────────────────────────────────────────────────────
         if r.type in _BASIS_ADD_TYPES:
             if is_non_cotado_row:
-                non_cotado_basis_brl += gross * effective_fx
+                added_brl = gross * effective_fx
+                non_cotado_basis_brl += added_brl
+                value_mode_flows.append((r.event_date, added_brl))
             elif r.type == AssetMovementType.BONUS:
                 # Bonificação: cost comes from gross_amount (declared valor
                 # de incorporação, or 0), never from unit_price (validation
@@ -311,7 +352,43 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
                 basis_cost_brl += qty * unit * effective_fx
         elif r.type in _BASIS_SUB_TYPES:
             if is_non_cotado_row:
-                non_cotado_basis_brl -= gross * effective_fx
+                # Spec 79 — o resgate leva principal E rendimento; só o
+                # principal é custo. Tira do custo a mesma fração que tirou
+                # da posição. Sem referência de valor (resgate anterior ao
+                # primeiro fechamento do ativo), cai no comportamento antigo.
+                redeemed_brl = gross * effective_fx
+                ref = _market_value_brl_before(db, asset_id, r.event_date)
+                mv_before: Decimal | None = None
+                if ref is not None:
+                    mv_ref, ref_date = ref
+                    # Aportes e resgates entre o fechamento de referência e
+                    # este resgate ainda não estão no valor congelado.
+                    mv_before = mv_ref + sum(
+                        (flow for d, flow in value_mode_flows if ref_date < d <= r.event_date),
+                        Decimal("0"),
+                    )
+                if mv_before is not None and mv_before > 0:
+                    fraction = redeemed_brl / mv_before
+                    if fraction > 1:
+                        fraction = Decimal("1")
+                    non_cotado_basis_brl -= non_cotado_basis_brl * fraction
+                else:
+                    non_cotado_basis_brl -= redeemed_brl
+                value_mode_flows.append((r.event_date, -redeemed_brl))
+                # Custo negativo não existe: sacar mais do que se aportou é
+                # rendimento, não custo negativo.
+                if non_cotado_basis_brl < 0:
+                    non_cotado_basis_brl = Decimal("0")
+            elif basis_qty > 0 and qty > 0:
+                # Spec 79 — venda reduz basis_qty e custo na mesma proporção.
+                # O PM fica intacto (numerador e denominador caem juntos), então
+                # nada muda em ativo sem bonificação POSTERIOR a uma venda —
+                # que é justamente o caso onde a convenção antiga inflava o
+                # custo (BUY 100@30, SELL 50, BONUS 50 → 2.000 em vez de 1.500).
+                sold = qty if qty <= basis_qty else basis_qty
+                basis_cost_native -= sold * (basis_cost_native / basis_qty)
+                basis_cost_brl -= sold * (basis_cost_brl / basis_qty)
+                basis_qty -= sold
 
         # ── Cost-basis reset ────────────────────────────────────────────────
         # FULL_REDEMPTION: zera TUDO (posição encerrada por completo).

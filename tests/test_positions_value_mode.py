@@ -23,6 +23,11 @@ from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.financial_institution import FinancialInstitution
+from numis_geek.models.portfolio_snapshot import (
+    PortfolioSnapshot,
+    PortfolioSnapshotItem,
+    SnapshotStatus,
+)
 from numis_geek.services.positions import asset_has_position, compute_position
 from numis_geek.services.workspace import WorkspaceService
 
@@ -648,6 +653,181 @@ def test_cotado_partial_sell_keeps_remaining_basis(world):
     assert pos["quantity_held"] == Decimal("5")
     assert pos["average_cost_brl"] == Decimal("25")
     assert pos["total_invested_brl"] == Decimal("125")
+
+
+def _add_closed_snapshot(world, asset_id, period_end, market_value_brl):
+    """Fechamento CLOSED com o item do ativo — referência de valor de mercado
+    que a spec 79 usa pra dimensionar a fração de um resgate."""
+    now = datetime.now(timezone.utc)
+    snap = PortfolioSnapshot(
+        id=str(uuid.uuid4()), workspace_id=world["ws_id"],
+        period_end_date=period_end,
+        fx_rate_usd_brl=Decimal("5.00"),
+        total_value_brl=Decimal(str(market_value_brl)),
+        total_value_usd=Decimal("0"),
+        total_invested_brl=Decimal("0"),
+        status=SnapshotStatus.CLOSED,
+        closed_at=now, closed_by="test",
+        is_active=True, created_at=now, updated_at=now,
+    )
+    world["db"].add(snap)
+    world["db"].add(PortfolioSnapshotItem(
+        id=str(uuid.uuid4()), snapshot_id=snap.id, asset_id=asset_id,
+        quantity=Decimal("1"),
+        unit_price=Decimal(str(market_value_brl)),
+        market_value_native=Decimal(str(market_value_brl)),
+        market_value_brl=Decimal(str(market_value_brl)),
+        created_at=now, updated_at=now,
+    ))
+    world["db"].commit()
+    return snap
+
+
+def test_value_mode_redemption_reduces_basis_proportionally(world):
+    """Spec 79 — caso Tesouro Selic 2029, em escala.
+
+    Aporte 100.000; o saldo rende até 200.000; resgate de 50.000 = 25% da
+    posição ⇒ o custo cai 25%, não 50.000.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=150_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=100_000, event_date=date(2025, 1, 15),
+    )
+    _add_closed_snapshot(world, a.id, date(2026, 1, 31), 200_000)
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 2, 10),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("75000")
+
+
+def test_value_mode_redemption_never_drives_basis_negative(world):
+    """Spec 79 — resgatar mais do que se aportou é rendimento, não custo
+    negativo. Sem essa trava o Tesouro Selic 2029 ficava em −R$ 14.323,49.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=10_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=100_000, event_date=date(2025, 1, 15),
+    )
+    _add_closed_snapshot(world, a.id, date(2026, 1, 31), 180_000)
+    # resgate total do saldo rendido — 180k sobre um custo de 100k
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=180_000, event_date=date(2026, 2, 10),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("0")
+    assert asset_has_position(pos, a) is False
+
+
+def test_value_mode_redemption_without_snapshot_falls_back_to_gross(world):
+    """Spec 79 — sem fechamento anterior não há como medir a fração:
+    mantém o comportamento antigo (subtrai o gross), agora com piso em 0."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=10_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=30_000, event_date=date(2026, 1, 5),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=12_000, event_date=date(2026, 1, 20),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("18000")
+
+
+def test_value_mode_ignores_snapshot_on_the_redemption_day(world):
+    """Spec 79 — a referência é o fechamento ESTRITAMENTE anterior: o do
+    próprio dia já reflete o resgate."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=10_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=100_000, event_date=date(2025, 1, 15),
+    )
+    _add_closed_snapshot(world, a.id, date(2026, 1, 31), 200_000)
+    # fechamento do próprio dia do resgate, já pós-saque — deve ser ignorado
+    _add_closed_snapshot(world, a.id, date(2026, 2, 28), 150_000)
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=50_000, event_date=date(2026, 2, 28),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    # 50.000 / 200.000 (jan) = 25% — não 50.000 / 150.000 (fev) = 33%
+    assert pos["total_invested_brl"] == Decimal("75000")
+
+
+def test_cotado_bonus_after_partial_sell_keeps_fiscal_cost(world):
+    """Spec 79 — caso Klabin. A convenção antiga ("SELL não reduz basis_qty")
+    inflava o custo quando uma bonificação vinha DEPOIS de uma venda parcial:
+    BUY 100@30 + SELL 50 + BONUS 50 dava invested 2.000 em vez de 1.500.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.STOCK, current_price=30,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 100, 30, date(2026, 1, 1),
+        AssetMovementType.BUY,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 50, 35, date(2026, 2, 1),
+        AssetMovementType.SELL,
+    )
+    # bonificação sem valor de incorporação declarado (gross 0) → dilui o PM
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BONUS, event_date=date(2026, 3, 1),
+        quantity=Decimal("50"), unit_price=None,
+        gross_amount=Decimal("0"), net_amount=Decimal("0"),
+        currency=Currency.BRL,
+    ))
+    world["db"].commit()
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("100")
+    # custo fiscal: 50 ações remanescentes a 30 = 1.500, diluído em 100 ações
+    assert pos["average_cost_brl"] == Decimal("15")
+    assert pos["total_invested_brl"] == Decimal("1500")
+
+
+def test_cotado_partial_sell_preserves_average_cost(world):
+    """Spec 79 — sem regressão: reduzir basis_qty e custo na mesma proporção
+    não muda o PM, então nada muda em ativo sem bonificação pós-venda."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.STOCK, current_price=40,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 100, 30, date(2026, 1, 1),
+        AssetMovementType.BUY,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 40, 35, date(2026, 2, 1),
+        AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("60")
+    assert pos["average_cost_brl"] == Decimal("30")
+    assert pos["total_invested_brl"] == Decimal("1800")
 
 
 def test_full_redemption_zeroes_both_cotado_and_non_cotado(world):
