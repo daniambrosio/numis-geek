@@ -310,3 +310,44 @@ describe('AssetDetail proventos (spec 81 fase 4)', () => {
     expect(assetSelect).toBeTruthy()
   })
 })
+
+describe('AssetDetail rentabilidade (spec 81 fase 5)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('aba Fechamentos carrega /performance e mostra tiles + tabela', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetSnapshotHistory').mockResolvedValue({ asset_id: 'a1', currency: 'USD', items: [] })
+    vi.spyOn(api, 'getAssetPerformance').mockResolvedValue({
+      asset_id: 'a1', currency: 'USD', is_value_mode: false,
+      items: [{
+        period_end_date: '2026-08-31', quantity: '30', unit_price: '85',
+        market_value_native: '2550', market_value_brl: '14025', market_value_usd: '2550',
+        total_invested_brl: '17000', fx_rate_usd_brl: '5.5', pnl_brl: '-2975', pnl_pct: -0.175,
+        aportes_native: '0', resgates_native: '0', aportes_brl: '0', resgates_brl: '0',
+        proventos_native: '12.49', proventos_brl: '68.7',
+        return_pct: 0.0483, return_brl_pct: 0.061, return_null_reason: null,
+      }],
+      summary: {
+        as_of: '2026-08-31', return_12m_pct: -0.167, return_12m_brl_pct: -0.12,
+        return_ytd_pct: -0.1243, return_ytd_brl_pct: -0.09,
+        since_inception_pct: -0.0113, since_inception_brl_pct: 0.02,
+        months_in_12m: 12, months_in_ytd: 8, proventos_12m_native: '41.7', proventos_12m_brl: '229',
+      },
+    })
+    renderPage('/assets/a1?tab=performance')
+    await waitFor(() => expect(screen.getByTestId('asset-performance-tiles')).toBeInTheDocument())
+    expect(api.getAssetPerformance).toHaveBeenCalledWith('a1')
+    expect(screen.getByTestId('asset-performance-tiles')).toHaveTextContent('-16,7%')
+    expect(screen.getByTestId('asset-performance-table')).toBeInTheDocument()
+    expect(screen.getByTestId('asset-performance-return')).toHaveTextContent('+4,83%')
+  })
+
+  it('falha em /performance não quebra a aba', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetSnapshotHistory').mockResolvedValue({ asset_id: 'a1', currency: 'USD', items: [] })
+    vi.spyOn(api, 'getAssetPerformance').mockRejectedValue(new Error('boom'))
+    renderPage('/assets/a1?tab=performance')
+    await waitFor(() => expect(screen.getByTestId('asset-performance-error')).toBeInTheDocument())
+    expect(screen.getByTestId('asset-tab-panel-performance')).toBeInTheDocument()
+  })
+})

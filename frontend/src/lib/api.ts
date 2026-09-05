@@ -585,6 +585,53 @@ export interface AssetSnapshotHistoryItem {
   fx_rate_usd_brl: string | null
 }
 
+// ── Spec 81 — rentabilidade mês a mês por ativo ─────────────────────────────
+export type AssetReturnNullReason = 'FIRST_CLOSING' | 'GAP' | 'ZERO_START' | 'MISSING_MV' | 'OPTION'
+
+export interface AssetPerformanceRow {
+  period_end_date: string
+  quantity: string
+  unit_price: string | null
+  market_value_native: string | null
+  market_value_brl: string | null
+  market_value_usd: string | null
+  total_invested_brl: string | null
+  fx_rate_usd_brl: string | null
+  pnl_brl: string | null
+  pnl_pct: number | null
+  aportes_native: string
+  resgates_native: string
+  aportes_brl: string
+  resgates_brl: string
+  proventos_native: string
+  proventos_brl: string
+  return_pct: number | null
+  return_brl_pct: number | null
+  return_null_reason: AssetReturnNullReason | null
+}
+
+export interface AssetPerformanceSummary {
+  as_of: string | null
+  return_12m_pct: number | null
+  return_12m_brl_pct: number | null
+  return_ytd_pct: number | null
+  return_ytd_brl_pct: number | null
+  since_inception_pct: number | null
+  since_inception_brl_pct: number | null
+  months_in_12m: number
+  months_in_ytd: number
+  proventos_12m_native: string
+  proventos_12m_brl: string
+}
+
+export interface AssetPerformanceOut {
+  asset_id: string
+  currency: string
+  is_value_mode: boolean
+  items: AssetPerformanceRow[]   // cronológica desc
+  summary: AssetPerformanceSummary
+}
+
 export interface AssetSnapshotHistoryOut {
   asset_id: string
   currency: 'BRL' | 'USD'
@@ -931,6 +978,8 @@ export const api = {
   // Spec 46 — historical unit prices derived from snapshots.
   getAssetPriceHistory: (id: string, period: AssetPriceHistoryPeriod = '24m') =>
     request<AssetPriceHistoryOut>(`/assets/${id}/price-history?period=${period}`),
+  getAssetPerformance: (id: string) =>
+    request<AssetPerformanceOut>(`/assets/${id}/performance`),
   getAssetSnapshotHistory: (id: string) =>
     request<AssetSnapshotHistoryOut>(`/assets/${id}/snapshot-history`),
 

@@ -10,6 +10,7 @@ import {
   type AssetMovementOut,
   type AssetMovementRequest,
   type AssetOut,
+  type AssetPerformanceOut,
   type AssetPriceHistoryOut,
   type AssetPriceHistoryPeriod,
   type AssetRequest,
@@ -104,6 +105,10 @@ export default function AssetDetail() {
   // Spec 50 — snapshot history table + chart.
   const [snapshotHistory, setSnapshotHistory] = useState<AssetSnapshotHistoryOut | null>(null)
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(false)
+  // Spec 81 — rentabilidade mês a mês (carrega quando a aba abre).
+  const [performance, setPerformance] = useState<AssetPerformanceOut | null>(null)
+  const [performanceLoading, setPerformanceLoading] = useState(false)
+  const [performanceError, setPerformanceError] = useState<string | null>(null)
 
   // Lançamentos sub-flow: side panel + composer + deactivate + spec 51 reconciliation
   const [selectedMovement, setSelectedMovement] = useState<AssetMovementOut | null>(null)
@@ -434,6 +439,20 @@ export default function AssetDetail() {
     return () => { cancelled = true }
   }, [me, id, tab, snapshotHistory])
 
+  // Spec 81 — performance (retorno total mês a mês), lazy por aba. Fechamentos
+  // são congelados, então o cache no shell não fica stale com lançamentos novos.
+  useEffect(() => {
+    if (!me || !id || tab !== 'performance' || performance) return
+    let cancelled = false
+    setPerformanceLoading(true)
+    setPerformanceError(null)
+    api.getAssetPerformance(id)
+      .then(p => { if (!cancelled) setPerformance(p) })
+      .catch(e => { if (!cancelled) setPerformanceError(e instanceof Error ? e.message : 'Erro') })
+      .finally(() => { if (!cancelled) setPerformanceLoading(false) })
+    return () => { cancelled = true }
+  }, [me, id, tab, performance])
+
   if (!me) return null
 
   if (loading) {
@@ -714,6 +733,9 @@ export default function AssetDetail() {
             snapshotHistory={snapshotHistory}
             snapshotHistoryLoading={snapshotHistoryLoading}
             movements={movements}
+            performance={performance}
+            performanceLoading={performanceLoading}
+            performanceError={performanceError}
           />
         )}
 

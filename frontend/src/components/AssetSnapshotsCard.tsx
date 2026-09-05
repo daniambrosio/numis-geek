@@ -21,6 +21,9 @@ interface Props {
   assetId: string
   /** Movements pra agregação mensal de aportes (BUYs). */
   movements?: AssetMovementOut[]
+  /** Spec 81 — só o gráfico (a aba de rentabilidade tem a própria tabela). */
+  hideTable?: boolean
+  title?: string
 }
 
 function fmtQty(n: number): string {
@@ -54,7 +57,7 @@ const CHART_PAD_TOP = 12
 const CHART_PAD_BOTTOM = 18
 
 export default function AssetSnapshotsCard({
-  history, loading, assetId, movements,
+  history, loading, assetId, movements, hideTable = false, title = 'Fechamentos',
 }: Props) {
   const rows = history?.items ?? []
 
@@ -109,7 +112,7 @@ export default function AssetSnapshotsCard({
   return (
     <Card padding="p-5">
       <div className="flex items-center justify-between mb-3">
-        <SectionTitle>Fechamentos</SectionTitle>
+        <SectionTitle>{title}</SectionTitle>
         <span className="text-[10px] text-gray-500">
           {rows.length} fechamento{rows.length === 1 ? '' : 's'} ·
           {' '}apenas confirmados
@@ -240,6 +243,7 @@ export default function AssetSnapshotsCard({
         )
       })()}
 
+      {!hideTable && (
       <div className="overflow-x-auto">
         <table className="w-full text-[12px]" data-testid="asset-snapshots-table">
           <thead>
@@ -311,6 +315,7 @@ export default function AssetSnapshotsCard({
           </tbody>
         </table>
       </div>
+      )}
     </Card>
   )
 }
