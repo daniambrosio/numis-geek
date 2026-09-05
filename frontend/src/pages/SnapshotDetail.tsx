@@ -38,6 +38,7 @@ import SnapshotDriftPanel from '../components/SnapshotDriftPanel'
 import SnapshotItemEditModal from '../components/SnapshotItemEditModal'
 import StatusPill from '../components/StatusPill'
 import { Card, ClassBadge, FILogo, MultiChips, SearchInput, SectionTitle } from '../components/ui'
+import KpiTile from '../components/KpiTile'
 import { KLASS, collapsedOf, fiTokenFor, type CollapsedClassCode } from '../lib/tokens'
 
 const MONTH_NAMES_LONG = [
@@ -1383,22 +1384,6 @@ const TYPE_META: Record<string, { label: string; color: string }> = {
   INTEREST:           { label: 'Juros / Cupom', color: '#3b82f6' },
   SECURITIES_LENDING: { label: 'Aluguel',       color: '#8b5cf6' },
   OPTION_PREMIUM:     { label: 'Prêmio sintético', color: '#a855f7' },
-}
-
-function KpiTile({
-  label, value, sub, intent,
-}: { label: string; value: string; sub?: string; intent?: 'positive' | 'negative' }) {
-  const intentColor =
-    intent === 'negative' ? 'text-red-500 dark:text-red-400'
-    : intent === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
-    : ''
-  return (
-    <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
-      <div className="text-[10px] uppercase tracking-wider font-medium text-gray-500">{label}</div>
-      <div className={`mt-1 text-lg font-semibold tnum ${intentColor}`}>{value}</div>
-      {sub && <div className="text-[11px] text-gray-500 mt-0.5">{sub}</div>}
-    </div>
-  )
 }
 
 function SortHeader<K extends string>({

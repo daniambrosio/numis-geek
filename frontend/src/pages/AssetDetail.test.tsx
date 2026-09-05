@@ -186,3 +186,16 @@ describe('AssetDetail price chart (Spec 46)', () => {
     expect(screen.queryByText(/Preço · 24 meses/)).toBeNull()
   })
 })
+
+describe('AssetDetail KPIs (spec 81 — sem PTAX hardcoded)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('Preço atual USD mostra BRL pelo câmbio implícito da posição', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([]))
+    renderPage()
+    // position: current_value = 30×85, current_value_brl = 30×85×5.5 → fx 5,5
+    await waitFor(() => expect(screen.getByTestId('price-brl')).toBeInTheDocument())
+    expect(screen.getByTestId('price-brl')).toHaveTextContent('467,50')
+  })
+})

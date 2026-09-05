@@ -205,6 +205,10 @@ def _resolve_mv_native(
     if item.market_value_native is not None:
         return Decimal(item.market_value_native)
     if item.market_value_brl is None:
+        # Item legado sem valor de mercado gravado: qty × preço unitário é o
+        # invariante do snapshot (modo valor: qty=1, unit=total).
+        if item.unit_price is not None and item.quantity is not None:
+            return Decimal(item.quantity) * Decimal(item.unit_price)
         return None
     if asset_currency == Currency.BRL.value:
         return Decimal(item.market_value_brl)

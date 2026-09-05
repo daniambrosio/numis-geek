@@ -11,6 +11,8 @@ import type {
   AssetMovementOut,
   AssetSnapshotHistoryOut,
 } from '../lib/api'
+import { fmtPct } from '../lib/format'
+import { fmtBRL, fmtUSD } from '../lib/money'
 import { Card, SectionTitle } from './ui'
 
 interface Props {
@@ -21,26 +23,11 @@ interface Props {
   movements?: AssetMovementOut[]
 }
 
-function fmtBRL(n: number | null | undefined): string {
-  if (n == null) return '—'
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-}
-
-function fmtUSD(n: number | null | undefined): string {
-  if (n == null) return '—'
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
-
 function fmtQty(n: number): string {
   return n.toLocaleString('pt-BR', {
     minimumFractionDigits: n < 1 ? 4 : 0,
     maximumFractionDigits: n < 1 ? 6 : 4,
   })
-}
-
-function fmtPct(n: number, sign = true): string {
-  const v = (n * 100).toFixed(2)
-  return (sign && n > 0 ? '+' : '') + v + '%'
 }
 
 const PT_MONTHS = [
@@ -316,7 +303,7 @@ export default function AssetSnapshotsCard({
                     {fmtUSD(usd)}
                   </td>
                   <td className={`py-2 px-2 text-right tnum ${deltaCls}`}>
-                    {delta == null ? '—' : fmtPct(delta)}
+                    {delta == null ? '—' : fmtPct(delta, 2, true)}
                   </td>
                 </tr>
               )

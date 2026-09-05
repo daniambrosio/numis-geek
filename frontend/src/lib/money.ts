@@ -4,11 +4,16 @@
  * (Intl.NumberFormat com notation: 'compact' em pt-BR usa "mil"/"mi",
  * que confunde leitura visual). Decimal com vírgula, sem espaço entre
  * número e sufixo: "R$ 1,5k", "R$ 12,5M", "-US$ 3,2k".
+ *
+ * `null`/`undefined` viram "—" (spec 81 — antes cada página tinha a sua
+ * cópia null-safe). `sign: true` prefixa "+"/"−" (P&L, variação).
  */
 
-interface FmtOpts {
+export interface FmtOpts {
   compact?: boolean
   decimals?: number
+  /** Prefixa "+" (≥ 0) ou "−" (< 0) — pra P&L e deltas. */
+  sign?: boolean
 }
 
 function compactNumeric(abs: number): { value: string; suffix: string } | null {
@@ -39,43 +44,48 @@ function fmtCompact(
   return `${sign}${symbol} ${c.value}${c.suffix}`
 }
 
-export function fmtBRL(n: number, opts: FmtOpts = {}): string {
-  if (opts.compact) {
-    return fmtCompact(n, 'R$', () =>
-      n.toLocaleString('pt-BR', {
-        style: 'currency', currency: 'BRL',
-        minimumFractionDigits: opts.decimals ?? 0,
-        maximumFractionDigits: opts.decimals ?? 0,
-      }),
-    )
-  }
-  return n.toLocaleString('pt-BR', {
-    style: 'currency', currency: 'BRL',
-    minimumFractionDigits: opts.decimals ?? 2,
-    maximumFractionDigits: opts.decimals ?? 2,
-  })
+function withSign(n: number, formatAbs: (abs: number) => string): string {
+  return (n >= 0 ? '+' : '−') + formatAbs(Math.abs(n))
 }
 
-export function fmtUSD(n: number, opts: FmtOpts = {}): string {
-  if (opts.compact) {
-    return fmtCompact(n, 'US$', () =>
-      n.toLocaleString('en-US', {
-        style: 'currency', currency: 'USD',
-        minimumFractionDigits: opts.decimals ?? 0,
-        maximumFractionDigits: opts.decimals ?? 0,
-      }),
-    )
+function fmtCurrency(
+  n: number | null | undefined,
+  symbol: string,
+  locale: string,
+  currency: 'BRL' | 'USD',
+  opts: FmtOpts,
+): string {
+  if (n == null || Number.isNaN(n)) return '—'
+  const plain = (v: number) => {
+    if (opts.compact) {
+      return fmtCompact(v, symbol, () =>
+        v.toLocaleString(locale, {
+          style: 'currency', currency,
+          minimumFractionDigits: opts.decimals ?? 0,
+          maximumFractionDigits: opts.decimals ?? 0,
+        }),
+      )
+    }
+    return v.toLocaleString(locale, {
+      style: 'currency', currency,
+      minimumFractionDigits: opts.decimals ?? 2,
+      maximumFractionDigits: opts.decimals ?? 2,
+    })
   }
-  return n.toLocaleString('en-US', {
-    style: 'currency', currency: 'USD',
-    minimumFractionDigits: opts.decimals ?? 2,
-    maximumFractionDigits: opts.decimals ?? 2,
-  })
+  return opts.sign ? withSign(n, plain) : plain(n)
+}
+
+export function fmtBRL(n: number | null | undefined, opts: FmtOpts = {}): string {
+  return fmtCurrency(n, 'R$', 'pt-BR', 'BRL', opts)
+}
+
+export function fmtUSD(n: number | null | undefined, opts: FmtOpts = {}): string {
+  return fmtCurrency(n, 'US$', 'en-US', 'USD', opts)
 }
 
 export function fmtMoney(
-  n: number,
-  currency: 'BRL' | 'USD',
+  n: number | null | undefined,
+  currency: 'BRL' | 'USD' | string,
   opts: FmtOpts = {},
 ): string {
   return currency === 'USD' ? fmtUSD(n, opts) : fmtBRL(n, opts)

@@ -365,3 +365,12 @@ def test_no_closed_snapshots_returns_empty(world):
     a = _asset(world)
     perf = compute_asset_performance(world["db"], a.id)
     assert perf.rows == [] and perf.summary.as_of is None
+
+
+def test_legacy_item_without_mv_falls_back_to_qty_times_unit_price(world):
+    a = _asset(world)
+    s1 = _snap(world, "2026-01-31"); _item(world, s1, a, qty="10", unit="100")   # sem mv
+    s2 = _snap(world, "2026-02-28"); _item(world, s2, a, mv_native=1100, mv_brl=1100)
+    rows = _by_period(compute_asset_performance(world["db"], a.id))
+    assert rows["2026-01-31"].market_value_native == D("1000")
+    assert rows["2026-02-28"].return_pct == D("0.1")

@@ -1,32 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type AccountOut, type AssetClass, type AssetOut, type AssetRequest, type FinancialInstitutionOut, type FixedIncomeDetails, type FixedIncomeIndexer, type AssetMovementOut, type PhysicalDetails, type PositionOut } from '../lib/api'
+import {
+  CLASS_LABELS, INDEXERS, NEEDS_FIXED_INCOME, NEEDS_PHYSICAL,
+  TICKER_FORBIDDEN, TICKER_REQUIRED, resolveInvestmentAccount,
+} from '../lib/assetForm'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
-
-const CLASS_LABELS: Record<AssetClass, string> = {
-  STOCK: 'Ação',
-  REIT: 'FII / REIT',
-  ETF: 'ETF',
-  FIXED_INCOME: 'Renda Fixa',
-  FUND: 'Fundo',
-  CRYPTO: 'Cripto',
-  REAL_ESTATE: 'Imóvel',
-  VEHICLE: 'Veículo',
-  CASH: 'Dinheiro',
-  FGTS: 'FGTS',
-  PRIVATE_PENSION: 'Previdência',
-  OPTION: 'Opção',
-}
-
-// PRIVATE_PENSION/FGTS/CASH behave like ticker classes but ticker is optional
-// (per spec 07a — Notion has no ticker for those rows).
-const TICKER_REQUIRED: AssetClass[] = ['STOCK', 'ETF', 'REIT', 'CRYPTO']
-const TICKER_FORBIDDEN: AssetClass[] = ['FIXED_INCOME', 'REAL_ESTATE', 'VEHICLE']
-const NEEDS_FIXED_INCOME: AssetClass[] = ['FIXED_INCOME']
-const NEEDS_PHYSICAL: AssetClass[] = ['REAL_ESTATE', 'VEHICLE']
-
-const INDEXERS: FixedIncomeIndexer[] = ['CDI', 'IPCA', 'SELIC', 'PREFIXED', 'USD']
 
 interface Props {
   initial?: AssetOut
@@ -54,9 +34,7 @@ export default function AssetModal({ initial, institutions, forcedWorkspaceId, w
   // Spec 10: resolve account from (workspace, FI).
   const [accounts, setAccounts] = useState<AccountOut[]>([])
   useEffect(() => { api.listAccounts().then(setAccounts).catch(() => {}) }, [])
-  const accountForFi = useMemo(() => {
-    return accounts.find(a => a.financial_institution_id === fiId && a.account_type === 'investment') ?? null
-  }, [accounts, fiId])
+  const accountForFi = useMemo(() => resolveInvestmentAccount(accounts, fiId), [accounts, fiId])
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? 'BRL')
   const [ticker, setTicker] = useState(initial?.ticker ?? '')
   const [cnpj, setCnpj] = useState(initial?.cnpj ?? '')

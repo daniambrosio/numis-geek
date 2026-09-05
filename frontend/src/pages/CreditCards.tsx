@@ -10,6 +10,7 @@ import { CreditCard as CreditCardIcon, Plus } from 'lucide-react'
 import { api, type CreditCardOut, type CreditCardPayload, type FinancialInstitutionOut, type UserOut } from '../lib/api'
 import AppLayout from '../components/AppLayout'
 import { Card, SectionTitle, FILogo, Field, INPUT_CLS } from '../components/ui'
+import KpiTile from '../components/KpiTile'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
 
@@ -26,18 +27,6 @@ export function cardKpis(cards: CreditCardOut[]) {
   const total = cards.reduce((s, c) => s + c.open_invoice_total, 0)
   const totalLimit = cards.reduce((s, c) => s + (c.credit_limit ?? 0), 0)
   return { total, totalLimit, available: totalLimit - total, usedPct: totalLimit > 0 ? total / totalLimit : 0 }
-}
-
-export function KpiTile({ label, value, intent }: { label: string; value: string; intent?: 'negative' | 'positive' }) {
-  const tone = intent === 'negative' ? 'text-amber-500 dark:text-amber-400'
-    : intent === 'positive' ? 'text-emerald-600 dark:text-emerald-400'
-    : 'text-gray-900 dark:text-white'
-  return (
-    <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-800">
-      <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
-      <div className={`text-lg font-semibold tnum money mt-0.5 ${tone}`}>{value}</div>
-    </div>
-  )
 }
 
 interface ModalProps {

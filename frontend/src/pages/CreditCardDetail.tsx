@@ -13,7 +13,8 @@ import AppLayout from '../components/AppLayout'
 import { Card, SectionTitle, FILogo, Field, INPUT_CLS } from '../components/ui'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
-import { fmtMoney, fmtPct, KpiTile } from './CreditCards'
+import { fmtMoney, fmtPct } from './CreditCards'
+import KpiTile from '../components/KpiTile'
 
 function fmtDate(iso: string) {
   const [y, m, d] = iso.split('-')

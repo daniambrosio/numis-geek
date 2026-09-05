@@ -19,6 +19,8 @@ import {
   type PositionOut,
   type UserOut,
 } from '../lib/api'
+import { fmtDate, fmtMonthYY, fmtNum, fmtPct } from '../lib/format'
+import { fmtBRL, fmtMoney, fmtUSD } from '../lib/money'
 import { SOURCE_LABEL, TIER_COLOR, formatRelative } from '../lib/price'
 import { useEscapeKey } from '../lib/useEscapeKey'
 
@@ -33,6 +35,7 @@ import AppLayout from '../components/AppLayout'
 import AssetDistributionsChart from '../components/AssetDistributionsChart'
 import AssetModal from '../components/AssetModal'
 import AssetSnapshotsCard from '../components/AssetSnapshotsCard'
+import KpiTile from '../components/KpiTile'
 import ValuationCard from '../components/ValuationCard'
 import LancamentoDetailPanel from '../components/LancamentoDetailPanel'
 import ManualPriceModal from '../components/ManualPriceModal'
@@ -47,76 +50,7 @@ import {
 } from '../components/ui'
 import { KLASS, collapsedOf } from '../lib/tokens'
 
-// ── Formatters (match prototype) ─────────────────────────────────────────────
-
-// Compact suffix system-wide: "k" e "M" (lib/money.ts). pt-BR usa "mil"/"mi"
-// no Intl.NumberFormat com notation:'compact' — proibido.
-function compactSuffix(abs: number): { value: string; suffix: string } | null {
-  if (abs >= 1_000_000) {
-    return { value: (abs / 1_000_000).toFixed(1).replace('.', ','), suffix: 'M' }
-  }
-  if (abs >= 1_000) {
-    return { value: (abs / 1_000).toFixed(1).replace('.', ','), suffix: 'k' }
-  }
-  return null
-}
-
-function fmtBRL(n: number | null | undefined, opts: { compact?: boolean; sign?: boolean } = {}) {
-  if (n == null) return '—'
-  const { compact = false, sign = false } = opts
-  const abs = Math.abs(n)
-  const c = compact ? compactSuffix(abs) : null
-  let out: string
-  if (c) {
-    out = `R$ ${c.value}${c.suffix}`
-  } else {
-    out = new Intl.NumberFormat('pt-BR', {
-      style: 'currency', currency: 'BRL',
-      minimumFractionDigits: compact ? 0 : 2,
-      maximumFractionDigits: compact ? 0 : 2,
-    }).format(abs)
-  }
-  if (sign) return (n >= 0 ? '+' : '−') + out.replace('R$', 'R$ ')
-  return n < 0 ? '−' + out : out
-}
-
-function fmtUSD(n: number | null | undefined, opts: { compact?: boolean; sign?: boolean } = {}) {
-  if (n == null) return '—'
-  const { compact = false, sign = false } = opts
-  const abs = Math.abs(n)
-  const c = compact ? compactSuffix(abs) : null
-  let out: string
-  if (c) {
-    out = `US$ ${c.value}${c.suffix}`
-  } else {
-    out = new Intl.NumberFormat('en-US', {
-      style: 'currency', currency: 'USD',
-      minimumFractionDigits: compact ? 0 : 2,
-      maximumFractionDigits: compact ? 0 : 2,
-    }).format(abs)
-  }
-  if (sign) return (n >= 0 ? '+' : '−') + out
-  return n < 0 ? '−' + out : out
-}
-
-function fmtMoney(n: number | null | undefined, ccy: string, opts?: { compact?: boolean; sign?: boolean }) {
-  return ccy === 'USD' ? fmtUSD(n, opts) : fmtBRL(n, opts)
-}
-
-function fmtNum(n: number | null | undefined, dp = 0) {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: dp, maximumFractionDigits: dp }).format(n)
-}
-
-function fmtPct(n: number | null | undefined, dp = 1, sign = false) {
-  if (n == null) return '—'
-  const v = (n * 100).toFixed(dp)
-  return (sign && n > 0 ? '+' : '') + v + '%'
-}
-
-function fmtDate(iso: string) {
-  return new Intl.DateTimeFormat('pt-BR').format(new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')))
-}
+// ── Formatters: lib/money.ts + lib/format.ts (spec 81) ──────────────────────
 
 function CountryFlag({ country }: { country: string }) {
   const flag = country === 'BR' ? '🇧🇷' : country === 'US' ? '🇺🇸' : '🌐'
@@ -130,17 +64,6 @@ const PERIOD_LABEL: Record<AssetPriceHistoryPeriod, string> = {
   '12m': '12 meses',
   '24m': '24 meses',
   'all': 'tudo',
-}
-
-const MONTH_SHORT_PT = [
-  'jan', 'fev', 'mar', 'abr', 'mai', 'jun',
-  'jul', 'ago', 'set', 'out', 'nov', 'dez',
-]
-
-function fmtMonthYY(iso: string): string {
-  // iso = YYYY-MM-DD
-  const [y, m] = iso.split('-')
-  return `${MONTH_SHORT_PT[parseInt(m, 10) - 1]}/${y.slice(2)}`
 }
 
 function PriceChartAxis({ points }: { points: { date: string }[] }) {
@@ -157,7 +80,6 @@ function PriceChartAxis({ points }: { points: { date: string }[] }) {
   )
 }
 
-const PTAX = 5.12 // fallback if no fx_rate available
 
 // ── Type label mappings (prototype-faithful) ─────────────────────────────────
 
@@ -534,6 +456,10 @@ export default function AssetDetail() {
   const pl = value != null && cost != null ? value - cost : null
   const valueBRL = position?.current_value_brl != null ? Number(position.current_value_brl) : null
   const costBRL = position?.total_invested_brl != null ? Number(position.total_invested_brl) : null
+  // Spec 81 — sem PTAX hardcoded: o câmbio implícito vem da própria posição
+  // (current_value_brl / current_value), e o P&L em BRL do investido em BRL.
+  const impliedFx = value != null && value > 0 && valueBRL != null ? valueBRL / value : null
+  const plBRL = valueBRL != null && costBRL != null ? valueBRL - costBRL : null
   const variation = position?.variation != null ? Number(position.variation) : null
   const rentabilidade = position?.rentabilidade != null ? Number(position.rentabilidade) : null
   const yoc = (costBRL && costBRL > 0) ? distSumBRL / costBRL : null
@@ -672,10 +598,10 @@ export default function AssetDetail() {
                         <span data-testid="price-source">{SOURCE_LABEL[asset.price_source]}</span>
                       </>
                     )}
-                    {ccy === 'USD' && price != null && (
+                    {ccy === 'USD' && price != null && impliedFx != null && (
                       <>
                         <span className="mx-1">·</span>
-                        <span className="tnum">R$ {(price * PTAX).toFixed(2)}</span>
+                        <span className="tnum" data-testid="price-brl">{fmtBRL(price * impliedFx)}</span>
                       </>
                     )}
                   </>
@@ -687,7 +613,7 @@ export default function AssetDetail() {
             <KpiTile
               label="P&L"
               value={fmtMoney(pl, ccy, { sign: true, compact: true })}
-              sub={ccy === 'USD' && pl != null ? fmtBRL(pl * PTAX, { sign: true, compact: true }) : undefined}
+              sub={ccy === 'USD' && plBRL != null ? fmtBRL(plBRL, { sign: true, compact: true }) : undefined}
               intent={pl == null ? undefined : pl >= 0 ? 'positive' : 'negative'}
             />
             <KpiTile
@@ -1040,39 +966,6 @@ export default function AssetDetail() {
         </div>
       )}
     </AppLayout>
-  )
-}
-
-function KpiTile({
-  label, value, sub, intent, cornerDot,
-}: {
-  label: string
-  value: string
-  sub?: React.ReactNode
-  intent?: 'positive' | 'negative'
-  cornerDot?: { color: string; title?: string }
-}) {
-  const intentColor =
-    intent === 'negative' ? 'text-red-500 dark:text-red-400'
-    : intent === 'positive' ? 'text-emerald-500 dark:text-emerald-400'
-    : ''
-  return (
-    <div className="relative px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
-      {cornerDot && (
-        <span
-          className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
-          style={{ background: cornerDot.color }}
-          title={cornerDot.title}
-          aria-label={cornerDot.title}
-          data-testid="kpi-dot"
-        />
-      )}
-      <div className="text-[11px] uppercase tracking-wider font-medium text-gray-500 dark:text-gray-400">{label}</div>
-      <div className={`mt-1 text-lg font-semibold tnum money flex items-center gap-2 ${intentColor}`}>
-        {value}
-      </div>
-      {sub && <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{sub}</div>}
-    </div>
   )
 }
 
