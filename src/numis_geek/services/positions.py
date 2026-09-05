@@ -211,6 +211,15 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         kv[1].created_at,
     ))
 
+    # Spec 64 — asset value-mode: TODA linha com gross entra no basis
+    # non_cotado, mesmo com quantity=1 (invariante `modo_valor_qty_1`
+    # da migration 2026-07-02). Sem isso um SELL parcial (resgate) zerava
+    # running_qty, disparava reset_cotado_basis e o ativo sumia do
+    # fechamento (caso LFT mar/2028 XP: BUY 4.838 + SELL 522 → invested 0).
+    is_value_mode_asset = bool(
+        asset and asset.asset_class and asset.asset_class not in _COTADO_CLASSES
+    )
+
     running_qty = Decimal("0")
     basis_qty = Decimal("0")          # qty contributing to native PM (cotado BUY/SUBSCRIPTION)
     basis_cost_native = Decimal("0")  # weighted native cost
@@ -262,7 +271,9 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
         mv_ccy = r.currency.value if hasattr(r.currency, "value") else r.currency
         effective_fx = fx if mv_ccy == "USD" else Decimal("1")
 
-        is_non_cotado_row = r.quantity is None and r.gross_amount is not None
+        is_non_cotado_row = r.gross_amount is not None and (
+            r.quantity is None or is_value_mode_asset
+        )
 
         # ── Quantity update ─────────────────────────────────────────────────
         if r.type in _QTY_ADD_TYPES:
@@ -302,7 +313,11 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
             reset_basis()
         elif r.type == AssetMovementType.SELL and abs(running_qty) < _TOLERANCE:
             running_qty = Decimal("0")
-            reset_cotado_basis()
+            # Spec 64 — em modo valor `quantity` é convenção fixa (=1), não
+            # tamanho de posição: running_qty=0 é estado normal e não
+            # significa posição encerrada. Só cotado zera o basis aqui.
+            if not is_value_mode_asset:
+                reset_cotado_basis()
 
     if basis_qty > 0:
         average_cost = basis_cost_native / basis_qty

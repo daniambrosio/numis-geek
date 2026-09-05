@@ -23,7 +23,7 @@ from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.financial_institution import FinancialInstitution
-from numis_geek.services.positions import compute_position
+from numis_geek.services.positions import asset_has_position, compute_position
 from numis_geek.services.workspace import WorkspaceService
 
 
@@ -364,10 +364,15 @@ def test_hybrid_sell_zeroing_cotado_preserves_non_cotado(world):
     """Bug 2026-07-07 audit — reset_basis() em SELL que zerava running_qty
     também zerava non_cotado_basis_brl, perdendo o componente non_cotado
     do total_invested_brl. Fix: SELL usa reset_cotado_basis() (só cotado).
+
+    Spec 64 — o cenário híbrido só existe em classe COTADA: em modo valor
+    toda linha com gross entra no basis non_cotado e `reset_cotado_basis`
+    nem é alcançado (ver
+    `test_value_mode_hybrid_sums_all_gross_without_reset`).
     """
     a = _make_asset(
         world["db"], world["ws_id"], world["account_id"],
-        AssetClass.FIXED_INCOME, current_price=15_000,
+        AssetClass.STOCK, current_price=15_000,
     )
     now = datetime.now(timezone.utc)
     # BUY cotado: 100 títulos @ R$100
@@ -403,6 +408,159 @@ def test_hybrid_sell_zeroing_cotado_preserves_non_cotado(world):
     # total_invested_brl = 0 + 5000 = 5000.
     assert pos["total_invested_brl"] == Decimal("5000")
     assert pos["quantity_held"] == Decimal("0")
+
+
+def test_value_mode_hybrid_sums_all_gross_without_reset(world):
+    """Spec 64 — mesmo cenário do teste acima, mas em classe de modo valor
+    (FIXED_INCOME): `quantity` é convenção, não tamanho de posição. Todo
+    gross entra no basis non_cotado e o SELL apenas subtrai — sem reset.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=15_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=10_000, event_date=date(2026, 1, 1),
+    )
+    world["db"].add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=world["ws_id"], asset_id=a.id,
+        type=AssetMovementType.BUY, event_date=date(2026, 2, 1),
+        quantity=None, unit_price=None,
+        gross_amount=Decimal("5000"), net_amount=Decimal("5000"),
+        currency=Currency.BRL,
+    ))
+    world["db"].commit()
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=11_000, event_date=date(2026, 3, 1),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("4000")
+
+
+def test_value_mode_partial_sell_keeps_position(world):
+    """Spec 64 — caso LFT mar/2028 (XP): BUY R$ 4.838,54 + resgate parcial
+    de R$ 522,43, ambos qty=1 (invariante `modo_valor_qty_1`). Antes do fix
+    o SELL zerava running_qty, disparava reset_cotado_basis e o ativo sumia
+    do fechamento com invested=0.
+    """
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FIXED_INCOME, current_price=5_278.74,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross="4838.535", event_date=date(2025, 5, 6),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross="522.43", event_date=date(2025, 9, 25),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 8, 31))
+    # gross_amount é NUMERIC(18,2): 4838.535 → 4838.53 na coluna.
+    assert pos["total_invested_brl"] == Decimal("4316.10")
+    assert asset_has_position(pos, a) is True
+
+
+def test_value_mode_only_buys_sums_gross(world):
+    """FUND só com aportes: invested = Σ gross."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=25_000,
+    )
+    for i, g in enumerate((10_000, 7_500, 2_500)):
+        _add_value_mode_movement(
+            world["db"], world["ws_id"], a.id,
+            gross=g, event_date=date(2026, 1, 1 + i),
+        )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("20000")
+
+
+def test_value_mode_multiple_buys_and_sells(world):
+    """FUND com aportes e resgates parciais: invested = Σ BUY − Σ SELL."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.FUND, current_price=25_000,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=10_000, event_date=date(2026, 1, 1),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=3_000, event_date=date(2026, 2, 1),
+        mtype=AssetMovementType.SELL,
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=5_000, event_date=date(2026, 3, 1),
+    )
+    _add_value_mode_movement(
+        world["db"], world["ws_id"], a.id,
+        gross=2_000, event_date=date(2026, 4, 1),
+        mtype=AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["total_invested_brl"] == Decimal("10000")
+    assert asset_has_position(pos, a) is True
+
+
+def _add_cotado_movement(db, ws_id, asset_id, qty, unit, event_date, mtype):
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()),
+        workspace_id=ws_id, asset_id=asset_id, type=mtype,
+        event_date=event_date,
+        quantity=Decimal(str(qty)), unit_price=Decimal(str(unit)),
+        gross_amount=Decimal(str(qty)) * Decimal(str(unit)),
+        net_amount=Decimal(str(qty)) * Decimal(str(unit)),
+        currency=Currency.BRL,
+    ))
+    db.commit()
+
+
+def test_cotado_sell_all_still_closes_position(world):
+    """Spec 64 — sem regressão em cotado: STOCK BUY 10 + SELL 10 zera."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.STOCK, current_price=30,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 10, 25, date(2026, 1, 1),
+        AssetMovementType.BUY,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 10, 30, date(2026, 2, 1),
+        AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("0")
+    assert pos["total_invested_brl"] == Decimal("0")
+    assert asset_has_position(pos, a) is False
+
+
+def test_cotado_partial_sell_keeps_remaining_basis(world):
+    """Spec 64 — sem regressão em cotado: STOCK BUY 10 + SELL 5."""
+    a = _make_asset(
+        world["db"], world["ws_id"], world["account_id"],
+        AssetClass.STOCK, current_price=30,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 10, 25, date(2026, 1, 1),
+        AssetMovementType.BUY,
+    )
+    _add_cotado_movement(
+        world["db"], world["ws_id"], a.id, 5, 30, date(2026, 2, 1),
+        AssetMovementType.SELL,
+    )
+    pos = compute_position(world["db"], a.id, as_of=date(2026, 6, 30))
+    assert pos["quantity_held"] == Decimal("5")
+    assert pos["average_cost_brl"] == Decimal("25")
+    assert pos["total_invested_brl"] == Decimal("125")
 
 
 def test_full_redemption_zeroes_both_cotado_and_non_cotado(world):
