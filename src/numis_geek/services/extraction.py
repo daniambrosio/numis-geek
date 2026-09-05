@@ -1266,6 +1266,14 @@ def preview_bulk_extract(
         raise ExtractionError(f"Job {job_id} not found")
     if job.snapshot_id is None:
         raise ExtractionError("Preview only available for bulk jobs (snapshot_id set)")
+    # BROKER_INCOME (proventos) tem classificação própria — espelha o
+    # dispatch de confirm_extraction. Sem isso o modal de revisão de
+    # proventos recebia a classificação de POSIÇÕES (tudo órfão/vazio).
+    if (
+        job.source_hint == ExtractionSourceHint.BROKER_INCOME
+        and not job.pendency_id
+    ):
+        return preview_bulk_income(db, job_id=job_id)
     payload = job.extracted_json or {}
     apply_plan, detail, errors = _classify_bulk_extract(
         db, job, payload,

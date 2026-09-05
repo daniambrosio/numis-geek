@@ -7,6 +7,12 @@
  *
  * Diferente do BulkExtractReviewModal (que mexe em pendências de preço),
  * aqui o apply CRIA Distribution rows — não há "casar com pendência".
+ *
+ * Server-authoritative (2026-09-05): as três seções vêm de
+ * `previewExtraction` (que resolve cada evento pro Asset da FI), não de
+ * classificação no cliente. A versão anterior lia `extracted_json` direto
+ * com o campo errado (`ticker` em vez de `ticker_raw`) e nunca sabia pra
+ * qual ativo o provento ia — mostrava "—" em todas as linhas.
  */
 import { useEffect, useState } from 'react'
 import { Sparkles, X } from 'lucide-react'
@@ -57,6 +63,15 @@ interface IncomePreview {
   orphan: IncomeRow[]
   pendency_not_in_extract: unknown[]  // unused for income
   auto_skipped: unknown[]             // unused for income
+  errors: string[]
+}
+
+/** Nome do ativo pra onde o provento vai. Aluguel (sem ticker) é
+ *  permitido sem ativo — Distribution.asset_id é nullable. */
+function assetLabel(r: IncomeRow): string | null {
+  if (r.asset_name) return r.asset_name
+  if (!r.ticker && !r.option_ticker) return 'sem ativo (aluguel)'
+  return null
 }
 
 export default function BulkIncomeReviewModal({
@@ -69,52 +84,41 @@ export default function BulkIncomeReviewModal({
   const [error, setError] = useState<string | null>(null)
   const scopedFi = job.institution_short_name ?? null
 
-  // Período do fechamento em revisão. Mês do period_end (ex.: "2026-06-30"
-  // → 2026-06-01..2026-06-30). Preview filtra o payload por isso — CSVs
-  // de proventos costumam vir com múltiplos meses; o backend também
-  // descarta o que está fora em `_classify_bulk_income`, então mostrar
-  // fora aqui era enganoso ("Registrar 45" mas só 1 entrava).
+  // Período do fechamento em revisão — só pra rótulo; quem filtra os
+  // eventos fora do mês é o backend (`_classify_bulk_income`), que
+  // devolve a contagem ignorada em `errors`.
   const periodEndIso = job.snapshot_period_end_date ?? null
-  const [periodStartIso, periodStartLabel, periodEndLabel] = (() => {
-    if (!periodEndIso) return [null, null, null] as const
-    const start = `${periodEndIso.slice(0, 7)}-01`
-    return [start, start, periodEndIso] as const
-  })()
-  const [outOfPeriodCount, setOutOfPeriodCount] = useState(0)
+  const periodStartLabel = periodEndIso ? `${periodEndIso.slice(0, 7)}-01` : null
+  const periodEndLabel = periodEndIso
 
+  // `loading` nasce true e o modal é remontado por job — não precisa
+  // resetar estado dentro do effect (react-hooks/set-state-in-effect).
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    const events = (job.extracted_json as { events?: unknown[] } | null)?.events ?? []
-    const inPeriod: IncomeRow[] = []
-    let dropped = 0
-    for (const e of events) {
-      const row = e as IncomeRow
-      const d = row.event_date
-      if (periodStartIso && periodEndIso && (d < periodStartIso || d > periodEndIso)) {
-        dropped++
-        continue
-      }
-      inPeriod.push({
-        ...row,
-        external_id: '',
-        asset_id: null,
-        asset_name: null,
-        institution_short_name: scopedFi,
+    api.previewExtraction(job.id)
+      .then(result => {
+        if (cancelled) return
+        const detail = (result.bulk_detail ?? null) as unknown as Omit<IncomePreview, 'errors'> | null
+        setPreview({
+          applied: detail?.applied ?? [],
+          matched_no_pendency: detail?.matched_no_pendency ?? [],
+          orphan: detail?.orphan ?? [],
+          pendency_not_in_extract: [],
+          auto_skipped: [],
+          errors: result.errors ?? [],
+        })
       })
-    }
-    if (cancelled) return
-    setPreview({
-      applied: inPeriod,
-      matched_no_pendency: [],
-      orphan: [],
-      pendency_not_in_extract: [],
-      auto_skipped: [],
-    })
-    setOutOfPeriodCount(dropped)
-    setLoading(false)
+      .catch(e => {
+        if (cancelled) return
+        setError(e instanceof Error ? e.message : 'Erro ao carregar preview')
+        setPreview({
+          applied: [], matched_no_pendency: [], orphan: [],
+          pendency_not_in_extract: [], auto_skipped: [], errors: [],
+        })
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [job.extracted_json, scopedFi, periodStartIso, periodEndIso])
+  }, [job.id])
 
   async function handleApply() {
     setApplying(true); setError(null)
@@ -135,6 +139,9 @@ export default function BulkIncomeReviewModal({
   }
 
   const rows = preview?.applied ?? []
+  const orphans = preview?.orphan ?? []
+  const duplicates = preview?.matched_no_pendency ?? []
+  const notices = preview?.errors ?? []
   const totalGross = rows.reduce((s, r) => s + Number(r.gross_amount || 0), 0)
   const totalNet = rows.reduce((s, r) => s + Number(r.net_amount || 0), 0)
   const currency = rows[0]?.currency ?? 'USD'
@@ -157,12 +164,11 @@ export default function BulkIncomeReviewModal({
                 </span>
               )}
             </div>
-            {outOfPeriodCount > 0 && (
-              <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
-                {outOfPeriodCount} evento{outOfPeriodCount === 1 ? '' : 's'} fora do mês
-                {' '}ignorado{outOfPeriodCount === 1 ? '' : 's'}.
+            {notices.map((n, i) => (
+              <div key={i} className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                {n}
               </div>
-            )}
+            ))}
           </div>
           <button
             onClick={handleCancel}
@@ -176,14 +182,14 @@ export default function BulkIncomeReviewModal({
         <div className="p-5 overflow-y-auto flex-1 space-y-3">
           {loading ? (
             <div className="text-[12px] text-gray-500 italic">Carregando…</div>
-          ) : rows.length === 0 ? (
+          ) : rows.length === 0 && orphans.length === 0 && duplicates.length === 0 ? (
             <div className="text-[12px] text-gray-500 italic">
               Nenhum provento encontrado no arquivo.
             </div>
           ) : (
             <>
               <div className="flex items-center justify-between text-[11px] text-gray-500 border-b border-gray-200 dark:border-gray-800 pb-1.5">
-                <span>Data · Tipo · Ticker</span>
+                <span>Data · Tipo · Ticker · Ativo</span>
                 <span>Bruto / Imposto / Líquido</span>
               </div>
               <ul className="space-y-1">
@@ -200,6 +206,12 @@ export default function BulkIncomeReviewModal({
                       </span>
                       <span className="ml-2 font-mono text-gray-700 dark:text-gray-300">
                         {r.ticker ?? r.option_ticker ?? '—'}
+                      </span>
+                      <span
+                        className="ml-2 text-gray-500 dark:text-gray-400 truncate"
+                        data-testid={`income-row-asset-${i}`}
+                      >
+                        {assetLabel(r) ?? '—'}
                       </span>
                     </div>
                     <div className="tnum text-[11px] text-gray-600 dark:text-gray-400">
@@ -223,6 +235,67 @@ export default function BulkIncomeReviewModal({
                   <span className="font-semibold">Líquido {fmtMoney(totalNet, currency)}</span>
                 </span>
               </div>
+              {orphans.length > 0 && (
+                <div className="mt-3" data-testid="income-orphans">
+                  <div className="text-[11px] font-medium text-red-600 dark:text-red-400 mb-1">
+                    {orphans.length} sem ativo correspondente na {scopedFi ?? 'instituição'} — não
+                    {orphans.length === 1 ? ' será registrado' : ' serão registrados'}
+                  </div>
+                  <ul className="space-y-1">
+                    {orphans.map((r, i) => (
+                      <li
+                        key={`orphan-${r.event_date}-${r.ticker ?? '_'}-${i}`}
+                        className="flex items-center justify-between text-[12px] py-1 border-b border-gray-100 dark:border-gray-800/60"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <span className="font-mono text-gray-500 tnum">{r.event_date}</span>
+                          <span className="ml-2 text-[10px] uppercase tracking-wider text-gray-500">
+                            {TYPE_LABEL[r.type] ?? r.type}
+                          </span>
+                          <span className="ml-2 font-mono text-red-600 dark:text-red-400">
+                            {r.ticker ?? r.option_ticker ?? '—'}
+                          </span>
+                        </div>
+                        <div className="tnum text-[11px] text-gray-500">
+                          {fmtMoney(Number(r.net_amount), r.currency)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="text-[11px] text-gray-500 italic mt-1">
+                    Cadastre o ativo na {scopedFi ?? 'instituição'} e clique em Re-extrair.
+                  </div>
+                </div>
+              )}
+              {duplicates.length > 0 && (
+                <div className="mt-3" data-testid="income-duplicates">
+                  <div className="text-[11px] font-medium text-gray-500 mb-1">
+                    {duplicates.length} já registrado{duplicates.length === 1 ? '' : 's'} — pulado{duplicates.length === 1 ? '' : 's'}
+                  </div>
+                  <ul className="space-y-1 opacity-60">
+                    {duplicates.map((r, i) => (
+                      <li
+                        key={`dup-${r.event_date}-${r.ticker ?? '_'}-${i}`}
+                        className="flex items-center justify-between text-[12px] py-1 border-b border-gray-100 dark:border-gray-800/60"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <span className="font-mono text-gray-500 tnum">{r.event_date}</span>
+                          <span className="ml-2 text-[10px] uppercase tracking-wider text-gray-500">
+                            {TYPE_LABEL[r.type] ?? r.type}
+                          </span>
+                          <span className="ml-2 font-mono text-gray-600 dark:text-gray-400">
+                            {r.ticker ?? r.option_ticker ?? '—'}
+                          </span>
+                          <span className="ml-2 text-gray-500 truncate">{assetLabel(r) ?? '—'}</span>
+                        </div>
+                        <div className="tnum text-[11px] text-gray-500">
+                          {fmtMoney(Number(r.net_amount), r.currency)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="text-[11px] text-gray-500 italic mt-2">
                 Itens já registrados (mesma data + ticker + valor) são pulados
                 automaticamente.

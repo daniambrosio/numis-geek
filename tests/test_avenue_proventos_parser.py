@@ -386,6 +386,19 @@ def test_e2e_avenue_proventos_creates_distributions(tmp_path, monkeypatch):
     # T 4.25 coupon → orphan (no asset cadastrado).
     assert preview.applied_count == 2
     assert {o["ticker"] for o in preview.bulk_detail.orphan} == {"T 4.25 15/11/34"}
+    # Cada linha aplicável diz pra qual ativo vai (o modal mostra isso).
+    by_ticker = {a["ticker"]: a for a in preview.bulk_detail.applied}
+    assert by_ticker["WMT"]["asset_id"] == wmt.id
+    assert by_ticker["WMT"]["asset_name"] == wmt.name
+    assert by_ticker[None]["asset_id"] is None  # aluguel — sem ativo
+
+    # A rota genérica /preview (preview_bulk_extract) DEVE despachar
+    # BROKER_INCOME pro classificador de proventos — antes caía no de
+    # posições e o modal recebia tudo vazio/órfão (regressão 2026-09-05).
+    via_generic = extraction_service.preview_bulk_extract(s, job_id=job.id)
+    assert via_generic.applied_count == 2
+    assert {a["ticker"] for a in via_generic.bulk_detail.applied} == {"WMT", None}
+    assert {o["ticker"] for o in via_generic.bulk_detail.orphan} == {"T 4.25 15/11/34"}
 
     # ── Confirm (writes) ──
     result = extraction_service.confirm_extraction(
