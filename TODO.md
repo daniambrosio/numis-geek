@@ -6,12 +6,13 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Fechamento e cost basis (pós-fix bonificação d2b14f6)
 
-- [ ] `[claude]` **Fechamento Ago/26 — validar degrau de PM/invested.** O fix `d2b14f6`
-  (BONUS entra no basis) + data fix ITUB4 (gross 7.820 + 3.240) mudam o PM de todos os
-  ativos com bonificação (ITUB4 31,33→35,26 e +R$ 11.060 invested; ITSA4/KLBN11/AURE3/
-  EGIE3/BHIA3/WBD/BTHF11/Terreno diluem). Snapshots frozen ≤ Jul/26 NÃO recomputam —
-  o degrau no fechamento de Ago/26 é esperado e correto; apenas confirmar que os números
-  batem e explicar a variação no review do snapshot.
+- [x] ~~**Fechamento Ago/26 — degrau de PM/invested.**~~ RESOLVIDO em 2026-09-05 por
+  decisão do user: em vez de conviver com o degrau, os meses fechados foram recomputados.
+  O `invested`/`average_cost_brl` congelado de 223 itens (19 ativos) foi corrigido —
+  9 cotados que divergiam por causa do `d2b14f6` (BTHF11, ITSA4, BTC, EGIE3, AURE3,
+  KLBN11, ITUB4, BHIA3) + 11 de modo valor com invested legado errado. Não existe mais
+  degrau: dez/24→ago/26 usam o mesmo algoritmo. Backup
+  `numis_geek.db.bak-before-frozen-invested-20260905-144907`.
 - [ ] `[user]` **Notion legado — bonificações ITUB4 com Preço Unit. = 0.** O Notion nunca
   teve o valor de incorporação (R$ 34,00 mar/2025 · R$ 40,00 dez/2025). Corrigir lá só
   se quiser consistência do histórico legado; o numis-geek já está correto.
@@ -37,28 +38,47 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 - [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
   66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
 
-- [ ] `[user]` `[claude]` **Correção ampla do `invested` congelado nos meses fechados
-  (pós spec 64).** Sobraram **210 itens em 17 ativos** cujo `total_invested_brl` congelado
-  diverge do recomputado. Duas famílias, com decisões diferentes:
-  - **(a) modo valor com invested legado errado** — Tesouro Selic 2031 (Δ até
-    R$ 979.482,90 · set/25–jun/26), Tesouro Renda+ 2065 XP (R$ 484.262,40),
-    Tesouro Selic 2029 (R$ 179.830,65), Tesouro Renda+ 2065 Itaú, CDB Banco Original,
-    BTG Pactual REHF FII, FGTS - Eletrobras, FGTS - Carrefour, Trend Investback.
-    Valores congelados por versões antigas do algoritmo (ex.: 2031 com −R$ 297.470 em
-    jun/26). Corrigir via SQL cirúrgico, nunca reopen.
-  - **(b) cotados que divergem por causa do fix de bonificação `d2b14f6`** — ITSA4,
-    KLBN11, AURE3, EGIE3, BHIA3, ITUB4, Bitcoin. **NÃO corrigir sem decisão explícita:**
-    o TODO do degrau de PM já registrou que snapshots ≤ jul/26 não recomputam e que
-    o degrau em ago/26 é esperado.
+- [ ] `[claude]` **Spec nova: modo valor — `quantity` puramente informativa.** Proposta
+  do user (2026-09-05), e concordo: em ativo de modo valor a quantidade pode existir como
+  informação (nº de cotas do extrato), mas NADA de cálculo pode depender dela. Hoje ainda
+  vaza: `compute_position` acumula `running_qty` (= nº de aportes, ex.: PGBL Flexprev
+  qty=23, Tesouro Selic 2031 qty=5) e `asset_has_position` lê `qty != 0 or invested != 0`.
+  Ninguém quebra hoje, mas um ativo de modo valor com invested=0 e nº de aportes ≠ nº de
+  resgates fica preso no fechamento pra sempre. Fix: em modo valor, presença = `invested
+  != 0` (ou classe CASH), e `quantity_held` vira campo informativo, nunca base de decisão.
 
-- [ ] `[user]` `[claude]` **Semântica de `invested` negativo em modo valor.** Pós spec 64,
-  `Tesouro Selic 2029` (−R$ 14.323), `FGTS - Carrefour` (−R$ 36.562), `FGTS - Meli`
-  (jun/26 −R$ 1.083) e `Saldo em Conta (Wise)` (−R$ 4.600) ficam com invested negativo.
-  Causa: em modo valor o SELL subtrai o gross do resgate, que carrega rendimento
-  acumulado além do principal, e boa parte do histórico de aportes nunca entrou no
-  sistema (base começa no import do Notion). Decidir se `invested` continua sendo
-  "Σ aportes − Σ resgates" (podendo ir a negativo) ou se vira custo fiscal com redução
-  proporcional — casa com o item da spec de SELL parcial reduzindo basis.
+- [ ] `[claude]` **Spec nova: resgate em modo valor deve reduzir o custo proporcionalmente.**
+  Hoje SELL subtrai o `gross` inteiro do invested — mas o resgate carrega rendimento além
+  do principal, então um resgate total deixa invested NEGATIVO. Caso limpo: `Tesouro Selic
+  2029` tem histórico completo (aportes R$ 179.830,65 em 2023-04/2024-04/2024-09), resgates
+  de R$ 144.000 + R$ 50.154,14 e ainda R$ 43.087,70 em carteira → invested −R$ 14.323,49.
+  O Notion legado fazia proporcional (LFT mar/2028: resgate de ~10% do saldo → basis
+  4.838,535 × 0,9 = 4.354,68). Regra proposta: `basis -= basis × (gross_resgate / MV_na_data)`,
+  com o MV vindo do último snapshot fechado. Casa com o item "SELL parcial deve reduzir
+  basis proporcionalmente" logo acima — provavelmente é UMA spec só, cobrindo cotado e
+  modo valor.
+
+- [ ] `[user]` **Saldo de abertura de FGTS.** `FGTS - Carrefour` (−R$ 36.562,46 em 14 meses)
+  e `FGTS - Meli` (−R$ 1.083,91 em jun/26) ficam negativos porque o saldo que já existia
+  quando o acompanhamento começou nunca foi lançamento — nem aqui, nem no Notion (lá o
+  FGTS era saldo mensal, não aporte). Evidência: Meli tinha MV R$ 504.635,36 em dez/24 e o
+  primeiro lançamento é um BUY de R$ 11.711,36 em set/25; Carrefour tinha MV R$ 35.172,00
+  em dez/24 e o primeiro lançamento é um SELL. Não é falha do import. Fix: lançar um BUY
+  de saldo de abertura na data de início do acompanhamento (dez/2024), com o valor do
+  extrato do FGTS. Só o user tem esse número.
+
+- [ ] `[user]` **`Saldo em Conta (Wise)` — SELL de R$ 4.600 (2026-07-10) num ativo CASH.**
+  Ativos "Saldo em Conta" não têm aportes por design (o saldo é digitado a cada
+  fechamento); os outros 5 têm invested = 0. Esse SELL deixa invested −R$ 4.600 em jul e
+  ago/26. Provavelmente era uma transferência, que deveria ser Transaction e não
+  AssetMovement. Confirmar e remover/reclassificar o lançamento.
+
+- [ ] `[user]` `[claude]` **`Terreno Paranapanema` em set/25 — item incoerente.** Único item
+  pulado pela correção ampla: o terreno foi vendido em 2025-09-30 (SELL R$ 50.000, basis
+  R$ 15 de um BONUS de 2004), mas o fechamento de set/25 ainda carrega o item com
+  quantidade 0 e valor de mercado R$ 20.000. Recomputar daria qty 1 e invested
+  −R$ 49.985,00 — ou seja, o item está errado de outro jeito e precisa de decisão: sai do
+  fechamento de set/25 ou fica com que valor?
 - [ ] `[user]` `[claude]` **Specs 68/69 — deltas do Done a decidir (audit 2026-08-18):**
   4 páginas sem `.test.tsx` próprio (CreditCards, CreditCardDetail — incl. fluxo
   "Fechar fatura" —, Categories, Parties) apesar de os deliverables prometerem testes;
