@@ -78,12 +78,18 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   conta com câmbio tem sim aportes. A regra atual (CASH sempre presente no fechamento,
   saldo digitado, invested 0) foi mantida, mas com saldo de abertura por cima. Rever quando
   a trilha de câmbio for tratada.
-- [ ] `[user]` **Nubank — conta reativada, não está no sistema.** A instituição financeira
-  `Nubank` existe e está ativa, mas **não tem nenhuma conta cadastrada** — logo, nenhum
-  ativo, logo nada no fechamento de 2026. Não é bug: o cadastro nunca foi feito. Pra
-  incluir: criar a(s) conta(s) (investimento e/ou corrente) e os ativos — 2 investimentos
-  + saldo em conta —, e lançar o saldo de abertura no mesmo padrão de FGTS/Wise.
-  Faltam do user: nome/tipo da conta, nome e classe dos 2 investimentos, e os valores.
+- [x] ~~**Nubank — conta reativada.**~~ Cadastrado em 2026-09-05 (spec 80): conta
+  investimento + conta corrente, `Tesouro IPCA+ 2032 (Nubank)`, `Caixinha Nubank` e
+  `Saldo em Conta (Nubank)`, com os lançamentos de 05–07/08 e os itens no fechamento
+  de ago/26.
+
+- [ ] `[claude]` **Spec 80 fase 2 — junto com a spec 70.** Com `transaction` no ar, o
+  fechamento passa a puxar o saldo derivado (`opening_balance` + Σ transactions) dos 5
+  ativos CASH que hoje têm `linked_account_id`, em vez do valor digitado. E os 3 fluxos
+  de caixa desativados na fase 1 viram `transaction`:
+  `Saldo em Conta (Wise)` BUY R$ 6.050,00 (01/12/2025) e SELL R$ 4.600,00 (10/07/2026);
+  `Saldo em Conta Nomad` BUY US$ 1.007,38 (27/06/2026). A UI pra gerenciar o vínculo
+  também entra aí (hoje são 5 ativos e o vínculo não muda).
 
 - [ ] `[user]` `[claude]` **`Terreno Paranapanema` em set/25 — item incoerente.** Único item
   pulado pela correção ampla: o terreno foi vendido em 2025-09-30 (SELL R$ 50.000, basis
