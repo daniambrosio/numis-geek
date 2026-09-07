@@ -393,3 +393,30 @@ describe('AssetDetail documentos & dados (spec 81 fase 6)', () => {
     }
   })
 })
+
+describe('AssetDetail gráfico de preço ajustado por eventos (2026-09-06)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('mostra a nota de ajuste quando há desdobramento na série', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue({
+      ...priceHistory([
+        { date: '2025-04-30', unit_price: '9.80', unit_price_raw: '98.00' },
+        { date: '2025-05-31', unit_price: '10.04', unit_price_raw: '10.04' },
+      ]),
+      adjustments: [{ event_date: '2025-05-06', event_type: 'SPLIT', ratio: '10' }],
+    })
+    renderPage()
+    expect(await screen.findByTestId('price-chart-adjustments')).toHaveTextContent('desdobramento 1:10 em 06/05/2025')
+  })
+
+  it('sem eventos não mostra nota', async () => {
+    mockBoringDeps()
+    vi.spyOn(api, 'getAssetPriceHistory').mockResolvedValue(priceHistory([
+      { date: '2025-04-30', unit_price: '98.00' }, { date: '2025-05-31', unit_price: '99.00' },
+    ]))
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/Preço · 24 meses/)).toBeInTheDocument())
+    expect(screen.queryByTestId('price-chart-adjustments')).toBeNull()
+  })
+})

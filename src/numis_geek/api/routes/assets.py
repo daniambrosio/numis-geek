@@ -21,6 +21,7 @@ from numis_geek.models.asset import (
     FixedIncomeIndexer,
     PhysicalAsset,
 )
+from numis_geek.models.corporate_action import CorporateAction, CorporateActionType
 from numis_geek.models.external import ExternalSource
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.asset_movement import (
@@ -1016,7 +1017,14 @@ def get_asset_position(
 
 class AssetPriceHistoryPoint(BaseModel):
     date: str            # YYYY-MM-DD
-    unit_price: str      # Decimal as str (consistent with SnapshotItemOut)
+    unit_price: str      # Decimal as str — AJUSTADO por desdobramentos/agrupamentos posteriores
+    unit_price_raw: str  # o preço bruto do fechamento (o que estava no extrato)
+
+
+class AssetPriceHistoryAdjustment(BaseModel):
+    event_date: str
+    event_type: str      # SPLIT | GROUPING
+    ratio: str
 
 
 class AssetPriceHistoryOut(BaseModel):
@@ -1024,6 +1032,8 @@ class AssetPriceHistoryOut(BaseModel):
     currency: str        # 'BRL' | 'USD'
     period: str          # echo da query
     points: list[AssetPriceHistoryPoint]
+    # Eventos societários aplicados à série (vazio = série bruta).
+    adjustments: list[AssetPriceHistoryAdjustment] = []
 
 
 _PERIOD_DAYS: dict[str, int | None] = {
@@ -1071,13 +1081,54 @@ def asset_price_history(
         q = q.filter(PortfolioSnapshot.period_end_date >= cutoff)
     rows = q.order_by(PortfolioSnapshot.period_end_date.asc()).all()
 
+    # Ajuste por desdobramento/agrupamento (2026-09-06): o preço congelado no
+    # fechamento é o bruto da época; sem ajuste, um 10:1 vira um degrau de
+    # R$ 100 → R$ 10 no gráfico. Ponto anterior ao evento é dividido pelo
+    # ratio (new_qty = old_qty × ratio), acumulando eventos posteriores —
+    # mesma convenção de qualquer plataforma de cotação. Só o gráfico usa a
+    # série ajustada; a tabela de fechamentos continua com o bruto.
+    actions = (
+        db.query(CorporateAction)
+        .filter(
+            CorporateAction.asset_id == asset_id,
+            CorporateAction.is_active.is_(True),
+            CorporateAction.event_type.in_([
+                CorporateActionType.SPLIT, CorporateActionType.GROUPING,
+            ]),
+        )
+        .order_by(CorporateAction.event_date.asc())
+        .all()
+    )
+
+    def _adjusted(d: date, p: Decimal) -> Decimal:
+        factor = Decimal("1")
+        for ca in actions:
+            if ca.event_date > d and ca.ratio:
+                factor *= Decimal(ca.ratio)
+        return p / factor if factor != 1 else p
+
+    first_date = rows[0][0] if rows else None
+    applied = [ca for ca in actions if first_date is not None and ca.event_date > first_date]
+
     return AssetPriceHistoryOut(
         asset_id=asset_id,
         currency=asset.currency.value,
         period=period,
         points=[
-            AssetPriceHistoryPoint(date=d.isoformat(), unit_price=str(p))
+            AssetPriceHistoryPoint(
+                date=d.isoformat(),
+                unit_price=str(_adjusted(d, Decimal(p))),
+                unit_price_raw=str(p),
+            )
             for (d, p) in rows
+        ],
+        adjustments=[
+            AssetPriceHistoryAdjustment(
+                event_date=ca.event_date.isoformat(),
+                event_type=ca.event_type.value,
+                ratio=str(ca.ratio),
+            )
+            for ca in applied
         ],
     )
 

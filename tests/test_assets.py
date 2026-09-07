@@ -1152,3 +1152,54 @@ def test_patch_legacy_fixed_income_with_ticker_and_no_details(client, seed):
         headers=auth(seed["admin_token_a"]),
     )
     assert r.status_code == 422
+
+
+def test_price_history_adjusts_for_split_and_grouping(client, seed):
+    """Desdobramento 10:1 em mai/25: pontos anteriores são divididos por 10
+    pra série ficar contínua; o bruto continua em unit_price_raw."""
+    from numis_geek.models.corporate_action import CorporateAction, CorporateActionType
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    from decimal import Decimal as _D
+    asset_id = _create_test_asset(client, seed, ticker="SPLT11")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2022-03-31", "100.00")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2022-04-30", "98.00")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2022-05-31", "10.10")   # pós 10:1 em 06/05
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2022-06-30", "50.00")   # pós agrupamento 5:1 em 15/06
+    db = TestSession()
+    try:
+        for d, t, r in (
+            (_date(2022, 5, 6), CorporateActionType.SPLIT, "10"),
+            (_date(2022, 6, 15), CorporateActionType.GROUPING, "0.2"),
+        ):
+            db.add(CorporateAction(
+                id=str(uuid.uuid4()), workspace_id=seed["ws_a"], asset_id=asset_id,
+                event_date=d, event_type=t, ratio=_D(r), is_active=True,
+                created_at=_dt.now(_tz.utc), updated_at=_dt.now(_tz.utc),
+            ))
+        db.commit()
+    finally:
+        db.close()
+    r = client.get(
+        f"/api/assets/{asset_id}/price-history?period=all",
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    pts = {p["date"]: p for p in body["points"]}
+    # 100 / 10 (split) / 0.2 (grouping) = 50 → contínuo com o último ponto
+    assert float(pts["2022-03-31"]["unit_price"]) == 50.0
+    assert float(pts["2022-04-30"]["unit_price"]) == 49.0
+    assert float(pts["2022-05-31"]["unit_price"]) == 50.5          # só o agrupamento
+    assert float(pts["2022-06-30"]["unit_price"]) == 50.0          # nenhum ajuste
+    assert pts["2022-03-31"]["unit_price_raw"].startswith("100.00")
+    assert [a["event_type"] for a in body["adjustments"]] == ["SPLIT", "GROUPING"]
+
+
+def test_price_history_no_actions_returns_raw_and_empty_adjustments(client, seed):
+    asset_id = _create_test_asset(client, seed, ticker="RAW11")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2021-01-31", "30.00")
+    _seed_snapshot_with_item(seed["ws_a"], asset_id, "2021-02-28", "31.00")
+    r = client.get(f"/api/assets/{asset_id}/price-history?period=all", headers=auth(seed["admin_token_a"]))
+    body = r.json()
+    assert body["adjustments"] == []
+    assert body["points"][0]["unit_price"] == body["points"][0]["unit_price_raw"]
