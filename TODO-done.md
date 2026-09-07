@@ -4,6 +4,12 @@ Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não
 
 ## Setembro 2026
 
+- [x] **2026-09-06 — Meli Dólar vira CASH (modo valor).** User decidiu "só anotar o total
+  no fechamento". Classe CRYPTO→CASH; 9 fechamentos com valor normalizados pra qtd=1 /
+  preço unitário = total (totais em R$ inalterados); ago/26 estava inflado
+  (19,34 × R$ 348,31 = R$ 6.736,31) → R$ 348,31, total do fechamento −R$ 6.388,00.
+  Backup `data/numis_geek.db.bak-before-meli-dolar-cash-20260906`. Sanity: soma dos itens
+  = total do fechamento; compute_position = R$ 348,31 em modo valor.
 - [x] **2026-09-05 — 17 anexos de fechamento sem instituição/finalidade em prod.** Triagem
   via artifact (preview + inferência do Claude, confirmada pelo user sem correções) e SQL
   cirúrgico: 59/59 anexos SNAPSHOT com slot, 0 órfãos. Backup
