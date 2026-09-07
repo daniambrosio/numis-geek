@@ -16,7 +16,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-rou
 import AssetDetail from './AssetDetail'
 import {
   api,
-  type AccountOut, type AssetOut, type AssetPriceHistoryOut,
+  type AccountOut, type AssetOut, type AssetPriceHistoryOut, type AssetPriceHistoryPoint,
   type FinancialInstitutionOut, type UserOut,
 } from '../lib/api'
 
@@ -56,7 +56,7 @@ const account: AccountOut = {
   is_active: true, created_at: '2026-01-01T00:00:00Z',
 }
 
-function priceHistory(points: { date: string; unit_price: string }[]): AssetPriceHistoryOut {
+function priceHistory(points: AssetPriceHistoryPoint[]): AssetPriceHistoryOut {
   return { asset_id: 'a1', currency: 'USD', period: '24m', points }
 }
 

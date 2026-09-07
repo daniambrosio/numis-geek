@@ -575,9 +575,17 @@ export interface DistributionRequest {
 // Spec 46 — Asset price history (V1 derived from snapshots).
 export type AssetPriceHistoryPeriod = '6m' | '12m' | '24m' | 'all'
 
+export interface AssetPriceHistoryAdjustment {
+  event_date: string
+  event_type: 'SPLIT' | 'GROUPING'
+  ratio: string
+}
+
 export interface AssetPriceHistoryPoint {
   date: string         // YYYY-MM-DD
-  unit_price: string   // Decimal as string
+  unit_price: string   // Decimal as string — ajustado por eventos posteriores
+  /** Preço bruto do fechamento (o que estava no extrato). */
+  unit_price_raw?: string
 }
 
 export interface AssetPriceHistoryOut {
@@ -585,6 +593,8 @@ export interface AssetPriceHistoryOut {
   currency: 'BRL' | 'USD'
   period: AssetPriceHistoryPeriod
   points: AssetPriceHistoryPoint[]
+  /** Desdobramentos/agrupamentos aplicados à série (vazio = bruta). */
+  adjustments?: AssetPriceHistoryAdjustment[]
 }
 
 // Spec 50 — Asset snapshot history (closings table + chart).

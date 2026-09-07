@@ -3,7 +3,7 @@
 import type {
   AssetOut, AssetPriceHistoryOut, AssetPriceHistoryPeriod, PositionOut, UserOut,
 } from '../../lib/api'
-import { fmtMonthYY } from '../../lib/format'
+import { fmtDate, fmtMonthYY } from '../../lib/format'
 import OpenOptionsCard from '../OpenOptionsCard'
 import OptionContextCard from '../OptionContextCard'
 import Sparkline from '../Sparkline'
@@ -81,6 +81,23 @@ export default function AssetOverviewTab({
             <Sparkline data={priceSeries} w={1200} h={180} color={klassColor} />
           </div>
           <PriceChartAxis points={priceHistory.points} />
+          {(priceHistory.adjustments?.length ?? 0) > 0 && (
+            <div className="mt-2 text-[10px] text-gray-500" data-testid="price-chart-adjustments">
+              Série ajustada por{' '}
+              {priceHistory.adjustments!.map((a, i) => {
+                const r = Number(a.ratio)
+                const label = a.event_type === 'SPLIT'
+                  ? `desdobramento 1:${Number.isInteger(r) ? r : r.toFixed(2)}`
+                  : `agrupamento ${Number.isInteger(1 / r) ? `${Math.round(1 / r)}:1` : `×${r}`}`
+                return (
+                  <span key={a.event_date}>
+                    {i > 0 ? ' e ' : ''}{label} em {fmtDate(a.event_date)}
+                  </span>
+                )
+              })}
+              . A tabela de fechamentos mostra o preço bruto de cada mês.
+            </div>
+          )}
         </Card>
       )}
 

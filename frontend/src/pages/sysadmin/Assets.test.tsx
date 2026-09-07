@@ -45,8 +45,10 @@ describe('sysadmin Assets (spec 81)', () => {
         </Routes>
       </MemoryRouter>,
     )
-    await waitFor(() => expect(screen.getByText('ITUB4')).toBeInTheDocument())
+    // A lista dispara N getAssetPosition em paralelo; sob a suíte inteira o
+    // jsdom fica lento — timeout folgado evita flake.
+    await waitFor(() => expect(screen.getByText('ITUB4')).toBeInTheDocument(), { timeout: 5000 })
     fireEvent.click(screen.getByText('ITUB4'))
-    await waitFor(() => expect(screen.getByTestId('asset-page')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('asset-page')).toBeInTheDocument(), { timeout: 5000 })
   })
 })
