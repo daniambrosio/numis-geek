@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { X } from 'lucide-react'
+import { ExternalLink, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import {
   api,
   type AssetOut, type AttachmentOut, type FinancialInstitutionOut,
@@ -150,6 +151,15 @@ export default function LancamentoDetailPanel({
                   <span className="text-[11px] text-gray-500 dark:text-gray-400">{fi.short_name}</span>
                 </div>
               )}
+              <Link
+                to={`/assets/${asset.id}`}
+                state={{ from: '/asset-movements', fromLabel: 'Lançamentos' }}
+                data-testid="lancamento-open-asset"
+                title="Abrir página do ativo"
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors"
+              >
+                Abrir ativo <ExternalLink className="w-3 h-3" />
+              </Link>
             </div>
           )}
 

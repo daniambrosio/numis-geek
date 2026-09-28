@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { ExternalLink, Plus } from 'lucide-react'
 import {
   api,
   type AssetOut,
@@ -623,9 +623,11 @@ function Row({
                 state={{ from: '/asset-movements', fromLabel: 'Lançamentos' }}
                 onClick={e => e.stopPropagation()}
                 data-testid={`movement-asset-link-${l.id}`}
-                className={`font-mono font-medium text-gray-900 dark:text-white hover:text-indigo-500 dark:hover:text-indigo-300 ${inactive ? 'line-through' : ''}`}
+                title="Abrir página do ativo"
+                className={`group/asset inline-flex items-center gap-1 font-mono font-medium text-gray-900 dark:text-white hover:text-indigo-600 dark:hover:text-indigo-300 hover:underline underline-offset-2 ${inactive ? 'line-through' : ''}`}
               >
                 {asset.ticker || asset.name}
+                <ExternalLink className="w-3 h-3 opacity-0 group-hover/asset:opacity-100 transition-opacity" />
               </Link>
             ) : (
               <div className="font-mono font-medium text-gray-900 dark:text-white">—</div>
