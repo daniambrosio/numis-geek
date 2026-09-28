@@ -143,8 +143,11 @@ def detect_pendencies(
                                      bug — CD Itau, Meli Dólar etc. viravam
                                      items no snapshot com valor do BUY
                                      movement e nunca pediam revisão)
-    - NULL / no source + cotado class → skip (real estate, etc. sem preço
-                                     configurado ficam silenciosos)
+    - NULL / no source + cotado class + current_price preenchido → skip
+    - NULL / no source + cotado class (exceto OPTION) + sem current_price
+                                  → MANUAL_SOURCE (2026-09-28: LON:IB01
+                                     fechou Ago/26 com item vazio e sem
+                                     pendência; opção continua silenciosa)
     - MANUAL                      → MANUAL_SOURCE
     - Automated source + price OK (tier FRESH or STALE) → no pendency
     - Automated source + tier OLD → STALE_PRICE
@@ -158,6 +161,12 @@ def detect_pendencies(
         and asset.asset_class not in _COTADO_CLASSES
     )
     if source is None and not is_value_mode:
+        if asset.asset_class != AssetClass.OPTION and asset.current_price is None:
+            return (
+                PendencyReason.MANUAL_SOURCE,
+                PendencyAction.EDIT_PRICE,
+                "Ativo cotado sem fonte de preço e sem cotação — item ficaria sem valor",
+            )
         return None
 
     if source is None or source == PriceSource.MANUAL:

@@ -149,3 +149,25 @@ def fetch_close_on(symbol: str, target_date: date) -> Decimal | None:
                 return None
             return _as_decimal(close)
     return None
+
+
+def fetch_last_price(symbol: str) -> Decimal | None:
+    """Última cotação (delayed ~15min) via ``fast_info`` do yfinance.
+
+    Usada como fallback de cotação atual pra bolsas que o Finnhub free não
+    cobre (LSE etc.). Retorna None quando o Yahoo não conhece o símbolo ou
+    não tem preço; levanta YFinanceError só por pacote ausente ou falha de
+    rede/parse.
+    """
+    if not _HAS_YFINANCE:
+        raise YFinanceError("yfinance package not installed")
+    try:
+        tk = yf.Ticker(symbol)
+        fi = tk.fast_info
+        last = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+    except Exception as e:
+        raise YFinanceError(f"yfinance last_price {symbol} failed: {e}") from e
+    price = _as_decimal(last)
+    if price is None or price <= 0:
+        return None
+    return price

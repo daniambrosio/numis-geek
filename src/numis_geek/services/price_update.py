@@ -31,6 +31,7 @@ from numis_geek.integrations.brapi import BrapiError, fetch_quote as brapi_quote
 from numis_geek.integrations.coinbase import CoinbaseError, fetch_spot as coinbase_spot
 from numis_geek.integrations.finnhub import FinnhubError, fetch_quote as finnhub_quote
 from numis_geek.integrations.tesouro import TesouroError, fetch_close_on as tesouro_close_on
+from numis_geek.integrations.yfinance import YFinanceError, fetch_last_price as yfinance_last_price
 from numis_geek.models.asset import Asset, AssetClass, PriceSource
 from numis_geek.models.integration_credential import (
     IntegrationCredential,
@@ -102,7 +103,20 @@ def _fetch_price(db: Session, asset: Asset) -> tuple[Decimal, str]:
         token = _get_token(db, IntegrationProvider.FINNHUB)
         if not token:
             raise _SkipReason("FINNHUB credential missing")
-        quote = finnhub_quote(asset.ticker, token)
+        try:
+            quote = finnhub_quote(asset.ticker, token)
+        except FinnhubError as finnhub_exc:
+            # 2026-09-28 — Finnhub free só cobre bolsas US. Pra ativo em
+            # outra bolsa (ex.: IB01.L na LSE) cai no yfinance com o mesmo
+            # ticker, espelhando a chain do histórico. Sem preço lá, a
+            # falha original do Finnhub é a que sobe.
+            try:
+                price = yfinance_last_price(asset.ticker)
+            except YFinanceError:
+                price = None
+            if price is None:
+                raise finnhub_exc
+            return price, "yfinance"
         return quote.price, "finnhub"
 
     if source == PriceSource.COINBASE:

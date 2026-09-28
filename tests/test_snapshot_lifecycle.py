@@ -1952,3 +1952,34 @@ def test_update_snapshot_item_price_modo_valor_qty_zero(db):
     # Fase 3.1: value-mode agora persiste qty=1 (era 0).
     assert item.quantity == Decimal("1")
     assert item.market_value_brl == typed, f"got {item.market_value_brl}"
+
+
+def test_detect_no_source_cotado_without_price_generates_manual(db):
+    """2026-09-28 — LON:IB01 (ETF, sem fonte, sem cotação) fechou Ago/26
+    com item vazio e nenhuma pendência. Cotado sem fonte e sem preço
+    agora pede edição; com preço preenchido segue silencioso; OPTION
+    continua silenciosa em qualquer caso."""
+    w = _seed(db)
+    etf = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], account_id=db.get(Asset, w["aapl_id"]).account_id,
+        asset_class=AssetClass.ETF, country="US", name="IB01", ticker="IB01.L",
+        currency=Currency.USD, current_price=None, price_source=None,
+    )
+    opt = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], account_id=db.get(Asset, w["aapl_id"]).account_id,
+        asset_class=AssetClass.OPTION, country="US", name="CALL AAPL", ticker="AAPL260",
+        currency=Currency.USD, current_price=None, price_source=None,
+    )
+    db.add_all([etf, opt])
+    db.flush()
+
+    det = detect_pendencies(db, etf, period_end=PERIOD, now=NOW)
+    assert det is not None
+    assert det[0] == PendencyReason.MANUAL_SOURCE
+    assert det[1] == PendencyAction.EDIT_PRICE
+
+    etf.current_price = Decimal("121.64")
+    db.flush()
+    assert detect_pendencies(db, etf, period_end=PERIOD, now=NOW) is None
+
+    assert detect_pendencies(db, opt, period_end=PERIOD, now=NOW) is None

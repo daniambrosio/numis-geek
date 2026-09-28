@@ -400,3 +400,38 @@ def test_cron_audit_action_variant(db):
         db.query(AuditLog).filter(AuditLog.action == "price.refresh.cron").first()
     )
     assert cron_audit is not None
+
+
+def test_refresh_one_finnhub_falls_back_to_yfinance(db):
+    """2026-09-28 — Finnhub free não cobre LSE (403). Com o mesmo ticker o
+    yfinance responde, então a cotação atual vem de lá e o provider fica
+    registrado como 'yfinance'."""
+    world = _seed_world(db)
+    with patch(
+        "numis_geek.services.price_update.finnhub_quote",
+        side_effect=FinnhubError("You don't have access to this resource."),
+    ), patch(
+        "numis_geek.services.price_update.yfinance_last_price",
+        return_value=Decimal("121.92"),
+    ):
+        r = refresh_one(db, world["asset_us"])
+    assert r.status == "ok"
+    assert r.provider == "yfinance"
+    assert r.new_price == Decimal("121.92")
+    assert world["asset_us"].current_price == Decimal("121.92")
+
+
+def test_refresh_one_finnhub_fallback_without_yfinance_price_stays_failed(db):
+    """Sem preço no yfinance, a falha original do Finnhub é a reportada."""
+    world = _seed_world(db)
+    with patch(
+        "numis_geek.services.price_update.finnhub_quote",
+        side_effect=FinnhubError("zero price"),
+    ), patch(
+        "numis_geek.services.price_update.yfinance_last_price",
+        return_value=None,
+    ):
+        r = refresh_one(db, world["asset_us"])
+    assert r.status == "failed"
+    assert "zero price" in (r.error or "")
+    assert world["asset_us"].current_price is None
