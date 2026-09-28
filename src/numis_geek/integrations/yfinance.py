@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 try:
@@ -170,4 +170,5 @@ def fetch_last_price(symbol: str) -> Decimal | None:
     price = _as_decimal(last)
     if price is None or price <= 0:
         return None
-    return price
+    # fast_info devolve float32 (121.91999816894531) — normaliza pra 4 casas.
+    return price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
