@@ -18,7 +18,7 @@ const asset: AssetOut = {
   name: 'IB01 iShares $ Treasury Bond 0-1yr UCITS ETF', ticker: 'LON:IB01', cnpj: null,
   currency: 'USD',
   current_price: 121, price_updated_at: null,
-  price_source: null, price_tier: null,
+  price_source: null, price_tier: 'UNKNOWN',
   notes: null, external_id: null, external_source: null,
   is_active: true, details: null,
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
