@@ -217,7 +217,11 @@ const ASSETS = [
   { id: "hrv",   account: "particular",      klass: "VEHICLE",      country: "BR", ticker: null,  name: "Honda HR-V 2022",         qty: 1, avg: 78000,  price: 62000,  ccy: "BRL" },
 
   // Caixa FGTS
-  { id: "fgts",  account: "caixa-inv",       klass: "FGTS",         country: "BR", ticker: null,  name: "FGTS",                    qty: 1, avg: 28400,  price: 34820, ccy: "BRL" },
+  // Um ativo FGTS por empregador (espelha o banco real). Os aportes mensais
+  // nascem da linha "FGTS do mês" do holerite — ver PAYSLIPS / spec 77.
+  { id: "fgts-meli",       account: "caixa-inv", klass: "FGTS", country: "BR", ticker: null, name: "FGTS — Meli",       qty: 1, avg: 12800, price: 15240, ccy: "BRL" },
+  { id: "fgts-carrefour",  account: "caixa-inv", klass: "FGTS", country: "BR", ticker: null, name: "FGTS — Carrefour",  qty: 1, avg:  9200, price: 11480, ccy: "BRL" },
+  { id: "fgts-eletrobras", account: "caixa-inv", klass: "FGTS", country: "BR", ticker: null, name: "FGTS — Eletrobras", qty: 1, avg:  6400, price:  8100, ccy: "BRL" },
 
   // BTG private pension
   { id: "vgblbtg", account: "btg-inv",       klass: "PRIVATE_PENSION", country: "BR", ticker: null, name: "VGBL BTG Conservador", qty: 1, avg: 60000, price: 74200, ccy: "BRL" },
@@ -285,7 +289,9 @@ const PRICE_META = {
   // Manual / monthly — intentionally stale
   apto:     { updated_at: "2026-02-12T10:00:00", source: "manual"   },  // 100+ days
   hrv:      { updated_at: "2025-12-20T10:00:00", source: "manual"   },  // 150+ days
-  fgts:     { updated_at: "2026-04-30T03:00:00", source: "manual"   },  // 23 days
+  "fgts-meli":       { updated_at: "2026-04-30T03:00:00", source: "manual" },  // 23 days
+  "fgts-carrefour":  { updated_at: "2026-03-31T03:00:00", source: "manual" },
+  "fgts-eletrobras": { updated_at: "2026-03-31T03:00:00", source: "manual" },
   vgblbtg:  { updated_at: "2026-04-30T19:00:00", source: "manual"   },  // 23 days
   // Options — fresh (b3 intraday)
   itubr364: { updated_at: "2026-05-23T17:55:00", source: "brapi"    },
@@ -540,6 +546,17 @@ const TRANSACTIONS = [
   { id: "t024", d: "2026-04-15", card: "itau-visa",   invoice: "inv-itau-may",  desc: "iPhone 16 Pro",           cat: "tecnologia",  amt: -1200.00, ccy: "BRL", reconciled: true,  instal: "5/12" },
   { id: "t025", d: "2026-04-12", card: "bradesco-mc", invoice: "inv-brad-may",  desc: "Booking.com",             cat: "viagens",     amt:  -980.00, ccy: "BRL", reconciled: true  },
   { id: "t026", d: "2026-04-08", card: "nubank-mc",   invoice: "inv-nub-may",   desc: "Mercado · Carrefour",     cat: "mercado",     amt:  -412.30, ccy: "BRL", reconciled: true  },
+  // Créditos de salário CLT — vinculados a holerites (spec 77). A descrição é a
+  // do extrato bancário, não a do holerite: por isso o vínculo precisa de um
+  // matcher por valor+data, e não do fingerprint de descrição.
+  { id: "t031", d: "2026-04-30", acc: "itau-cc", desc: "CRED SALARIO MERCADOLIVRE",   cat: "renda", amt: 6715.13, ccy: "BRL", reconciled: true, payslip: "ps-2026-04-reg" },
+  { id: "t032", d: "2026-04-20", acc: "itau-cc", desc: "CRED ADTO SAL MERCADOLIVRE",  cat: "renda", amt: 8800.00, ccy: "BRL", reconciled: true, payslip: "ps-2026-04-adv" },
+  { id: "t033", d: "2026-03-30", acc: "itau-cc", desc: "CRED SALARIO MERCADOLIVRE",   cat: "renda", amt: 6715.13, ccy: "BRL", reconciled: true, payslip: "ps-2026-03-reg" },
+  { id: "t034", d: "2026-03-20", acc: "itau-cc", desc: "CRED ADTO SAL MERCADOLIVRE",  cat: "renda", amt: 8800.00, ccy: "BRL", reconciled: true, payslip: "ps-2026-03-adv" },
+  { id: "t035", d: "2026-02-28", acc: "itau-cc", desc: "CRED SALARIO MERCADOLIVRE",   cat: "renda", amt: 6715.13, ccy: "BRL", reconciled: true, payslip: "ps-2026-02-reg" },
+  { id: "t036", d: "2026-02-20", acc: "itau-cc", desc: "CRED ADTO SAL MERCADOLIVRE",  cat: "renda", amt: 8800.00, ccy: "BRL", reconciled: true, payslip: "ps-2026-02-adv" },
+  { id: "t037", d: "2026-01-30", acc: "itau-cc", desc: "CRED SALARIO MERCADOLIVRE",   cat: "renda", amt: 6715.13, ccy: "BRL", reconciled: true, payslip: "ps-2026-01-reg" },
+  { id: "t038", d: "2026-01-20", acc: "itau-cc", desc: "CRED ADTO SAL MERCADOLIVRE",  cat: "renda", amt: 8800.00, ccy: "BRL", reconciled: true, payslip: "ps-2026-01-adv" },
 ];
 const txById = Object.fromEntries(TRANSACTIONS.map(t => [t.id, t]));
 
@@ -563,6 +580,163 @@ const INVOICES = [
   { id: "inv-nub-mar",   card: "nubank-mc",   closeDate: "2026-02-28", dueDate: "2026-03-05", total: 1680.90, isPaid: true,  paidAt: "2026-03-04" },
 ];
 const invoiceById = Object.fromEntries(INVOICES.map(i => [i.id, i]));
+
+/* ---------------------------------------------------------------------
+ * HOLERITES (spec 77)
+ *
+ * Um holerite é uma "fatura invertida": documento com N linhas que se
+ * liquida em 1..N créditos na conta corrente. O líquido é o que o banco
+ * credita; bruto, INSS/IRRF e descontos-despesa só existem aqui.
+ *
+ * kind da linha:  EARNING | DEDUCTION | EMPLOYER_CONTRIBUTION | INFORMATIONAL
+ *   gross      = Σ EARNING
+ *   deductions = Σ DEDUCTION
+ *   net        = gross − deductions
+ *   EMPLOYER_CONTRIBUTION (FGTS do mês) e INFORMATIONAL (bases, VR) ficam fora.
+ *
+ * Flags que a spec 77 usa pra separar o que é despesa do que não é:
+ *   tax:true      → INSS/IRRF. Entram na alíquota efetiva, NUNCA em despesa.
+ *   advance:true  → desconto do adiantamento. Timing de caixa, nem despesa nem imposto.
+ *   cat:"saude"   → desconto que É despesa real → entra na despesa mensal média
+ *                   via gross-up (renda += valor, despesa += valor).
+ * ------------------------------------------------------------------- */
+
+const EMPLOYERS = [
+  { id: "meli",       name: "Mercado Livre Brasil Ltda.",      short: "Meli",       cnpj: "03.361.252/0001-34", color: "#FFE600", initials: "ML", fgtsAsset: "fgts-meli",       current: true  },
+  { id: "carrefour",  name: "Carrefour Com. e Indústria Ltda.", short: "Carrefour", cnpj: "45.543.915/0001-81", color: "#004E9F", initials: "CR", fgtsAsset: "fgts-carrefour",  current: false },
+  { id: "eletrobras", name: "Centrais Elétricas Brasileiras",   short: "Eletrobras", cnpj: "00.001.180/0001-26", color: "#00A859", initials: "EL", fgtsAsset: "fgts-eletrobras", current: false },
+];
+const employerById = Object.fromEntries(EMPLOYERS.map(e => [e.id, e]));
+
+const PAYSLIP_TYPE = {
+  REGULAR:     { label: "Mensal",        color: "#6366f1", earningsDoc: true  },
+  ADVANCE:     { label: "Adiantamento",  color: "#64748b", earningsDoc: false },
+  THIRTEENTH:  { label: "13º",           color: "#f59e0b", earningsDoc: true  },
+  VACATION:    { label: "Férias",        color: "#06b6d4", earningsDoc: true  },
+  PLR:         { label: "PLR",           color: "#22c55e", earningsDoc: true  },
+  TERMINATION: { label: "Rescisão",      color: "#ef4444", earningsDoc: true  },
+};
+
+// Rubricas do holerite mensal do empregador atual (Meli). Bruto 22.000.
+const MELI_REGULAR_LINES = [
+  { code: "0001", desc: "Salário base",                   kind: "EARNING",               ref: "30 dias", amt: 20000.00 },
+  { code: "0031", desc: "Adicional de tempo de serviço",  kind: "EARNING",               ref: "5,00%",   amt:  1000.00 },
+  { code: "0052", desc: "Horas extras 100%",              kind: "EARNING",               ref: "6,00h",   amt:   800.00 },
+  { code: "0053", desc: "DSR sobre horas extras",         kind: "EARNING",               ref: "",        amt:   200.00 },
+  { code: "9001", desc: "INSS",                           kind: "DEDUCTION",             ref: "14,00%",  amt:  1023.50, tax: true },
+  { code: "9002", desc: "IRRF",                           kind: "DEDUCTION",             ref: "27,50%",  amt:  4673.47, tax: true },
+  { code: "9110", desc: "Plano de saúde · titular",       kind: "DEDUCTION",             ref: "",        amt:   620.00, cat: "saude" },
+  { code: "9111", desc: "Plano odontológico",             kind: "DEDUCTION",             ref: "",        amt:    48.00, cat: "saude" },
+  { code: "9112", desc: "Coparticipação · consultas",     kind: "DEDUCTION",             ref: "",        amt:    87.40, cat: "saude" },
+  { code: "9120", desc: "Seguro de vida em grupo",        kind: "DEDUCTION",             ref: "",        amt:    32.50, cat: "saude" },
+  { code: "9200", desc: "Adiantamento salarial",          kind: "DEDUCTION",             ref: "40,00%",  amt:  8800.00, advance: true },
+  { code: "8001", desc: "FGTS do mês",                    kind: "EMPLOYER_CONTRIBUTION", ref: "8,00%",   amt:  1760.00 },
+  { code: "7001", desc: "Base INSS",                      kind: "INFORMATIONAL",         ref: "",        amt: 22000.00 },
+  { code: "7002", desc: "Base IRRF",                      kind: "INFORMATIONAL",         ref: "",        amt: 20976.50 },
+  { code: "7003", desc: "Base FGTS",                      kind: "INFORMATIONAL",         ref: "",        amt: 22000.00 },
+  { code: "7010", desc: "Vale-refeição · crédito no cartão", kind: "INFORMATIONAL",      ref: "22 dias", amt:  1100.00 },
+];
+
+const MELI_ADVANCE_LINES = [
+  { code: "0009", desc: "Adiantamento salarial 40%", kind: "EARNING", ref: "40,00%", amt: 8800.00 },
+];
+
+// Carrefour — emprego anterior, salário menor, sem adiantamento.
+const CARREFOUR_REGULAR_LINES = [
+  { code: "0001", desc: "Salário base",              kind: "EARNING",               ref: "30 dias", amt: 11500.00 },
+  { code: "9001", desc: "INSS",                      kind: "DEDUCTION",             ref: "14,00%",  amt:   951.62, tax: true },
+  { code: "9002", desc: "IRRF",                      kind: "DEDUCTION",             ref: "27,50%",  amt:  1802.14, tax: true },
+  { code: "9110", desc: "Plano de saúde · titular",  kind: "DEDUCTION",             ref: "",        amt:   410.00, cat: "saude" },
+  { code: "9130", desc: "Vale-transporte",           kind: "DEDUCTION",             ref: "6,00%",   amt:   690.00, cat: "transporte" },
+  { code: "8001", desc: "FGTS do mês",               kind: "EMPLOYER_CONTRIBUTION", ref: "8,00%",   amt:   920.00 },
+  { code: "7001", desc: "Base INSS",                 kind: "INFORMATIONAL",         ref: "",        amt: 11500.00 },
+  { code: "7003", desc: "Base FGTS",                 kind: "INFORMATIONAL",         ref: "",        amt: 11500.00 },
+];
+
+// Somas derivadas das linhas — nunca hardcoded (é a invariante da spec 77).
+function payslipTotals(lines) {
+  const sum = (k) => lines.filter(l => l.kind === k).reduce((s, l) => s + l.amt, 0);
+  const gross = sum("EARNING");
+  const deductions = sum("DEDUCTION");
+  const fgts = lines.filter(l => l.kind === "EMPLOYER_CONTRIBUTION" && /fgts/i.test(l.desc)).reduce((s, l) => s + l.amt, 0);
+  const taxes = lines.filter(l => l.kind === "DEDUCTION" && l.tax).reduce((s, l) => s + l.amt, 0);
+  // Descontos que são despesa real — o gross-up da spec 77.
+  const expenseDeductions = lines.filter(l => l.kind === "DEDUCTION" && l.cat).reduce((s, l) => s + l.amt, 0);
+  return { gross, deductions, net: gross - deductions, fgts, taxes, expenseDeductions };
+}
+
+const PAYSLIPS = (() => {
+  const out = [];
+  const mk = (id, employer, type, ym, payDate, lines, extra = {}) => {
+    const t = payslipTotals(lines);
+    out.push({
+      id, employer, type, competence: ym, payDate,
+      lines: lines.map((l, i) => ({ ...l, order: i + 1 })),
+      ...t,
+      fgtsAsset: t.fgts > 0 ? employerById[employer].fgtsAsset : null,
+      ...extra,
+    });
+  };
+
+  // Meli — ciclo mensal: adiantamento dia 20, saldo dia 30. Ago/25 → Abr/26.
+  const months = ["2025-08","2025-09","2025-10","2025-11","2025-12","2026-01","2026-02","2026-03","2026-04"];
+  months.forEach(ym => {
+    const [y, m] = ym.split("-");
+    const last = new Date(Number(y), Number(m), 0).getDate();
+    mk(`ps-${ym}-adv`, "meli", "ADVANCE", ym, `${ym}-20`, MELI_ADVANCE_LINES);
+    mk(`ps-${ym}-reg`, "meli", "REGULAR", ym, `${ym}-${String(Math.min(last, 30)).padStart(2, "0")}`, MELI_REGULAR_LINES);
+  });
+
+  // 13º — 1ª parcela sem descontos, 2ª com INSS/IRRF e o abatimento da 1ª.
+  mk("ps-2025-11-13a", "meli", "THIRTEENTH", "2025-11", "2025-11-28", [
+    { code: "0301", desc: "13º salário · 1ª parcela", kind: "EARNING", ref: "50,00%", amt: 11000.00 },
+  ], { installment: 1 });
+  mk("ps-2025-12-13b", "meli", "THIRTEENTH", "2025-12", "2025-12-19", [
+    { code: "0302", desc: "13º salário · 2ª parcela",   kind: "EARNING",               ref: "50,00%", amt: 11000.00 },
+    { code: "9001", desc: "INSS sobre 13º",             kind: "DEDUCTION",             ref: "14,00%", amt:  1023.50, tax: true },
+    { code: "9002", desc: "IRRF sobre 13º",             kind: "DEDUCTION",             ref: "27,50%", amt:  1417.68, tax: true },
+    { code: "9203", desc: "Adiantamento 1ª parcela",    kind: "DEDUCTION",             ref: "",       amt: 11000.00, advance: true },
+    { code: "8001", desc: "FGTS sobre 13º",             kind: "EMPLOYER_CONTRIBUTION", ref: "8,00%",  amt:   880.00 },
+  ], { installment: 2, note: "2ª parcela: o bruto do 13º inteiro aparece aqui; a 1ª parcela é abatida como adiantamento." });
+
+  // Férias — 30 dias + 1/3 constitucional.
+  mk("ps-2026-01-fer", "meli", "VACATION", "2026-01", "2026-01-14", [
+    { code: "0401", desc: "Férias · 30 dias",           kind: "EARNING",               ref: "30 dias", amt: 22000.00 },
+    { code: "0402", desc: "1/3 constitucional",         kind: "EARNING",               ref: "33,33%",  amt:  7333.33 },
+    { code: "9001", desc: "INSS sobre férias",          kind: "DEDUCTION",             ref: "14,00%",  amt:  1023.50, tax: true },
+    { code: "9002", desc: "IRRF sobre férias",          kind: "DEDUCTION",             ref: "27,50%",  amt:  6685.10, tax: true },
+    { code: "8001", desc: "FGTS sobre férias",          kind: "EMPLOYER_CONTRIBUTION", ref: "8,00%",   amt:  2346.67 },
+  ]);
+
+  // PLR — tributação exclusiva na fonte, sem INSS e sem FGTS.
+  mk("ps-2026-03-plr", "meli", "PLR", "2026-03", "2026-03-13", [
+    { code: "0501", desc: "Participação nos lucros",    kind: "EARNING",   ref: "",        amt: 38000.00 },
+    { code: "9007", desc: "IRRF exclusivo · PLR",       kind: "DEDUCTION", ref: "tabela",  amt:  5142.30, tax: true },
+  ], { note: "PLR não tem INSS nem FGTS; IRRF é exclusivo na fonte (tabela própria)." });
+
+  // Carrefour — emprego anterior (jun–jul/2025).
+  mk("ps-2025-06-reg", "carrefour", "REGULAR", "2025-06", "2025-06-30", CARREFOUR_REGULAR_LINES);
+  mk("ps-2025-07-reg", "carrefour", "REGULAR", "2025-07", "2025-07-30", CARREFOUR_REGULAR_LINES);
+
+  return out.sort((a, b) => (b.payDate).localeCompare(a.payDate));
+})();
+const payslipById = Object.fromEntries(PAYSLIPS.map(p => [p.id, p]));
+
+// Vínculo holerite → transação. Só 2026-01..2026-04 têm extrato importado;
+// o histórico de 2025 entrou só como PDF de holerite — estado UNSETTLED
+// legítimo, não erro (é o cenário da Fase 3 da spec 77).
+const PAYSLIP_TX = {
+  "ps-2026-04-reg": ["t031"], "ps-2026-04-adv": ["t032"],
+  "ps-2026-03-reg": ["t033"], "ps-2026-03-adv": ["t034"],
+  "ps-2026-02-reg": ["t035"], "ps-2026-02-adv": ["t036"],
+  "ps-2026-01-reg": ["t037"], "ps-2026-01-adv": ["t038"],
+};
+const txByPayslip = (id) => (PAYSLIP_TX[id] || []).map(t => txById[t]).filter(Boolean);
+const payslipSettled = (p) => {
+  const paid = txByPayslip(p.id).reduce((s, t) => s + t.amt, 0);
+  if (Math.abs(p.net - paid) <= 0.01 && paid !== 0) return "SETTLED";
+  return paid === 0 ? "UNSETTLED" : "PARTIAL";
+};
 
 // Audit log — system actions with user attribution. workspace_id null for sysadmin actions.
 const AUDIT_ENTRIES = [
@@ -978,7 +1152,7 @@ const snapshotByYm = (() => {
 const PENDING_ASSETS_FOR_REVIEW = (() => {
   // 2 API failures + 4 manual pending
   const apiFails = ["qqq", "voo"]; // simulating API outage on US ETFs
-  const manualPend = ["apto", "veic", "fgts", "btc"];
+  const manualPend = ["apto", "veic", "fgts-meli", "btc"];
   return [
     ...apiFails.map(id => ({ id, reason: "API yahoo timeout", action_type: "refresh", source: "yahoo" })),
     ...manualPend.map(id => {
@@ -1228,6 +1402,7 @@ const ICONS = {
   "coins":           "M12 5a8 3 0 1 0 0 6 8 3 0 1 0 0-6zM4 8v6a8 3 0 0 0 16 0V8M4 14v3a8 3 0 0 0 16 0v-3",
   "arrow-down-up":   "M7 3v18M7 21l-4-4M7 3l-4 4M17 3v18M17 3l4 4M17 21l4-4",
   "wallet":          "M3 6a2 2 0 0 1 2-2h11v4M3 6v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3M17 14h.01",
+  "receipt":         "M5 2v20l2.5-1.5L10 22l2-1.5L14 22l2.5-1.5L19 22V2l-2.5 1.5L14 2l-2 1.5L10 2 7.5 3.5zM8 7h8M8 11h8M8 15h5",
   "credit-card":     "M3 5h18v14H3zM3 10h18",
   "target":          "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0-10 0M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0",
   "building-2":      "M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18M6 22h12M9 6h.01M9 10h.01M9 14h.01M14 6h.01M14 10h.01M14 14h.01",
@@ -1701,6 +1876,7 @@ const NAV = [
   { kind: "item", label: "Movimentações",  href: "#/movimentacoes",  icon: "wallet", badge: TRANSACTIONS.length.toString() },
   { kind: "item", label: "Cartões",        href: "#/cartoes",        icon: "credit-card", badge: CARDS.length.toString() },
   { kind: "item", label: "Faturas",        href: "#/faturas",        icon: "file-text", badge: INVOICES.length.toString() },
+  { kind: "item", label: "Holerites",      href: "#/holerites",      icon: "receipt", badge: PAYSLIPS.filter(p => p.competence >= "2026-01").length.toString() },
   { kind: "item", label: "Orçamento",      href: "#/orcamento",      icon: "target" },
 
   { kind: "section", label: "Estrutura" },
@@ -2056,6 +2232,7 @@ function NovoButton({ route }) {
     if (route.startsWith("/proventos"))    return "distribution";
     if (route.startsWith("/lancamentos"))  return "movement";
     if (route.startsWith("/movimentacoes"))return "transaction";
+    if (route.startsWith("/holerite"))     return "payslip-import";
     return "movement";
   };
   const defaultId = inferDefault();
@@ -2066,6 +2243,7 @@ function NovoButton({ route }) {
     { id: "distribution", label: "Provento",       desc: "Dividendo, juros, JCP, aluguel",       icon: "coins",         group: "Investimentos" },
     { id: "transaction",  label: "Movimentação",   desc: "Cash flow em conta corrente",          icon: "wallet",        group: "Caixa & Cartões" },
     { id: "card-tx",      label: "Lançamento de cartão", desc: "Compra na fatura aberta",        icon: "credit-card",   group: "Caixa & Cartões" },
+    { id: "payslip-import", label: "Holerite",     desc: "Importar PDF do contracheque",         icon: "receipt",       group: "Caixa & Cartões" },
     { id: "asset",        label: "Ativo",          desc: "Cadastrar um novo ativo",              icon: "line-chart",    group: "Cadastros" },
     { id: "new-account",  label: "Conta",          desc: "Nova conta corrente ou de investimento", icon: "layers",      group: "Cadastros" },
     { id: "new-card",     label: "Cartão",         desc: "Novo cartão de crédito",               icon: "credit-card",   group: "Cadastros" },
@@ -2119,7 +2297,7 @@ function NovoButton({ route }) {
   );
 }
 function itemShortcut(id) {
-  return ({ movement: "L", option: "O", distribution: "P", transaction: "M", "card-tx": "F", asset: "A", "new-account": "C", "new-card": "K" })[id] || "";
+  return ({ movement: "L", option: "O", distribution: "P", transaction: "M", "card-tx": "F", "payslip-import": "H", asset: "A", "new-account": "C", "new-card": "K" })[id] || "";
 }
 
 function TopBar({ breadcrumbs, route }) {
@@ -2365,8 +2543,10 @@ function ComposerProvider({ children }) {
 }
 
 function ComposerHost({ type, prefill, editing, onClose }) {
+  // O review de holerite tem tabela de rubricas — precisa de mais largura.
+  const width = type === "payslip-import" ? "max-w-4xl" : "max-w-2xl";
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={onClose} width={width}>
       {type === "movement"     && <MovementComposer    prefill={prefill} editing={editing} onClose={onClose}/>}
       {type === "option"       && <OptionComposer      prefill={prefill} editing={editing} onClose={onClose}/>}
       {type === "distribution" && <DistributionComposer prefill={prefill} editing={editing} onClose={onClose}/>}
@@ -2375,6 +2555,7 @@ function ComposerHost({ type, prefill, editing, onClose }) {
       {type === "asset"       && <NewAssetComposer prefill={prefill} onClose={onClose}/>}
       {type === "new-account" && <NewAccountComposer prefill={prefill} onClose={onClose}/>}
       {type === "new-card"    && <NewCardComposer prefill={prefill} onClose={onClose}/>}
+      {type === "payslip-import" && <PayslipImportModal onClose={onClose}/>}
     </Modal>
   );
 }
@@ -5515,7 +5696,16 @@ function MovimentacoesPage() {
                           </div>
                         </td>
                         <td className="px-2">
-                          <div>{t.desc}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span>{t.desc}</span>
+                            {t.payslip && (
+                              <a href={`#/holerite/${t.payslip}`} onClick={e => e.stopPropagation()}
+                                title={`Holerite · ${competenceLabel(payslipById[t.payslip].competence)}`}
+                                className="text-gray-500 hover:text-indigo-400 transition-colors">
+                                <Icon name="receipt" className="w-3.5 h-3.5"/>
+                              </a>
+                            )}
+                          </div>
                           {t.note && <div className="text-[10px] text-gray-500 tnum money">{t.note}</div>}
                         </td>
                         <td className="px-2">
@@ -6842,6 +7032,673 @@ function FaturasPage() {
         </div>
       </Card>
     </div>
+  );
+}
+
+/* =====================================================================
+ * HOLERITES (spec 77)
+ * =================================================================== */
+
+const MONTHS_LONG_PT = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const competenceLabel = (ym) => { const [y, m] = ym.split("-"); return `${MONTHS_LONG_PT[+m - 1]}/${y}`; };
+const competenceShort = (ym) => { const [y, m] = ym.split("-"); return `${MONTHS_LONG_PT[+m - 1].slice(0, 3)}/${y.slice(2)}`; };
+
+function EmployerLogo({ employer, size = "md" }) {
+  const e = employerById[employer];
+  if (!e) return null;
+  const px = size === "sm" ? "w-6 h-6 text-[10px]" : size === "lg" ? "w-10 h-10 text-sm" : "w-8 h-8 text-xs";
+  const dark = ["#FFE600"].includes(e.color);
+  return (
+    <div className={`flex items-center justify-center rounded-md font-semibold shrink-0 ${px} ${dark ? "text-gray-900" : "text-white"}`}
+      style={{ background: e.color }} title={e.name}>
+      {e.initials}
+    </div>
+  );
+}
+
+function PayslipTypeBadge({ type, installment }) {
+  const meta = PAYSLIP_TYPE[type];
+  if (!meta) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md font-medium text-[11px] px-2 py-0.5 bg-gray-100 dark:bg-gray-800/70 text-gray-700 dark:text-gray-300">
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }} />
+      {meta.label}{installment ? ` · ${installment}ª` : ""}
+    </span>
+  );
+}
+
+function SettlementPill({ status, size = "md" }) {
+  const map = {
+    SETTLED:   { label: "Vinculado",  cls: "bg-emerald-500/15 text-emerald-400", icon: "check" },
+    PARTIAL:   { label: "Parcial",    cls: "bg-indigo-500/15 text-indigo-400",   icon: "circle-dot" },
+    UNSETTLED: { label: "Sem extrato", cls: "bg-amber-500/15 text-amber-400",    icon: "circle-dot" },
+  }[status];
+  const pad = size === "sm" ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-[11px]";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded uppercase tracking-wider ${pad} ${map.cls}`}
+      title={status === "UNSETTLED" ? "Holerite sem crédito bancário casado — o extrato desse mês ainda não foi importado" : undefined}>
+      <Icon name={map.icon} className="w-3 h-3"/>{map.label}
+    </span>
+  );
+}
+
+// O gross-up da spec 77: renda reconhecida = líquido + descontos que são
+// despesa real. Resultado do mês continua igual ao caixa; a despesa mensal
+// média passa a enxergar plano de saúde, odonto e afins.
+function GrossUpCard({ payslips }) {
+  const net = payslips.reduce((s, p) => s + p.net, 0);
+  const grossedUp = payslips.reduce((s, p) => s + p.expenseDeductions, 0);
+  const taxes = payslips.reduce((s, p) => s + p.taxes, 0);
+  return (
+    <Card>
+      <SectionTitle>Efeito na despesa mensal média</SectionTitle>
+      <div className="space-y-2 text-[12px]">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Líquido creditado no banco</span>
+          <span className="tnum money font-medium">{fmtBRL(net)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-emerald-400">+ Renda reconhecida (gross-up)</span>
+          <span className="tnum money font-medium text-emerald-400">{fmtBRL(grossedUp)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-red-400">− Despesa reconhecida (mesmas linhas)</span>
+          <span className="tnum money font-medium text-red-400">{fmtBRL(grossedUp)}</span>
+        </div>
+        <div className="flex items-center justify-between pt-2 border-t border-gray-200 dark:border-gray-800">
+          <span className="font-medium">Resultado</span>
+          <span className="tnum money font-semibold">{fmtBRL(net)}</span>
+        </div>
+      </div>
+      <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+        Plano de saúde, odonto e coparticipação nunca passam pelo extrato, mas são despesa.
+        Entram nos dois lados: o resultado continua batendo com o caixa, e a despesa média deixa
+        de subestimar {fmtBRL(grossedUp / Math.max(payslips.filter(p => p.expenseDeductions > 0).length, 1))} por mês.
+        INSS e IRRF ({fmtBRL(taxes)}) ficam fora dos dois — é renda que nunca chegou, não despesa.
+      </p>
+    </Card>
+  );
+}
+
+function HoleritesPage() {
+  const years = useMemo(() => [...new Set(PAYSLIPS.map(p => p.competence.slice(0, 4)))].sort().reverse(), []);
+  const [year, setYear] = useState(years[0]);
+  const [empFilter, setEmpFilter] = useState([]);
+  const [typeFilter, setTypeFilter] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all"); // all | settled | unsettled
+  const composer = useComposer();
+
+  const filtered = useMemo(() => {
+    let xs = PAYSLIPS.filter(p => year === "all" || p.competence.startsWith(year));
+    if (empFilter.length)  xs = xs.filter(p => empFilter.includes(p.employer));
+    if (typeFilter.length) xs = xs.filter(p => typeFilter.includes(p.type));
+    if (statusFilter === "settled")   xs = xs.filter(p => payslipSettled(p) === "SETTLED");
+    if (statusFilter === "unsettled") xs = xs.filter(p => payslipSettled(p) !== "SETTLED");
+    return xs;
+  }, [year, empFilter, typeFilter, statusFilter]);
+
+  // Bruto e alíquota só contam documentos de proventos — ADVANCE é timing de
+  // caixa e o bruto dele já está no holerite mensal (senão conta duas vezes).
+  const earnings = filtered.filter(p => PAYSLIP_TYPE[p.type].earningsDoc);
+  const gross      = earnings.reduce((s, p) => s + p.gross, 0);
+  const taxes      = earnings.reduce((s, p) => s + p.taxes, 0);
+  const deductions = earnings.reduce((s, p) => s + p.deductions, 0);
+  const net        = filtered.reduce((s, p) => s + p.net, 0);
+  const fgts       = filtered.reduce((s, p) => s + p.fgts, 0);
+  const unlinked   = filtered.filter(p => payslipSettled(p) !== "SETTLED").length;
+
+  const empOpts  = EMPLOYERS.map(e => ({ id: e.id, label: e.short, color: e.color }));
+  const typeOpts = Object.entries(PAYSLIP_TYPE).map(([id, m]) => ({ id, label: m.label, color: m.color }));
+
+  const grouped = useMemo(() => {
+    const out = {};
+    filtered.forEach(p => { const y = p.competence.slice(0, 4); (out[y] = out[y] || []).push(p); });
+    return Object.keys(out).sort((a, b) => b.localeCompare(a)).map(y => ({ y, items: out[y] }));
+  }, [filtered]);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Holerites"
+        count={filtered.length}
+        countLabel={`holerites · ${new Set(filtered.map(p => p.employer)).size} empregador(es)`}
+        action={
+          <button onClick={() => composer.open("payslip-import")}
+            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
+            <Icon name="upload-cloud" className="w-3.5 h-3.5"/> Importar holerite
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-12 gap-4">
+        <Card className="col-span-6 lg:col-span-3">
+          <SectionTitle>Bruto</SectionTitle>
+          <div className="text-2xl font-semibold tnum money">{fmtBRL(gross, { compact: true })}</div>
+          <div className="text-[11px] text-gray-500 mt-1"><span className="tnum">{earnings.length}</span> documentos de proventos</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3">
+          <SectionTitle>Descontos</SectionTitle>
+          <div className="text-2xl font-semibold tnum money text-red-400">{fmtBRL(deductions, { compact: true })}</div>
+          <div className="text-[11px] text-gray-500 mt-1">inclui adiantamentos abatidos</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3">
+          <SectionTitle>Líquido recebido</SectionTitle>
+          <div className="text-2xl font-semibold tnum money text-emerald-400">{fmtBRL(net, { compact: true })}</div>
+          <div className="text-[11px] text-gray-500 mt-1">soma de todos os créditos</div>
+        </Card>
+        <Card className="col-span-6 lg:col-span-3">
+          <SectionTitle>Alíquota efetiva</SectionTitle>
+          <div className="text-2xl font-semibold tnum">{gross ? fmtPct(taxes / gross, 1) : "—"}</div>
+          <div className="text-[11px] text-gray-500 mt-1">INSS + IRRF <span className="money tnum">{fmtBRL(taxes, { compact: true })}</span></div>
+        </Card>
+      </div>
+
+      {unlinked > 0 && (
+        <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-amber-500/5 border border-amber-500/25">
+          <Icon name="alert-triangle" className="w-4 h-4 text-amber-400 mt-0.5 shrink-0"/>
+          <div className="text-[12px] leading-relaxed">
+            <span className="font-medium text-amber-400"><span className="tnum">{unlinked}</span> holerites sem crédito bancário casado.</span>
+            <span className="text-gray-500"> A renda deles continua contando — o dinheiro entrou, só não importamos o extrato do mês.
+            O alerta existe pro caso oposto: se o extrato for importado e o vínculo não acontecer, a renda conta duas vezes.</span>
+          </div>
+        </div>
+      )}
+
+      <Card padding="p-3" className="space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium min-w-[90px]">Ano</span>
+          <GroupingToggle value={year} onChange={setYear}
+            options={[...years.map(y => ({ id: y, label: y })), { id: "all", label: "Tudo" }]}/>
+          <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium ml-4">Vínculo</span>
+          <GroupingToggle value={statusFilter} onChange={setStatusFilter} options={[
+            { id: "all", label: "Todos" }, { id: "settled", label: "Vinculados" }, { id: "unsettled", label: "Sem extrato" },
+          ]}/>
+        </div>
+        <div className="space-y-2 pt-3 border-t border-gray-200 dark:border-gray-800">
+          <FilterGroup label="Empregador">
+            <MultiChips options={empOpts} selected={empFilter} onChange={setEmpFilter}/>
+          </FilterGroup>
+          <FilterGroup label="Tipo">
+            <MultiChips options={typeOpts} selected={typeFilter} onChange={setTypeFilter}/>
+          </FilterGroup>
+        </div>
+      </Card>
+
+      <Card padding="p-3">
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                <th className="text-left font-medium px-2 py-2">Competência</th>
+                <th className="text-left font-medium px-2 py-2">Empregador</th>
+                <th className="text-left font-medium px-2 py-2">Tipo</th>
+                <th className="text-right font-medium px-2 py-2">Bruto</th>
+                <th className="text-right font-medium px-2 py-2">Descontos</th>
+                <th className="text-right font-medium px-2 py-2">Líquido</th>
+                <th className="text-right font-medium px-2 py-2">FGTS</th>
+                <th className="text-center font-medium px-2 py-2">Vínculo</th>
+                <th className="px-2"/>
+              </tr>
+            </thead>
+            <tbody>
+              {grouped.map(g => (
+                <Fragment key={g.y}>
+                  <tr><td colSpan={9} className="px-2 py-2 pt-4 text-[10px] uppercase tracking-wider font-semibold text-gray-500 border-b border-gray-200 dark:border-gray-800">{g.y}</td></tr>
+                  {g.items.map(p => {
+                    const emp = employerById[p.employer];
+                    const st = payslipSettled(p);
+                    return (
+                      <tr key={p.id}
+                        onClick={() => { window.location.hash = `#/holerite/${p.id}`; }}
+                        className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer">
+                        <td className="px-2 py-2">
+                          <div className="font-medium">{competenceShort(p.competence)}</div>
+                          <div className="text-[10px] text-gray-500 tnum">pago {fmtDate(p.payDate)}</div>
+                        </td>
+                        <td className="px-2">
+                          <div className="flex items-center gap-2">
+                            <EmployerLogo employer={p.employer} size="sm"/>
+                            <span className="text-[12px] truncate">{emp.short}</span>
+                          </div>
+                        </td>
+                        <td className="px-2"><PayslipTypeBadge type={p.type} installment={p.installment}/></td>
+                        <td className="px-2 text-right tnum money text-gray-400">{p.gross ? fmtBRL(p.gross) : "—"}</td>
+                        <td className="px-2 text-right tnum money text-red-400">{p.deductions ? "−" + fmtBRL(p.deductions) : "—"}</td>
+                        <td className="px-2 text-right tnum money font-medium text-emerald-400">{fmtBRL(p.net)}</td>
+                        <td className="px-2 text-right tnum money text-[11px] text-lime-400">{p.fgts ? fmtBRL(p.fgts) : "—"}</td>
+                        <td className="px-2 text-center"><SettlementPill status={st} size="sm"/></td>
+                        <td className="px-2 text-gray-500"><Icon name="chevron-right" className="w-4 h-4"/></td>
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              ))}
+              {!filtered.length && (
+                <tr><td colSpan={9} className="px-2 py-10 text-center text-[12px] text-gray-500">Nenhum holerite com esses filtros.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-12 gap-4">
+        <div className="col-span-12 lg:col-span-7"><GrossUpCard payslips={filtered}/></div>
+        <Card className="col-span-12 lg:col-span-5">
+          <SectionTitle action={<a href={`#/ativo/${EMPLOYERS.find(e => e.current).fgtsAsset}`} className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver ativo →</a>}>
+            FGTS aportado no período
+          </SectionTitle>
+          <div className="text-2xl font-semibold tnum money text-lime-400">{fmtBRL(fgts)}</div>
+          <p className="text-[11px] text-gray-500 mt-2 leading-relaxed">
+            Cada linha "FGTS do mês" vira um aporte em modo valor no ativo FGTS do empregador.
+            O aporte alimenta a base; o rendimento (juros + TR) continua vindo do fechamento mensal.
+          </p>
+          <div className="mt-3 space-y-1.5">
+            {EMPLOYERS.filter(e => filtered.some(p => p.employer === e.id && p.fgts > 0)).map(e => {
+              const v = filtered.filter(p => p.employer === e.id).reduce((s, p) => s + p.fgts, 0);
+              return (
+                <a key={e.id} href={`#/ativo/${e.fgtsAsset}`}
+                  className="flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors">
+                  <span className="flex items-center gap-2 text-[12px]"><EmployerLogo employer={e.id} size="sm"/>{e.short}</span>
+                  <span className="tnum money text-[12px]">{fmtBRL(v)}</span>
+                </a>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+const LINE_KIND_META = {
+  EARNING:               { label: "Proventos",              color: "#22c55e", sign: "+" },
+  DEDUCTION:             { label: "Descontos",              color: "#ef4444", sign: "−" },
+  EMPLOYER_CONTRIBUTION: { label: "Encargos do empregador", color: "#84cc16", sign: "" },
+  INFORMATIONAL:         { label: "Informativo",            color: "#64748b", sign: "" },
+};
+
+function HoleriteDetailPage({ payslipId }) {
+  const p = payslipById[payslipId];
+  if (!p) return <NotFound/>;
+  const emp = employerById[p.employer];
+  const st = payslipSettled(p);
+  const txs = txByPayslip(p.id);
+  const fgtsAsset = p.fgtsAsset ? assetById[p.fgtsAsset] : null;
+  const order = ["EARNING", "DEDUCTION", "EMPLOYER_CONTRIBUTION", "INFORMATIONAL"];
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start gap-3">
+            <EmployerLogo employer={p.employer} size="lg"/>
+            <div>
+              <h1 className="text-xl font-semibold">{competenceLabel(p.competence)}</h1>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[12px] text-gray-500">{emp.name}</span>
+                <PayslipTypeBadge type={p.type} installment={p.installment}/>
+                <SettlementPill status={st}/>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1 tnum">CNPJ {emp.cnpj} · pago em {fmtDate(p.payDate)}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <Icon name="paperclip" className="w-3.5 h-3.5"/> PDF original
+            </button>
+            <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <Icon name="edit-2" className="w-3.5 h-3.5"/> Editar
+            </button>
+          </div>
+        </div>
+
+        {/* Cascata bruto → descontos → líquido */}
+        <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800">
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 font-medium">Bruto</div>
+            <div className="mt-1 text-xl font-semibold tnum money flex items-center gap-2">{fmtBRL(p.gross)}<CcyPill ccy="BRL"/></div>
+          </div>
+          <div className="px-4 py-3 rounded-xl bg-red-500/5 border border-red-500/20">
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 font-medium">Descontos</div>
+            <div className="mt-1 text-xl font-semibold tnum money text-red-400">−{fmtBRL(p.deductions)}</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">{p.gross ? fmtPct(p.deductions / p.gross, 1) : "—"} do bruto</div>
+          </div>
+          <div className="px-4 py-3 rounded-xl bg-emerald-500/5 border border-emerald-500/25">
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 font-medium">Líquido</div>
+            <div className="mt-1 text-xl font-semibold tnum money text-emerald-400">{fmtBRL(p.net)}</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">creditado em conta</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KpiTile label="Alíquota efetiva" value={p.gross ? fmtPct(p.taxes / p.gross, 1) : "—"} sub="INSS + IRRF sobre o bruto"/>
+          <KpiTile label="INSS" value={fmtBRL(p.lines.filter(l => /inss/i.test(l.desc) && l.kind === "DEDUCTION").reduce((s, l) => s + l.amt, 0))}/>
+          <KpiTile label="IRRF" value={fmtBRL(p.lines.filter(l => /irrf/i.test(l.desc) && l.kind === "DEDUCTION").reduce((s, l) => s + l.amt, 0))}/>
+          <KpiTile label="FGTS do mês" value={p.fgts ? fmtBRL(p.fgts) : "—"} sub={p.fgts ? "vira aporte no ativo" : "não incide neste tipo"}/>
+        </div>
+
+        {p.note && (
+          <div className="mt-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-500/20 text-[11px] text-gray-400">
+            <Icon name="sparkles" className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0"/>{p.note}
+          </div>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-12 gap-4">
+        {/* Linhas */}
+        <Card padding="p-3" className="col-span-12 lg:col-span-8">
+          <div className="px-2 pb-2"><SectionTitle>Rubricas</SectionTitle></div>
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                <th className="text-left font-medium px-2 py-2 w-16">Cód.</th>
+                <th className="text-left font-medium px-2 py-2">Descrição</th>
+                <th className="text-left font-medium px-2 py-2 w-24">Referência</th>
+                <th className="text-left font-medium px-2 py-2 w-40">Categoria</th>
+                <th className="text-right font-medium px-2 py-2 w-32">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {order.map(kind => {
+                const rows = p.lines.filter(l => l.kind === kind);
+                if (!rows.length) return null;
+                const meta = LINE_KIND_META[kind];
+                const subtotal = rows.reduce((s, l) => s + l.amt, 0);
+                return (
+                  <Fragment key={kind}>
+                    <tr>
+                      <td colSpan={5} className="px-2 py-2 pt-4 border-b border-gray-200 dark:border-gray-800">
+                        <span className="text-[10px] uppercase tracking-wider font-semibold flex items-center gap-1.5" style={{ color: meta.color }}>
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }}/>{meta.label}
+                        </span>
+                      </td>
+                    </tr>
+                    {rows.map(l => (
+                      <tr key={l.code + l.order} className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors">
+                        <td className="px-2 py-1.5 tnum text-[11px] text-gray-500">{l.code}</td>
+                        <td className="px-2">
+                          <span>{l.desc}</span>
+                          {l.tax && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider bg-gray-200 dark:bg-gray-800 text-gray-500">imposto</span>}
+                          {l.advance && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider bg-gray-200 dark:bg-gray-800 text-gray-500">caixa</span>}
+                        </td>
+                        <td className="px-2 tnum text-[11px] text-gray-500">{l.ref || "—"}</td>
+                        <td className="px-2">
+                          {l.cat ? (
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px]"
+                              style={{ background: catById[l.cat].color + "22", color: catById[l.cat].color }}>
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ background: catById[l.cat].color }}/>
+                              {catById[l.cat].name}
+                            </span>
+                          ) : l.kind === "DEDUCTION" && !l.tax && !l.advance ? (
+                            <span className="text-[11px] italic text-amber-400">Sem categoria</span>
+                          ) : (
+                            <span className="text-[11px] text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-2 text-right tnum money" style={{ color: kind === "DEDUCTION" ? "#f87171" : kind === "EARNING" ? undefined : "#9ca3af" }}>
+                          {meta.sign}{fmtBRL(l.amt)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-gray-200 dark:border-gray-800">
+                      <td colSpan={4} className="px-2 py-1.5 text-[11px] text-gray-500 text-right">Subtotal {meta.label.toLowerCase()}</td>
+                      <td className="px-2 py-1.5 text-right tnum money text-[12px] font-medium">{meta.sign}{fmtBRL(subtotal)}</td>
+                    </tr>
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="mt-3 px-2 pt-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between">
+            <span className="text-[11px] text-gray-500">Proventos − descontos</span>
+            <span className="tnum money text-sm font-semibold text-emerald-400">{fmtBRL(p.net)}</span>
+          </div>
+        </Card>
+
+        <div className="col-span-12 lg:col-span-4 space-y-4">
+          {/* Liquidação */}
+          <Card>
+            <SectionTitle>Liquidação</SectionTitle>
+            {txs.length ? (
+              <div className="space-y-2">
+                {txs.map(t => (
+                  <a key={t.id} href="#/movimentacoes"
+                    className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-800 hover:border-indigo-500/40 transition-colors">
+                    <div className="min-w-0">
+                      <div className="text-[12px] truncate">{t.desc}</div>
+                      <div className="text-[10px] text-gray-500 tnum">{fmtDate(t.d)} · {accById[t.acc].name}</div>
+                    </div>
+                    <span className="tnum money text-[12px] font-medium text-emerald-400 shrink-0 ml-2">{fmtBRL(t.amt)}</span>
+                  </a>
+                ))}
+                <div className="flex items-center justify-between pt-2 text-[11px] text-gray-500">
+                  <span>Total casado</span>
+                  <span className="tnum money">{fmtBRL(txs.reduce((s, t) => s + t.amt, 0))}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-4">
+                <div className="text-[12px] text-gray-500 mb-3 leading-relaxed">
+                  Nenhum crédito bancário casado.<br/>O extrato de {competenceLabel(p.competence)} não foi importado.
+                </div>
+                <button className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                  <Icon name="git-compare" className="w-3.5 h-3.5"/> Vincular movimentação
+                </button>
+              </div>
+            )}
+          </Card>
+
+          {/* FGTS */}
+          {fgtsAsset && (
+            <Card>
+              <SectionTitle action={<a href={`#/ativo/${fgtsAsset.id}`} className="text-[11px] text-indigo-400 hover:text-indigo-300">Ver ativo →</a>}>FGTS</SectionTitle>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-gray-500">Aporte gerado</span>
+                <span className="tnum money text-sm font-semibold text-lime-400">{fmtBRL(p.fgts)}</span>
+              </div>
+              <div className="mt-2 flex items-center gap-2 text-[11px] text-gray-500">
+                <ClassBadge klass="FGTS" size="xs"/> {fgtsAsset.name}
+              </div>
+              <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+                Lançado como compra em modo valor (qty 1 · valor {fmtBRL(p.fgts)}) na data do pagamento.
+                Alimenta a base investida; o rendimento vem do fechamento mensal.
+              </p>
+            </Card>
+          )}
+
+          {/* Gross-up deste holerite */}
+          {p.expenseDeductions > 0 && (
+            <Card>
+              <SectionTitle>Reflexo na despesa</SectionTitle>
+              <div className="space-y-1.5 text-[12px]">
+                {p.lines.filter(l => l.cat).map(l => (
+                  <div key={l.code} className="flex items-center justify-between">
+                    <span className="text-gray-500 truncate mr-2">{l.desc}</span>
+                    <span className="tnum money shrink-0">{fmtBRL(l.amt)}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between pt-2 border-t border-gray-200 dark:border-gray-800 font-medium">
+                  <span>Despesa reconhecida</span>
+                  <span className="tnum money text-red-400">{fmtBRL(p.expenseDeductions)}</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+                Essas linhas nunca aparecem no extrato. Sem elas, a despesa mensal média
+                subestimaria {fmtBRL(p.expenseDeductions)} neste mês.
+              </p>
+            </Card>
+          )}
+
+          {/* Origem */}
+          <Card>
+            <SectionTitle>Origem</SectionTitle>
+            <div className="space-y-1.5 text-[11px] text-gray-500">
+              <div className="flex items-center gap-2"><Icon name="paperclip" className="w-3.5 h-3.5"/> holerite-{p.competence}-{p.type.toLowerCase()}.pdf</div>
+              <div className="flex items-center gap-2"><Icon name="sparkles" className="w-3.5 h-3.5 text-indigo-400"/> Extração LLM · confiança 0,97</div>
+              <div className="flex items-center gap-2"><Icon name="clock" className="w-3.5 h-3.5"/> Importado em {fmtDate(p.payDate)}</div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Import de holerite: upload + review ---------- */
+
+function PayslipImportModal({ onClose }) {
+  const [step, setStep] = useState("upload"); // upload | review
+  const [employer, setEmployer] = useState("meli");
+  const [competence, setCompetence] = useState("2026-05");
+  const [type, setType] = useState("REGULAR");
+  const [lines, setLines] = useState(() => MELI_REGULAR_LINES.map((l, i) => ({ ...l, order: i + 1, confidence: i === 8 ? 0.71 : 0.98 })));
+  const [fgtsAsset, setFgtsAsset] = useState("fgts-meli");
+
+  const t = payslipTotals(lines);
+  // Divergência de soma: o líquido impresso no PDF vs. o calculado das linhas.
+  const printedNet = 6715.13;
+  const drift = Math.abs(t.net - printedNet);
+  const uncategorized = lines.filter(l => l.kind === "DEDUCTION" && !l.tax && !l.advance && !l.cat).length;
+
+  const setCat = (order, cat) => setLines(ls => ls.map(l => l.order === order ? { ...l, cat: cat || undefined } : l));
+
+  if (step === "upload") {
+    return (
+      <Fragment>
+        <ModalHeader title="Importar holerite" subtitle="PDF do contracheque · extração por LLM" onClose={onClose}/>
+        <div className="px-6 py-5 space-y-4 overflow-y-auto scrollbar-thin">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Empregador">
+              <select value={employer} onChange={e => setEmployer(e.target.value)} className={inputCls}>
+                {EMPLOYERS.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Tipo esperado" hint="o LLM confirma">
+              <select value={type} onChange={e => setType(e.target.value)} className={inputCls}>
+                {Object.entries(PAYSLIP_TYPE).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl px-6 py-10 text-center hover:border-indigo-500/50 transition-colors cursor-pointer"
+            onClick={() => setStep("review")}>
+            <Icon name="upload-cloud" className="w-8 h-8 mx-auto text-gray-500 mb-3"/>
+            <div className="text-[13px] font-medium">Arraste o PDF ou clique para selecionar</div>
+            <div className="text-[11px] text-gray-500 mt-1">PDF, imagem ou screenshot · até 10 MB · vários arquivos de uma vez</div>
+          </div>
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800/50 text-[11px] text-gray-500">
+            <Icon name="alert-triangle" className="w-3.5 h-3.5 mt-0.5 shrink-0"/>
+            Arquivo já importado é recusado pelo hash. Competência repetida do mesmo empregador cai como duplicata.
+          </div>
+        </div>
+        <ModalFooter onCancel={onClose} onSave={() => setStep("review")} saveLabel="Extrair"/>
+      </Fragment>
+    );
+  }
+
+  return (
+    <Fragment>
+      <ModalHeader title="Revisar extração" subtitle={`${employerById[employer].name} · ${competenceLabel(competence)}`} onClose={onClose}/>
+      <div className="px-6 py-4 space-y-4 overflow-y-auto scrollbar-thin">
+        <div className="grid grid-cols-4 gap-3">
+          <Field label="Competência">
+            <input value={competence} onChange={e => setCompetence(e.target.value)} className={inputCls}/>
+          </Field>
+          <Field label="Tipo">
+            <select value={type} onChange={e => setType(e.target.value)} className={inputCls}>
+              {Object.entries(PAYSLIP_TYPE).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Ativo FGTS" hint="destino do aporte">
+            <select value={fgtsAsset} onChange={e => setFgtsAsset(e.target.value)} className={inputCls}>
+              {ASSETS.filter(a => a.klass === "FGTS").map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Líquido impresso">
+            <div className={`${inputCls} flex items-center justify-between`}>
+              <span className="money">{fmtBRL(printedNet)}</span>
+              {drift <= 0.01
+                ? <Icon name="check-circle" className="w-4 h-4 text-emerald-400"/>
+                : <Icon name="alert-triangle" className="w-4 h-4 text-amber-400"/>}
+            </div>
+          </Field>
+        </div>
+
+        {drift > 0.01 && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px]">
+            <Icon name="alert-triangle" className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0"/>
+            <span className="text-amber-300">Soma das rubricas ({fmtBRL(t.net)}) diverge do líquido impresso em {fmtBRL(drift)}. Corrija antes de importar.</span>
+          </div>
+        )}
+        {uncategorized > 0 && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-500/25 text-[11px] text-gray-400">
+            <Icon name="sparkles" className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0"/>
+            <span><span className="tnum font-medium">{uncategorized}</span> rubrica(s) sem categoria. As demais vieram da memória de rubrica —
+            já foram categorizadas em holerites anteriores deste empregador.</span>
+          </div>
+        )}
+
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+          <table className="w-full text-[12px]">
+            <thead className="bg-gray-50 dark:bg-gray-800/40">
+              <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                <th className="text-left font-medium px-2 py-2 w-14">Cód.</th>
+                <th className="text-left font-medium px-2 py-2">Descrição</th>
+                <th className="text-left font-medium px-2 py-2 w-40">Tipo</th>
+                <th className="text-left font-medium px-2 py-2 w-40">Categoria</th>
+                <th className="text-right font-medium px-2 py-2 w-28">Valor</th>
+                <th className="text-center font-medium px-2 py-2 w-14">Conf.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map(l => {
+                const editable = l.kind === "DEDUCTION" && !l.tax && !l.advance;
+                return (
+                  <tr key={l.order} className="border-t border-gray-100 dark:border-gray-800">
+                    <td className="px-2 py-1 tnum text-[11px] text-gray-500">{l.code}</td>
+                    <td className="px-2 truncate">{l.desc}</td>
+                    <td className="px-2">
+                      <span className="inline-flex items-center gap-1.5 text-[11px]">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: LINE_KIND_META[l.kind].color }}/>
+                        {LINE_KIND_META[l.kind].label}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1">
+                      {editable ? (
+                        <select value={l.cat || ""} onChange={e => setCat(l.order, e.target.value)}
+                          className={`w-full h-7 px-2 text-[11px] rounded-md bg-white dark:bg-gray-800/40 border transition-colors focus:outline-none focus:border-indigo-500
+                            ${l.cat ? "border-gray-200 dark:border-gray-800" : "border-amber-500/50"}`}>
+                          <option value="">Sem categoria</option>
+                          {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      ) : (
+                        <span className="text-[11px] text-gray-600">{l.tax ? "imposto" : l.advance ? "caixa" : "—"}</span>
+                      )}
+                    </td>
+                    <td className="px-2 text-right tnum money">{fmtBRL(l.amt)}</td>
+                    <td className="px-2 text-center"><ConfidencePill value={l.confidence}/></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <PreviewBlock>
+          <PreviewRow label="Bruto" value={fmtBRL(t.gross)}/>
+          <PreviewRow label="Descontos" value={"−" + fmtBRL(t.deductions)} valueClass="text-red-400"/>
+          <PreviewRow label="Líquido" value={fmtBRL(t.net)} valueClass="text-emerald-400"/>
+          <PreviewRow label={`Aporte FGTS → ${assetById[fgtsAsset]?.name || "—"}`} value={fmtBRL(t.fgts)} valueClass="text-lime-400"/>
+          <PreviewRow label="Despesa reconhecida (gross-up)" value={fmtBRL(t.expenseDeductions)} valueClass="text-red-400"/>
+        </PreviewBlock>
+      </div>
+      <ModalFooter
+        onCancel={onClose}
+        onSave={onClose}
+        saveDisabled={drift > 0.01}
+        saveLabel={`Importar ${lines.length} rubricas`}
+        leftSlot={<button onClick={() => setStep("upload")} className="text-[11px] text-gray-500 hover:text-gray-300">← Trocar arquivo</button>}
+      />
+    </Fragment>
   );
 }
 
@@ -8301,11 +9158,11 @@ function TickerResolutionBadge({ raw, normalized }) {
 function mockExtractionFor(asset, hint) {
   const base = {
     as_of_date: "2026-04-30",
-    broker_name: asset.id === "apto" ? "FIPE Imóveis" : asset.id === "veic" ? "Tabela FIPE" : asset.id === "fgts" ? "Caixa Econômica" : asset.id === "btc" ? "Coinbase" : "Avenue Securities",
+    broker_name: asset.id === "apto" ? "FIPE Imóveis" : asset.id === "veic" ? "Tabela FIPE" : asset.klass === "FGTS" ? "Caixa Econômica" : asset.id === "btc" ? "Coinbase" : "Avenue Securities",
     confidence: 0.88,
     detected_hint: hint === "GENERIC" ? "BROKER_POSITION" : hint,
   };
-  if (hint === "FGTS_BALANCE" || asset.id === "fgts") {
+  if (hint === "FGTS_BALANCE" || asset.klass === "FGTS") {
     return { ...base, kind: "single", payload: { ticker: "FGTS", value: 18450.32, currency: "BRL", confidence: 0.99 } };
   }
   if (hint === "SCREENSHOT_PRICE" || asset.klass === "CRYPTO") {
@@ -9348,6 +10205,18 @@ function App() {
   } else if (route === "/faturas") {
     page = <FaturasPage/>;
     breadcrumbs = [{ label: "Caixa & Cartões" }, { label: "Faturas" }];
+  } else if (route === "/holerites") {
+    page = <HoleritesPage/>;
+    breadcrumbs = [{ label: "Caixa & Cartões" }, { label: "Holerites" }];
+  } else if (route.startsWith("/holerite/")) {
+    const id = route.split("/")[2];
+    const ps = payslipById[id];
+    page = <HoleriteDetailPage payslipId={id}/>;
+    breadcrumbs = [
+      { label: "Caixa & Cartões" },
+      { label: "Holerites", href: "#/holerites" },
+      { label: ps ? `${competenceShort(ps.competence)} · ${employerById[ps.employer].short}` : id }
+    ];
   } else if (route === "/patrimonio") {
     page = <PatrimonioPage/>;
     breadcrumbs = [{ label: "Investimentos" }, { label: "Patrimônio" }];

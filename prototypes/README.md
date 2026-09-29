@@ -38,6 +38,8 @@ All sidebar items are real pages now (no more "soon" placeholders).
 - `#/cartoes` — credit cards list
 - `#/cartao/{id}` — credit card detail (open invoice + history)
 - `#/faturas` — cross-card invoice history with filters
+- `#/holerites` — payslip list (spec 77): 4 KPIs (bruto, descontos, líquido, alíquota efetiva), employer/type/year/settlement filters, table grouped by year, gross-up explainer, FGTS-per-employer card
+- `#/holerite/{id}` — payslip detail: bruto → descontos → líquido cascade, line-by-line rubricas grouped by kind with category editor, liquidação card (linked transactions or "vincular"), FGTS aporte card, despesa reflex card
 - `#/orcamento` — categorias × meses grid, color-coded by % usage
 
 **Estrutura**
@@ -66,6 +68,7 @@ Open via Novo dropdown or contextual buttons. ESC and click-outside close them.
 - **DistributionComposer** — 4 types; asset becomes optional for `SECURITIES_LENDING` (Avenue case).
 - **TransactionComposer** — direction toggle (in/out), category auto-suggest by description.
 - **CardTxComposer** — international purchase mode (USD + IOF).
+- **PayslipImportModal** — two steps: upload (employer + expected type + dropzone) → review (competência/tipo/ativo FGTS editáveis, rubrica table with kind + inline category select, sum-drift alert vs. the printed líquido, confidence pills, preview block with bruto/descontos/líquido/aporte FGTS/gross-up). Import button disabled while the sum diverges.
 - **NewAssetComposer** — class/country/account/ticker/name/CNPJ.
 - **NewAccountComposer** — type/FI/name/currency/opening balance.
 - **NewCardComposer** — FI/brand/name/last4/limit/close+due days.
@@ -97,10 +100,13 @@ Top of `<script type="text/babel">`:
 - `FIs` — 13 financial institutions
 - `ACCOUNTS` — 12 accounts (checking + investment only)
 - `CARDS` — 3 credit cards (separate entity from accounts)
-- `ASSETS` — 30 assets, each linked to an investment account via `account` FK
+- `ASSETS` — 32 assets, each linked to an investment account via `account` FK (FGTS is split into one asset per employer, mirroring the real DB)
 - `MOVEMENTS` — 30 AssetMovements
 - `DISTRIBUTIONS` — 24 Distributions (3 with `asset = null`)
-- `TRANSACTIONS` — 26 Transactions (cash + card)
+- `TRANSACTIONS` — 34 Transactions (cash + card; 8 are salary credits carrying a `payslip` FK)
+- `EMPLOYERS` — 3 employers (Meli current, Carrefour + Eletrobras legacy), each with its own FGTS asset
+- `PAYSLIPS` — 24 payslips generated from line templates; totals are always derived via `payslipTotals`, never hardcoded
+- `PAYSLIP_TX` — payslip → transaction links. Only 2026 has bank statements imported; 2025 payslips are deliberately `UNSETTLED`
 - `INVOICES` — 12 invoices across 3 cards
 - `AUDIT_ENTRIES` — 15 sample audit log entries
 - `CATEGORIES` — 11 budget categories
@@ -119,6 +125,9 @@ The screens design against the **target schema** in
 1. **Net worth equation visible** on Dashboard hero: `Investimentos + Caixa − Cartões`.
 2. **Asset belongs to an Investment Account** (not directly to FI). The Conta investment page shows account-scoped assets.
 3. **CreditCard is its own entity** — separate from Account; lives at `#/cartao/{id}`.
+3b. **Payslip is a fatura invertida** (spec 77) — a document with N lines settling into 1..N cash credits. The bank credits the *líquido*; bruto, INSS/IRRF and payroll-deducted expenses exist only on the payslip. Two rules the screens encode:
+   - **Gross-up**: a deduction that is a real expense (plano de saúde, odonto) is added to *both* renda and despesa. The month's resultado still equals the cash credit, but the despesa média stops underreporting. INSS/IRRF (`tax`) and the adiantamento offset (`advance`) stay out of both.
+   - **ADVANCE is a cash-timing document**, not an earnings one: its net counts as income, its gross never enters the bruto/alíquota totals (the monthly payslip already carries the full bruto and deducts the advance).
 4. **Distribution can have `asset = null`** — Avenue's "rendimento de aluguel" case.
 5. **Transaction is polymorphic** — belongs to either an Account (cash) or a CreditCard (charge).
 6. **Activity feed mixes ledgers** on Dashboard: AssetMovements (blue), Distributions (amber), Transactions (violet).
