@@ -5,7 +5,7 @@
  * resolvida pela FI, regra spec 10). Salva via PATCH /assets/{id} só com
  * os campos que mudaram. Renda fixa / físico continuam editando `details`
  * pelo AssetModal ("Editar detalhes…"). */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Edit2, Loader2 } from 'lucide-react'
 
 import {
@@ -88,9 +88,21 @@ export default function AssetDataCard({
   const [draft, setDraft] = useState<Draft>(() => draftOf(asset))
   const [accounts, setAccounts] = useState<AccountOut[] | null>(null)
   const [saving, setSaving] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (autoEdit) { startEditing(); onAutoEditConsumed?.() }
+    if (!autoEdit) return
+    startEditing()
+    onAutoEditConsumed?.()
+    // Feedback visível pro "Editar ativo" do header: o card fica abaixo da
+    // dobra, então sem scroll+foco o clique parece não fazer nada (e, com o
+    // card já em edição, seria um no-op de verdade).
+    const t = window.setTimeout(() => {
+      rootRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+      nameRef.current?.focus()
+    }, 0)
+    return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoEdit])
 
@@ -149,10 +161,22 @@ export default function AssetDataCard({
   const sel = `${INPUT_CLS} appearance-none`
 
   return (
+    <div ref={rootRef} className="scroll-mt-4">
     <Card>
       <SectionTitle action={
         editing ? (
           <div className="flex items-center gap-2">
+            {NEEDS_DETAILS.includes(asset.asset_class) && (
+              <button
+                type="button"
+                onClick={onEditDetails}
+                data-testid="asset-data-full-form"
+                title="Editar vencimento, indexador, taxa (ou endereço/placa) no formulário completo"
+                className="h-7 px-2.5 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              >
+                Editar detalhes…
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setEditing(false)}
@@ -208,7 +232,7 @@ export default function AssetDataCard({
         >
           <label className="col-span-2 grid gap-1">
             <span className="text-[10px] uppercase tracking-wider text-gray-500">Nome</span>
-            <input className={INPUT_CLS} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} data-testid="asset-data-name" />
+            <input ref={nameRef} className={INPUT_CLS} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} data-testid="asset-data-name" />
           </label>
           <label className="grid gap-1">
             <span className="text-[10px] uppercase tracking-wider text-gray-500">Ticker{tickerRequired ? ' *' : ''}</span>
@@ -318,5 +342,6 @@ export default function AssetDataCard({
         </div>
       )}
     </Card>
+    </div>
   )
 }

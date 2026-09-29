@@ -146,6 +146,21 @@ describe('AssetDataCard (spec 81)', () => {
     expect((screen.getByTestId('asset-data-ticker') as HTMLInputElement).disabled).toBe(true)
   })
 
+  it('autoEdit (header "Editar ativo") abre em edição, foca o nome e consome o flag', async () => {
+    const props = mount({ autoEdit: true, onAutoEditConsumed: vi.fn() })
+    await waitFor(() => expect(screen.getByTestId('asset-data-form')).toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('asset-data-name')))
+    expect(props.onAutoEditConsumed).toHaveBeenCalled()
+  })
+
+  it('renda fixa em edição ainda mostra "Editar detalhes…"', () => {
+    const fi: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: null, details: null }
+    const props = mount({ asset: fi })
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    fireEvent.click(screen.getByTestId('asset-data-full-form'))
+    expect(props.onEditDetails).toHaveBeenCalled()
+  })
+
   it('Zerar ativo só aparece com permissão e chama onDeactivate', () => {
     const props = mount()
     fireEvent.click(screen.getByTestId('asset-data-deactivate'))
