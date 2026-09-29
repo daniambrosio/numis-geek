@@ -321,6 +321,49 @@ def test_ticker_required_for_stock(client, seed):
     assert r.status_code == 422
 
 
+def test_fixed_income_accepts_optional_ticker(client, seed):
+    """Relaxado em 2026-09-29: renda fixa aceita ticker opcional (código curto
+    do título, ex.: Treasury "T 4.85 15/08/36"). Cria com ticker e depois
+    PATCH define/limpa o ticker sem 422."""
+    details = {
+        "issuer": "Tesouro Americano", "maturity_date": "2036-08-15",
+        "indexer": "PREFIXED", "rate": 4.85,
+    }
+    r = client.post("/api/assets", json={
+        "asset_class": "FIXED_INCOME", "country": "US",
+        "account_id": seed["acc_xp_a"],
+        "name": "US Treasury 4.85% 08/15/2036",
+        "currency": "USD",
+        "ticker": "T 4.85 15/08/36",
+        "details": details,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    assert r.json()["ticker"] == "T 4.85 15/08/36"
+
+    r = client.post("/api/assets", json={
+        "asset_class": "FIXED_INCOME", "country": "US",
+        "account_id": seed["acc_xp_a"],
+        "name": "US Treasury 4.00% 02/15/2034",
+        "currency": "USD",
+        "details": details,
+    }, headers=auth(seed["admin_token_a"]))
+    assert r.status_code == 201, r.text
+    asset_id = r.json()["id"]
+    assert r.json()["ticker"] is None
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"ticker": "T 4 02/15/34"},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["ticker"] == "T 4 02/15/34"
+    r = client.patch(
+        f"/api/assets/{asset_id}", json={"ticker": None},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["ticker"] is None
+
+
 def test_ticker_forbidden_for_real_estate(client, seed):
     r = client.post("/api/assets", json={
         "asset_class": "REAL_ESTATE", "country": "BR",

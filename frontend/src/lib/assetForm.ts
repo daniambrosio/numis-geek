@@ -21,7 +21,8 @@ export const CLASS_LABELS: Record<AssetClass, string> = {
 // PRIVATE_PENSION/FGTS/CASH behave like ticker classes but ticker is optional
 // (per spec 07a — Notion has no ticker for those rows).
 export const TICKER_REQUIRED: AssetClass[] = ['STOCK', 'ETF', 'REIT', 'CRYPTO']
-export const TICKER_FORBIDDEN: AssetClass[] = ['FIXED_INCOME', 'REAL_ESTATE', 'VEHICLE']
+// FUND e FIXED_INCOME aceitam ticker opcional (código curto do título).
+export const TICKER_FORBIDDEN: AssetClass[] = ['REAL_ESTATE', 'VEHICLE']
 export const NEEDS_FIXED_INCOME: AssetClass[] = ['FIXED_INCOME']
 export const NEEDS_PHYSICAL: AssetClass[] = ['REAL_ESTATE', 'VEHICLE']
 /** Classes cujos `details` só se editam pelo AssetModal. */

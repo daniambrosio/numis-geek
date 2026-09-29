@@ -126,6 +126,26 @@ describe('AssetDataCard (spec 81)', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { name: 'CDB renomeado' }))
   })
 
+  it('renda fixa aceita ticker opcional: input habilitado e PATCH envia o ticker', async () => {
+    const fi: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: null, details: null }
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...fi, ticker: 'T 4.85 15/08/36' })
+    mount({ asset: fi })
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    const input = screen.getByTestId('asset-data-ticker') as HTMLInputElement
+    expect(input.disabled).toBe(false)
+    fireEvent.change(input, { target: { value: 't 4.85 15/08/36' } })
+    expect(screen.queryByTestId('asset-data-problems')).toBeNull()
+    fireEvent.click(screen.getByTestId('asset-data-save'))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { ticker: 'T 4.85 15/08/36' }))
+  })
+
+  it('imóvel continua sem ticker: input desabilitado', () => {
+    const re: AssetOut = { ...asset, asset_class: 'REAL_ESTATE', ticker: null, details: null }
+    mount({ asset: re })
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    expect((screen.getByTestId('asset-data-ticker') as HTMLInputElement).disabled).toBe(true)
+  })
+
   it('Zerar ativo só aparece com permissão e chama onDeactivate', () => {
     const props = mount()
     fireEvent.click(screen.getByTestId('asset-data-deactivate'))

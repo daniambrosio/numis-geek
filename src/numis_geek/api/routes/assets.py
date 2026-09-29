@@ -57,11 +57,11 @@ TICKER_REQUIRED_CLASSES = {
     AssetClass.CRYPTO,
 }
 TICKER_FORBIDDEN_CLASSES = {
-    AssetClass.FIXED_INCOME,
     AssetClass.REAL_ESTATE,
     AssetClass.VEHICLE,
 }
-# FUND: ticker optional
+# FUND e FIXED_INCOME: ticker opcional (código curto — ex.: "T 4.85 15/08/36",
+# "CD ITAU 3.86 18/06/27"; relaxado em 2026-09-29, spec 06).
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
