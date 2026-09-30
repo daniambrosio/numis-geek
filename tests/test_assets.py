@@ -1105,6 +1105,38 @@ def test_patch_asset_invalid_class_change_422(client, seed):
     assert "details is required" in r.json()["detail"]
 
 
+def test_patch_asset_class_change_with_details_200(client, seed):
+    """Card inline: trocar ação → renda fixa mandando `details` no mesmo PATCH
+    cria a linha especializada; PATCH só de details atualiza a existente."""
+    asset_id = _create_test_asset(client, seed, ticker="PT4B")
+    r = client.patch(
+        f"/api/assets/{asset_id}",
+        json={
+            "asset_class": "FIXED_INCOME", "ticker": None,
+            "details": {
+                "issuer": "Banco X", "maturity_date": "2030-01-31",
+                "indexer": "CDI", "rate": 110,
+            },
+        },
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["asset_class"] == "FIXED_INCOME"
+    assert r.json()["details"]["issuer"] == "Banco X"
+    assert r.json()["details"]["indexer"] == "CDI"
+    r = client.patch(
+        f"/api/assets/{asset_id}",
+        json={"details": {
+            "issuer": "Banco X", "maturity_date": "2030-01-31",
+            "indexer": "PREFIXED", "rate": 12.5,
+        }},
+        headers=auth(seed["admin_token_a"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["details"]["indexer"] == "PREFIXED"
+    assert float(r.json()["details"]["rate"]) == 12.5
+
+
 def test_patch_asset_unknown_field_422(client, seed):
     asset_id = _create_test_asset(client, seed, ticker="PT5")
     r = client.patch(

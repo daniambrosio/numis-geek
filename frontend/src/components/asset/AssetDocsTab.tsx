@@ -22,7 +22,6 @@ interface Props {
   onAutoEditConsumed?: () => void
   onSaved: (asset: AssetOut) => void
   onError: (msg: string) => void
-  onEditDetails: () => void
   onDeactivate: () => void
   attachments: AttachmentOut[]
   onAttachmentsChanged: () => void | Promise<void>
@@ -32,7 +31,7 @@ interface Props {
 export default function AssetDocsTab({
   asset, fi, account, institutions, canDeactivate,
   costBRL, receivedBRL, movementsCount, lastMovementDate,
-  autoEdit, onAutoEditConsumed, onSaved, onError, onEditDetails, onDeactivate,
+  autoEdit, onAutoEditConsumed, onSaved, onError, onDeactivate,
   attachments, onAttachmentsChanged, onNotesSave,
 }: Props) {
   return (
@@ -51,7 +50,6 @@ export default function AssetDocsTab({
         onAutoEditConsumed={onAutoEditConsumed}
         onSaved={onSaved}
         onError={onError}
-        onEditDetails={onEditDetails}
         onDeactivate={onDeactivate}
       />
       <NotesAttachmentsCard

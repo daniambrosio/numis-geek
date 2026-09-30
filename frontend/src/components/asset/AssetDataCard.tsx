@@ -1,19 +1,22 @@
 /* Spec 81 — card "Dados do ativo" com edição inline (sem modal).
  *
- * Modo leitura: a <dl> de detalhes de sempre. Modo edição: nome, ticker,
- * CNPJ, classe, país, moeda e custodiante (a conta de investimento é
- * resolvida pela FI, regra spec 10). Salva via PATCH /assets/{id} só com
- * os campos que mudaram. Renda fixa / físico continuam editando `details`
- * pelo AssetModal ("Editar detalhes…"). */
+ * Modo leitura: a <dl> de detalhes de sempre — inclusive os `details` de
+ * renda fixa (emissor, vencimento, indexador, taxa) e de imóvel/veículo.
+ * Modo edição: nome, ticker, CNPJ, classe, país, moeda, custodiante (a
+ * conta de investimento é resolvida pela FI, regra spec 10) e, quando a
+ * classe pede, os `details`. Trocar a classe pra renda fixa/imóvel/veículo
+ * abre a seção de detalhes aqui mesmo — o AssetModal ficou só pra criação.
+ * Salva via PATCH /assets/{id} só com os campos que mudaram. */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Edit2, Loader2 } from 'lucide-react'
 
 import {
-  api, type AccountOut, type AssetClass, type AssetOut, type AssetPatchRequest,
-  type FinancialInstitutionOut,
+  api, type AccountOut, type AssetClass, type AssetOut, type FinancialInstitutionOut,
+  type FixedIncomeDetails, type FixedIncomeIndexer, type PhysicalDetails,
 } from '../../lib/api'
 import {
-  CLASS_LABELS, NEEDS_DETAILS, TICKER_FORBIDDEN, TICKER_REQUIRED, resolveInvestmentAccount,
+  CLASS_LABELS, INDEXERS, NEEDS_FIXED_INCOME, NEEDS_PHYSICAL, TICKER_FORBIDDEN, TICKER_REQUIRED,
+  resolveInvestmentAccount,
 } from '../../lib/assetForm'
 import { fmtDate } from '../../lib/format'
 import { fmtBRL } from '../../lib/money'
@@ -21,43 +24,12 @@ import { collapsedOf } from '../../lib/tokens'
 import { Card, CcyPill, ClassBadge, INPUT_CLS, SectionTitle } from '../ui'
 import { Detail } from './AssetDocsTab'
 import CountryFlag from './CountryFlag'
+import { buildPatch, detailsProblems, draftOf, type DetailsDraft, type Draft } from './assetDataDraft'
 
-interface Draft {
-  name: string
-  ticker: string
-  cnpj: string
-  asset_class: AssetClass
-  country: string
-  currency: 'BRL' | 'USD'
-  fiId: string
-}
-
-function draftOf(asset: AssetOut): Draft {
-  return {
-    name: asset.name,
-    ticker: asset.ticker ?? '',
-    cnpj: asset.cnpj ?? '',
-    asset_class: asset.asset_class,
-    country: asset.country,
-    currency: asset.currency,
-    fiId: asset.financial_institution_id,
-  }
-}
-
-/** Só os campos que mudaram — o PATCH é parcial de verdade. */
-export function buildPatch(asset: AssetOut, d: Draft, accountId: string | null): AssetPatchRequest {
-  const patch: AssetPatchRequest = {}
-  if (d.name.trim() !== asset.name) patch.name = d.name.trim()
-  const ticker = d.ticker.trim() || null
-  if (ticker !== (asset.ticker ?? null)) patch.ticker = ticker
-  const cnpj = d.cnpj.trim() || null
-  if (cnpj !== (asset.cnpj ?? null)) patch.cnpj = cnpj
-  if (d.asset_class !== asset.asset_class) patch.asset_class = d.asset_class
-  if (d.country !== asset.country) patch.country = d.country
-  if (d.currency !== asset.currency) patch.currency = d.currency
-  if (accountId && accountId !== asset.account_id) patch.account_id = accountId
-  return patch
-}
+const fmtPct = (v: number | null | undefined) =>
+  v == null ? '—' : `${v.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}%`
+const fmtNum = (v: number | null | undefined, unit = '') =>
+  v == null ? '—' : `${v.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}${unit}`
 
 interface Props {
   asset: AssetOut
@@ -75,14 +47,13 @@ interface Props {
   onAutoEditConsumed?: () => void
   onSaved: (asset: AssetOut) => void
   onError: (msg: string) => void
-  onEditDetails: () => void
   onDeactivate: () => void
 }
 
 export default function AssetDataCard({
   asset, fi, account, institutions, canDeactivate,
   costBRL, receivedBRL, movementsCount, lastMovementDate,
-  autoEdit, onAutoEditConsumed, onSaved, onError, onEditDetails, onDeactivate,
+  autoEdit, onAutoEditConsumed, onSaved, onError, onDeactivate,
 }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Draft>(() => draftOf(asset))
@@ -116,6 +87,8 @@ export default function AssetDataCard({
     }
   }
 
+  const setD = (patch: Partial<DetailsDraft>) => setDraft(d => ({ ...d, details: { ...d.details, ...patch } }))
+
   const resolvedAccount = useMemo(() => {
     if (draft.fiId === asset.financial_institution_id) return account
     return accounts ? resolveInvestmentAccount(accounts, draft.fiId) : null
@@ -123,13 +96,13 @@ export default function AssetDataCard({
 
   const tickerRequired = TICKER_REQUIRED.includes(draft.asset_class)
   const tickerForbidden = TICKER_FORBIDDEN.includes(draft.asset_class)
-  const classNeedsDetails = NEEDS_DETAILS.includes(draft.asset_class)
-  const classChangedToDetails = classNeedsDetails && !NEEDS_DETAILS.includes(asset.asset_class)
+  const showFixedIncome = NEEDS_FIXED_INCOME.includes(draft.asset_class)
+  const showPhysical = NEEDS_PHYSICAL.includes(draft.asset_class)
   const patch = buildPatch(asset, draft, resolvedAccount?.id ?? null)
   const dirty = Object.keys(patch).length > 0
-  // Violações herdadas (ativo legado com ticker em renda fixa, etc.) não
-  // bloqueiam: o backend só rejeita o que o PATCH introduz. Só apontamos
-  // problemas em campos que o usuário mexeu.
+  // Violações herdadas (ativo legado sem details, etc.) não bloqueiam: o
+  // backend só rejeita o que o PATCH introduz. Só apontamos problemas em
+  // campos que o usuário mexeu — nos details, só quando eles entram no PATCH.
   const tickerTouched = draft.ticker.trim() !== (asset.ticker ?? '') || draft.asset_class !== asset.asset_class
   const cnpjTouched = draft.cnpj.trim() !== (asset.cnpj ?? '') || draft.asset_class !== asset.asset_class
   const problems: string[] = []
@@ -140,7 +113,7 @@ export default function AssetDataCard({
   if (draft.fiId !== asset.financial_institution_id && accounts && !resolvedAccount) {
     problems.push('custodiante sem conta de investimento no workspace')
   }
-  if (classChangedToDetails) problems.push('mudar pra renda fixa/imóvel/veículo exige detalhes — use "Formulário completo…"')
+  if (patch.details !== undefined) problems.push(...detailsProblems(draft.asset_class, draft.details))
   const canSave = editing && dirty && problems.length === 0 && !saving
 
   async function save() {
@@ -159,6 +132,10 @@ export default function AssetDataCard({
 
   const klass = collapsedOf(asset.asset_class)
   const sel = `${INPUT_CLS} appearance-none`
+  const lbl = 'text-[10px] uppercase tracking-wider text-gray-500'
+  const isFixedIncome = NEEDS_FIXED_INCOME.includes(asset.asset_class)
+  const fiDetails = (isFixedIncome ? asset.details : null) as FixedIncomeDetails | null
+  const phDetails = (NEEDS_PHYSICAL.includes(asset.asset_class) ? asset.details : null) as PhysicalDetails | null
 
   return (
     <div ref={rootRef} className="scroll-mt-4">
@@ -166,17 +143,6 @@ export default function AssetDataCard({
       <SectionTitle action={
         editing ? (
           <div className="flex items-center gap-2">
-            {NEEDS_DETAILS.includes(asset.asset_class) && (
-              <button
-                type="button"
-                onClick={onEditDetails}
-                data-testid="asset-data-full-form"
-                title="Editar vencimento, indexador, taxa (ou endereço/placa) no formulário completo"
-                className="h-7 px-2.5 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              >
-                Editar detalhes…
-              </button>
-            )}
             <button
               type="button"
               onClick={() => setEditing(false)}
@@ -198,27 +164,14 @@ export default function AssetDataCard({
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onEditDetails}
-              data-testid="asset-data-full-form"
-              title={NEEDS_DETAILS.includes(asset.asset_class)
-                ? 'Editar vencimento, indexador, taxa (ou endereço/placa) no formulário completo'
-                : 'Formulário completo — inclusive pra converter em renda fixa, imóvel ou veículo'}
-              className="h-7 px-2.5 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-            >
-              {NEEDS_DETAILS.includes(asset.asset_class) ? 'Editar detalhes…' : 'Formulário completo…'}
-            </button>
-            <button
-              type="button"
-              onClick={startEditing}
-              data-testid="asset-data-edit"
-              className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-            >
-              <Edit2 className="w-3 h-3" /> Editar
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={startEditing}
+            data-testid="asset-data-edit"
+            className="h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+          >
+            <Edit2 className="w-3 h-3" /> Editar
+          </button>
         )
       }>
         Dados do ativo
@@ -231,21 +184,21 @@ export default function AssetDataCard({
           data-testid="asset-data-form"
         >
           <label className="col-span-2 grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Nome</span>
+            <span className={lbl}>Nome</span>
             <input ref={nameRef} className={INPUT_CLS} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} data-testid="asset-data-name" />
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Ticker{tickerRequired ? ' *' : ''}</span>
+            <span className={lbl}>Ticker{tickerRequired ? ' *' : ''}</span>
             <input className={`${INPUT_CLS} font-mono`} value={draft.ticker} disabled={tickerForbidden}
               onChange={e => setDraft({ ...draft, ticker: e.target.value.toUpperCase() })} data-testid="asset-data-ticker" />
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">CNPJ</span>
+            <span className={lbl}>CNPJ</span>
             <input className={`${INPUT_CLS} font-mono`} value={draft.cnpj} disabled={draft.asset_class !== 'FUND'}
               onChange={e => setDraft({ ...draft, cnpj: e.target.value })} data-testid="asset-data-cnpj" />
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Classe</span>
+            <span className={lbl}>Classe</span>
             <select
               className={sel}
               value={draft.asset_class}
@@ -264,21 +217,21 @@ export default function AssetDataCard({
             </select>
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">País</span>
+            <span className={lbl}>País</span>
             <select className={sel} value={draft.country} onChange={e => setDraft({ ...draft, country: e.target.value })}>
               <option value="BR">🇧🇷 Brasil</option>
               <option value="US">🇺🇸 EUA</option>
             </select>
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Moeda</span>
+            <span className={lbl}>Moeda</span>
             <select className={sel} value={draft.currency} onChange={e => setDraft({ ...draft, currency: e.target.value as 'BRL' | 'USD' })}>
               <option value="BRL">BRL</option>
               <option value="USD">USD</option>
             </select>
           </label>
           <label className="grid gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Custodiante</span>
+            <span className={lbl}>Custodiante</span>
             <select className={sel} value={draft.fiId} onChange={e => setDraft({ ...draft, fiId: e.target.value })} data-testid="asset-data-fi">
               {institutions.map(f => <option key={f.id} value={f.id}>{f.short_name}</option>)}
             </select>
@@ -288,6 +241,95 @@ export default function AssetDataCard({
                 : resolvedAccount ? `conta: ${resolvedAccount.name}` : 'sem conta de investimento nesse custodiante'}
             </span>
           </label>
+
+          {showFixedIncome && (
+            <div className="col-span-2 lg:col-span-4 grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-3 pt-3 mt-1 border-t border-gray-100 dark:border-gray-800" data-testid="asset-data-details-fi">
+              <label className="col-span-2 grid gap-1">
+                <span className={lbl}>Emissor *</span>
+                <input className={INPUT_CLS} value={draft.details.issuer} onChange={e => setD({ issuer: e.target.value })} placeholder="Ex: Banco BTG Pactual" data-testid="asset-data-issuer" />
+              </label>
+              <label className="grid gap-1">
+                <span className={lbl}>Emissão</span>
+                <input type="date" className={INPUT_CLS} value={draft.details.issue_date} onChange={e => setD({ issue_date: e.target.value })} />
+              </label>
+              <label className="grid gap-1">
+                <span className={lbl}>Vencimento *</span>
+                <input type="date" className={INPUT_CLS} value={draft.details.maturity_date} onChange={e => setD({ maturity_date: e.target.value })} data-testid="asset-data-maturity" />
+              </label>
+              <label className="grid gap-1">
+                <span className={lbl}>Indexador *</span>
+                <select className={sel} value={draft.details.indexer} onChange={e => setD({ indexer: e.target.value as FixedIncomeIndexer | '' })} data-testid="asset-data-indexer">
+                  <option value="">— selecione —</option>
+                  {INDEXERS.map(i => <option key={i} value={i}>{i}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className={lbl}>Taxa (%) *</span>
+                <input inputMode="decimal" className={`${INPUT_CLS} tnum`} value={draft.details.rate} onChange={e => setD({ rate: e.target.value })} placeholder="110 · 4,85" data-testid="asset-data-rate" />
+              </label>
+              <label className="grid gap-1">
+                <span className={lbl}>Valor nominal</span>
+                <input inputMode="decimal" className={`${INPUT_CLS} tnum`} value={draft.details.face_value} onChange={e => setD({ face_value: e.target.value })} placeholder="(opcional)" />
+              </label>
+            </div>
+          )}
+
+          {showPhysical && (
+            <div className="col-span-2 lg:col-span-4 grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-3 pt-3 mt-1 border-t border-gray-100 dark:border-gray-800" data-testid="asset-data-details-physical">
+              {draft.asset_class === 'REAL_ESTATE' ? (
+                <>
+                  <label className="col-span-2 grid gap-1">
+                    <span className={lbl}>Endereço *</span>
+                    <input className={INPUT_CLS} value={draft.details.address} onChange={e => setD({ address: e.target.value })} data-testid="asset-data-address" />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Cidade *</span>
+                    <input className={INPUT_CLS} value={draft.details.city} onChange={e => setD({ city: e.target.value })} />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>UF *</span>
+                    <input className={INPUT_CLS} value={draft.details.state} onChange={e => setD({ state: e.target.value })} />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>País (ISO) *</span>
+                    <input className={`${INPUT_CLS} font-mono`} maxLength={2} value={draft.details.country} onChange={e => setD({ country: e.target.value.toUpperCase() })} placeholder="BR" />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Área (m²)</span>
+                    <input inputMode="decimal" className={`${INPUT_CLS} tnum`} value={draft.details.area_m2} onChange={e => setD({ area_m2: e.target.value })} />
+                  </label>
+                  <label className="col-span-2 grid gap-1">
+                    <span className={lbl}>Matrícula</span>
+                    <input className={`${INPUT_CLS} font-mono`} value={draft.details.registration_number} onChange={e => setD({ registration_number: e.target.value })} />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Marca *</span>
+                    <input className={INPUT_CLS} value={draft.details.make} onChange={e => setD({ make: e.target.value })} data-testid="asset-data-make" />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Modelo *</span>
+                    <input className={INPUT_CLS} value={draft.details.model} onChange={e => setD({ model: e.target.value })} />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Ano *</span>
+                    <input inputMode="numeric" className={`${INPUT_CLS} tnum`} maxLength={4} value={draft.details.year} onChange={e => setD({ year: e.target.value })} />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className={lbl}>Placa</span>
+                    <input className={`${INPUT_CLS} font-mono`} value={draft.details.license_plate} onChange={e => setD({ license_plate: e.target.value.toUpperCase() })} />
+                  </label>
+                  <label className="col-span-2 grid gap-1">
+                    <span className={lbl}>Chassi</span>
+                    <input className={`${INPUT_CLS} font-mono`} value={draft.details.chassis} onChange={e => setD({ chassis: e.target.value.toUpperCase() })} />
+                  </label>
+                </>
+              )}
+            </div>
+          )}
+
           {problems.length > 0 && dirty && (
             <div className="col-span-2 lg:col-span-4 text-[11px] text-amber-600 dark:text-amber-400" data-testid="asset-data-problems">
               {problems.join(' · ')}
@@ -311,6 +353,32 @@ export default function AssetDataCard({
           <Detail label="Moeda"><CcyPill ccy={asset.currency} /></Detail>
           <Detail label="Custodiante" value={fi?.short_name || '—'} />
           <Detail label="Conta" value={account?.name || '—'} />
+          {isFixedIncome && (
+            <>
+              <Detail label="Emissor" value={fiDetails?.issuer || '—'} />
+              <Detail label="Vencimento" value={fiDetails?.maturity_date ? fmtDate(fiDetails.maturity_date) : '—'} tnum />
+              <Detail label="Indexador" value={fiDetails?.indexer || '—'} mono />
+              <Detail label="Taxa" value={fmtPct(fiDetails?.rate)} tnum />
+              {fiDetails?.issue_date && <Detail label="Emissão" value={fmtDate(fiDetails.issue_date)} tnum />}
+              {fiDetails?.face_value != null && <Detail label="Valor nominal" value={fmtNum(fiDetails.face_value)} tnum />}
+            </>
+          )}
+          {asset.asset_class === 'REAL_ESTATE' && (
+            <>
+              <Detail label="Endereço" value={phDetails?.address || '—'} />
+              <Detail label="Cidade / UF" value={phDetails?.city ? `${phDetails.city}${phDetails.state ? ` / ${phDetails.state}` : ''}` : '—'} />
+              <Detail label="Área" value={fmtNum(phDetails?.area_m2, ' m²')} tnum />
+              <Detail label="Matrícula" value={phDetails?.registration_number || '—'} mono />
+            </>
+          )}
+          {asset.asset_class === 'VEHICLE' && (
+            <>
+              <Detail label="Marca / Modelo" value={phDetails?.make ? `${phDetails.make}${phDetails.model ? ` ${phDetails.model}` : ''}` : '—'} />
+              <Detail label="Ano" value={phDetails?.year != null ? String(phDetails.year) : '—'} tnum />
+              <Detail label="Placa" value={phDetails?.license_plate || '—'} mono />
+              <Detail label="Chassi" value={phDetails?.chassis || '—'} mono />
+            </>
+          )}
           <Detail label="Status">
             {asset.is_active
               ? <span className="text-emerald-500 dark:text-emerald-400">Ativo</span>

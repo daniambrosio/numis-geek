@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import AssetDataCard, { buildPatch } from './AssetDataCard'
+import AssetDataCard from './AssetDataCard'
+import { buildPatch, emptyDetailsDraft } from './assetDataDraft'
 import { api, type AccountOut, type AssetOut, type FinancialInstitutionOut } from '../../lib/api'
 
 const asset: AssetOut = {
@@ -26,7 +27,7 @@ function mount(over: Partial<React.ComponentProps<typeof AssetDataCard>> = {}) {
   const props = {
     asset, fi: fis[0], account: accounts[0], institutions: fis, canDeactivate: true,
     costBRL: 1000, receivedBRL: 50, movementsCount: 3, lastMovementDate: '2026-08-01',
-    onSaved: vi.fn(), onError: vi.fn(), onEditDetails: vi.fn(), onDeactivate: vi.fn(),
+    onSaved: vi.fn(), onError: vi.fn(), onDeactivate: vi.fn(),
     ...over,
   }
   render(<AssetDataCard {...props} />)
@@ -42,7 +43,7 @@ beforeEach(() => {
 
 describe('AssetDataCard (spec 81)', () => {
   it('buildPatch envia só o que mudou', () => {
-    const d = { name: 'Itaú PN', ticker: 'ITUB4', cnpj: '', asset_class: 'STOCK' as const, country: 'BR', currency: 'BRL' as const, fiId: 'fi-xp' }
+    const d = { name: 'Itaú PN', ticker: 'ITUB4', cnpj: '', asset_class: 'STOCK' as const, country: 'BR', currency: 'BRL' as const, fiId: 'fi-xp', details: emptyDetailsDraft() }
     expect(buildPatch(asset, d, 'acc-xp')).toEqual({})
     expect(buildPatch(asset, { ...d, name: 'Itaú Unibanco PN' }, 'acc-xp')).toEqual({ name: 'Itaú Unibanco PN' })
     expect(buildPatch(asset, { ...d, fiId: 'fi-btg' }, 'acc-btg')).toEqual({ account_id: 'acc-btg' })
@@ -153,12 +154,63 @@ describe('AssetDataCard (spec 81)', () => {
     expect(props.onAutoEditConsumed).toHaveBeenCalled()
   })
 
-  it('renda fixa em edição ainda mostra "Editar detalhes…"', () => {
-    const fi: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: null, details: null }
-    const props = mount({ asset: fi })
+  it('renda fixa: leitura mostra vencimento/indexador/taxa e edição envia details no PATCH', async () => {
+    const details = { issuer: 'Tesouro Americano', issue_date: null, maturity_date: '2036-08-15', indexer: 'PREFIXED' as const, rate: 4.85, face_value: null }
+    const fi: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: null, details }
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...fi, details: { ...details, rate: 4.9 } })
+    mount({ asset: fi })
+    expect(screen.getByText('Tesouro Americano')).toBeInTheDocument()
+    expect(screen.getByText('15/08/2036')).toBeInTheDocument()
+    expect(screen.getByText('PREFIXED')).toBeInTheDocument()
+    expect(screen.getByText('4,85%')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('asset-data-edit'))
-    fireEvent.click(screen.getByTestId('asset-data-full-form'))
-    expect(props.onEditDetails).toHaveBeenCalled()
+    expect(screen.getByTestId('asset-data-details-fi')).toBeInTheDocument()
+    expect(screen.queryByTestId('asset-data-full-form')).toBeNull()
+    fireEvent.change(screen.getByTestId('asset-data-rate'), { target: { value: '4,9' } })
+    expect(screen.queryByTestId('asset-data-problems')).toBeNull()
+    fireEvent.click(screen.getByTestId('asset-data-save'))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', { details: { ...details, rate: 4.9 } }))
+  })
+
+  it('renda fixa legada sem details: editar só o nome não manda details; preencher details exige os obrigatórios', () => {
+    const legacy: AssetOut = { ...asset, asset_class: 'FIXED_INCOME', ticker: 'CDB-LEGADO', details: null }
+    mount({ asset: legacy })
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    // details vazios são "iguais" a null → não entram no PATCH, nome salva sozinho
+    fireEvent.change(screen.getByTestId('asset-data-name'), { target: { value: 'CDB renomeado' } })
+    expect(screen.queryByTestId('asset-data-problems')).toBeNull()
+    expect(screen.getByTestId('asset-data-save')).not.toBeDisabled()
+    // começou a preencher details → precisa dos obrigatórios
+    fireEvent.change(screen.getByTestId('asset-data-issuer'), { target: { value: 'Banco X' } })
+    expect(screen.getByTestId('asset-data-problems')).toHaveTextContent('vencimento obrigatório')
+    expect(screen.getByTestId('asset-data-problems')).toHaveTextContent('indexador obrigatório')
+    expect(screen.getByTestId('asset-data-save')).toBeDisabled()
+  })
+
+  it('trocar ação → renda fixa abre os details inline e o PATCH leva classe + details', async () => {
+    const patch = vi.spyOn(api, 'patchAsset').mockResolvedValue({ ...asset, asset_class: 'FIXED_INCOME', ticker: null })
+    mount()
+    fireEvent.click(screen.getByTestId('asset-data-edit'))
+    fireEvent.change(screen.getByTestId('asset-data-class'), { target: { value: 'FIXED_INCOME' } })
+    expect(screen.getByTestId('asset-data-details-fi')).toBeInTheDocument()
+    expect(screen.getByTestId('asset-data-problems')).toHaveTextContent('emissor obrigatório')
+    fireEvent.change(screen.getByTestId('asset-data-issuer'), { target: { value: 'Banco X' } })
+    fireEvent.change(screen.getByTestId('asset-data-maturity'), { target: { value: '2030-01-31' } })
+    fireEvent.change(screen.getByTestId('asset-data-indexer'), { target: { value: 'CDI' } })
+    fireEvent.change(screen.getByTestId('asset-data-rate'), { target: { value: '110' } })
+    expect(screen.queryByTestId('asset-data-problems')).toBeNull()
+    fireEvent.click(screen.getByTestId('asset-data-save'))
+    // ticker fica (renda fixa aceita ticker opcional desde 2026-09-29)
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('a1', {
+      asset_class: 'FIXED_INCOME',
+      details: { issuer: 'Banco X', issue_date: null, maturity_date: '2030-01-31', indexer: 'CDI', rate: 110, face_value: null },
+    }))
+  })
+
+  it('só existe um botão de edição no modo leitura', () => {
+    mount()
+    expect(screen.getByTestId('asset-data-edit')).toBeInTheDocument()
+    expect(screen.queryByTestId('asset-data-full-form')).toBeNull()
   })
 
   it('Zerar ativo só aparece com permissão e chama onDeactivate', () => {

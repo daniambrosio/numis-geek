@@ -13,7 +13,6 @@ import {
   type AssetPerformanceOut,
   type AssetPriceHistoryOut,
   type AssetPriceHistoryPeriod,
-  type AssetRequest,
   type AssetSnapshotHistoryOut,
   type AttachmentOut,
   type DistributionOut,
@@ -36,7 +35,6 @@ const PRICE_TIER_TITLE: Record<import('../lib/api').PriceTier, string> = {
 }
 import AffectedSnapshotsModal from '../components/AffectedSnapshotsModal'
 import AppLayout from '../components/AppLayout'
-import AssetModal from '../components/AssetModal'
 import DistributionComposer from '../components/DistributionComposer'
 import DistributionDetailPanel from '../components/DistributionDetailPanel'
 import KpiTile from '../components/KpiTile'
@@ -98,7 +96,6 @@ export default function AssetDetail() {
   const [refreshingPrice, setRefreshingPrice] = useState(false)
   const [priceMsg, setPriceMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [manualPriceOpen, setManualPriceOpen] = useState(false)
-  const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [institutions, setInstitutions] = useState<FinancialInstitutionOut[]>([])
   // Spec 46 — real price history derived from snapshots.
   const [pricePeriod, setPricePeriod] = useState<AssetPriceHistoryPeriod>('24m')
@@ -390,19 +387,6 @@ export default function AssetDetail() {
     if (selectedMovement?.id === l.id) setSelectedMovement(null)
     setConfirmDeactivate(null)
     void refreshMovementsAndPosition()
-  }
-
-  async function handleSaveAsset(data: AssetRequest) {
-    if (!asset) return
-    const updated = await api.updateAsset(asset.id, data)
-    setAsset(updated)
-    if (updated.account_id !== asset.account_id) {
-      const acc = await api.getAccount(updated.account_id).catch(() => null)
-      if (acc) {
-        setAccount(acc)
-        setFi(institutions.find(f => f.id === acc.financial_institution_id) ?? null)
-      }
-    }
   }
 
   useEffect(() => {
@@ -846,7 +830,6 @@ export default function AssetDetail() {
             onAutoEditConsumed={() => setDocsAutoEdit(false)}
             onSaved={handleAssetSaved}
             onError={(msg) => showMsg('err', msg)}
-            onEditDetails={() => setEditAssetOpen(true)}
             onDeactivate={() => setConfirmDeactivateAsset(true)}
             attachments={assetAttachments ?? []}
             onAttachmentsChanged={refreshAssetAttachments}
@@ -860,15 +843,6 @@ export default function AssetDetail() {
           underlying={asset}
           onClose={() => setOptionModalOpen(false)}
           onSaved={() => setOptionsRefresh(n => n + 1)}
-        />
-      )}
-
-      {editAssetOpen && institutions.length > 0 && (
-        <AssetModal
-          initial={asset}
-          institutions={institutions}
-          onSave={handleSaveAsset}
-          onClose={() => setEditAssetOpen(false)}
         />
       )}
 
