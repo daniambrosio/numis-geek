@@ -25,6 +25,14 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Specs pausadas / em andamento
 
+- [ ] `[claude]` **Deploy: migration sem busy_timeout e sem rollback.** 2026-10-30 a
+  migration `spec65_drop_susp_delta` caiu com `database is locked` (app escrevendo no
+  mesmo instante) e o `deploy.sh` saiu pelo `set -e` antes da etapa de rollback — repo do
+  VPS ficou no commit novo com container antigo. Resolvido com `--force-rebuild`.
+  Fix: `connect_args={"timeout": 30}` no `alembic/env.py` e checar exit da migration
+  (`PIPESTATUS`) pra cair no rollback em vez de abortar.
+
+
 - [ ] `[claude]` **Spec 59 (Comparativo) — retomar da Fase 0.1.** Protótipo da 1ª tela
   plantado e funcionando; 3 perguntas de UX em aberto pro user; fila Fases 0.2→6 pendente.
   Contexto completo de retomada na memory `session_state_spec_59_fase_0_1`.
