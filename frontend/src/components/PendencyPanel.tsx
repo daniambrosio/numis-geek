@@ -48,10 +48,6 @@ function fmtDateBR(iso: string): string {
   return `${d}/${m}/${y}`
 }
 
-// Spec 62 SUSPICIOUS_DELTA formatter removido pela spec 65.
-// Pendencies existentes com esse reason (histórico) exibem detail cru;
-// não há mais criação de novas.
-
 const UNGROUPED_FI_LABEL = 'Sem instituição'
 
 interface FIGroup {

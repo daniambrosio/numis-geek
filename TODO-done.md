@@ -2,6 +2,17 @@
 
 Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não fila.
 
+## Outubro 2026
+
+- [x] **2026-10-30 — Spec 65 Fase 1 (cleanup backend do SUSPICIOUS_DELTA).** Detector,
+  endpoints `mom-deltas`/`recheck-deltas`/`confirm-delta`, enum e testes removidos;
+  migration `spec65_drop_susp_delta` apaga as rows. Gatilho: BHIA3 (+109% em set/26)
+  preso no painel com JSON cru — resolvido antes via SQL (backup
+  `.bak-before-bhia3-delta-20261030-234026`).
+- [x] **2026-10-30 — CDB Vai Brasil removido do fechamento set/26.** Resgate total de 01/09
+  lançado em 03/10, depois do snapshot; `delete_snapshot_item` (−R$ 2.041,27). Backup
+  `.bak-before-cdb-vaibrasil-20261030-234303`.
+
 ## Setembro 2026
 
 - [x] **2026-09-06 — Meli Dólar vira CASH (modo valor).** User decidiu "só anotar o total

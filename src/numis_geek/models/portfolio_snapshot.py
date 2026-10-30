@@ -61,11 +61,6 @@ class PendencyReason(str, enum.Enum):
     # period_end != hoje. Não temos preço histórico (Spec 53 vai
     # buscar via providers); user preenche manualmente até lá.
     HISTORICAL_PRICE_REQUIRED = "HISTORICAL_PRICE_REQUIRED"
-    # Spec 62 — DEPRECATED pela spec 65 (2026-08-01). Detector produzia
-    # falsos-positivos demais; frontend MoMDeltaBlock removido. Enum
-    # preservado pra backward-compat com rows existentes no DB. Novos
-    # snapshots não geram mais pendencies deste tipo.
-    SUSPICIOUS_DELTA = "SUSPICIOUS_DELTA"
 
 
 class PendencyAction(str, enum.Enum):
@@ -76,8 +71,6 @@ class PendencyAction(str, enum.Enum):
     # de extração de 1 ativo continua acessível — hoje por um botão-ícone em
     # toda pendência manual, não por action_type.
     UPLOAD_FILE = "UPLOAD_FILE"
-    # Spec 62 — DEPRECATED pela spec 65. Ver PendencyReason.SUSPICIOUS_DELTA.
-    CONFIRM_DELTA = "CONFIRM_DELTA"
 
 
 class PortfolioSnapshot(Base):

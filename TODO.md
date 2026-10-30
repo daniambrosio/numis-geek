@@ -28,13 +28,6 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 - [ ] `[claude]` **Spec 59 (Comparativo) — retomar da Fase 0.1.** Protótipo da 1ª tela
   plantado e funcionando; 3 perguntas de UX em aberto pro user; fila Fases 0.2→6 pendente.
   Contexto completo de retomada na memory `session_state_spec_59_fase_0_1`.
-- [ ] `[claude]` **Spec 65 — Fase 1 (cleanup backend) — ANTES do fechamento Ago/26.**
-  ~60% entregue (frontend em 25c7bfd/93c80d2); falta deletar o legado SUSPICIOUS_DELTA —
-  enum, `detect_suspicious_deltas`, endpoints, testes e migration de drop. NÃO é
-  dormente (audit 2026-08-18): `detect_suspicious_deltas` roda em toda criação de
-  snapshot (`services/snapshot.py:477`) e rebaixa CLOSED→IN_REVIEW; o PendencyPanel
-  exibe o detail cru dessas pendencies. Sem o cleanup, Ago/26 cria pendencies com
-  JSON cru no painel.
 - [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
   66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
 

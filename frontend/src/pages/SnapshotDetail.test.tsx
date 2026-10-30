@@ -103,8 +103,40 @@ function renderPage() {
 describe('SnapshotDetail (Spec 45)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    // Spec 62 MoMDeltaBlock removido pela spec 65 — não há mais chamada
-    // de listSnapshotMomDeltas ao montar SnapshotDetail.
+  })
+
+  it('Δ % column compares against previous_mv_native (spec 65)', async () => {
+    const assets = [asset('up', 'UPUP3'), asset('down', 'DOWN3'), asset('new', 'NEWW3'), asset('zero', 'ZERO3')]
+    const items = [
+      { ...item('up', 1500), previous_mv_native: '1000' },
+      { ...item('down', 800), previous_mv_native: '1000' },
+      { ...item('new', 500), previous_mv_native: null },
+      { ...item('zero', 300), previous_mv_native: '0' },
+    ]
+    vi.spyOn(api, 'me').mockResolvedValue(me)
+    vi.spyOn(api, 'listSnapshots').mockResolvedValue([snap])
+    vi.spyOn(api, 'listSnapshotItems').mockResolvedValue(items)
+    vi.spyOn(api, 'listSnapshotPendencies').mockResolvedValue([])
+    vi.spyOn(api, 'listAssets').mockResolvedValue(assets)
+    vi.spyOn(api, 'listDistributions').mockResolvedValue({
+      items: [], total: 0, page: 1, page_size: 200,
+    })
+
+    renderPage()
+
+    const deltaCell = async (ticker: string) => {
+      const row = (await screen.findByText(ticker)).closest('tr')!
+      const cells = within(row).getAllByRole('cell')
+      return cells[cells.length - 2]
+    }
+    const up = await deltaCell('UPUP3')
+    expect(up).toHaveTextContent('+50.00%')
+    expect(up.querySelector('span')!.className).toContain('text-emerald-500')
+    const down = await deltaCell('DOWN3')
+    expect(down).toHaveTextContent('-20.00%')
+    expect(down.querySelector('span')!.className).toContain('text-red-500')
+    expect(await deltaCell('NEWW3')).toHaveTextContent('—')
+    expect(await deltaCell('ZERO3')).toHaveTextContent('—')
   })
 
   it('shows 20 positions by default with "ver todos" link, expands on click', async () => {
