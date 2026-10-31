@@ -15,6 +15,9 @@ interface Props {
   /** Called when the per-row refresh button updates a single asset.
    * The parent should merge it back into its assets state. */
   onAssetUpdated?: (updated: AssetOut) => void
+  /** Ordenação inicial (o clique no cabeçalho continua alternando). Sem
+   *  ela, a tabela mantém a ordem recebida (backend: nome). */
+  defaultSort?: SortState
 }
 
 interface Group {
@@ -30,7 +33,7 @@ export type SortKey =
   | 'dividend_yield' | 'yield_on_cost' | 'updated'
 export type SortDir = 'asc' | 'desc' | null
 
-interface SortState {
+export interface SortState {
   key: SortKey | null
   dir: SortDir
 }
@@ -111,9 +114,9 @@ function nextSort(current: SortState, key: SortKey): SortState {
 }
 
 export default function AssetTable({
-  assets, positions, institutions, grouping, onRowClick, onAssetUpdated,
+  assets, positions, institutions, grouping, onRowClick, onAssetUpdated, defaultSort,
 }: Props) {
-  const [sort, setSort] = useState<SortState>({ key: null, dir: null })
+  const [sort, setSort] = useState<SortState>(defaultSort ?? { key: null, dir: null })
   const onSort = (key: SortKey) => setSort(prev => nextSort(prev, key))
 
   const fiById = useMemo(() => {

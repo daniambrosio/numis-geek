@@ -446,6 +446,39 @@ def test_xlsx_payload_is_converted_to_csv_text():
     assert "ITUB4,200,32.1" in text
 
 
+def test_xlsx_ignores_wrong_declared_dimension():
+    """Export da XP (out/26) declara <dimension ref="A1:M35"/> tendo 256
+    linhas. Em read_only o openpyxl parava na linha 35 — setembro inteiro
+    sumia do extrato de proventos."""
+    pytest.importorskip("openpyxl")
+    import re
+    import zipfile
+    from io import BytesIO
+    from openpyxl import Workbook
+    from numis_geek.services.extraction import _xlsx_to_csv_text
+
+    wb = Workbook()
+    ws = wb.active
+    for i in range(1, 101):
+        ws.append([f"2026-09-{(i % 28) + 1:02d}", f"linha {i}", i])
+    buf = BytesIO()
+    wb.save(buf)
+
+    # Reescreve a dimensão declarada pra mentir (A1:C5).
+    src = zipfile.ZipFile(BytesIO(buf.getvalue()))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = re.sub(rb'<dimension ref="[^"]+"', b'<dimension ref="A1:C5"', data)
+            dst.writestr(item, data)
+
+    text = _xlsx_to_csv_text(out.getvalue())
+    assert "linha 100" in text
+    assert text.count("linha ") == 100
+
+
 def test_split_image_tiles_when_taller_than_8000px():
     pytest.importorskip("PIL")
     from io import BytesIO

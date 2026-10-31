@@ -196,6 +196,8 @@ export default function SysadminAssets() {
             positions={positions}
             institutions={institutions}
             grouping={grouping}
+            // Sysadmin enxerga ativos pelo ticker (GOOGL, não "Alphabet").
+            defaultSort={{ key: 'ticker', dir: 'asc' }}
             // Spec 81 — página completa do ativo, como no /assets do admin.
             // O drawer AssetDetailPanel foi aposentado.
             onRowClick={(a) => navigate(`/assets/${a.id}`, {

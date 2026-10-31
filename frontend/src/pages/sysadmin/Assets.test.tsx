@@ -51,4 +51,22 @@ describe('sysadmin Assets (spec 81)', () => {
     fireEvent.click(screen.getByText('ITUB4'))
     await waitFor(() => expect(screen.getByTestId('asset-page')).toBeInTheDocument(), { timeout: 5000 })
   })
+
+  it('ordena por ticker por padrão (GOOGL antes de ITUB4, mesmo com nome "Alphabet" vs "Itaú")', async () => {
+    const googl = { ...asset, id: 'a2', name: 'Zeta Alphabet Inc', ticker: 'GOOGL' }
+    const noTicker = { ...asset, id: 'a3', name: 'Caixinha', ticker: null }
+    vi.spyOn(api, 'listAssets').mockResolvedValue([noTicker, asset, googl])
+    render(
+      <MemoryRouter initialEntries={['/sysadmin/assets']}>
+        <Routes>
+          <Route path="/sysadmin/assets" element={<SysAdminAssets />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('GOOGL')).toBeInTheDocument(), { timeout: 5000 })
+    const order = ['Caixinha', 'GOOGL', 'ITUB4'].map(t => screen.getAllByText(t)[0])
+    // Sem ticker cai no nome ("caixinha" < "googl" < "itub4").
+    expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(order[1].compareDocumentPosition(order[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
 })

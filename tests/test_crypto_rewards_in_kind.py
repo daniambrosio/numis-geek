@@ -320,3 +320,120 @@ def test_failure_mid_apply_leaves_nothing(db, monkeypatch):
 
     assert db.query(Distribution).filter_by(asset_id=w["usdc"].id).count() == 0
     assert _buys(db, w) == []
+
+
+# ── Audit adversarial 2026-10-31 ─────────────────────────────────────────────
+
+
+def test_same_day_existing_buy_does_not_crash_position_sort(db):
+    """created_at aware (linha nova) × naive (lida do SQLite) quebrava o
+    sort da timeline em compute_position com TypeError."""
+    w = _world(db)
+    db.add(AssetMovement(
+        id=str(uuid.uuid4()), workspace_id=w["ws"].id, asset_id=w["btc"].id,
+        type=AssetMovementType.BUY, event_date=date(2026, 9, 3),
+        quantity=Decimal("0.002"), unit_price=Decimal("400000"),
+        gross_amount=Decimal("800"), net_amount=Decimal("800"),
+        currency=Currency.BRL, fx_rate=Decimal("5.4"), is_active=True,
+        created_at=datetime(2026, 9, 3, 12, 0), updated_at=datetime(2026, 9, 3, 12, 0),
+    ))
+    db.commit()
+    db.expire_all()
+
+    res = _apply(db, _job(db, w, [_reward("2026-09-03", 189.15, 0.000471)]))
+
+    assert res.applied_count == 1
+    db.refresh(w["btc_item"])
+    assert w["btc_item"].quantity == Decimal("0.012471")
+
+
+def test_same_reward_twice_in_one_file_is_applied_once(db):
+    w = _world(db)
+    job = _job(db, w, [
+        _reward("2026-09-03", 189.15, 0.000471),
+        _reward("2026-09-03", 189.15, 0.000471),
+    ])
+
+    res = _apply(db, job)
+
+    assert res.applied_count == 1
+    [dup] = res.bulk_detail.matched_no_pendency
+    assert dup["duplicate_reason"] == "repetido no arquivo"
+    assert len(_buys(db, w)) == 1
+
+
+def test_two_distinct_rewards_same_day_both_apply(db):
+    """Dedup intra-arquivo não pode engolir recompensas diferentes do dia."""
+    w = _world(db)
+    job = _job(db, w, [
+        _reward("2026-09-03", 189.15, 0.000471),
+        {**_reward("2026-09-03", 50.0, 0.0001), "ticker_raw": "BTC", "payment_in_kind": {"ticker": "BTC", "quantity": 0.0001}},
+    ])
+
+    res = _apply(db, job)
+
+    assert res.applied_count == 2
+    assert len(_buys(db, w)) == 2
+
+
+def test_later_snapshots_recomputed_or_warned(db):
+    w = _world(db)
+    now = datetime.now(timezone.utc)
+
+    def later(pe, st):
+        s = PortfolioSnapshot(
+            id=str(uuid.uuid4()), workspace_id=w["ws"].id, period_end_date=pe,
+            fx_rate_usd_brl=Decimal("5"), total_value_brl=Decimal("4000"),
+            total_value_usd=Decimal("800"), total_invested_brl=Decimal("3000"),
+            total_received_brl=Decimal("0"), source=SnapshotSource.MANUAL, status=st,
+        )
+        db.add(s)
+        db.flush()
+        it = PortfolioSnapshotItem(
+            id=str(uuid.uuid4()), snapshot_id=s.id, asset_id=w["btc"].id,
+            quantity=Decimal("0.01"), unit_price=Decimal("400000"),
+            market_value_native=Decimal("4000"), market_value_brl=Decimal("4000"),
+            market_value_usd=Decimal("800"), average_cost_brl=Decimal("300000"),
+            total_invested_brl=Decimal("3000"), created_at=now,
+        )
+        db.add(it)
+        db.flush()
+        return it
+
+    oct_item = later(date(2026, 10, 31), SnapshotStatus.IN_REVIEW)
+    nov_item = later(date(2026, 11, 30), SnapshotStatus.CLOSED)
+
+    res = _apply(db, _job(db, w, [_reward("2026-09-03", 189.15, 0.000471)]))
+
+    db.refresh(oct_item)
+    db.refresh(nov_item)
+    assert oct_item.quantity == Decimal("0.010471")
+    assert nov_item.quantity == Decimal("0.01")  # CLOSED nunca é reaberto
+    assert any("2026-11" in e and "ajuste manual" in e for e in res.errors)
+
+
+def test_confirm_on_closed_snapshot_is_refused(db):
+    import pytest
+    from numis_geek.services.extraction import ExtractionError
+
+    w = _world(db, snapshot_status=SnapshotStatus.CLOSED)
+    job = _job(db, w, [_reward("2026-09-03", 189.15, 0.000471)])
+
+    with pytest.raises(ExtractionError, match="não está em revisão"):
+        _apply(db, job)
+    assert _buys(db, w) == []
+    assert db.query(Distribution).filter_by(asset_id=w["usdc"].id).count() == 0
+
+
+def test_malformed_in_kind_from_edited_payload_is_event_error(db):
+    w = _world(db)
+    job = _job(db, w, [
+        {**_reward("2026-09-03", 189.15, None), "payment_in_kind": {"ticker": "BTC", "quantity": "0,000471"}},
+        {**_reward("2026-09-10", 190.58, None), "payment_in_kind": "BTC"},
+        _reward("2026-09-17", 191.29, 0.000484),
+    ])
+
+    res = _apply(db, job)
+
+    assert res.applied_count == 1
+    assert sum("payment_in_kind" in e for e in res.errors) == 2

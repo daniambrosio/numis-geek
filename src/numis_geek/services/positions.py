@@ -33,7 +33,7 @@ Returned shape — see `compute_position`:
 - total_received_brl: Decimal — sum of Distribution net_amount × fx_rate
 - currency: str — asset's native currency
 """
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TypedDict
 
@@ -210,6 +210,17 @@ def _market_value_brl_before(
     return (row[0], row[1])
 
 
+def _naive_utc(dt: datetime | None) -> datetime:
+    """Desempate da timeline por created_at. Linha recém-criada na sessão
+    carrega datetime aware (UTC); a mesma linha lida do SQLite volta naive —
+    comparar as duas lança TypeError. Normaliza tudo pra naive UTC."""
+    if dt is None:
+        return datetime.min
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -> Position:
     """Compute current position for an asset.
 
@@ -255,7 +266,7 @@ def compute_position(db: Session, asset_id: str, *, as_of: date | None = None) -
     timeline.sort(key=lambda kv: (
         kv[1].event_date,
         0 if kv[0] == "mv" else 1,
-        kv[1].created_at,
+        _naive_utc(kv[1].created_at),
     ))
 
     # Spec 64 — asset value-mode: TODA linha com gross entra no basis

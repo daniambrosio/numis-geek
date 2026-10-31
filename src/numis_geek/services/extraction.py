@@ -19,7 +19,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -402,8 +402,11 @@ def _xlsx_to_csv_text(blob: bytes) -> str | None:
         from openpyxl import load_workbook
     except ImportError:
         return None
+    # NÃO usar read_only=True: nesse modo o openpyxl confia na dimensão
+    # declarada no arquivo, e o export da XP de out/26 declarava 35 linhas
+    # tendo 256 — só outubro chegava ao LLM e setembro sumiu do fechamento.
     try:
-        wb = load_workbook(BytesIO(blob), read_only=True, data_only=True)
+        wb = load_workbook(BytesIO(blob), data_only=True)
     except Exception:
         return None
     parts: list[str] = []
@@ -1444,6 +1447,10 @@ def _classify_bulk_income(
 
     events = payload.get("events") or []
     out_of_period = 0
+    # Spec 66 — chaves do par já planejadas NESTE arquivo. O dedup contra o
+    # banco não vê o que ainda não foi gravado: a mesma recompensa lida duas
+    # vezes (fatia de print repetida) viraria 2 proventos + 2 BUYs.
+    planned_in_kind: set[tuple] = set()
 
     for ev in events:
         type_str = (ev.get("type") or "").upper()
@@ -1498,9 +1505,15 @@ def _classify_bulk_income(
         in_kind_row: dict | None = None
         in_kind_problem: str | None = None
         if in_kind_raw:
-            paid_ticker = (in_kind_raw.get("ticker") or "").strip()
-            raw_qty = in_kind_raw.get("quantity")
-            paid_qty = Decimal(str(raw_qty)) if raw_qty is not None else None
+            # edited_payload do /confirm não passa pelo schema — tolera lixo.
+            try:
+                paid_ticker = (in_kind_raw.get("ticker") or "").strip()
+                raw_qty = in_kind_raw.get("quantity")
+                paid_qty = Decimal(str(raw_qty)) if raw_qty is not None else None
+                if paid_qty is not None and not paid_qty.is_finite():
+                    paid_qty = None
+            except (AttributeError, InvalidOperation, TypeError):
+                paid_ticker, paid_qty = "", None
             if not paid_ticker or paid_qty is None or paid_qty <= 0:
                 errors.append(f"payment_in_kind inválido: {in_kind_raw!r}")
                 continue
@@ -1593,6 +1606,16 @@ def _classify_bulk_income(
             row["movement_id"] = existing_buy.id
             duplicate.append(row)
             continue
+        if in_kind_raw:
+            keys = {
+                ("dist", asset.id if asset else ticker, type_str, event_d),
+                ("buy", paid_asset.id if paid_asset else in_kind_row["ticker"], event_d, paid_qty),
+            }
+            if keys & planned_in_kind:
+                row["duplicate_reason"] = "repetido no arquivo"
+                duplicate.append(row)
+                continue
+            planned_in_kind |= keys
 
         # Orphan = ticker present but no asset matched. Lending (ticker=None)
         # is allowed without an asset (Distribution.asset_id is nullable).
@@ -1826,6 +1849,16 @@ def _apply_bulk_income_to_snapshot(
     Linhas de prêmio de opção (payload.option_events) viram AssetMovement
     SELL_OPEN/BUY_TO_CLOSE em vez de Distribution — o sintético
     OPTION_PREMIUM é derivado disso pelo services/proventos.py."""
+    # Upload exige fechamento IN_REVIEW, mas o confirm pode chegar depois do
+    # fechamento ter sido confirmado — aí o item congelado não anda junto.
+    if job.snapshot_id:
+        snap = db.get(PortfolioSnapshot, job.snapshot_id)
+        if snap is not None and snap.status != SnapshotStatus.IN_REVIEW:
+            raise ExtractionError(
+                f"Fechamento {snap.period_end_date.isoformat()} não está em revisão "
+                f"({snap.status.value}) — reabra antes de registrar proventos.",
+            )
+
     apply_plan, preview_rows, orphan_rows, duplicate_rows, errors = (
         _classify_bulk_income(db, job, payload)
     )
@@ -1971,7 +2004,7 @@ def _apply_bulk_income_to_snapshot(
     # do ativo recebido já está congelado. Recalcula só esse item (preço
     # congelado preservado; qty/custo/valor andam juntos).
     if in_kind_asset_ids and job.snapshot_id:
-        _recompute_in_kind_items(
+        errors = errors + _recompute_in_kind_items(
             db, job, in_kind_asset_ids, user_id=user_id, user_email=user_email,
         )
 
@@ -1998,25 +2031,35 @@ def _recompute_in_kind_items(
     *,
     user_id: str | None,
     user_email: str | None,
-) -> None:
+) -> list[str]:
+    """Recalcula o item do ativo recebido em todo fechamento IN_REVIEW a
+    partir do mês do job (preço congelado preservado). Fechamento CLOSED
+    nunca é reaberto — volta como aviso pra ajuste manual."""
     snap = db.get(PortfolioSnapshot, job.snapshot_id)
-    # Bulk income só roda em fechamento IN_REVIEW (rota devolve 409), mas
-    # apply_recompute reabriria um CLOSED — nunca deixar isso acontecer.
     if snap is None or snap.status != SnapshotStatus.IN_REVIEW:
-        return
+        return []
+    warnings: list[str] = []
     period_start, _ = _income_period_bounds(snap)
     for asset_id in sorted(asset_ids):
+        asset = db.get(Asset, asset_id)
+        label = (asset.ticker or asset.name) if asset else asset_id
         affected = find_affected_snapshots(
             db, workspace_id=job.workspace_id, asset_id=asset_id,
             earliest_event_date=period_start,
         )
-        if not any(a.snapshot_id == snap.id for a in affected):
-            continue
-        apply_recompute_to_snapshot(
-            db, snapshot_id=snap.id, asset_id=asset_id,
-            trigger_event_type="extraction_job", trigger_event_id=job.id,
-            user_id=user_id, user_email=user_email,
-        )
+        for a in affected:
+            if a.status != SnapshotStatus.IN_REVIEW:
+                warnings.append(
+                    f"{label}: fechamento {a.ym} já está fechado e ficou com a "
+                    f"quantidade antiga ({a.old_quantity} → {a.new_quantity}) — ajuste manual"
+                )
+                continue
+            apply_recompute_to_snapshot(
+                db, snapshot_id=a.snapshot_id, asset_id=asset_id,
+                trigger_event_type="extraction_job", trigger_event_id=job.id,
+                user_id=user_id, user_email=user_email,
+            )
+    return warnings
 
 
 def preview_bulk_income(

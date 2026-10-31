@@ -99,6 +99,8 @@ describe('BulkIncomeReviewModal', () => {
     expect(screen.getByTestId('income-orphans')).toHaveTextContent('só entra junto com o aporte')
     // 2 proventos + 1 aporte.
     expect(screen.getByTestId('income-review-apply')).toHaveTextContent('Registrar 3 eventos')
+    // Cabeçalho e botão contam igual.
+    expect(screen.getByText(/3 eventos pra registrar/)).toBeInTheDocument()
   })
 
   it('confirma via confirmExtraction e devolve applied_count', async () => {

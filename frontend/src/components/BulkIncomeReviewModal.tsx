@@ -173,6 +173,7 @@ export default function BulkIncomeReviewModal({
   const currency = rows[0]?.currency ?? 'USD'
   // Spec 66 — par provento + aporte conta como 2 eventos no botão.
   const inKindCount = rows.filter(r => r.in_kind).length
+  const headerCount = rows.length + inKindCount
   const applyLabel = inKindCount > 0
     ? `Registrar ${rows.length + inKindCount} eventos`
     : `Registrar ${rows.length} provento${rows.length === 1 ? '' : 's'}`
@@ -187,7 +188,7 @@ export default function BulkIncomeReviewModal({
             </div>
             <div className="text-[11px] text-gray-500 flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-emerald-500" />
-              {rows.length} evento{rows.length === 1 ? '' : 's'} pra registrar
+              {headerCount} evento{headerCount === 1 ? '' : 's'} pra registrar
               {scopedFi && <span className="ml-1">· {scopedFi}</span>}
               {periodStartLabel && periodEndLabel && (
                 <span className="ml-1 text-gray-600 dark:text-gray-400">
