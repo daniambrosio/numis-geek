@@ -83,9 +83,7 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   `Saldo em Conta (Nubank)`, com os lançamentos de 05–07/08 e os itens no fechamento
   de ago/26.
 
-- [ ] `[claude]` **Spec 70 fase 4 — migrar os 4 fluxos de caixa** dos ativos vinculados para
-  `transaction` (script dry-run/apply, backup antes, recompute do invested congelado do Wise).
-  A fase 3 (saldo derivado, conferência, abertura editável, vínculo, trava) está no código.
+- [ ] `[claude]` **Spec 70 — audit adversarial** antes de marcar Done (fases 1–4 entregues).
 - [ ] `[user]` **Ligar "saldo vem das movimentações"** conta por conta (página da conta),
   depois que os extratos entrarem e a conferência com os fechamentos bater. Hoje as 5 estão
   desligadas — fechamento segue digitado.
