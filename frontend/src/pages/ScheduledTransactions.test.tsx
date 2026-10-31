@@ -188,7 +188,7 @@ describe('ScheduledTransactions page (spec 72)', () => {
     expect(within(m.getByTestId('forecast-table')).getByText('Conta Corrente Itaú')).toBeInTheDocument()
     // janela: mês corrente até +2 meses, mais as atrasadas
     expect(list).toHaveBeenCalledWith({ overdue: true })
-    expect(list).toHaveBeenCalledWith({ from: startOfMonthISO(), to: endOfMonthISO(2) })
+    expect(list).toHaveBeenCalledWith({ from: startOfMonthISO() })
   })
 
   it('erro de carga aparece na página e não desloga', async () => {

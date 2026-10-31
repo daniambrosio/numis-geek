@@ -131,10 +131,11 @@ export default function ScheduledTransactions() {
   }, [me])
 
   const reload = useCallback(async () => {
+    // Lista tudo o que já foi materializado (até hoje + 90 dias), não só a
+    // janela da previsão — senão um vencimento já gerado fica escondido.
     const from = startOfMonthISO()
-    const to = endOfMonthISO(FORECAST_MONTHS - 1)
     const [inWindow, overdue, rs, fc] = await Promise.all([
-      api.listScheduled({ from, to }),
+      api.listScheduled({ from }),
       api.listScheduled({ overdue: true }),
       api.listRecurrenceRules(),
       api.scheduledForecast(FORECAST_MONTHS),
