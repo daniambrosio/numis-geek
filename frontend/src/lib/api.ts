@@ -163,6 +163,8 @@ export interface AccountOut {
   currency: 'BRL' | 'USD'
   opening_balance: number | null
   opening_balance_date?: string | null
+  /** Spec 70 fase 3 — fechamento puxa o saldo derivado do ledger. */
+  balance_from_ledger?: boolean
   account_info: string | null
   is_active: boolean
   created_at: string
@@ -1042,6 +1044,8 @@ export const api = {
     request<AccountOut[]>(`/accounts${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`),
   getAccount: (id: string) => request<AccountDetailOut>(`/accounts/${id}`),
   accountBalanceCheck: (id: string) => request<BalanceCheckRow[]>(`/accounts/${id}/balance-check`),
+  updateBalanceSource: (id: string, balance_from_ledger: boolean) =>
+    request<AccountDetailOut>(`/accounts/${id}/balance-source`, { method: 'PATCH', body: JSON.stringify({ balance_from_ledger }) }),
   updateOpeningBalance: (id: string, data: { opening_balance: number | null; opening_balance_date: string | null }) =>
     request<AccountDetailOut>(`/accounts/${id}/opening-balance`, { method: 'PATCH', body: JSON.stringify(data) }),
   setLinkedAsset: (id: string, asset_id: string | null) =>

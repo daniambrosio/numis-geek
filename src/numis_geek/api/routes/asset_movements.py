@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
-from numis_geek.models.account import Currency
+from numis_geek.models.account import Account, Currency
 from numis_geek.models.asset import Asset
 from numis_geek.models.asset_movement import (
     ASSET_MOVEMENT_TYPE_LABELS,
@@ -238,9 +238,11 @@ def _resolve_asset(db: Session, asset_id: str, workspace_id: str, current_user: 
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Asset belongs to a different workspace.",
         )
-    # Spec 80/70 — ativo CASH espelho de conta corrente não tem lançamento:
-    # o saldo vem do ledger. Bloqueia criar e editar (o update também passa aqui).
-    if asset.linked_account_id:
+    # Spec 80/70 — ativo CASH espelho de conta corrente com saldo vindo do
+    # ledger não tem lançamento. Bloqueia criar e editar (o update também passa
+    # aqui). Interruptor desligado: segue aceitando, como antes.
+    linked = db.get(Account, asset.linked_account_id) if asset.linked_account_id else None
+    if linked is not None and linked.balance_from_ledger:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Ativo vinculado a conta corrente: entrada e saída de conta corrente são Movimentações.",

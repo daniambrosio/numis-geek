@@ -9,7 +9,7 @@ Sem `opening_balance_date`, soma todas as tx até `d` (abertura 0 ou o
 valor informado). Moeda nativa da conta.
 
 O ativo CASH com `linked_account_id` é o espelho da conta no fechamento:
-em fechamento OPEN/IN_REVIEW com `period_end >= opening_balance_date`, o
+com `balance_from_ledger` ligado na conta, em fechamento OPEN/IN_REVIEW com `period_end >= opening_balance_date`, o
 item do ativo puxa o saldo derivado em vez do digitado. Fechamento CLOSED
 nunca é sobrescrito — a divergência aparece na conferência
 (`balance_check`) e a decisão é do user, mês a mês.
@@ -48,10 +48,12 @@ def derived_balance(db: Session, account: Account, as_of: date) -> Decimal:
 
 
 def derives_on(account: Account | None, period_end: date) -> bool:
-    """O saldo derivado vale pra essa data? Antes da abertura, segue digitado."""
+    """O saldo derivado vale pra essa data? Interruptor desligado ou antes da
+    abertura, segue digitado."""
     return (
         account is not None
         and account.account_type == AccountType.checking
+        and account.balance_from_ledger
         and account.opening_balance_date is not None
         and period_end >= account.opening_balance_date
     )

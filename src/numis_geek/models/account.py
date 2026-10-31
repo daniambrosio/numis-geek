@@ -32,6 +32,10 @@ class Account(Base):
     # Spec 80 — a partir de quando o saldo derivado soma transações. Sem data,
     # `opening_balance` é ambíguo.
     opening_balance_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Spec 70 fase 3 — interruptor por conta: o fechamento só puxa o saldo
+    # derivado do ledger quando ligado. Nasce desligado; o user liga depois de
+    # importar os extratos e a conferência bater.
+    balance_from_ledger: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     account_info: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

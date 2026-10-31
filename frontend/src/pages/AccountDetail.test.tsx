@@ -23,7 +23,7 @@ function detail(partial: Partial<AccountDetailOut> = {}): AccountDetailOut {
   return {
     id: 'itau', workspace_id: 'ws1', financial_institution_id: 'fi1', financial_institution_name: 'Itaú',
     name: 'Conta Corrente Itaú', account_type: 'checking', currency: 'BRL',
-    opening_balance: 47496.71, opening_balance_date: '2026-08-31', account_info: null,
+    opening_balance: 47496.71, opening_balance_date: '2026-08-31', balance_from_ledger: false, account_info: null,
     is_active: true, created_at: '2026-09-05T00:00:00',
     fi_long_name: 'Itaú Unibanco S.A.', fi_logo_slug: null,
     balance: 33720, balance_brl: 33720,
@@ -143,6 +143,32 @@ describe('AccountDetail page (spec 70 fase 3)', () => {
     await m.findByRole('heading', { name: 'Conta Corrente Itaú' })
     expect(m.queryByRole('button', { name: 'Editar saldo de abertura' })).not.toBeInTheDocument()
     expect(m.queryByRole('button', { name: 'Alterar vínculo' })).not.toBeInTheDocument()
+    expect(m.queryByRole('button', { name: 'Ligar saldo pelas movimentações' })).not.toBeInTheDocument()
+  })
+
+  it('interruptor: nasce digitado, liga pelas movimentações e mostra erro inline', async () => {
+    mockBase()
+    const patch = vi.spyOn(api, 'updateBalanceSource')
+      .mockRejectedValueOnce(new Error('Defina o saldo de abertura antes de ligar.'))
+      .mockResolvedValueOnce(detail({ balance_from_ledger: true }))
+    renderPage()
+    const m = await mainReady()
+    expect(await m.findByTestId('balance-source')).toHaveTextContent('Digitado no fechamento')
+    fireEvent.click(m.getByRole('button', { name: 'Ligar saldo pelas movimentações' }))
+    expect(await m.findByText('Defina o saldo de abertura antes de ligar.')).toBeInTheDocument()
+    vi.spyOn(api, 'getAccount').mockResolvedValue(detail({ balance_from_ledger: true }))
+    fireEvent.click(m.getByRole('button', { name: 'Ligar saldo pelas movimentações' }))
+    await waitFor(() => expect(patch).toHaveBeenLastCalledWith('itau', true))
+    await waitFor(() => expect(m.getByTestId('balance-source')).toHaveTextContent('Vem das movimentações'))
+    expect(m.getByRole('button', { name: 'Desligar saldo pelas movimentações' })).toBeEnabled()
+  })
+
+  it('interruptor desabilitado sem data de abertura', async () => {
+    mockBase()
+    vi.spyOn(api, 'getAccount').mockResolvedValue(detail({ opening_balance_date: null }))
+    renderPage()
+    const m = await mainReady()
+    expect(await m.findByRole('button', { name: 'Ligar saldo pelas movimentações' })).toBeDisabled()
   })
 
   it('editar saldo de abertura: exige data, envia pt-BR e fecha no ESC', async () => {

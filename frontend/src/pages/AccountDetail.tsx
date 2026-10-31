@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { FileText, Link2, Pencil, Plus } from 'lucide-react'
+import { FileText, Link2, Loader2, Pencil, Plus } from 'lucide-react'
 import {
   api, type AccountDetailOut, type AssetOut, type BalanceCheckRow, type CategoryOut,
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload, type UserOut,
@@ -64,6 +64,8 @@ export default function AccountDetail() {
   const [composer, setComposer] = useState<{ editing?: TransactionOut } | null>(null)
   const [editingOpening, setEditingOpening] = useState(false)
   const [editingLink, setEditingLink] = useState(false)
+  const [togglingSource, setTogglingSource] = useState(false)
+  const [sourceError, setSourceError] = useState('')
 
   useEscapeKey(() => {
     if (editingOpening) setEditingOpening(false)
@@ -95,6 +97,20 @@ export default function AccountDetail() {
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar.'))
       .finally(() => setLoading(false))
   }, [me, reload])
+
+  async function toggleSource() {
+    if (!acc) return
+    setTogglingSource(true)
+    setSourceError('')
+    try {
+      setAcc(await api.updateBalanceSource(acc.id, !acc.balance_from_ledger))
+      await reload()
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : 'Erro ao salvar.')
+    } finally {
+      setTogglingSource(false)
+    }
+  }
 
   // Cadastros auxiliares — falha não derruba a página.
   useEffect(() => {
@@ -212,13 +228,37 @@ export default function AccountDetail() {
                             ) : 'Nenhum'}
                           </div>
                           <div className="text-[11px] text-gray-500">
-                            {acc.linked_asset ? 'o saldo do fechamento vem desta conta' : 'sem vínculo, a conta não entra nos fechamentos'}
+                            {acc.linked_asset ? 'espelha esta conta nos fechamentos' : 'sem vínculo, a conta não entra nos fechamentos'}
                           </div>
                         </div>
                         {isAdmin && (
                           <button onClick={() => setEditingLink(true)} aria-label="Alterar vínculo"
                             className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
                             <Link2 className="w-3 h-3" /> Alterar
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-start justify-between gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
+                        <div>
+                          <div className="text-gray-500">Saldo no fechamento</div>
+                          <div className="text-[13px] font-medium text-gray-900 dark:text-white" data-testid="balance-source">
+                            {acc.balance_from_ledger ? 'Vem das movimentações' : 'Digitado no fechamento'}
+                          </div>
+                          <div className="text-[11px] text-gray-500">
+                            {acc.balance_from_ledger
+                              ? 'fechamentos abertos usam o saldo calculado; fechados não mudam'
+                              : 'ligue quando a conferência abaixo bater'}
+                          </div>
+                          {sourceError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{sourceError}</div>}
+                        </div>
+                        {isAdmin && (
+                          <button onClick={toggleSource}
+                            disabled={togglingSource || (!acc.balance_from_ledger && (!acc.linked_asset || !acc.opening_balance_date))}
+                            title={!acc.balance_from_ledger && (!acc.linked_asset || !acc.opening_balance_date) ? 'Precisa de ativo vinculado e data de abertura' : undefined}
+                            aria-label={acc.balance_from_ledger ? 'Desligar saldo pelas movimentações' : 'Ligar saldo pelas movimentações'}
+                            className="h-7 px-2 inline-flex items-center gap-1 rounded-md text-[11px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                            {togglingSource && <Loader2 className="w-3 h-3 animate-spin" />}
+                            {acc.balance_from_ledger ? 'Desligar' : 'Ligar'}
                           </button>
                         )}
                       </div>

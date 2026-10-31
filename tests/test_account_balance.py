@@ -74,11 +74,12 @@ def client():
 
 
 def _account(db, ws_id, fi_id, name, *, account_type=AccountType.checking, currency=Currency.BRL,
-             opening=None, opening_date=None):
+             opening=None, opening_date=None, from_ledger=True):
     a = Account(
         id=str(uuid.uuid4()), workspace_id=ws_id, financial_institution_id=fi_id, name=name,
         account_type=account_type, currency=currency, is_active=True,
         opening_balance=opening, opening_balance_date=opening_date,
+        balance_from_ledger=from_ledger,
     )
     db.add(a)
     return a
@@ -418,3 +419,71 @@ def test_asset_movement_on_linked_cash_is_blocked(client, seed):
         "quantity": "1", "unit_price": "100", "gross_amount": "100", "currency": "BRL",
     }, headers=auth(seed["admin_token"]))
     assert r.status_code == 201, r.text
+
+
+# ── interruptor "saldo vem das movimentações" ─────────────────────────────────
+
+def _off_account(seed):
+    """Conta corrente com abertura e vínculo, mas interruptor desligado."""
+    db = TestSession()
+    acc = _account(db, seed["ws_id"], seed["fi_id"], f"Conta Off {uuid.uuid4().hex[:6]}",
+                   opening=Decimal("500"), opening_date=date(2026, 8, 31), from_ledger=False)
+    cash = _asset(db, seed["ws_id"], seed["invest"], f"Saldo em Conta Off {uuid.uuid4().hex[:6]}", linked=acc.id)
+    db.commit()
+    ids = acc.id, cash.id
+    db.close()
+    return ids
+
+
+def test_toggle_off_keeps_typed_snapshot_and_movements(client, seed):
+    acc_id, cash_id = _off_account(seed)
+    db = TestSession()
+    assert not account_balance.derives_on(db.get(Account, acc_id), date(2026, 10, 31))
+    res = create_snapshot(
+        db, workspace_id=seed["ws_id"], period_end=date(2026, 10, 31),
+        source=SnapshotSource.MANUAL, initial_status=SnapshotStatus.IN_REVIEW,
+    )
+    item = _item(db, res.snapshot_id, cash_id)
+    assert item is None or item.market_value_native in (None, Decimal("0"))
+    pens = db.query(SnapshotPendency).filter(SnapshotPendency.snapshot_id == res.snapshot_id).all()
+    assert cash_id in {p.asset_id for p in pens}
+    db.rollback()
+    db.close()
+    # conferência funciona mesmo desligado
+    r = client.get(f"/api/accounts/{acc_id}", headers=auth(seed["admin_token"]))
+    assert r.status_code == 200
+    assert r.json()["balance_from_ledger"] is False
+    # lançamento no CASH vinculado segue aceito enquanto desligado
+    r = client.post("/api/asset-movements", json={
+        "asset_id": cash_id, "type": "BUY", "event_date": "2026-09-10",
+        "quantity": "1", "unit_price": "100", "gross_amount": "100", "currency": "BRL",
+    }, headers=auth(seed["admin_token"]))
+    assert r.status_code == 201, r.text
+
+
+def test_balance_source_patch(client, seed):
+    acc_id, cash_id = _off_account(seed)
+    h = auth(seed["admin_token"])
+    url = f"/api/accounts/{acc_id}/balance-source"
+    assert client.patch(url, json={"balance_from_ledger": True}, headers=auth(seed["member_token"])).status_code == 403
+    assert client.patch(f"/api/accounts/{seed['invest']}/balance-source",
+                        json={"balance_from_ledger": True}, headers=h).status_code == 422
+    assert client.patch(f"/api/accounts/{seed['spare']}/balance-source",
+                        json={"balance_from_ledger": True}, headers=h).status_code == 422  # sem abertura
+    r = client.patch(url, json={"balance_from_ledger": True}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["balance_from_ledger"] is True
+    # ligado → CASH vinculado passa a recusar lançamento
+    r = client.post("/api/asset-movements", json={
+        "asset_id": cash_id, "type": "BUY", "event_date": "2026-09-11",
+        "quantity": "1", "unit_price": "100", "gross_amount": "100", "currency": "BRL",
+    }, headers=h)
+    assert r.status_code == 422
+    r = client.patch(url, json={"balance_from_ledger": False}, headers=h)
+    assert r.json()["balance_from_ledger"] is False
+    from numis_geek.models.audit_log import AuditLog
+    db = TestSession()
+    assert db.query(AuditLog).filter(
+        AuditLog.action == "account.balance_source_updated", AuditLog.resource_id == acc_id,
+    ).count() == 2
+    db.close()

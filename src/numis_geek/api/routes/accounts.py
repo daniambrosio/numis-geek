@@ -33,6 +33,7 @@ class AccountOut(BaseModel):
     currency: str
     opening_balance: float | None
     opening_balance_date: str | None
+    balance_from_ledger: bool
     account_info: str | None
     is_active: bool
     created_at: str
@@ -52,6 +53,7 @@ class AccountOut(BaseModel):
                 account.opening_balance_date.isoformat()
                 if account.opening_balance_date is not None else None
             ),
+            balance_from_ledger=bool(account.balance_from_ledger),
             account_info=account.account_info,
             is_active=account.is_active,
             created_at=account.created_at.isoformat(),
@@ -409,6 +411,10 @@ class OpeningBalanceRequest(BaseModel):
         return self
 
 
+class BalanceSourceRequest(BaseModel):
+    balance_from_ledger: bool
+
+
 class LinkAssetRequest(BaseModel):
     asset_id: str | None = None  # None desvincula
 
@@ -592,5 +598,46 @@ def set_linked_asset(
         resource_type="account",
         resource_id=acc.id,
         details={"name": acc.name, "before": current.id if current else None, "after": body.asset_id},
+    )
+    return _detail(db, acc)
+
+
+@router.patch("/{account_id}/balance-source", response_model=AccountDetailOut)
+def update_balance_source(
+    account_id: str,
+    body: BalanceSourceRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Liga/desliga "saldo vem das movimentações". Ligar exige data de abertura
+    (sem ela o derivado é ambíguo). Ligado → reaplica nos fechamentos abertos;
+    desligar não desfaz valores já gravados (o user redigita se quiser)."""
+    _require_admin(current_user)
+    acc = _scoped_or_404(db, account_id, current_user)
+    if acc.account_type != AccountType.checking:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Só conta corrente tem saldo derivado.",
+        )
+    if body.balance_from_ledger and acc.opening_balance_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Defina o saldo de abertura antes de ligar.",
+        )
+    before = bool(acc.balance_from_ledger)
+    acc.balance_from_ledger = body.balance_from_ledger
+    acc.updated_at = datetime.now(timezone.utc)
+    acc.updated_by = current_user.user_id
+    db.flush()
+    if body.balance_from_ledger:
+        account_balance.refresh_open_snapshots(db, acc.workspace_id)
+    AuditService(db).log(
+        user_email=current_user.user_id,
+        action="account.balance_source_updated",
+        workspace_id=acc.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="account",
+        resource_id=acc.id,
+        details={"name": acc.name, "before": before, "after": body.balance_from_ledger},
     )
     return _detail(db, acc)
