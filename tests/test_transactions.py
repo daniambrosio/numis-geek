@@ -695,3 +695,322 @@ def test_attachment_source_type_transaction_is_wired():
     from numis_geek.api.routes.attachments import _SOURCE_MODEL
     from numis_geek.models.attachment import AttachmentSourceType
     assert _SOURCE_MODEL[AttachmentSourceType.TRANSACTION] is Transaction
+
+
+# ── audit adversarial 2026-10-31 ──────────────────────────────────────────────
+
+@pytest.fixture
+def sdb(seed):
+    """Service-level session; everything rolls back at the end."""
+    db = TestSession()
+    yield db
+    db.rollback()
+    db.close()
+
+
+def _card(db, seed, close_day, due_day=15, name=None):
+    c = CreditCardAccount(
+        id=str(uuid.uuid4()), workspace_id=seed["ws_id"], financial_institution_id=seed["fi_id"],
+        name=name or f"Card {close_day} {uuid.uuid4().hex[:4]}", currency=Currency.BRL,
+        close_day=close_day, due_day=due_day, is_active=True,
+    )
+    db.add(c)
+    db.flush()
+    return c
+
+
+def _invoice(db, seed, card, close, status=InvoiceStatus.OPEN, total=None):
+    inv = Invoice(
+        id=str(uuid.uuid4()), workspace_id=seed["ws_id"], credit_card_account_id=card.id,
+        close_date=close, due_date=close + timedelta(days=10), currency=Currency.BRL,
+        status=status, total_amount=total,
+    )
+    db.add(inv)
+    db.flush()
+    return inv
+
+
+def _card_tx(db, seed, card, ev, amount="-10", installments=1, invoice_id=None, desc="Compra"):
+    return svc.create_transaction(db, seed["ws_id"], svc.TxInput(
+        source_type=TransactionSourceType.CREDIT_CARD, credit_card_account_id=card.id,
+        invoice_id=invoice_id, event_date=ev, description=desc, amount=Decimal(amount),
+    ), installments=installments)
+
+
+def _close_of(db, tx):
+    return db.get(Invoice, tx.invoice_id).close_date
+
+
+def test_transfer_edit_rederives_ptax_leg(sdb, seed):
+    """Editar uma perna de transferência BRL→BRL não pode transformar a
+    outra em STATEMENT com a cotação velha."""
+    legs = svc.create_transfer(
+        sdb, seed["ws_id"], from_account_id=seed["itau"], to_account_id=seed["wise"],
+        event_date=TODAY - timedelta(days=30), amount_out=Decimal("100"),
+    )
+    assert {l.fx_source for l in legs} == {FxSource.PTAX}
+    svc.update_transaction(sdb, legs[0], {"event_date": TODAY - timedelta(days=20), "description": "Transf"})
+    assert [l.fx_source for l in legs] == [FxSource.PTAX, FxSource.PTAX]
+    assert legs[0].amount_usd == -legs[1].amount_usd
+    assert legs[1].event_date == TODAY - timedelta(days=20)
+
+
+def test_transfer_edit_keeps_statement_rate_on_cross_currency(sdb, seed):
+    legs = svc.create_transfer(
+        sdb, seed["ws_id"], from_account_id=seed["itau"], to_account_id=seed["nomad"],
+        event_date=TODAY - timedelta(days=30), amount_out=Decimal("520"), amount_in=Decimal("100"),
+    )
+    svc.update_transaction(sdb, legs[0], {"event_date": TODAY - timedelta(days=20)})
+    assert [l.fx_source for l in legs] == [FxSource.STATEMENT, FxSource.STATEMENT]
+    assert legs[1].fx_rate == Decimal("5.20000000")
+
+
+def test_card_edit_without_date_change_keeps_chosen_invoice(sdb, seed):
+    card = _card(sdb, seed, 7)
+    chosen = _invoice(sdb, seed, card, date(2040, 2, 7))
+    [tx] = _card_tx(sdb, seed, card, date(2040, 2, 10), invoice_id=chosen.id)
+    assert tx.invoice_id == chosen.id
+    # composer manda event_date sempre — mesma data não re-roteia
+    svc.update_transaction(sdb, tx, {"event_date": date(2040, 2, 10), "description": "Outra", "amount": Decimal("-10")})
+    assert tx.invoice_id == chosen.id
+    # data mudou de fato → re-resolve
+    svc.update_transaction(sdb, tx, {"event_date": date(2040, 2, 20)})
+    assert _close_of(sdb, tx) == date(2040, 3, 7)
+
+
+def test_late_real_close_captures_purchase_in_the_gap(sdb, seed):
+    """close_day=5, fatura real fechou dia 7: compra no dia 6 é dela."""
+    card = _card(sdb, seed, 5)
+    late = _invoice(sdb, seed, card, date(2040, 1, 7))
+    [tx] = _card_tx(sdb, seed, card, date(2040, 1, 6))
+    assert tx.invoice_id == late.id
+    [tx2] = _card_tx(sdb, seed, card, date(2040, 1, 8))
+    assert _close_of(sdb, tx2) == date(2040, 2, 5)
+
+
+@pytest.mark.parametrize("close_day,ev,expected", [
+    (30, date(2041, 1, 31), [date(2041, 2, 28), date(2041, 3, 30), date(2041, 4, 30)]),
+    (31, date(2041, 1, 31), [date(2041, 1, 31), date(2041, 2, 28), date(2041, 3, 31)]),
+    (29, date(2041, 1, 30), [date(2041, 2, 28), date(2041, 3, 29), date(2041, 4, 29)]),
+])
+def test_installments_with_high_close_day_one_per_cycle(sdb, seed, close_day, ev, expected):
+    card = _card(sdb, seed, close_day, due_day=10)
+    rows = _card_tx(sdb, seed, card, ev, amount="-300", installments=3)
+    assert [_close_of(sdb, r) for r in rows] == expected
+
+
+def test_installments_from_invoice_that_closed_early(sdb, seed):
+    """close_day=1, fatura X fechou 30/01 (ciclo de 01/02): parcela 2 vai
+    pra 01/03, nunca de novo pra X."""
+    card = _card(sdb, seed, 1)
+    x = _invoice(sdb, seed, card, date(2042, 1, 30))
+    rows = _card_tx(sdb, seed, card, date(2042, 1, 20), amount="-300", installments=3, invoice_id=x.id)
+    closes = [_close_of(sdb, r) for r in rows]
+    assert closes == [date(2042, 1, 30), date(2042, 3, 1), date(2042, 4, 1)]
+    assert len({r.invoice_id for r in rows}) == 3
+
+
+def test_installments_after_early_close_start_next_cycle(sdb, seed):
+    """Compra depois de um fechamento antecipado vai pra próxima fatura e as
+    parcelas seguem dali, sem repetir fatura."""
+    card = _card(sdb, seed, 5)
+    early = _invoice(sdb, seed, card, date(2043, 3, 3))
+    rows = _card_tx(sdb, seed, card, date(2043, 3, 4), amount="-200", installments=2)
+    assert rows[0].invoice_id != early.id
+    assert [_close_of(sdb, r) for r in rows] == [date(2043, 4, 5), date(2043, 5, 5)]
+
+
+def test_installment_split_with_zero_parcel_is_rejected(sdb, seed):
+    card = _card(sdb, seed, 5)
+    with pytest.raises(svc.TransactionError, match="parcelas"):
+        _card_tx(sdb, seed, card, date(2044, 1, 10), amount="-0.02", installments=3)
+
+
+def _closed_invoice_with_tx(sdb, seed, close, amount="-100"):
+    card = _card(sdb, seed, close.day)
+    [tx] = _card_tx(sdb, seed, card, close - timedelta(days=3), amount=amount)
+    inv = sdb.get(Invoice, tx.invoice_id)
+    inv.status = InvoiceStatus.CLOSED
+    inv.total_amount = svc.invoice_open_total(sdb, inv)
+    sdb.flush()
+    return card, inv
+
+
+def test_pay_default_amount_refused_when_tx_changed_after_close(sdb, seed):
+    card, inv = _closed_invoice_with_tx(sdb, seed, date(2045, 1, 5))
+    # tx entra depois do fechamento (import da spec 71) — fatura segue gravável
+    _card_tx(sdb, seed, card, date(2045, 1, 4), amount="-50", invoice_id=inv.id)
+    with pytest.raises(svc.TransactionError, match="difere da soma dos lançamentos"):
+        svc.pay_invoice(sdb, inv, checking_account_id=seed["itau"], paid_on=date(2045, 1, 10))
+    assert inv.status == InvoiceStatus.CLOSED
+    tx = svc.pay_invoice(sdb, inv, checking_account_id=seed["itau"], paid_on=date(2045, 1, 10), amount=Decimal("150"))
+    assert tx.amount == Decimal("-150.00")
+    assert inv.status == InvoiceStatus.PAID
+
+
+def test_pay_open_invoice_is_409_and_undo_returns_to_closed(client, seed, sdb):
+    card = _card(sdb, seed, 5)
+    [tx] = _card_tx(sdb, seed, card, date(2046, 1, 2))
+    inv_id = tx.invoice_id
+    sdb.commit()
+    h = auth(seed["admin_token"])
+    r = client.post(f"/api/invoices/{inv_id}/pay", json={
+        "checking_account_id": seed["itau"], "paid_on": "2046-01-10", "amount": "10",
+    }, headers=h)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Feche a fatura antes de pagar."
+    assert client.post(f"/api/invoices/{inv_id}/close", json={}, headers=h).status_code == 200
+    r = client.post(f"/api/invoices/{inv_id}/pay", json={
+        "checking_account_id": seed["itau"], "paid_on": "2046-01-10",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    pay_id = db.get(Invoice, inv_id).paid_by_transaction_id
+    db.close()
+    assert client.delete(f"/api/transactions/{pay_id}", headers=h).status_code == 204
+    db = TestSession()
+    inv = db.get(Invoice, inv_id)
+    assert inv.status == InvoiceStatus.CLOSED and inv.total_amount == Decimal("10.00")
+    from numis_geek.models.audit_log import AuditLog
+    assert db.query(AuditLog).filter(
+        AuditLog.action == "invoice.payment_reverted", AuditLog.resource_id == inv_id,
+    ).count() == 1
+    db.close()
+
+
+def test_pay_route_refuses_default_amount_when_diverged(client, seed, sdb):
+    card, inv = _closed_invoice_with_tx(sdb, seed, date(2047, 1, 5))
+    _card_tx(sdb, seed, card, date(2047, 1, 4), amount="-50", invoice_id=inv.id)
+    inv_id = inv.id
+    sdb.commit()
+    h = auth(seed["admin_token"])
+    r = client.post(f"/api/invoices/{inv_id}/pay", json={"checking_account_id": seed["itau"], "paid_on": "2047-01-10"}, headers=h)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Total da fatura difere da soma dos lançamentos — informe o valor"
+    # a divergência aparece na listagem (tx_total × total_amount)
+    invs = client.get(f"/api/credit-cards/{card.id}/invoices", headers=h).json()
+    row = next(i for i in invs if i["id"] == inv_id)
+    assert row["total_amount"] == 100.0 and row["tx_total"] == 150.0
+
+
+def test_editing_payment_date_moves_paid_at_and_is_audited(client, seed, sdb):
+    card, inv = _closed_invoice_with_tx(sdb, seed, date(2048, 1, 5))
+    inv_id = inv.id
+    sdb.commit()
+    h = auth(seed["admin_token"])
+    r = client.post(f"/api/invoices/{inv_id}/pay", json={"checking_account_id": seed["itau"], "paid_on": "2048-01-15"}, headers=h)
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    pay_id = db.get(Invoice, inv_id).paid_by_transaction_id
+    db.close()
+    r = client.patch(f"/api/transactions/{pay_id}", json={"event_date": "2048-01-20", "description": "Pagamento"}, headers=h)
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    assert db.get(Invoice, inv_id).paid_at == date(2048, 1, 20)
+    from numis_geek.models.audit_log import AuditLog
+    assert db.query(AuditLog).filter(
+        AuditLog.action == "invoice.payment_date_updated", AuditLog.resource_id == inv_id,
+    ).count() == 1
+    db.close()
+
+
+@pytest.mark.parametrize("field", ["event_date", "amount", "is_reconciled", "description"])
+def test_patch_explicit_null_is_422(client, seed, field):
+    [tx] = post_tx(client, seed, description="Nulo").json()
+    r = client.patch(f"/api/transactions/{tx['id']}", json={field: None}, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422, r.text
+
+
+def test_sub_cent_amount_is_zero(client, seed):
+    r = post_tx(client, seed, amount="0.004")
+    assert r.status_code == 422
+    [tx] = post_tx(client, seed, description="Centavo").json()
+    r = client.patch(f"/api/transactions/{tx['id']}", json={"amount": "0.001"}, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422
+    r = client.post("/api/transactions/transfer", json={
+        "from_account_id": seed["itau"], "to_account_id": seed["wise"], "event_date": d(5), "amount_out": "0.004",
+    }, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422
+
+
+def test_sub_cent_service_inputs_are_quantized_first(sdb, seed):
+    with pytest.raises(svc.TransactionError, match="zero"):
+        svc.create_transaction(sdb, seed["ws_id"], svc.TxInput(
+            source_type=TransactionSourceType.CHECKING, checking_account_id=seed["itau"],
+            event_date=TODAY, description="x", amount=Decimal("0.004"),
+        ))
+    with pytest.raises(svc.TransactionError, match="positivo"):
+        svc.create_transfer(sdb, seed["ws_id"], from_account_id=seed["itau"], to_account_id=seed["wise"],
+                            event_date=TODAY, amount_out=Decimal("0.004"))
+    _, inv = _closed_invoice_with_tx(sdb, seed, date(2049, 1, 5))
+    with pytest.raises(svc.TransactionError, match="positivo"):
+        svc.pay_invoice(sdb, inv, checking_account_id=seed["itau"], paid_on=TODAY, amount=Decimal("0.004"))
+
+
+@pytest.mark.parametrize("override", [
+    {"amount": "1e30"},
+    {"amount": "-10", "fx_rate": "1e-30"},
+    {"amount": "-10", "fx_rate": "0"},
+    {"amount": "-10", "fx_rate": "-5"},
+    {"amount": "-10", "fx_rate": "1e30"},
+    {"event_date": "9999-12-20"},
+    {"event_date": "0001-01-01"},
+])
+def test_absurd_inputs_are_422_not_500(client, seed, override):
+    r = client.post("/api/transactions", json={
+        "source_type": "CREDIT_CARD", "credit_card_account_id": seed["card"],
+        "event_date": "2037-01-10", "description": "X", "amount": "-10", **override,
+    }, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422, r.text
+
+
+def test_absurd_inputs_on_transfer_pay_and_opening_balance(client, seed):
+    h = auth(seed["admin_token"])
+    r = client.post("/api/transactions/transfer", json={
+        "from_account_id": seed["itau"], "to_account_id": seed["wise"], "event_date": d(5), "amount_out": "1e30",
+    }, headers=h)
+    assert r.status_code == 422
+    r = client.post(f"/api/invoices/{seed['future_invoice']}/pay", json={
+        "checking_account_id": seed["itau"], "paid_on": "9999-01-01",
+    }, headers=h)
+    assert r.status_code == 422
+    r = client.patch(f"/api/accounts/{seed['itau']}/opening-balance", json={
+        "opening_balance": "1e30", "opening_balance_date": "2025-01-01",
+    }, headers=h)
+    assert r.status_code == 422
+
+
+def test_inactive_category_and_party(client, seed):
+    h = auth(seed["admin_token"])
+    db = TestSession()
+    cat = Category(id=str(uuid.uuid4()), workspace_id=seed["ws_id"], name="Antiga",
+                   parent_id=seed["root"], kind=CategoryKind.EXPENSE)
+    party = Party(id=str(uuid.uuid4()), workspace_id=seed["ws_id"], name="Fornecedor velho")
+    db.add_all([cat, party])
+    db.commit()
+    cat_id, party_id = cat.id, party.id
+    db.close()
+    [tx] = post_tx(client, seed, description="Antes", category_id=cat_id, party_id=party_id).json()
+    db = TestSession()
+    db.get(Category, cat_id).is_active = False
+    db.get(Party, party_id).is_active = False
+    db.commit()
+    db.close()
+    r = post_tx(client, seed, category_id=cat_id)
+    assert r.status_code == 422 and "inativa" in r.json()["detail"]
+    r = post_tx(client, seed, party_id=party_id)
+    assert r.status_code == 422 and "inativo" in r.json()["detail"]
+    r = client.post("/api/transactions/transfer", json={
+        "from_account_id": seed["itau"], "to_account_id": seed["wise"], "event_date": d(5),
+        "amount_out": "10", "category_id": cat_id,
+    }, headers=h)
+    assert r.status_code == 422
+    # edição que mantém o id inativo continua aceita
+    r = client.patch(f"/api/transactions/{tx['id']}", json={
+        "description": "Depois", "category_id": cat_id, "party_id": party_id,
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    # trocar PARA um id inativo não
+    [tx2] = post_tx(client, seed, description="Outra").json()
+    r = client.patch(f"/api/transactions/{tx2['id']}", json={"category_id": cat_id}, headers=h)
+    assert r.status_code == 422

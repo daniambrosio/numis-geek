@@ -13,6 +13,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.api.fields import BoundedDate, Money, Rate
 from numis_geek.models.account import Account
 from numis_geek.models.category import Category
 from numis_geek.models.credit_card import CreditCardAccount
@@ -99,10 +100,10 @@ class TransactionCreateRequest(BaseModel):
     checking_account_id: str | None = None
     credit_card_account_id: str | None = None
     invoice_id: str | None = None
-    event_date: date
+    event_date: BoundedDate
     description: str
-    amount: Decimal
-    fx_rate: Decimal | None = None
+    amount: Money
+    fx_rate: Rate | None = None
     category_id: str | None = None
     party_id: str | None = None
     tag_ids: list[str] | None = None
@@ -111,10 +112,10 @@ class TransactionCreateRequest(BaseModel):
 
 
 class TransactionUpdateRequest(BaseModel):
-    event_date: date | None = None
+    event_date: BoundedDate | None = None
     description: str | None = None
-    amount: Decimal | None = None
-    fx_rate: Decimal | None = None
+    amount: Money | None = None
+    fx_rate: Rate | None = None
     category_id: str | None = None
     party_id: str | None = None
     tag_ids: list[str] | None = None
@@ -125,9 +126,9 @@ class TransactionUpdateRequest(BaseModel):
 class TransferRequest(BaseModel):
     from_account_id: str
     to_account_id: str
-    event_date: date
-    amount_out: Decimal
-    amount_in: Decimal | None = None
+    event_date: BoundedDate
+    amount_out: Money
+    amount_in: Money | None = None
     description: str = "Transferência entre contas"
     category_id: str | None = None
     notes: str | None = None
@@ -178,6 +179,18 @@ def _audit(db: Session, current_user: UserContext, action: str, rows: list[Trans
         resource_id=first.id,
         details=details,
         workspace_id=first.workspace_id,
+    )
+
+
+def _audit_invoice(db: Session, current_user: UserContext, action: str, invoice_id: str, ws_id: str, details: dict) -> None:
+    actor = db.get(User, current_user.user_id)
+    AuditService(db).log(
+        user_email=actor.email if actor else current_user.user_id,
+        action=action,
+        resource_type="invoice",
+        resource_id=invoice_id,
+        details=details,
+        workspace_id=ws_id,
     )
 
 
@@ -434,6 +447,7 @@ def update_transaction(
     tx = _get_or_404(db, tx_id, current_user)
     changes = body.model_dump(exclude_unset=True)
     before = {k: str(getattr(tx, k, None)) for k in changes if k != "tag_ids"}
+    old_date = tx.event_date
     try:
         rows = svc.update_transaction(db, tx, changes, user_id=current_user.user_id)
     except (svc.TransactionError, svc.TransactionConflict) as exc:
@@ -441,6 +455,10 @@ def update_transaction(
     _audit(db, current_user, "transaction.updated", rows, {
         "before": before, "after": {k: str(v) for k, v in changes.items()},
     })
+    if tx.paid_invoice_id and tx.event_date != old_date:
+        _audit_invoice(db, current_user, "invoice.payment_date_updated", tx.paid_invoice_id, tx.workspace_id, {
+            "transaction_id": tx.id, "before": old_date.isoformat(), "after": tx.event_date.isoformat(),
+        })
     account_balance.refresh_open_snapshots(db, tx.workspace_id)
     return hydrate(db, rows)
 
@@ -459,5 +477,10 @@ def delete_transaction(
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.deleted", rows)
+    for r in rows:
+        if r.paid_invoice_id:
+            _audit_invoice(db, current_user, "invoice.payment_reverted", r.paid_invoice_id, ws, {
+                "transaction_id": r.id, "amount": str(-r.amount), "paid_on": r.event_date.isoformat(),
+            })
     account_balance.refresh_open_snapshots(db, ws)
 

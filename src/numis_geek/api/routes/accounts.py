@@ -7,6 +7,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.api.fields import BoundedDate, Money
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.financial_institution import FinancialInstitution
@@ -65,19 +66,23 @@ class AccountRequest(BaseModel):
     account_type: AccountType
     financial_institution_id: str
     currency: Currency
-    opening_balance: Decimal | None = None
+    opening_balance: Money | None = None
     # Spec 80 — a partir de quando o saldo derivado soma transações.
     # Obrigatória quando há saldo de abertura: sem data o valor é ambíguo.
-    opening_balance_date: date | None = None
+    # No PUT, campo omitido = mantém o gravado (o modal do Admin não manda a
+    # data; antes o PUT apagava e desligava a derivação em silêncio).
+    opening_balance_date: BoundedDate | None = None
     account_info: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "AccountRequest":
-        if self.account_type == AccountType.checking and self.opening_balance is not None:
-            if self.opening_balance_date is None:
-                raise ValueError(
-                    "opening_balance_date is required when opening_balance is set",
-                )
+        # Só quando a data veio no corpo — omitida, o PUT herda a gravada e
+        # a regra é checada na rota sobre o valor resultante.
+        if (
+            self.account_type == AccountType.checking and self.opening_balance is not None
+            and "opening_balance_date" in self.model_fields_set and self.opening_balance_date is None
+        ):
+            raise ValueError("opening_balance_date is required when opening_balance is set")
         return self
 
 
@@ -241,6 +246,11 @@ def create_account(
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
+    if body.account_type == AccountType.checking and body.opening_balance is not None and body.opening_balance_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="opening_balance_date is required when opening_balance is set",
+        )
     fi = db.get(FinancialInstitution, body.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
@@ -308,15 +318,38 @@ def update_account(
     fi = db.get(FinancialInstitution, body.financial_institution_id)
     if not fi or not fi.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Financial institution not found.")
+    sent = body.model_fields_set
+    is_checking = body.account_type == AccountType.checking
+    new_ob = (body.opening_balance if "opening_balance" in sent else account.opening_balance) if is_checking else None
+    new_obd = (body.opening_balance_date if "opening_balance_date" in sent else account.opening_balance_date) if is_checking else None
+    # Saldo sem data é ambíguo — exceto conta legada que já estava assim e
+    # o PUT não mexeu nesses campos.
+    ob_changed = new_ob != account.opening_balance or new_obd != account.opening_balance_date
+    if is_checking and new_ob is not None and new_obd is None and ob_changed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="opening_balance_date is required when opening_balance is set",
+        )
+    if account.balance_from_ledger and new_obd is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Desligue 'saldo vem das movimentações' antes de remover a data de abertura.",
+        )
+    if body.currency != account.currency:
+        has_tx = db.query(Transaction.id).filter(Transaction.checking_account_id == account.id).first() is not None
+        linked = db.query(Asset.id).filter(Asset.linked_account_id == account.id).first() is not None
+        if has_tx or linked:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conta com movimentações ou ativo vinculado não muda de moeda.",
+            )
     account.name = body.name
     account.account_type = body.account_type
     account.financial_institution_id = body.financial_institution_id
     account.currency = body.currency
-    account.opening_balance = body.opening_balance if body.account_type == AccountType.checking else None
-    account.opening_balance_date = (
-        body.opening_balance_date if body.account_type == AccountType.checking else None
-    )
-    account.account_info = body.account_info
+    account.opening_balance = new_ob
+    account.opening_balance_date = new_obd
+    account.account_info = body.account_info if "account_info" in sent else account.account_info
     account.updated_at = datetime.now(timezone.utc)
     account.updated_by = current_user.user_id
     db.flush()
@@ -401,8 +434,9 @@ class BalanceCheckRowOut(BaseModel):
 
 
 class OpeningBalanceRequest(BaseModel):
-    opening_balance: Decimal | None = None
-    opening_balance_date: date | None = None
+    """Substitui os dois campos (o modal manda ambos)."""
+    opening_balance: Money | None = None
+    opening_balance_date: BoundedDate | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "OpeningBalanceRequest":
@@ -519,8 +553,17 @@ def update_opening_balance(
         "opening_balance": str(acc.opening_balance) if acc.opening_balance is not None else None,
         "opening_balance_date": acc.opening_balance_date.isoformat() if acc.opening_balance_date else None,
     }
-    acc.opening_balance = body.opening_balance
-    acc.opening_balance_date = body.opening_balance_date
+    new_ob = body.opening_balance
+    new_obd = body.opening_balance_date
+    # Sem data, derives_on() desliga a derivação em silêncio enquanto a UI
+    # mostra o interruptor ligado (e AssetMovement no CASH segue travado).
+    if acc.balance_from_ledger and new_obd is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Desligue 'saldo vem das movimentações' antes de remover a data de abertura.",
+        )
+    acc.opening_balance = new_ob
+    acc.opening_balance_date = new_obd
     acc.updated_at = datetime.now(timezone.utc)
     acc.updated_by = current_user.user_id
     db.flush()
@@ -536,8 +579,8 @@ def update_opening_balance(
             "name": acc.name,
             "before": before,
             "after": {
-                "opening_balance": str(body.opening_balance) if body.opening_balance is not None else None,
-                "opening_balance_date": body.opening_balance_date.isoformat() if body.opening_balance_date else None,
+                "opening_balance": str(new_ob) if new_ob is not None else None,
+                "opening_balance_date": new_obd.isoformat() if new_obd else None,
             },
         },
     )
@@ -584,7 +627,7 @@ def set_linked_asset(
             current.updated_at = now
             current.updated_by = current_user.user_id
             db.flush()
-        _resolve_linked_account(db, acc.id, acc.workspace_id, asset_id=asset.id)
+        _resolve_linked_account(db, acc.id, acc.workspace_id, asset_id=asset.id, currency=asset.currency)
         asset.linked_account_id = acc.id
         asset.updated_at = now
         asset.updated_by = current_user.user_id

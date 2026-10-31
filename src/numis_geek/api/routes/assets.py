@@ -36,6 +36,7 @@ from numis_geek.models.portfolio_snapshot import (
 )
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
+from numis_geek.services import account_balance
 from numis_geek.services.audit import AuditService
 from numis_geek.services.asset_performance import (
     AssetPerformance,
@@ -569,11 +570,14 @@ def _resolve_account(db: Session, account_id: str, workspace_id: str) -> Account
 
 def _resolve_linked_account(
     db: Session, linked_account_id: str | None, workspace_id: str, *, asset_id: str | None = None,
+    currency: Currency | None = None,
 ):
     """Spec 80 — valida o vínculo ativo CASH ↔ conta corrente.
 
-    A conta tem que ser do mesmo workspace, `account_type=checking`, e não pode
-    já estar espelhada por outro ativo (uma conta corrente tem um saldo só).
+    A conta tem que ser do mesmo workspace, `account_type=checking`, na mesma
+    moeda do ativo (o item do fechamento grava o saldo na moeda da conta como
+    se fosse a do ativo), e não pode já estar espelhada por outro ativo (uma
+    conta corrente tem um saldo só).
     """
     if not linked_account_id:
         return None
@@ -587,6 +591,11 @@ def _resolve_linked_account(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Linked account must be a checking account.",
+        )
+    if currency is not None and acc.currency != currency:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Ativo e conta corrente vinculados precisam ter a mesma moeda.",
         )
     q = db.query(Asset).filter(Asset.linked_account_id == linked_account_id)
     if asset_id is not None:
@@ -617,7 +626,7 @@ def create_asset(
         ticker=body.ticker,
         account_id=body.account_id,
     )
-    _resolve_linked_account(db, body.linked_account_id, workspace_id)
+    _resolve_linked_account(db, body.linked_account_id, workspace_id, currency=body.currency)
 
     now = datetime.now(timezone.utc)
     asset = Asset(
@@ -646,6 +655,8 @@ def create_asset(
     db.add(asset)
     db.flush()
     _audit(db, current_user, "asset.created", asset)
+    if asset.linked_account_id:
+        account_balance.refresh_open_snapshots(db, asset.workspace_id)
 
     ws_name: str | None = None
     if current_user.role == UserRole.sysadmin:
@@ -675,9 +686,10 @@ def _apply_asset_update(
         exclude_id=asset.id,
     )
     _resolve_linked_account(
-        db, body.linked_account_id, asset.workspace_id, asset_id=asset.id,
+        db, body.linked_account_id, asset.workspace_id, asset_id=asset.id, currency=body.currency,
     )
 
+    link_changed = asset.linked_account_id != body.linked_account_id
     asset.linked_account_id = body.linked_account_id
     asset.account_id = account.id
     asset.asset_class = body.asset_class
@@ -700,6 +712,8 @@ def _apply_asset_update(
     _apply_details(asset, body, db)
     db.flush()
     _audit(db, current_user, "asset.updated", asset)
+    if link_changed:
+        account_balance.refresh_open_snapshots(db, asset.workspace_id)
 
     ws_name: str | None = None
     if current_user.role == UserRole.sysadmin:
@@ -721,6 +735,15 @@ def update_asset(
 ):
     asset = _get_or_404(db, asset_id)
     _check_workspace_access(asset, current_user)
+    # O AssetModal do Admin não conhece o vínculo e não manda o campo: omitido
+    # = mantém (antes zerava e desligava a derivação em silêncio).
+    if "linked_account_id" not in body.model_fields_set and asset.linked_account_id:
+        if body.asset_class != AssetClass.CASH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ativo vinculado a conta corrente precisa ser CASH — desvincule antes.",
+            )
+        body = body.model_copy(update={"linked_account_id": asset.linked_account_id})
     return _apply_asset_update(db, asset, body, current_user)
 
 

@@ -1,4 +1,4 @@
-import { Search, ArrowUpRight, ArrowDownRight, Sparkles, CornerDownLeft } from 'lucide-react'
+import { Search, ArrowUpRight, ArrowDownRight, Sparkles, CornerDownLeft, Loader2 } from 'lucide-react'
 import { KLASS, fiTokenFor, lanTypeColor, type CollapsedClassCode } from '../lib/tokens'
 import { useFiLogosById, useFiLogosBySlug } from '../lib/fiLogos'
 
@@ -360,6 +360,29 @@ export function FILogo({
       title={shortName}
     >
       {tok.initials}
+    </div>
+  )
+}
+
+/** Rodapé de lista paginada no servidor (page_size 500): "mostrando X de N"
+ * + "Carregar mais" com spinner. Some quando já está tudo na tela. */
+export function LoadMore({
+  shown, total, loading, onLoadMore,
+}: {
+  shown: number
+  total: number
+  loading: boolean
+  onLoadMore: () => void
+}) {
+  if (shown >= total) return null
+  return (
+    <div className="flex items-center justify-center gap-3 pt-3 text-[11px] text-gray-500" data-testid="load-more">
+      <span>mostrando {shown} de {total}</span>
+      <button type="button" onClick={onLoadMore} disabled={loading}
+        className="h-7 px-3 inline-flex items-center gap-1.5 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+        Carregar mais
+      </button>
     </div>
   )
 }

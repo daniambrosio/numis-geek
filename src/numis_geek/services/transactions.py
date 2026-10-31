@@ -21,7 +21,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -47,6 +47,18 @@ class TransactionError(Exception):
 
 class TransactionConflict(Exception):
     """State conflict (e.g. paid invoice) — maps to 409."""
+
+
+def to_cents(value, what: str = "Valor") -> Decimal:
+    """Quantize to cents BEFORE any zero/sign check (0.004 is zero), and turn
+    absurd magnitudes into a 422 instead of InvalidOperation (500)."""
+    try:
+        q = Decimal(value).quantize(CENT, ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        raise TransactionError(f"{what} inválido.")
+    if abs(q) >= Decimal("1e14"):
+        raise TransactionError(f"{what} fora do limite.")
+    return q
 
 
 # ── pure helpers ──────────────────────────────────────────────────────────────
@@ -161,6 +173,8 @@ def validate_category(db: Session, workspace_id: str, category_id: str | None) -
         raise TransactionError("Categoria não encontrada.")
     if c.parent_id is None:
         raise TransactionError("Escolha uma subcategoria — a raiz é só agrupador.")
+    if not c.is_active:
+        raise TransactionError("Categoria inativa.")
 
 
 def validate_party(db: Session, workspace_id: str, party_id: str | None) -> None:
@@ -169,6 +183,8 @@ def validate_party(db: Session, workspace_id: str, party_id: str | None) -> None
     p = db.get(Party, party_id)
     if not p or p.workspace_id != workspace_id:
         raise TransactionError("Fornecedor/cliente não encontrado.")
+    if not p.is_active:
+        raise TransactionError("Fornecedor/cliente inativo.")
 
 
 def resolve_tags(db: Session, workspace_id: str, tag_ids: list[str] | None) -> list[str]:
@@ -187,19 +203,33 @@ def set_tags(db: Session, tx_id: str, tag_ids: list[str]) -> None:
         db.execute(transaction_tag.insert(), [{"transaction_id": tx_id, "tag_id": t} for t in tag_ids])
 
 
+def find_invoice_near(
+    db: Session, card: CreditCardAccount, target: date, *, exclude: set[str] | frozenset[str] = frozenset(),
+) -> Invoice | None:
+    """Existing invoice closing near `target` (real close_date may drift a few
+    days from the theoretical `close_day`) — lookup only."""
+    tol = timedelta(days=INVOICE_CLOSE_TOLERANCE_DAYS)
+    candidates = [
+        i for i in db.query(Invoice).filter(
+            Invoice.credit_card_account_id == card.id,
+            Invoice.close_date >= target - tol,
+            Invoice.close_date <= target + tol,
+        ).all()
+        if i.id not in exclude
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda i: abs((i.close_date - target).days))
+
+
 def invoice_for_close(
     db: Session, card: CreditCardAccount, target: date, *, user_id: str | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
 ) -> Invoice:
-    """Invoice closing near `target` (real close_date may drift a few days
-    from the theoretical `close_day`), created OPEN if missing."""
-    tol = timedelta(days=INVOICE_CLOSE_TOLERANCE_DAYS)
-    candidates = db.query(Invoice).filter(
-        Invoice.credit_card_account_id == card.id,
-        Invoice.close_date >= target - tol,
-        Invoice.close_date <= target + tol,
-    ).all()
-    if candidates:
-        return min(candidates, key=lambda i: abs((i.close_date - target).days))
+    """Invoice closing near `target`, created OPEN (at `target`) if missing."""
+    found = find_invoice_near(db, card, target, exclude=exclude)
+    if found is not None:
+        return found
     now = datetime.now(timezone.utc)
     inv = Invoice(
         id=str(uuid.uuid4()),
@@ -219,14 +249,26 @@ def invoice_for_close(
     return inv
 
 
+def cycle_of(card: CreditCardAccount, close_date: date) -> date:
+    """Theoretical close (a `close_day` date) of the cycle a real
+    `close_date` belongs to — the nearest one."""
+    options = [add_months(close_date, k, card.close_day) for k in (-1, 0, 1)]
+    return min(options, key=lambda t: abs((t - close_date).days))
+
+
 def resolve_invoice(
     db: Session, card: CreditCardAccount, event_date: date, *, user_id: str | None = None,
 ) -> Invoice:
     """Invoice whose period — (previous close_date, close_date] — contains
-    `event_date`, created OPEN if missing. A purchase on/after a real
-    close_date that came earlier than the theoretical one belongs to the
-    next invoice."""
+    `event_date`, created OPEN if missing. Real close_dates drift from the
+    theoretical `close_day` both ways:
+    - the previous cycle closed LATER than theoretical → a purchase on/before
+      that real close still belongs to it;
+    - this cycle closed EARLIER → a purchase after it belongs to the next."""
     target = theoretical_close_date(card, event_date)
+    prev = find_invoice_near(db, card, add_months(target, -1, card.close_day))
+    if prev is not None and prev.close_date >= event_date:
+        return prev
     inv = invoice_for_close(db, card, target, user_id=user_id)
     if inv.close_date < event_date:
         inv = invoice_for_close(db, card, add_months(target, 1, card.close_day), user_id=user_id)
@@ -289,7 +331,10 @@ def _new_tx(workspace_id: str, user_id: str | None, **fields) -> Transaction:
 def _validate_common(db: Session, workspace_id: str, data: TxInput) -> None:
     if not data.description or not data.description.strip():
         raise TransactionError("Descrição obrigatória.")
-    if Decimal(data.amount) == 0:
+    if data.event_date is None:
+        raise TransactionError("Data obrigatória.")
+    data.amount = to_cents(data.amount)
+    if data.amount == 0:
         raise TransactionError("Valor não pode ser zero.")
     validate_category(db, workspace_id, data.category_id)
     validate_party(db, workspace_id, data.party_id)
@@ -341,19 +386,30 @@ def create_transaction(
         if not first_invoice or first_invoice.credit_card_account_id != card.id:
             raise TransactionError("Fatura não pertence a este cartão.")
 
-    parts = split_installments(Decimal(data.amount), installments)
+    parts = split_installments(data.amount, installments)
+    if any(p == 0 for p in parts):
+        raise TransactionError(
+            f"Valor pequeno demais para {installments} parcelas — cada parcela precisa de ao menos 1 centavo."
+        )
     created: list[Transaction] = []
+    used: set[str] = set()
+    anchor: date | None = None
     for k, part in enumerate(parts):
         ev = add_months(data.event_date, k)
-        if k == 0 and first_invoice is not None:
-            inv = first_invoice
-        elif first_invoice is not None:
-            # "12x a partir da fatura X": parcela k cai k faturas depois
-            inv = invoice_for_close(
-                db, card, add_months(first_invoice.close_date, k, card.close_day), user_id=user_id,
+        if k == 0:
+            inv = first_invoice if first_invoice is not None else resolve_invoice(
+                db, card, data.event_date, user_id=user_id,
             )
+            # Parcela k cai k ciclos depois do ciclo TEÓRICO da 1ª — nunca
+            # re-resolvida pela data deslocada (close_day >= 29 clampado em
+            # fevereiro dobrava/pulava fatura; fatura X fechada cedo fazia a
+            # parcela 2 cair nela de novo).
+            anchor = cycle_of(card, inv.close_date)
         else:
-            inv = resolve_invoice(db, card, ev, user_id=user_id)
+            inv = invoice_for_close(
+                db, card, add_months(anchor, k, card.close_day), user_id=user_id, exclude=used,
+            )
+        used.add(inv.id)
         _ensure_invoice_writable(inv)
         tx = _new_tx(
             workspace_id, user_id,
@@ -388,6 +444,13 @@ def update_transaction(
     unknown = set(changes) - set(EDITABLE_FIELDS)
     if unknown:
         raise TransactionError(f"Campos não editáveis: {', '.join(sorted(unknown))}.")
+    for f in ("event_date", "description", "amount", "is_reconciled"):
+        if f in changes and changes[f] is None:
+            raise TransactionError(f"{f} não pode ser nulo.")
+    if "amount" in changes:
+        changes = {**changes, "amount": to_cents(changes["amount"])}
+    old_date = tx.event_date
+    date_changed = "event_date" in changes and changes["event_date"] != old_date
     if tx.invoice_id:
         _ensure_invoice_writable(db.get(Invoice, tx.invoice_id))
     if tx.paid_invoice_id and "amount" in changes:
@@ -397,11 +460,13 @@ def update_transaction(
 
     if "description" in changes and not (changes["description"] or "").strip():
         raise TransactionError("Descrição obrigatória.")
-    if "amount" in changes and Decimal(changes["amount"]) == 0:
+    if "amount" in changes and changes["amount"] == 0:
         raise TransactionError("Valor não pode ser zero.")
-    if "category_id" in changes:
+    # Só valida quando MUDA: tx antiga apontando pra categoria/party já
+    # desativada continua editável nos outros campos (spec 68).
+    if "category_id" in changes and changes["category_id"] != tx.category_id:
         validate_category(db, tx.workspace_id, changes["category_id"])
-    if "party_id" in changes:
+    if "party_id" in changes and changes["party_id"] != tx.party_id:
         validate_party(db, tx.workspace_id, changes["party_id"])
     tag_ids = resolve_tags(db, tx.workspace_id, changes["tag_ids"]) if "tag_ids" in changes else None
 
@@ -413,11 +478,20 @@ def update_transaction(
     if "amount" in changes:
         tx.amount = Decimal(changes["amount"])
 
-    if tx.source_type == TransactionSourceType.CREDIT_CARD and "event_date" in changes:
+    # Re-roteia só quando a data MUDOU de fato: o composer manda event_date
+    # sempre, e uma fatura escolhida à mão no create não pode ser desfeita
+    # por uma edição de descrição.
+    if tx.source_type == TransactionSourceType.CREDIT_CARD and date_changed:
         card = db.get(CreditCardAccount, tx.credit_card_account_id)
         inv = resolve_invoice(db, card, tx.event_date, user_id=user_id)
         _ensure_invoice_writable(inv)
         tx.invoice_id = inv.id
+    if tx.paid_invoice_id and date_changed:
+        paid = db.get(Invoice, tx.paid_invoice_id)
+        if paid is not None and paid.paid_by_transaction_id == tx.id:
+            paid.paid_at = tx.event_date
+            paid.updated_at = datetime.now(timezone.utc)
+            paid.updated_by = user_id
 
     # re-derive fx: keep a STATEMENT rate unless the caller sends a new one
     statement_rate = changes.get("fx_rate")
@@ -436,7 +510,12 @@ def update_transaction(
                 continue
             other.event_date = tx.event_date
             other.description = tx.description
-            _fill(db, other, currency=other.currency, statement_rate=other.fx_rate)
+            # Perna PTAX re-deriva na nova data; só STATEMENT (cotação do
+            # documento / implícita do câmbio) mantém a taxa.
+            _fill(
+                db, other, currency=other.currency,
+                statement_rate=other.fx_rate if other.fx_source == FxSource.STATEMENT else None,
+            )
             other.updated_at = tx.updated_at
             other.updated_by = user_id
             touched.append(other)
@@ -506,23 +585,26 @@ def create_transfer(
     `amount_in`; the implied rate becomes the fx of both legs (STATEMENT)."""
     if from_account_id == to_account_id:
         raise TransactionError("Origem e destino são a mesma conta.")
-    amount_out = Decimal(amount_out)
+    if event_date is None:
+        raise TransactionError("Data obrigatória.")
+    amount_out = to_cents(amount_out)
     if amount_out <= 0:
         raise TransactionError("Valor da transferência deve ser positivo.")
+    if amount_in is not None:
+        amount_in = to_cents(amount_in)
     src = get_checking_account(db, workspace_id, from_account_id)
     dst = get_checking_account(db, workspace_id, to_account_id)
     validate_category(db, workspace_id, category_id)
     description = (description or "").strip() or "Transferência entre contas"
 
     if src.currency == dst.currency:
-        if amount_in is not None and Decimal(amount_in) != amount_out:
+        if amount_in is not None and amount_in != amount_out:
             raise TransactionError("Mesma moeda: valor de entrada deve ser igual ao de saída.")
         amount_in = amount_out
         statement_rate = None
     else:
-        if amount_in is None or Decimal(amount_in) <= 0:
+        if amount_in is None or amount_in <= 0:
             raise TransactionError("Moedas diferentes: informe o valor que entrou no destino.")
-        amount_in = Decimal(amount_in)
         brl, usd = (amount_out, amount_in) if src.currency == Currency.BRL else (amount_in, amount_out)
         statement_rate = (brl / usd).quantize(Decimal("0.00000001"))
 
@@ -561,15 +643,24 @@ def pay_invoice(
     when the currencies match."""
     if invoice.status == InvoiceStatus.PAID:
         raise TransactionConflict("Fatura já paga.")
+    # Pagar fatura OPEN congelava um total implícito que o "desfazer" não
+    # sabia desfazer (voltava a CLOSED com total parcial). Fecha antes.
+    if invoice.status != InvoiceStatus.CLOSED:
+        raise TransactionConflict("Feche a fatura antes de pagar.")
     acc = get_checking_account(db, invoice.workspace_id, checking_account_id)
     validate_category(db, invoice.workspace_id, category_id)
     if amount is None:
         if invoice.total_amount is None:
-            raise TransactionError("Fatura sem total — informe o valor pago ou feche a fatura antes.")
+            raise TransactionError("Fatura sem total — informe o valor pago.")
         if acc.currency != invoice.currency:
             raise TransactionError("Conta em outra moeda — informe o valor debitado na conta.")
+        # Fatura fechada continua aceitando tx (import da spec 71): se a soma
+        # mudou depois do fechamento, o total congelado não é mais confiável.
+        has_tx = db.query(Transaction.id).filter(Transaction.invoice_id == invoice.id).first() is not None
+        if has_tx and invoice_open_total(db, invoice) != Decimal(invoice.total_amount).quantize(CENT):
+            raise TransactionError("Total da fatura difere da soma dos lançamentos — informe o valor")
         amount = invoice.total_amount
-    amount = Decimal(amount)
+    amount = to_cents(amount)
     if amount <= 0:
         raise TransactionError("Valor pago deve ser positivo.")
     card = db.get(CreditCardAccount, invoice.credit_card_account_id)
@@ -583,8 +674,6 @@ def pay_invoice(
     _fill(db, tx, currency=acc.currency, statement_rate=fx_rate)
     db.add(tx)
     db.flush()
-    if invoice.total_amount is None:
-        invoice.total_amount = invoice_open_total(db, invoice)
     invoice.status = InvoiceStatus.PAID
     invoice.paid_at = paid_on
     invoice.paid_by_transaction_id = tx.id

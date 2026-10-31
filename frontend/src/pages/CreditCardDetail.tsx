@@ -18,7 +18,7 @@ import {
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import { Card, SectionTitle, FILogo, Field, INPUT_CLS } from '../components/ui'
+import { Card, SectionTitle, FILogo, Field, INPUT_CLS, LoadMore } from '../components/ui'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CARDS_CHANGED_EVENT } from '../lib/useCardCounts'
@@ -26,6 +26,14 @@ import { fmtMoney, fmtPct } from './CreditCards'
 import KpiTile from '../components/KpiTile'
 import { CardTxComposer, CategorySelect } from '../components/TransactionComposers'
 import { todayISO } from '../lib/format'
+import { useTransactionAttachments } from '../lib/useTransactionAttachments'
+
+/** Fatura CLOSED cujo total congelado não bate mais com a soma das tx
+ * (lançamento entrou/mudou depois do fechamento — import da spec 71). */
+export function invoiceDiverges(inv: InvoiceOut): boolean {
+  return inv.status === 'CLOSED' && inv.total_amount != null && inv.tx_total != null
+    && Math.abs(inv.total_amount - inv.tx_total) >= 0.005
+}
 
 function fmtDate(iso: string) {
   const [y, m, d] = iso.split('-')
@@ -60,7 +68,13 @@ export default function CreditCardDetail() {
   const [closingInvoice, setClosingInvoice] = useState<InvoiceOut | null>(null)
   const [payingInvoice, setPayingInvoice] = useState<InvoiceOut | null>(null)
   const [actionError, setActionError] = useState('')
+  // Lançamentos da fatura aberta — filtrados no servidor por invoice_id
+  // (antes: todas as tx do cartão, cortadas em 500 sem aviso).
   const [txs, setTxs] = useState<TransactionOut[]>([])
+  const [txTotal, setTxTotal] = useState(0)
+  const [txPage, setTxPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const attachments = useTransactionAttachments()
   const [accounts, setAccounts] = useState<AccountOut[]>([])
   const [categories, setCategories] = useState<CategoryOut[]>([])
   const [txComposer, setTxComposer] = useState<{ editing?: TransactionOut } | null>(null)
@@ -75,10 +89,14 @@ export default function CreditCardDetail() {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
 
-  const reload = useCallback(() => {
-    if (!id) return Promise.resolve()
-    return Promise.all([api.listCreditCards(), api.listCardInvoices(id), api.listTransactions({ card_id: [id] })])
-      .then(([cs, invs, list]) => { setCards(cs); setInvoices(invs); setTxs(list.items) })
+  const reload = useCallback(async () => {
+    if (!id) return
+    const [cs, invs] = await Promise.all([api.listCreditCards(), api.listCardInvoices(id)])
+    const open = invs.filter(i => i.status === 'OPEN').sort((a, b) => a.close_date.localeCompare(b.close_date))[0]
+    const list = open
+      ? await api.listTransactions({ card_id: [id], invoice_id: open.id })
+      : { items: [], total: 0 }
+    setCards(cs); setInvoices(invs); setTxs(list.items); setTxTotal(list.total); setTxPage(1)
   }, [id])
 
   useEffect(() => {
@@ -111,15 +129,45 @@ export default function CreditCardDetail() {
     [invoices, openInvoice],
   )
   const openTxs = useMemo(() => txs.filter(t => t.invoice_id === openInvoice?.id), [txs, openInvoice])
-  const nextTotal = useMemo(
-    () => -txs.filter(t => t.invoice_id === nextInvoice?.id).reduce((acc, t) => acc + t.amount, 0),
-    [txs, nextInvoice],
+  const nextTotal = nextInvoice?.tx_total ?? 0
+  // Soma no servidor (vale mesmo com lista paginada); fallback pras tx carregadas.
+  const openTxSum = useMemo(
+    () => openInvoice?.tx_total ?? -openTxs.reduce((acc, t) => acc + t.amount, 0),
+    [openInvoice, openTxs],
   )
-  const openTxSum = useMemo(() => -openTxs.reduce((acc, t) => acc + t.amount, 0), [openTxs])
 
+  /** Recarrega depois de um write que deu certo: erro vai pro toast da
+   * página, nunca pro modal (que já fechou ou acharia que o write falhou). */
   async function afterTxWrite() {
     window.dispatchEvent(new Event(CARDS_CHANGED_EVENT))
-    await reload()
+    try {
+      await reload()
+    } catch (err) {
+      setActionError(`Salvo, mas a página não recarregou: ${err instanceof Error ? err.message : 'erro'}`)
+    }
+  }
+
+  async function loadMore() {
+    if (!id || !openInvoice) return
+    setLoadingMore(true)
+    try {
+      const next = await api.listTransactions({ card_id: [id], invoice_id: openInvoice.id, page: txPage + 1 })
+      setTxs(prev => {
+        const seen = new Set(prev.map(t => t.id))
+        return [...prev, ...next.items.filter(t => !seen.has(t.id))]
+      })
+      setTxTotal(next.total)
+      setTxPage(txPage + 1)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Erro ao carregar mais.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  function openComposer(editing?: TransactionOut) {
+    attachments.startEditing(editing?.id ?? null)
+    setTxComposer({ editing })
   }
   const canWrite = me?.role === 'admin' || me?.role === 'sysadmin'
 
@@ -155,7 +203,7 @@ export default function CreditCardDetail() {
                   <button disabled title="Chega com a spec 71 (import de fatura)" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
                     <FileText className="w-3.5 h-3.5" /> Importar fatura
                   </button>
-                  <button onClick={() => setTxComposer({})} className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                  <button onClick={() => openComposer()} className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                     <Plus className="w-3.5 h-3.5" /> Lançamento
                   </button>
                   {canWrite && (
@@ -193,7 +241,7 @@ export default function CreditCardDetail() {
                   <div className="mt-3"><HBar value={card.open_invoice_total} max={card.credit_limit} /></div>
                 )}
                 <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <KpiTile label="Lançamentos" value={String(openTxs.length)} />
+                  <KpiTile label="Lançamentos" value={String(openInvoice ? txTotal : 0)} />
                   <KpiTile label="IOF · cartão" value={openInvoice?.iof_total != null ? fmtMoney(openInvoice.iof_total, card.currency) : '—'} />
                   <KpiTile label="Compras parceladas" value={String(openTxs.filter(t => t.installment_total).length)} />
                   <KpiTile label="Próx. fatura · estimada" value={nextInvoice ? fmtMoney(nextTotal, card.currency) : '—'} />
@@ -211,6 +259,12 @@ export default function CreditCardDetail() {
                         <div className="flex-1 text-[12px]">
                           <div className="font-medium text-gray-900 dark:text-white">Fecho {fmtDate(inv.close_date)}</div>
                           <div className="text-[10px] text-gray-500">{STATUS_META[inv.status].label}{inv.paid_at && ` em ${fmtDate(inv.paid_at)}`}</div>
+                          {invoiceDiverges(inv) && (
+                            <div className="text-[10px] text-amber-600 dark:text-amber-400" data-testid={`invoice-divergence-${inv.id}`}
+                              title="Lançamento entrou ou mudou depois do fechamento — confira antes de pagar">
+                              soma dos lançamentos {fmtMoney(inv.tx_total!, inv.currency)} ≠ total congelado
+                            </div>
+                          )}
                         </div>
                         <div className="text-[12px] tnum money text-gray-900 dark:text-white">{inv.total_amount != null ? fmtMoney(inv.total_amount, inv.currency) : '—'}</div>
                         {inv.status === 'PAID' && <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />}
@@ -243,7 +297,7 @@ export default function CreditCardDetail() {
                 <table className="w-full text-[12px]">
                   <tbody>
                     {openTxs.map(t => (
-                      <tr key={t.id} onClick={() => setTxComposer({ editing: t })}
+                      <tr key={t.id} onClick={() => openComposer(t)}
                         className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 cursor-pointer">
                         <td className="px-2 py-2 tnum text-gray-400 w-16">{fmtDate(t.event_date)}</td>
                         <td className="px-2 text-gray-900 dark:text-white">
@@ -259,6 +313,7 @@ export default function CreditCardDetail() {
                   </tbody>
                 </table>
               )}
+              <LoadMore shown={openTxs.length} total={openInvoice ? txTotal : 0} loading={loadingMore} onLoadMore={loadMore} />
             </Card>
 
             {cards.length > 1 && (
@@ -292,8 +347,7 @@ export default function CreditCardDetail() {
         <InvoiceModal
           onSave={async data => {
             await api.createInvoice(card.id, data)
-            window.dispatchEvent(new Event(CARDS_CHANGED_EVENT))
-            await reload()
+            await afterTxWrite()
           }}
           onClose={() => setNewInvoiceOpen(false)}
         />
@@ -307,7 +361,7 @@ export default function CreditCardDetail() {
           onConfirm={async data => {
             await api.payInvoice(payingInvoice.id, data)
             setPayingInvoice(null)
-            await afterTxWrite()
+            void afterTxWrite()
           }}
           onClose={() => setPayingInvoice(null)}
         />
@@ -320,21 +374,25 @@ export default function CreditCardDetail() {
           onCreate={async (data: TransactionCreatePayload) => { const r = await api.createTransaction(data); await afterTxWrite(); return r }}
           onUpdate={async (txId: string, data: TransactionUpdatePayload) => { const r = await api.updateTransaction(txId, data); await afterTxWrite(); return r }}
           onClose={() => setTxComposer(null)}
+          persistedAttachments={txComposer.editing ? attachments.persisted : undefined}
+          onUploadDrafts={attachments.uploadDrafts}
+          onRemovePersistedAttachment={attachments.removePersisted}
         />
       )}
 
       {closingInvoice && (
         <CloseInvoiceModal
           invoice={closingInvoice}
-          txSum={closingInvoice.id === openInvoice?.id && openTxs.length ? openTxSum : null}
+          txSum={closingInvoice.id === openInvoice?.id && (openInvoice.tx_total != null || openTxs.length) ? openTxSum : null}
           onConfirm={async total => {
             try {
               await api.closeInvoice(closingInvoice.id, total)
-              setClosingInvoice(null)
-              await reload()
             } catch (err) {
               setActionError(err instanceof Error ? err.message : 'Erro ao fechar fatura.')
+              return
             }
+            setClosingInvoice(null)
+            await afterTxWrite()
           }}
           onClose={() => setClosingInvoice(null)}
         />
@@ -448,7 +506,16 @@ function PayInvoiceModal({ invoice, accounts, categories, onConfirm, onClose }: 
   const [accIdState, setAccId] = useState('')
   const accId = accIdState || (sameCcy[0] ?? checkings[0])?.id || ''
   const [paidOn, setPaidOn] = useState(todayISO())
-  const [amount, setAmount] = useState(invoice.total_amount != null ? String(invoice.total_amount).replace('.', ',') : '')
+  const diverged = invoiceDiverges(invoice)
+  // O valor é na moeda da CONTA: só pré-preenche com o total da fatura
+  // quando as moedas batem (e o total congelado ainda bate com as tx).
+  const defaultAmount = (accountId: string) => {
+    const a = accounts.find(x => x.id === accountId)
+    return a && a.currency === invoice.currency && invoice.total_amount != null && !diverged
+      ? String(invoice.total_amount).replace('.', ',')
+      : ''
+  }
+  const [amount, setAmount] = useState(() => defaultAmount(accId))
   const [catId, setCatId] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -477,7 +544,7 @@ function PayInvoiceModal({ invoice, accounts, categories, onConfirm, onClose }: 
         </p>
         <div className="space-y-3">
           <Field label="Conta corrente">
-            <select value={accId} onChange={e => setAccId(e.target.value)} className={INPUT_CLS} aria-label="Conta corrente">
+            <select value={accId} onChange={e => { setAccId(e.target.value); setAmount(defaultAmount(e.target.value)) }} className={INPUT_CLS} aria-label="Conta corrente">
               {checkings.map(a => <option key={a.id} value={a.id}>{a.name} · {a.currency}</option>)}
             </select>
           </Field>
@@ -487,6 +554,16 @@ function PayInvoiceModal({ invoice, accounts, categories, onConfirm, onClose }: 
           <Field label={`Valor pago · ${acc?.currency ?? invoice.currency}`}>
             <input type="text" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0,00" className={INPUT_CLS} aria-label="Valor pago" />
           </Field>
+          {acc && acc.currency !== invoice.currency && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              Fatura em {invoice.currency}, conta em {acc.currency} — informe o valor debitado na conta.
+            </p>
+          )}
+          {diverged && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400" data-testid="pay-divergence">
+              Total congelado {fmtMoney(invoice.total_amount!, invoice.currency)} × soma dos lançamentos {fmtMoney(invoice.tx_total!, invoice.currency)} — informe o valor pago.
+            </p>
+          )}
           <Field label="Categoria (opcional)">
             <CategorySelect categories={categories} value={catId} onChange={setCatId} filterKind="TRANSFER" />
           </Field>

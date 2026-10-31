@@ -20,13 +20,14 @@ import {
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import { Card, CcyPill, FILogo, Field, INPUT_CLS, SectionTitle, Trend } from '../components/ui'
+import { Card, CcyPill, FILogo, Field, INPUT_CLS, LoadMore, SectionTitle, Trend } from '../components/ui'
 import KpiTile from '../components/KpiTile'
 import Sparkline from '../components/Sparkline'
 import { TransactionComposer, fmtMoney } from '../components/TransactionComposers'
 import { fmtBRL } from '../lib/money'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
+import { useTransactionAttachments } from '../lib/useTransactionAttachments'
 
 const ACCOUNT_TYPE_LABEL: Record<string, string> = { checking: 'Conta corrente', investment: 'Conta investimento' }
 const STATUS_LABEL: Record<BalanceCheckRow['status'], string> = { OPEN: 'Aberto', IN_REVIEW: 'Em revisão', CLOSED: 'Fechado' }
@@ -56,6 +57,11 @@ export default function AccountDetail() {
   const [me, setMe] = useState<UserOut | null>(null)
   const [acc, setAcc] = useState<AccountDetailOut | null>(null)
   const [txs, setTxs] = useState<TransactionOut[]>([])
+  const [txTotal, setTxTotal] = useState(0)
+  const [txPage, setTxPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [toast, setToast] = useState('')
+  const attachments = useTransactionAttachments()
   const [check, setCheck] = useState<BalanceCheckRow[]>([])
   const [categories, setCategories] = useState<CategoryOut[]>([])
   const [cashAssets, setCashAssets] = useState<AssetOut[]>([])
@@ -86,9 +92,40 @@ export default function AccountDetail() {
         api.accountBalanceCheck(id),
       ])
       setTxs(list.items)
+      setTxTotal(list.total)
+      setTxPage(1)
       setCheck(rows)
     }
   }, [id])
+
+  /** Recarrega depois de um write que deu certo — erro vai pro toast da
+   * página, não pro modal/composer (que trataria como falha do write). */
+  const refresh = useCallback(() => (
+    reload().catch(err => setToast(`Salvo, mas a página não recarregou: ${err instanceof Error ? err.message : 'erro'}`))
+  ), [reload])
+
+  async function loadMore() {
+    if (!id) return
+    setLoadingMore(true)
+    try {
+      const next = await api.listTransactions({ account_id: [id], page: txPage + 1 })
+      setTxs(prev => {
+        const seen = new Set(prev.map(t => t.id))
+        return [...prev, ...next.items.filter(t => !seen.has(t.id))]
+      })
+      setTxTotal(next.total)
+      setTxPage(txPage + 1)
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : 'Erro ao carregar mais.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  function openComposer(editing?: TransactionOut) {
+    attachments.startEditing(editing?.id ?? null)
+    setComposer({ editing })
+  }
 
   useEffect(() => {
     if (!me) return
@@ -104,12 +141,13 @@ export default function AccountDetail() {
     setSourceError('')
     try {
       setAcc(await api.updateBalanceSource(acc.id, !acc.balance_from_ledger))
-      await reload()
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : 'Erro ao salvar.')
+      return
     } finally {
       setTogglingSource(false)
     }
+    await refresh()
   }
 
   // Cadastros auxiliares — falha não derruba a página.
@@ -154,7 +192,7 @@ export default function AccountDetail() {
                       className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
                       <FileText className="w-3.5 h-3.5" /> Reconciliar
                     </button>
-                    <button onClick={() => setComposer({})}
+                    <button onClick={() => openComposer()}
                       className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
                       <Plus className="w-3.5 h-3.5" /> Movimentação
                     </button>
@@ -329,7 +367,7 @@ export default function AccountDetail() {
                         </thead>
                         <tbody>
                           {txs.map(t => (
-                            <tr key={t.id} onClick={() => setComposer({ editing: t })}
+                            <tr key={t.id} onClick={() => openComposer(t)}
                               className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 cursor-pointer">
                               <td className="px-2 py-2 tnum text-gray-400">{fmtDay(t.event_date)}</td>
                               <td className="px-2 text-gray-900 dark:text-white">{t.description}</td>
@@ -348,6 +386,7 @@ export default function AccountDetail() {
                           ))}
                         </tbody>
                       </table>
+                      <LoadMore shown={txs.length} total={txTotal} loading={loadingMore} onLoadMore={loadMore} />
                     </div>
                   )}
                 </Card>
@@ -360,16 +399,19 @@ export default function AccountDetail() {
       {composer && acc && (
         <TransactionComposer
           accounts={[acc]} categories={categories} initial={composer.editing}
-          onCreate={async (data: TransactionCreatePayload) => { const r = await api.createTransaction(data); await reload(); return r }}
-          onUpdate={async (txId: string, data: TransactionUpdatePayload) => { const r = await api.updateTransaction(txId, data); await reload(); return r }}
+          onCreate={async (data: TransactionCreatePayload) => { const r = await api.createTransaction(data); await refresh(); return r }}
+          onUpdate={async (txId: string, data: TransactionUpdatePayload) => { const r = await api.updateTransaction(txId, data); await refresh(); return r }}
           onClose={() => setComposer(null)}
+          persistedAttachments={composer.editing ? attachments.persisted : undefined}
+          onUploadDrafts={attachments.uploadDrafts}
+          onRemovePersistedAttachment={attachments.removePersisted}
         />
       )}
 
       {editingOpening && acc && (
         <OpeningBalanceModal
           acc={acc}
-          onSave={async data => { setAcc(await api.updateOpeningBalance(acc.id, data)); await reload() }}
+          onSave={async data => { setAcc(await api.updateOpeningBalance(acc.id, data)); void refresh() }}
           onClose={() => setEditingOpening(false)}
         />
       )}
@@ -378,9 +420,16 @@ export default function AccountDetail() {
         <LinkAssetModal
           acc={acc}
           cashAssets={cashAssets}
-          onSave={async assetId => { setAcc(await api.setLinkedAsset(acc.id, assetId)); await reload() }}
+          onSave={async assetId => { setAcc(await api.setLinkedAsset(acc.id, assetId)); void refresh() }}
           onClose={() => setEditingLink(false)}
         />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-[70] max-w-sm bg-red-600 text-white text-[12px] rounded-lg shadow-lg px-4 py-3" role="alert">
+          {toast}
+          <button onClick={() => setToast('')} className="ml-3 underline">fechar</button>
+        </div>
       )}
     </AppLayout>
   )
@@ -406,8 +455,11 @@ function OpeningBalanceModal({ acc, onSave, onClose }: {
   const [day, setDay] = useState(acc.opening_balance_date ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const parsed = value.trim() === '' ? null : parseDecimal(value)
-  const valid = (parsed === null && value.trim() === '') || (parsed !== null && day !== '')
+  const empty = value.trim() === ''
+  const parsed = empty ? null : parseDecimal(value)
+  const badValue = !empty && parsed === null
+  const missingDay = parsed !== null && day === ''
+  const valid = empty || (parsed !== null && day !== '')
 
   async function submit() {
     setSaving(true)
@@ -435,7 +487,8 @@ function OpeningBalanceModal({ acc, onSave, onClose }: {
           <input type="date" value={day} onChange={e => setDay(e.target.value)} className={INPUT_CLS} aria-label="Data do saldo de abertura" />
         </Field>
       </div>
-      {!valid && <p className="text-[12px] text-amber-600 dark:text-amber-400 mt-3">Informe a data do saldo de abertura.</p>}
+      {badValue && <p className="text-[12px] text-amber-600 dark:text-amber-400 mt-3">Valor inválido.</p>}
+      {missingDay && <p className="text-[12px] text-amber-600 dark:text-amber-400 mt-3">Informe a data do saldo de abertura.</p>}
       {error && <p className="text-[12px] text-red-500 dark:text-red-400 mt-3">{error}</p>}
       <div className="flex justify-end gap-3 mt-5">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">Cancelar</button>

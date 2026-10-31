@@ -4,6 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import CreditCardDetail from './CreditCardDetail'
@@ -29,7 +30,7 @@ function inv(partial: Partial<InvoiceOut> & { id: string }): InvoiceOut {
   return {
     workspace_id: 'ws1', credit_card_account_id: 'c1', credit_card_name: 'Itaú Visa',
     close_date: '2026-10-05', due_date: '2026-10-15', total_amount: null, iof_total: null,
-    currency: 'BRL', status: 'OPEN', paid_at: null, notes: null,
+    currency: 'BRL', status: 'OPEN', paid_at: null, notes: null, tx_total: null,
     ...partial,
   }
 }
@@ -58,8 +59,12 @@ function tx(partial: Partial<TransactionOut> & { id: string }): TransactionOut {
   }
 }
 
+/** Backend filtra por invoice_id (a página só pede os da fatura aberta). */
 function mockTxs(items: TransactionOut[] = []) {
-  return vi.spyOn(api, 'listTransactions').mockResolvedValue({ items, total: items.length, page: 1, page_size: 500 })
+  return vi.spyOn(api, 'listTransactions').mockImplementation(async f => {
+    const rows = f?.invoice_id ? items.filter(t => t.invoice_id === f.invoice_id) : items
+    return { items: rows, total: rows.length, page: 1, page_size: 500 }
+  })
 }
 
 function renderPage() {
@@ -190,7 +195,7 @@ describe('CreditCardDetail page (spec 69)', () => {
 
   it('fatura aberta é a OPEN de fechamento mais próximo (parcelas criam OPEN futuras)', async () => {
     vi.spyOn(api, 'me').mockResolvedValue(admin)
-    const future = inv({ id: 'future', close_date: '2026-12-05', due_date: '2026-12-15' })
+    const future = inv({ id: 'future', close_date: '2026-12-05', due_date: '2026-12-15', tx_total: 333.33 })
     vi.spyOn(api, 'listCardInvoices').mockResolvedValue([future, openInv])  // ordem desc do backend
     mockTxs([
       tx({ id: 't1', description: 'Mercado' }),
@@ -264,4 +269,88 @@ describe('CreditCardDetail page (spec 69)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Lançamento de Cartão' })
     expect(within(dialog).getByLabelText('Cartão')).toHaveValue('c1')
   })
+
+  // ── audit adversarial 2026-10-31 ──────────────────────────────────────────
+
+  it('lançamentos da fatura aberta vêm filtrados no servidor por invoice_id', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv, closedInv])
+    const list = mockTxs([tx({ id: 't1', description: 'Mercado' })])
+    renderPage()
+    expect(await screen.findByText('Mercado')).toBeInTheDocument()
+    expect(list).toHaveBeenCalledWith({ card_id: ['c1'], invoice_id: 'open' })
+  })
+
+  it('fatura CLOSED com lançamento depois do fechamento mostra a divergência e o pagar não pré-preenche', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    const diverged = { ...closedInv, total_amount: 1800, tx_total: 1850 }
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv, diverged])
+    renderPage()
+    const flag = await screen.findByTestId('invoice-divergence-closed')
+    expect(flag).toHaveTextContent('1.850,00')
+    fireEvent.click(screen.getByRole('button', { name: /Pagar/ }))
+    const dialog = within(screen.getByRole('dialog', { name: 'Pagar fatura' }))
+    expect(dialog.getByLabelText('Valor pago')).toHaveValue('')
+    expect(dialog.getByTestId('pay-divergence')).toHaveTextContent(/1\.800,00.*1\.850,00/)
+    expect(dialog.getByRole('button', { name: 'Pagar fatura' })).toBeDisabled()
+  })
+
+  it('Pagar fatura: conta em outra moeda não herda o total da fatura', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    const nomad: AccountOut = { ...itau, id: 'acc2', name: 'Conta Nomad', currency: 'USD' }
+    vi.spyOn(api, 'listAccounts').mockResolvedValue([itau, nomad])
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv, closedInv])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /Pagar/ }))
+    const dialog = within(screen.getByRole('dialog', { name: 'Pagar fatura' }))
+    expect(dialog.getByLabelText('Valor pago')).toHaveValue('1800')
+    fireEvent.change(dialog.getByLabelText('Conta corrente'), { target: { value: 'acc2' } })
+    expect(dialog.getByLabelText('Valor pago')).toHaveValue('')
+    expect(dialog.getByText(/Fatura em BRL, conta em USD/)).toBeInTheDocument()
+    fireEvent.change(dialog.getByLabelText('Conta corrente'), { target: { value: 'acc1' } })
+    expect(dialog.getByLabelText('Valor pago')).toHaveValue('1800')
+  })
+
+  it('Pagar fatura: falha no recarregamento depois do pagamento vira toast da página', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv, closedInv])
+    const pay = vi.spyOn(api, 'payInvoice').mockResolvedValue({ ...closedInv, status: 'PAID', paid_at: '2026-10-14' })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /Pagar/ }))
+    vi.spyOn(api, 'listCreditCards').mockRejectedValue(new Error('500 recarga'))
+    const dialog = within(screen.getByRole('dialog', { name: 'Pagar fatura' }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Pagar fatura' }))
+    await waitFor(() => expect(pay).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/Salvo, mas a página não recarregou: 500 recarga/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Pagar fatura' })).not.toBeInTheDocument()
+  })
+
+  it('Pagar só aparece em fatura CLOSED', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv, paidInv])
+    renderPage()
+    await screen.findByText('Faturas anteriores')
+    expect(screen.getByText('Fecho 05/09/26')).toBeInTheDocument()
+    // aberta (hero) e paga não oferecem pagamento — o backend recusa OPEN com 409
+    expect(screen.queryByRole('button', { name: /Pagar/ })).not.toBeInTheDocument()
+  })
+
+  it('composer do cartão envia os anexos escolhidos', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv])
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    vi.spyOn(api, 'createTransaction').mockResolvedValue([tx({ id: 'nova' })])
+    const upload = vi.spyOn(api, 'uploadAttachment').mockResolvedValue({ id: 'att1' } as never)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /^Lançamento$/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Lançamento de Cartão' })
+    const d = within(dialog)
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Livraria' } })
+    fireEvent.change(d.getByLabelText('Valor'), { target: { value: '50' } })
+    await userEvent.upload(d.getByTestId('notes-attachments-input') as HTMLInputElement,
+      new File(['png'], 'nota.png', { type: 'image/png' }))
+    fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
+    await waitFor(() => expect(upload).toHaveBeenCalledWith('transaction', 'nova', expect.any(File)))
+  })
 })
+

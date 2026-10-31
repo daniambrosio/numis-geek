@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import Transactions, { groupByMonth, subIdsForRoots } from './Transactions'
@@ -316,4 +317,90 @@ describe('Transactions page (spec 70)', () => {
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Excluir movimentação' })).getByRole('button', { name: 'Excluir' }))
     expect(await screen.findByText('Fatura já paga')).toBeInTheDocument()
   })
+
+  // ── audit adversarial 2026-10-31 ──────────────────────────────────────────
+
+  it('anexo falhou depois do create: 2º Salvar só re-envia o anexo que falhou, sem criar de novo', async () => {
+    mockBase()
+    const create = vi.spyOn(api, 'createTransaction').mockResolvedValue([tx({ id: 'new' })])
+    const upload = vi.spyOn(api, 'uploadAttachment')
+      .mockRejectedValueOnce(new Error('413 grande demais'))
+      .mockResolvedValue({ id: 'att1' } as never)
+    renderPage('/transactions?compose=transaction')
+
+    const dialog = await screen.findByRole('dialog', { name: 'Nova Movimentação' })
+    const d = within(dialog)
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Mercado' } })
+    fireEvent.change(d.getByLabelText('Valor'), { target: { value: '10' } })
+    await userEvent.upload(d.getByTestId('notes-attachments-input') as HTMLInputElement,
+      new File(['pdf'], 'nota.pdf', { type: 'application/pdf' }))
+    fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
+
+    expect(await d.findByText(/alguns anexos falharam/)).toBeInTheDocument()
+    expect(create).toHaveBeenCalledTimes(1)
+    const retry = d.getByRole('button', { name: /Enviar anexos de novo/ })
+    fireEvent.click(retry)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Nova Movimentação' })).not.toBeInTheDocument())
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(upload).toHaveBeenCalledTimes(2)
+    expect(upload.mock.calls[1][1]).toBe('new')
+  })
+
+  it('falha no recarregamento depois do create vai pro toast da página e o composer fecha', async () => {
+    const list = mockBase()
+    const create = vi.spyOn(api, 'createTransaction').mockResolvedValue([tx({ id: 'new' })])
+    renderPage('/transactions?compose=transaction')
+
+    const d = within(await screen.findByRole('dialog', { name: 'Nova Movimentação' }))
+    list.mockRejectedValue(new Error('502 gateway'))
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Mercado' } })
+    fireEvent.change(d.getByLabelText('Valor'), { target: { value: '10' } })
+    fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
+
+    expect(await screen.findByText(/Salvo, mas a lista não recarregou: 502 gateway/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Nova Movimentação' })).not.toBeInTheDocument()
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it('editar lançamento de cartão sem mudar a data não manda event_date', async () => {
+    const card = tx({
+      id: 'c1', source_type: 'CREDIT_CARD', checking_account_id: null, account_name: null,
+      credit_card_account_id: 'visa', card_name: 'Itaú Visa', invoice_id: 'inv-escolhida', description: 'Livraria',
+    })
+    mockBase([card])
+    const update = vi.spyOn(api, 'updateTransaction').mockResolvedValue([card])
+    renderPage()
+
+    fireEvent.click(await (await mainReady()).findByText('Livraria'))
+    const d = within(await screen.findByRole('dialog', { name: 'Editar Lançamento de Cartão' }))
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Livraria Cultura' } })
+    fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    expect(update.mock.calls[0][1]).not.toHaveProperty('event_date')
+
+    // data mudou → manda
+    fireEvent.click(await main().findByText('Livraria'))
+    const d2 = within(await screen.findByRole('dialog', { name: 'Editar Lançamento de Cartão' }))
+    fireEvent.change(d2.getByLabelText('Data'), { target: { value: '2026-10-25' } })
+    fireEvent.click(d2.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    expect(update.mock.calls[1][1]).toMatchObject({ event_date: '2026-10-25' })
+  })
+
+  it('lista acima de 500: "mostrando X de N" + Carregar mais busca a página 2', async () => {
+    const list = mockBase()
+    list.mockReset()
+    list
+      .mockResolvedValueOnce({ items: [tx({ id: 'a', description: 'Primeira' })], total: 2, page: 1, page_size: 500 })
+      .mockResolvedValueOnce({ items: [tx({ id: 'b', description: 'Segunda', event_date: '2026-09-01' })], total: 2, page: 2, page_size: 500 })
+    renderPage()
+
+    await (await mainReady()).findByText('Primeira')
+    expect(main().getByText('mostrando 1 de 2')).toBeInTheDocument()
+    fireEvent.click(main().getByRole('button', { name: 'Carregar mais' }))
+    expect(await main().findByText('Segunda')).toBeInTheDocument()
+    expect(list.mock.calls[1][0]).toMatchObject({ page: 2 })
+    expect(main().queryByTestId('load-more')).not.toBeInTheDocument()
+  })
 })
+

@@ -5,6 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import AccountDetail, { momChange } from './AccountDetail'
@@ -234,4 +235,70 @@ describe('AccountDetail page (spec 70 fase 3)', () => {
     expect(await m.findByText(/Conta de investimento — as posições estão em/)).toBeInTheDocument()
     expect(list).not.toHaveBeenCalled()
   })
+
+  // ── audit adversarial 2026-10-31 ──────────────────────────────────────────
+
+  it('saldo de abertura: valor inválido diz "Valor inválido", data faltando diz a data', async () => {
+    mockBase()
+    renderPage()
+    const m = await mainReady()
+    fireEvent.click(await m.findByRole('button', { name: 'Editar saldo de abertura' }))
+    const dialog = within(screen.getByRole('dialog', { name: 'Saldo de abertura' }))
+    fireEvent.change(dialog.getByLabelText('Saldo de abertura'), { target: { value: 'abc' } })
+    expect(dialog.getByText('Valor inválido.')).toBeInTheDocument()
+    expect(dialog.queryByText('Informe a data do saldo de abertura.')).not.toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: 'Salvar' })).toBeDisabled()
+    fireEvent.change(dialog.getByLabelText('Saldo de abertura'), { target: { value: '10,00' } })
+    fireEvent.change(dialog.getByLabelText('Data do saldo de abertura'), { target: { value: '' } })
+    expect(dialog.queryByText('Valor inválido.')).not.toBeInTheDocument()
+    expect(dialog.getByText('Informe a data do saldo de abertura.')).toBeInTheDocument()
+  })
+
+  it('falha no recarregamento depois de salvar a abertura vira toast e o modal fecha', async () => {
+    mockBase()
+    vi.spyOn(api, 'updateOpeningBalance').mockResolvedValue(detail({ opening_balance: 10 }))
+    renderPage()
+    const m = await mainReady()
+    fireEvent.click(await m.findByRole('button', { name: 'Editar saldo de abertura' }))
+    vi.spyOn(api, 'getAccount').mockRejectedValue(new Error('503 indisponível'))
+    const dialog = within(screen.getByRole('dialog', { name: 'Saldo de abertura' }))
+    fireEvent.change(dialog.getByLabelText('Saldo de abertura'), { target: { value: '10' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Salvar' }))
+    expect(await screen.findByText(/Salvo, mas a página não recarregou: 503 indisponível/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Saldo de abertura' })).not.toBeInTheDocument()
+  })
+
+  it('composer da conta envia os anexos escolhidos', async () => {
+    mockBase()
+    vi.spyOn(api, 'listAttachments').mockResolvedValue([])
+    vi.spyOn(api, 'createTransaction').mockResolvedValue([tx({ id: 'novo' })])
+    const upload = vi.spyOn(api, 'uploadAttachment').mockResolvedValue({ id: 'att1' } as never)
+    renderPage()
+    const m = await mainReady()
+    fireEvent.click(await m.findByRole('button', { name: /Movimentação/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Nova Movimentação' })
+    const d = within(dialog)
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Aluguel' } })
+    fireEvent.change(d.getByLabelText('Valor'), { target: { value: '100' } })
+    await userEvent.upload(d.getByTestId('notes-attachments-input') as HTMLInputElement,
+      new File(['pdf'], 'recibo.pdf', { type: 'application/pdf' }))
+    fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
+    await waitFor(() => expect(upload).toHaveBeenCalledWith('transaction', 'novo', expect.any(File)))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Nova Movimentação' })).not.toBeInTheDocument())
+  })
+
+  it('movimentações acima de 500: Carregar mais pede a página 2 da conta', async () => {
+    mockBase()
+    const list = vi.spyOn(api, 'listTransactions')
+      .mockResolvedValueOnce({ items: [tx({ id: 't1', description: 'Aluguel' })], total: 2, page: 1, page_size: 500 })
+      .mockResolvedValueOnce({ items: [tx({ id: 't2', description: 'Condomínio' })], total: 2, page: 2, page_size: 500 })
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Aluguel')
+    expect(m.getByText('mostrando 1 de 2')).toBeInTheDocument()
+    fireEvent.click(m.getByRole('button', { name: 'Carregar mais' }))
+    expect(await m.findByText('Condomínio')).toBeInTheDocument()
+    expect(list).toHaveBeenLastCalledWith({ account_id: ['itau'], page: 2 })
+  })
 })
+

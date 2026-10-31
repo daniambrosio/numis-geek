@@ -10,7 +10,7 @@
  * - Sem sugestão de categoria por descrição (auto-categorização é spec futura).
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles, X } from 'lucide-react'
+import { Loader2, Sparkles, X } from 'lucide-react'
 import {
   type AccountOut, type CategoryOut, type CreditCardOut, type InvoiceOut,
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload,
@@ -24,6 +24,7 @@ import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
 import { todayISO } from '../lib/format'
+import { AttachmentUploadError } from '../lib/useTransactionAttachments'
 
 const num = (s: string): number => parseDecimal(s) ?? 0
 const today = () => todayISO()
@@ -108,7 +109,7 @@ function ComposerShell({
             </button>
             <button type="submit" form={formId} disabled={!valid || saving}
               className="h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-              {saving ? 'Salvando…' : `✓ ${saveLabel}`}
+              {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Salvando…</> : `✓ ${saveLabel}`}
             </button>
           </div>
         </div>
@@ -193,10 +194,15 @@ function CategoryDot({ categories, id }: { categories: CategoryOut[]; id: string
   )
 }
 
+/** Sobe os anexos depois do write. Falhou → mantém só os rascunhos que
+ * falharam e devolve false; o composer guarda a tx salva (`savedTx`) e o
+ * próximo "Salvar" só re-tenta os anexos — nunca cria a tx de novo (o
+ * fingerprint não é único: 2º create duplicava a compra e as parcelas). */
 async function uploadAfterSave(
   saved: TransactionOut | undefined,
   drafts: AttachmentDraft[],
   onUploadDrafts: AttachmentProps['onUploadDrafts'],
+  setDrafts: (d: AttachmentDraft[]) => void,
   setWarning: (s: string) => void,
 ): Promise<boolean> {
   if (!saved || !drafts.length || !onUploadDrafts) return true
@@ -204,7 +210,11 @@ async function uploadAfterSave(
     await onUploadDrafts(saved.id, drafts)
     return true
   } catch (err) {
-    setWarning(`Salvo, mas alguns anexos falharam: ${err instanceof Error ? err.message : 'erro'}`)
+    if (err instanceof AttachmentUploadError) setDrafts(err.failed)
+    setWarning(
+      `Lançamento salvo, mas alguns anexos falharam: ${err instanceof Error ? err.message : 'erro'}. `
+      + 'Salvar de novo só re-envia os anexos; fechar mantém o lançamento sem eles.',
+    )
     return false
   }
 }
@@ -236,6 +246,8 @@ export function TransactionComposer({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
+  // Write já feito, faltam anexos — "Salvar" passa a só re-tentar o upload.
+  const [savedTx, setSavedTx] = useState<TransactionOut | null>(null)
 
   const acc = accounts.find(a => a.id === accId)
   const ccy = acc?.currency ?? 'BRL'
@@ -249,22 +261,24 @@ export function TransactionComposer({
     setError('')
     setSaving(true)
     try {
-      let saved: TransactionOut | undefined
-      if (initial) {
+      let saved: TransactionOut | undefined = savedTx ?? undefined
+      if (!saved && initial) {
         const changes: TransactionUpdatePayload = {
-          event_date: date, description: desc.trim(), category_id: catId || null,
+          description: desc.trim(), category_id: catId || null,
           notes: notes.trim() || null,
         }
+        if (date !== initial.event_date) changes.event_date = date
         if (!amountLocked) changes.amount = signed
         saved = (await onUpdate(initial.id, changes)).find(t => t.id === initial.id)
-      } else {
+      } else if (!saved) {
         saved = (await onCreate({
           source_type: 'CHECKING', checking_account_id: accId, event_date: date,
           description: desc.trim(), amount: signed, category_id: catId || null,
           notes: notes.trim() || null,
         }))[0]
       }
-      if (await uploadAfterSave(saved, drafts, onUploadDrafts, setWarning)) onClose()
+      if (saved) setSavedTx(saved)
+      if (await uploadAfterSave(saved, drafts, onUploadDrafts, setDrafts, setWarning)) onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
     } finally {
@@ -277,8 +291,8 @@ export function TransactionComposer({
       formId="transaction-form"
       title={initial ? 'Editar Movimentação' : 'Nova Movimentação'}
       subtitle={initial ? 'Atualiza a movimentação de caixa' : 'Cash flow em conta corrente'}
-      onClose={onClose} onSubmit={submit} valid={valid} saving={saving}
-      saveLabel={initial ? 'Salvar alterações' : 'Salvar'}
+      onClose={onClose} onSubmit={submit} valid={valid || !!savedTx} saving={saving}
+      saveLabel={savedTx ? 'Enviar anexos de novo' : initial ? 'Salvar alterações' : 'Salvar'}
     >
       <Field label="Direção">
         <div className="inline-flex items-center rounded-lg p-0.5 bg-gray-100 dark:bg-gray-800">
@@ -377,6 +391,8 @@ export function CardTxComposer({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
+  // Write já feito, faltam anexos — "Salvar" passa a só re-tentar o upload.
+  const [savedTx, setSavedTx] = useState<TransactionOut | null>(null)
 
   const card = cards.find(c => c.id === cardId)
   const ccy = card?.currency ?? 'BRL'
@@ -395,13 +411,17 @@ export function CardTxComposer({
     setError('')
     setSaving(true)
     try {
-      let saved: TransactionOut | undefined
-      if (initial) {
-        saved = (await onUpdate(initial.id, {
-          event_date: date, description: desc.trim(), amount: signed,
+      let saved: TransactionOut | undefined = savedTx ?? undefined
+      if (!saved && initial) {
+        const changes: TransactionUpdatePayload = {
+          description: desc.trim(), amount: signed,
           category_id: catId || null, notes: notes.trim() || null,
-        })).find(t => t.id === initial.id)
-      } else {
+        }
+        // Só manda a data quando mudou: o backend re-roteia a fatura por ela
+        // e desfaria a fatura escolhida à mão no create.
+        if (date !== initial.event_date) changes.event_date = date
+        saved = (await onUpdate(initial.id, changes)).find(t => t.id === initial.id)
+      } else if (!saved) {
         const fxNote = intl
           ? `US$ ${usdN.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} @ R$ ${rateN.toLocaleString('pt-BR', { minimumFractionDigits: 4 })}`
             + (iofN > 0 ? ` + IOF ${fmtMoney(iofN, 'BRL')}` : '')
@@ -416,7 +436,8 @@ export function CardTxComposer({
         })
         saved = rows[0]
       }
-      if (await uploadAfterSave(saved, drafts, onUploadDrafts, setWarning)) onClose()
+      if (saved) setSavedTx(saved)
+      if (await uploadAfterSave(saved, drafts, onUploadDrafts, setDrafts, setWarning)) onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar.')
     } finally {
@@ -429,8 +450,8 @@ export function CardTxComposer({
       formId="card-tx-form"
       title={initial ? 'Editar Lançamento de Cartão' : 'Lançamento de Cartão'}
       subtitle={initial ? 'Atualiza a compra na fatura' : 'Compra na fatura aberta'}
-      onClose={onClose} onSubmit={submit} valid={valid} saving={saving}
-      saveLabel={initial ? 'Salvar alterações' : 'Salvar'}
+      onClose={onClose} onSubmit={submit} valid={valid || !!savedTx} saving={saving}
+      saveLabel={savedTx ? 'Enviar anexos de novo' : initial ? 'Salvar alterações' : 'Salvar'}
     >
       <div className="grid grid-cols-2 gap-4">
         <Field label="Cartão">

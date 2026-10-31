@@ -319,6 +319,7 @@ export interface TransactionFilters {
   party_id?: string
   invoice_id?: string
   search?: string
+  page?: number
   page_size?: number
 }
 
@@ -377,6 +378,7 @@ function txQuery(f: TransactionFilters): string {
   if (f.party_id) qs.set('party_id', f.party_id)
   if (f.invoice_id) qs.set('invoice_id', f.invoice_id)
   if (f.search) qs.set('search', f.search)
+  if (f.page && f.page > 1) qs.set('page', String(f.page))
   if (f.page_size) qs.set('page_size', String(f.page_size))
   const s = qs.toString()
   return s ? `?${s}` : ''
@@ -395,6 +397,9 @@ export interface InvoiceOut {
   status: 'OPEN' | 'CLOSED' | 'PAID'
   paid_at: string | null
   notes: string | null
+  /** Soma (positiva) das tx da fatura; null sem tx. CLOSED com valor
+   * diferente de total_amount = lançamento entrou depois do fechamento. */
+  tx_total?: number | null
 }
 
 export type AssetClass =

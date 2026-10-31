@@ -20,15 +20,15 @@ import {
   type TransactionUpdatePayload, type TransferPayload, type UserOut,
 } from '../lib/api'
 import AppLayout from '../components/AppLayout'
-import { Card, FILogo, FilterGroup, MultiChips, PageHeader, SearchInput, SectionTitle, INPUT_CLS } from '../components/ui'
+import { Card, FILogo, FilterGroup, LoadMore, MultiChips, PageHeader, SearchInput, SectionTitle, INPUT_CLS } from '../components/ui'
 import { fmtBRL } from '../lib/money'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CARDS_CHANGED_EVENT } from '../lib/useCardCounts'
 import {
   CardTxComposer, TransactionComposer, TransferComposer, fmtMoney,
 } from '../components/TransactionComposers'
-import type { AttachmentDraft, PersistedAttachment } from '../components/NotesAttachmentsField'
 import { todayISO } from '../lib/format'
+import { useTransactionAttachments } from '../lib/useTransactionAttachments'
 
 const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
 
@@ -77,6 +77,8 @@ export default function Transactions() {
   const [refsLoaded, setRefsLoaded] = useState(false)
   const [rows, setRows] = useState<TransactionOut[]>([])
   const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [summary, setSummary] = useState<TransactionSummaryOut | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -91,7 +93,8 @@ export default function Transactions() {
   const [to, setTo] = useState('')
 
   const [composer, setComposer] = useState<ComposerState>(null)
-  const [editingAttachments, setEditingAttachments] = useState<PersistedAttachment[]>([])
+  const attachments = useTransactionAttachments()
+  const { startEditing } = attachments
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<TransactionOut | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -138,13 +141,31 @@ export default function Transactions() {
   const reload = useCallback(() => {
     // Raiz selecionada sem subs → nada casa; evita mandar filtro vazio (= todos).
     if (filters.category_id && filters.category_id.length === 0) {
-      setRows([]); setTotal(0)
+      setRows([]); setTotal(0); setPage(1)
       setSummary({ inflows: { brl: 0, usd: 0 }, outflows: { brl: 0, usd: 0 }, net: { brl: 0, usd: 0 }, unreconciled_count: 0, count: 0 })
       return Promise.resolve()
     }
     return Promise.all([api.listTransactions(filters), api.transactionSummary(filters)])
-      .then(([list, s]) => { setRows(list.items); setTotal(list.total); setSummary(s) })
+      .then(([list, s]) => { setRows(list.items); setTotal(list.total); setPage(1); setSummary(s) })
   }, [filters])
+
+  // page_size 500 no servidor: o resto vem sob demanda (antes era cortado em silêncio).
+  async function loadMore() {
+    setLoadingMore(true)
+    try {
+      const next = await api.listTransactions({ ...filters, page: page + 1 })
+      setRows(prev => {
+        const seen = new Set(prev.map(r => r.id))
+        return [...prev, ...next.items.filter(r => !seen.has(r.id))]
+      })
+      setTotal(next.total)
+      setPage(page + 1)
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : 'Erro ao carregar mais.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   // Só depois dos cadastros: o filtro de categoria depende deles (evita 2 fetches).
   // "Carregando…" só na 1ª carga — refiltrar mantém a tabela na tela.
@@ -161,12 +182,13 @@ export default function Transactions() {
     const c = searchParams.get('compose')
     if (!me || !refsLoaded || !c) return
     if (c === 'transaction' || c === 'card-tx' || c === 'transfer') {
+      startEditing(null)
       setComposer({ kind: c })
       const next = new URLSearchParams(searchParams)
       next.delete('compose')
       setSearchParams(next, { replace: true })
     }
-  }, [searchParams, setSearchParams, me, refsLoaded])
+  }, [searchParams, setSearchParams, me, refsLoaded, startEditing])
 
   const sourceOpts = useMemo(() => [
     ...accounts.filter(a => a.account_type === 'checking' && a.is_active).map(a => ({ id: a.id, label: a.name })),
@@ -180,10 +202,13 @@ export default function Transactions() {
   const grouped = useMemo(() => groupByMonth(rows), [rows])
   const sourceCount = useMemo(() => new Set(rows.map(r => r.checking_account_id ?? r.credit_card_account_id)).size, [rows])
 
+  /** Depois de um write que DEU CERTO: falha no recarregamento vai pro toast
+   * da página — nunca pro composer (que acharia que o write falhou e
+   * deixaria salvar de novo). */
   function afterWrite() {
     window.dispatchEvent(new Event(CARDS_CHANGED_EVENT))
     api.listInvoices().then(setInvoices).catch(() => {})
-    return reload()
+    return reload().catch(err => setToast(`Salvo, mas a lista não recarregou: ${err instanceof Error ? err.message : 'erro'}`))
   }
 
   async function handleCreate(data: TransactionCreatePayload) {
@@ -201,26 +226,10 @@ export default function Transactions() {
     await afterWrite()
     return legs
   }
-  async function handleUploadDrafts(entityId: string, drafts: AttachmentDraft[]) {
-    const results = await Promise.allSettled(drafts.map(d => api.uploadAttachment('transaction', entityId, d.file)))
-    const failed = results.map((r, i) => ({ r, name: drafts[i].name })).filter(x => x.r.status === 'rejected')
-    if (failed.length) {
-      throw new Error(failed.map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message ?? 'erro'}`).join(' · '))
-    }
-  }
-  async function loadAttachments(txId: string) {
-    const list = await api.listAttachments('transaction', txId).catch(() => [])
-    setEditingAttachments(list.map(a => ({ id: a.id, filename: a.filename, size_bytes: a.size_bytes, mime_type: a.mime_type, kind: a.kind })))
-  }
-  async function handleRemoveAttachment(attachmentId: string) {
-    await api.deleteAttachment(attachmentId)
-    if (composer && 'editing' in composer && composer.editing) await loadAttachments(composer.editing.id)
-  }
 
   function openEdit(t: TransactionOut) {
     setMenuFor(null)
-    setEditingAttachments([])
-    loadAttachments(t.id)
+    attachments.startEditing(t.id)
     setComposer({ kind: t.source_type === 'CREDIT_CARD' ? 'card-tx' : 'transaction', editing: t })
   }
 
@@ -354,6 +363,7 @@ export default function Transactions() {
                   ))}
                 </tbody>
               </table>
+              <LoadMore shown={rows.length} total={total} loading={loadingMore} onLoadMore={loadMore} />
             </div>
           )}
         </Card>
@@ -363,16 +373,16 @@ export default function Transactions() {
         <TransactionComposer
           accounts={accounts} categories={categories} initial={editing}
           onCreate={handleCreate} onUpdate={handleUpdate} onClose={() => setComposer(null)}
-          persistedAttachments={editing ? editingAttachments : undefined}
-          onUploadDrafts={handleUploadDrafts} onRemovePersistedAttachment={handleRemoveAttachment}
+          persistedAttachments={editing ? attachments.persisted : undefined}
+          onUploadDrafts={attachments.uploadDrafts} onRemovePersistedAttachment={attachments.removePersisted}
         />
       )}
       {composer?.kind === 'card-tx' && (
         <CardTxComposer
           cards={cards} categories={categories} invoices={invoices} initial={editing}
           onCreate={handleCreate} onUpdate={handleUpdate} onClose={() => setComposer(null)}
-          persistedAttachments={editing ? editingAttachments : undefined}
-          onUploadDrafts={handleUploadDrafts} onRemovePersistedAttachment={handleRemoveAttachment}
+          persistedAttachments={editing ? attachments.persisted : undefined}
+          onUploadDrafts={attachments.uploadDrafts} onRemovePersistedAttachment={attachments.removePersisted}
         />
       )}
       {composer?.kind === 'transfer' && (

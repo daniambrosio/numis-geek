@@ -487,3 +487,161 @@ def test_balance_source_patch(client, seed):
         AuditLog.action == "account.balance_source_updated", AuditLog.resource_id == acc_id,
     ).count() == 2
     db.close()
+
+
+# ── audit adversarial 2026-10-31 ──────────────────────────────────────────────
+
+def _fresh_checking(seed, *, currency=Currency.BRL, opening=Decimal("700"), from_ledger=True):
+    db = TestSession()
+    acc = _account(db, seed["ws_id"], seed["fi_id"], f"Conta Audit {uuid.uuid4().hex[:6]}",
+                   currency=currency, opening=opening, opening_date=OPEN_DATE, from_ledger=from_ledger)
+    db.commit()
+    acc_id = acc.id
+    db.close()
+    return acc_id
+
+
+def _acc_body(acc_id, **over):
+    db = TestSession()
+    a = db.get(Account, acc_id)
+    body = {
+        "name": a.name, "account_type": a.account_type.value,
+        "financial_institution_id": a.financial_institution_id, "currency": a.currency.value,
+    }
+    db.close()
+    body.update(over)
+    return body
+
+
+def test_opening_balance_patch_cannot_clear_date_while_deriving(client, seed):
+    acc_id = _fresh_checking(seed)
+    h = auth(seed["admin_token"])
+    url = f"/api/accounts/{acc_id}/opening-balance"
+    assert client.patch(url, json={}, headers=h).status_code == 422
+    assert client.patch(url, json={"opening_balance": None, "opening_balance_date": None}, headers=h).status_code == 422
+    db = TestSession()
+    acc = db.get(Account, acc_id)
+    assert acc.opening_balance_date == OPEN_DATE and acc.balance_from_ledger
+    db.close()
+    # desligado, limpar é permitido
+    client.patch(f"/api/accounts/{acc_id}/balance-source", json={"balance_from_ledger": False}, headers=h)
+    r = client.patch(url, json={"opening_balance": None, "opening_balance_date": None}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["opening_balance_date"] is None
+
+
+def test_account_put_keeps_omitted_opening_fields(client, seed):
+    acc_id = _fresh_checking(seed)
+    h = auth(seed["admin_token"])
+    # modal do Admin: manda opening_balance mas nunca a data
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, name="Renomeada", opening_balance=700), headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["opening_balance_date"] == OPEN_DATE.isoformat()
+    assert r.json()["balance_from_ledger"] is True
+    # limpar a data com o interruptor ligado → 422
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, opening_balance_date=None), headers=h)
+    assert r.status_code == 422
+    # virar conta de investimento também apagaria a data
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, account_type="investment"), headers=h)
+    assert r.status_code == 422
+    # valor novo sem data, em conta sem data → 422
+    db = TestSession()
+    spare = _account(db, seed["ws_id"], seed["fi_id"], "Sem data", from_ledger=False)
+    db.commit()
+    spare_id = spare.id
+    db.close()
+    r = client.put(f"/api/accounts/{spare_id}", json=_acc_body(spare_id, opening_balance=10), headers=h)
+    assert r.status_code == 422
+
+
+def test_account_currency_change_blocked_with_transactions_or_link(client, seed):
+    h = auth(seed["admin_token"])
+    acc_id = _fresh_checking(seed, from_ledger=False)
+    # sem tx e sem vínculo: pode
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, currency="USD"), headers=h)
+    assert r.status_code == 200, r.text
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, currency="BRL"), headers=h)
+    assert r.status_code == 200
+    tx(client, seed, "itau", "2026-09-02", "1", "x")  # outra conta — não conta
+    r = client.post("/api/transactions", json={
+        "source_type": "CHECKING", "checking_account_id": acc_id, "event_date": "2026-09-05",
+        "description": "Mov", "amount": "10",
+    }, headers=h)
+    assert r.status_code == 201
+    r = client.put(f"/api/accounts/{acc_id}", json=_acc_body(acc_id, currency="USD"), headers=h)
+    assert r.status_code == 409
+    # vínculo sem tx também trava
+    linked_id = _fresh_checking(seed, from_ledger=False)
+    db = TestSession()
+    _asset(db, seed["ws_id"], seed["invest"], "Saldo vinculado", linked=linked_id)
+    db.commit()
+    db.close()
+    r = client.put(f"/api/accounts/{linked_id}", json=_acc_body(linked_id, currency="USD"), headers=h)
+    assert r.status_code == 409
+
+
+def test_link_requires_same_currency(client, seed):
+    h = auth(seed["admin_token"])
+    acc_id = _fresh_checking(seed, from_ledger=False)
+    db = TestSession()
+    usd_cash = _asset(db, seed["ws_id"], seed["invest"], "Saldo USD livre", currency=Currency.USD)
+    db.commit()
+    usd_id = usd_cash.id
+    db.close()
+    r = client.put(f"/api/accounts/{acc_id}/linked-asset", json={"asset_id": usd_id}, headers=h)
+    assert r.status_code == 422
+    assert "mesma moeda" in r.json()["detail"]
+    # lado do ativo: create e patch
+    r = client.post("/api/assets", json={
+        "asset_class": "CASH", "account_id": seed["invest"], "country": "US", "name": "Saldo USD novo",
+        "currency": "USD", "linked_account_id": acc_id,
+    }, headers=h)
+    assert r.status_code == 422
+    r = client.patch(f"/api/assets/{usd_id}", json={"linked_account_id": acc_id}, headers=h)
+    assert r.status_code == 422
+
+
+def test_asset_side_link_refreshes_open_snapshots_and_put_keeps_link(client, seed):
+    h = auth(seed["admin_token"])
+    acc_id = _fresh_checking(seed, opening=Decimal("700"))
+    db = TestSession()
+    res = create_snapshot(
+        db, workspace_id=seed["ws_id"], period_end=date(2026, 12, 31),
+        source=SnapshotSource.MANUAL, initial_status=SnapshotStatus.IN_REVIEW,
+    )
+    db.commit()
+    snap_id = res.snapshot_id
+    db.close()
+    try:
+        r = client.post("/api/assets", json={
+            "asset_class": "CASH", "account_id": seed["invest"], "country": "BR",
+            "name": f"Saldo Audit {uuid.uuid4().hex[:4]}", "currency": "BRL", "linked_account_id": acc_id,
+        }, headers=h)
+        assert r.status_code == 201, r.text
+        asset = r.json()
+        db = TestSession()
+        item = _item(db, snap_id, asset["id"])
+        assert item is not None and item.market_value_native == Decimal("700.00")
+        db.close()
+        # PUT do Admin sem o campo mantém o vínculo
+        body = {k: asset[k] for k in ("asset_class", "account_id", "country", "name", "currency")}
+        r = client.put(f"/api/assets/{asset['id']}", json={**body, "name": "Renomeado"}, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["linked_account_id"] == acc_id
+        # desvincular e revincular pelo PATCH refaz o derivado
+        assert client.patch(f"/api/assets/{asset['id']}", json={"linked_account_id": None}, headers=h).status_code == 200
+        db = TestSession()
+        item = _item(db, snap_id, asset["id"])
+        item.unit_price = item.market_value_native = item.market_value_brl = Decimal("1.00")
+        db.commit()
+        db.close()
+        r = client.patch(f"/api/assets/{asset['id']}", json={"linked_account_id": acc_id}, headers=h)
+        assert r.status_code == 200, r.text
+        db = TestSession()
+        assert _item(db, snap_id, asset["id"]).market_value_native == Decimal("700.00")
+        db.close()
+    finally:
+        db = TestSession()
+        db.get(PortfolioSnapshot, snap_id).is_active = False
+        db.commit()
+        db.close()

@@ -5,9 +5,11 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.api.fields import BoundedDate, Money, Rate
 from numis_geek.models.account import Currency
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
 from numis_geek.models.financial_institution import FinancialInstitution
@@ -101,9 +103,12 @@ class InvoiceOut(BaseModel):
     status: str
     paid_at: str | None
     notes: str | None
+    # Soma (positiva) das tx da fatura; None sem tx. Em fatura CLOSED, diferente
+    # de total_amount = lançamento entrou/mudou depois do fechamento.
+    tx_total: float | None = None
 
     @classmethod
-    def from_orm(cls, inv: Invoice, card_name: str) -> "InvoiceOut":
+    def from_orm(cls, inv: Invoice, card_name: str, tx_total: Decimal | None = None) -> "InvoiceOut":
         return cls(
             id=inv.id,
             workspace_id=inv.workspace_id,
@@ -117,6 +122,7 @@ class InvoiceOut(BaseModel):
             status=inv.status.value,
             paid_at=inv.paid_at.isoformat() if inv.paid_at else None,
             notes=inv.notes,
+            tx_total=float(tx_total) if tx_total is not None else None,
         )
 
 
@@ -135,9 +141,9 @@ class InvoiceCreateRequest(BaseModel):
 
 class InvoicePayRequest(BaseModel):
     checking_account_id: str
-    paid_on: date
-    amount: Decimal | None = None   # na moeda da conta; default = total da fatura
-    fx_rate: Decimal | None = None
+    paid_on: BoundedDate
+    amount: Money | None = None   # na moeda da conta; default = total da fatura
+    fx_rate: Rate | None = None
     category_id: str | None = None
 
 
@@ -198,6 +204,16 @@ def _open_total(db: Session, card: CreditCardAccount) -> Decimal:
     if db.query(Transaction.id).filter(Transaction.invoice_id == inv.id).first():
         return invoice_open_total(db, inv)
     return inv.total_amount if inv.total_amount is not None else Decimal("0")
+
+
+def _tx_totals(db: Session, invoice_ids: list[str]) -> dict[str, Decimal]:
+    """{invoice_id: soma positiva das tx} — só faturas com tx."""
+    if not invoice_ids:
+        return {}
+    rows = db.query(Transaction.invoice_id, func.sum(Transaction.amount)).filter(
+        Transaction.invoice_id.in_(invoice_ids),
+    ).group_by(Transaction.invoice_id).all()
+    return {inv_id: (-Decimal(total or 0)).quantize(Decimal("0.01")) for inv_id, total in rows}
 
 
 def _audit(db: Session, current_user: UserContext, action: str, resource_type: str, resource_id: str, ws_id: str, details: dict) -> None:
@@ -335,7 +351,8 @@ def list_card_invoices(
     invoices = db.query(Invoice).filter(
         Invoice.credit_card_account_id == c.id,
     ).order_by(Invoice.close_date.desc()).all()
-    return [InvoiceOut.from_orm(inv, c.name) for inv in invoices]
+    totals = _tx_totals(db, [i.id for i in invoices])
+    return [InvoiceOut.from_orm(inv, c.name, totals.get(inv.id)) for inv in invoices]
 
 
 @router.post("/{card_id}/invoices", response_model=InvoiceOut, status_code=status.HTTP_201_CREATED)
@@ -402,7 +419,8 @@ def list_invoices(
             CreditCardAccount.id.in_({i.credit_card_account_id for i in invoices})
         ).all()
     }
-    return [InvoiceOut.from_orm(i, card_names.get(i.credit_card_account_id, "—")) for i in invoices]
+    totals = _tx_totals(db, [i.id for i in invoices])
+    return [InvoiceOut.from_orm(i, card_names.get(i.credit_card_account_id, "—"), totals.get(i.id)) for i in invoices]
 
 
 @invoice_router.post("/{invoice_id}/close", response_model=InvoiceOut)
