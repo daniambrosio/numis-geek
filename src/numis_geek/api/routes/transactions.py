@@ -182,6 +182,28 @@ def _audit(db: Session, current_user: UserContext, action: str, rows: list[Trans
     )
 
 
+def _audit_payment_reverted(
+    db: Session, current_user: UserContext, occurrences: list, ws_id: str, reason: str, tx_id: str,
+) -> None:
+    """Spec 72: one audit per conta a pagar/receber put back to PENDING
+    because the tx that settled it was deleted or flipped sign."""
+    if not occurrences:
+        return
+    actor = db.get(User, current_user.user_id)
+    for occ in occurrences:
+        AuditService(db).log(
+            user_email=actor.email if actor else current_user.user_id,
+            action="scheduled_transaction.payment_reverted",
+            resource_type="scheduled_transaction",
+            resource_id=occ.id,
+            details={
+                "description": occ.description, "due_date": occ.due_date.isoformat(),
+                "reason": reason, "transaction_id": tx_id,
+            },
+            workspace_id=ws_id,
+        )
+
+
 def _audit_invoice(db: Session, current_user: UserContext, action: str, invoice_id: str, ws_id: str, details: dict) -> None:
     actor = db.get(User, current_user.user_id)
     AuditService(db).log(
@@ -448,13 +470,17 @@ def update_transaction(
     changes = body.model_dump(exclude_unset=True)
     before = {k: str(getattr(tx, k, None)) for k in changes if k != "tag_ids"}
     old_date = tx.event_date
+    reverted: list = []
     try:
-        rows = svc.update_transaction(db, tx, changes, user_id=current_user.user_id)
+        rows = svc.update_transaction(
+            db, tx, changes, user_id=current_user.user_id, reverted_occurrences=reverted,
+        )
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.updated", rows, {
         "before": before, "after": {k: str(v) for k, v in changes.items()},
     })
+    _audit_payment_reverted(db, current_user, reverted, tx.workspace_id, "transaction sign changed", tx.id)
     if tx.paid_invoice_id and tx.event_date != old_date:
         _audit_invoice(db, current_user, "invoice.payment_date_updated", tx.paid_invoice_id, tx.workspace_id, {
             "transaction_id": tx.id, "before": old_date.isoformat(), "after": tx.event_date.isoformat(),
@@ -478,16 +504,7 @@ def delete_transaction(
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.deleted", rows)
-    actor = db.get(User, current_user.user_id)
-    for occ in reverted:
-        AuditService(db).log(
-            user_email=actor.email if actor else current_user.user_id,
-            action="scheduled_transaction.payment_reverted",
-            resource_type="scheduled_transaction",
-            resource_id=occ.id,
-            details={"description": occ.description, "due_date": occ.due_date.isoformat(), "reason": "transaction deleted"},
-            workspace_id=ws,
-        )
+    _audit_payment_reverted(db, current_user, reverted, ws, "transaction deleted", tx_id)
     for r in rows:
         if r.paid_invoice_id:
             _audit_invoice(db, current_user, "invoice.payment_reverted", r.paid_invoice_id, ws, {

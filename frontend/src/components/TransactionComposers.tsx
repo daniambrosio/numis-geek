@@ -157,17 +157,26 @@ export function PreviewLine({ label, children }: { label: string; children: Reac
 
 /** Subcategorias agrupadas pela raiz (tx só aponta pra sub — spec 68 v2). */
 export function CategorySelect({
-  categories, value, onChange, filterKind,
+  categories, value, onChange, filterKind, currentName,
 }: {
   categories: CategoryOut[]
   value: string
   onChange: (v: string) => void
   filterKind?: CategoryOut['kind']
+  /** Nome da categoria já gravada no registro — usado quando ela está
+   * inativa (fora da lista de ativas), pra aparecer como "(inativa)". */
+  currentName?: string | null
 }) {
   const grouped = useMemo(() => groupCategories(categories.filter(c => c.is_active)), [categories])
+  // Valor gravado que não está entre as ativas (categoria desativada depois):
+  // mostra pelo nome, marcada "(inativa)", em vez de cair em "Sem categoria"
+  // — e escolher "Sem categoria" passa a limpar de fato.
+  const current = value ? categories.find(c => c.id === value) : undefined
+  const orphan = !!value && !(current && current.is_active)
   return (
     <select value={value} onChange={e => onChange(e.target.value)} className={inputCls} aria-label="Categoria">
       <option value="">Sem categoria</option>
+      {orphan && <option value={value}>{current?.name ?? currentName ?? 'Categoria'} (inativa)</option>}
       {grouped.map(({ root, children }) => {
         const subs = filterKind ? children.filter(c => c.kind === filterKind) : children
         if (!subs.length) return null

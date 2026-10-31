@@ -8,6 +8,7 @@ overdue derived status, positive-amount convention, every manual action
 (pay with/without tx, postpone, cancel, delete one-off), tx delete reverting
 the payment, forecast, workspace isolation and permissions.
 """
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -241,12 +242,14 @@ def test_materialization_is_idempotent(seed):
     db.rollback(); db.close()
 
 
-def test_unique_rule_due_date_constraint(seed):
+def test_unique_rule_slot_date_constraint(seed):
     db = TestSession()
     rule, created = _new_rule(db, seed["ws_id"], date(2026, 10, 31), description="Unique")
+    # same SLOT, different due date → still a duplicate
     dup = ScheduledTransaction(
         workspace_id=seed["ws_id"], direction=ScheduledDirection.PAYABLE, recurrence_rule_id=rule.id,
-        description="dup", amount=Decimal("1"), currency=Currency.BRL, due_date=created[0].due_date,
+        description="dup", amount=Decimal("1"), currency=Currency.BRL,
+        due_date=created[0].due_date + timedelta(days=3), slot_date=created[0].slot_date,
     )
     db.add(dup)
     with pytest.raises(IntegrityError):
@@ -567,11 +570,16 @@ def test_postpone_and_cancel(client, seed):
     db.close()
 
 
-def test_postpone_clash_with_same_rule(seed):
+def test_postpone_onto_another_slot_date_is_allowed(seed):
+    """Decision (audit 2026-10-31): the slot stays distinct, so landing on
+    another occurrence's date is fine — both stay, each holding its slot."""
     db = TestSession()
     rule, created = _new_rule(db, seed["ws_id"], date(2026, 10, 31), description="Clash")
-    with pytest.raises(svc.ScheduleConflict):
-        svc.postpone(db, created[0], created[1].due_date)
+    svc.postpone(db, created[0], created[1].due_date)
+    assert created[0].slot_date == date(2026, 11, 5) and created[0].due_date == date(2026, 12, 5)
+    assert svc.materialize_rule(db, rule, today=date(2026, 11, 30)) != []  # the job keeps going
+    rows = _occs(db, rule.id)
+    assert sorted(o.slot_date for o in rows) == [date(2026, 11, 5), date(2026, 12, 5), date(2027, 1, 5), date(2027, 2, 5)]
     db.rollback(); db.close()
 
 
@@ -710,3 +718,386 @@ def test_party_merge_repoints_rules_and_occurrences(client, seed):
     assert r.status_code == 200, r.text
     assert client.get(f"/api/scheduled-transactions/{occ['id']}", headers=h).json()["party_id"] == seed["party"]
     assert client.get(f"/api/recurrence-rules/{rule['id']}", headers=h).json()["party_id"] == seed["party"]
+
+
+# ── audit adversarial (2026-10-31) ────────────────────────────────────────────
+# One test per confirmed finding; the slot_date column is the root fix for
+# findings 1-4, 11-13 (dedupe/drop by ORIGINAL slot, never by due_date).
+
+AUDIT_TODAY = date(2026, 10, 31)
+
+
+def _dues(db, rule_id):
+    return [(o.slot_date, o.due_date, o.status) for o in _occs(db, rule_id)]
+
+
+def test_audit_rule_edit_keeps_postponed_overdue_occurrence(seed):
+    """#1/#11 — 05/10 postponed to 15/11, then an edit: October survives."""
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A1", start_date=date(2026, 8, 1))
+    october = next(o for o in created if o.due_date == date(2026, 10, 5))
+    svc.postpone(db, october, date(2026, 11, 15))
+    svc.update_rule(db, rule, {"notes": "x"}, today=AUDIT_TODAY)
+    slots = sorted(o.slot_date for o in _occs(db, rule.id))
+    assert slots == [date(2026, 8, 5), date(2026, 9, 5), date(2026, 10, 5), date(2026, 11, 5),
+                     date(2026, 12, 5), date(2027, 1, 5)]
+    kept = db.get(ScheduledTransaction, october.id)
+    assert kept is not None and kept.due_date == date(2026, 11, 15)
+    db.rollback(); db.close()
+
+
+def test_audit_installment_edit_keeps_postponed_parcela(seed):
+    """#1 case D — INSTALLMENT 6, parcela 3 (past slot) postponed, amount edit."""
+    db = TestSession()
+    rule, created = _new_rule(
+        db, seed["ws_id"], AUDIT_TODAY, description="A1D", start_date=date(2026, 8, 1),
+        frequency=RecurrenceFrequency.INSTALLMENT, installment_total=6, installment_paid=0,
+    )
+    p3 = next(o for o in created if o.installment_number == 3)
+    assert p3.slot_date == date(2026, 10, 5)
+    svc.postpone(db, p3, date(2026, 11, 20))
+    svc.update_rule(db, rule, {"amount": Decimal("300")}, today=AUDIT_TODAY)
+    rows = _occs(db, rule.id)
+    assert sorted(o.installment_number for o in rows) == [1, 2, 3, 4, 5, 6]
+    assert db.get(ScheduledTransaction, p3.id).due_date == date(2026, 11, 20)
+    db.rollback(); db.close()
+
+
+def test_audit_postpone_onto_unmaterialized_slot_keeps_that_month(seed):
+    """#2/#12 — 05/11 postponed to 05/02/2027 (beyond the horizon): February
+    still gets its own occurrence when the job reaches it."""
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A2")
+    svc.postpone(db, created[0], date(2027, 2, 5))
+    for d in (date(2026, 11, 30), date(2026, 12, 1), date(2027, 1, 1), date(2027, 3, 1)):
+        svc.materialize_rule(db, rule, today=d)
+    rows = _occs(db, rule.id)
+    feb = [o for o in rows if o.due_date == date(2027, 2, 5)]
+    assert sorted(o.slot_date for o in feb) == [date(2026, 11, 5), date(2027, 2, 5)]
+    assert [o.slot_date for o in rows].count(date(2027, 2, 5)) == 1
+    db.rollback(); db.close()
+
+
+def test_audit_installment_postpone_onto_future_slot_keeps_every_parcela(seed):
+    """#2 case F — parcela 1 postponed onto parcela 5's date: 5 is still created."""
+    db = TestSession()
+    today = date(2026, 10, 31)
+    rule, created = _new_rule(
+        db, seed["ws_id"], today, description="A2F", start_date=date(2026, 11, 1),
+        frequency=RecurrenceFrequency.INSTALLMENT, installment_total=6, installment_paid=0,
+    )
+    svc.postpone(db, created[0], date(2027, 3, 5))
+    for d in (date(2026, 12, 1), date(2027, 1, 1), date(2027, 2, 1), date(2027, 4, 1), date(2027, 6, 1)):
+        svc.materialize_rule(db, rule, today=d)
+    rows = _occs(db, rule.id)
+    assert sorted(o.installment_number for o in rows) == [1, 2, 3, 4, 5, 6]
+    p5 = next(o for o in rows if o.installment_number == 5)
+    assert p5.slot_date == p5.due_date == date(2027, 3, 5)
+    db.rollback(); db.close()
+
+
+@pytest.mark.parametrize("settle", ["pay", "cancel"])
+def test_audit_day_change_does_not_duplicate_settled_month(seed, settle):
+    """#3 — 05/11 paid in advance (C) or canceled (C2), then day 5 → 10:
+    November is not charged again; Dec/Jan move to day 10."""
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description=f"A3 {settle}")
+    if settle == "pay":
+        svc.mark_paid(db, created[0], paid_at=AUDIT_TODAY)
+    else:
+        svc.cancel(db, created[0])
+    svc.update_rule(db, rule, {"day_of_month": 10}, today=AUDIT_TODAY)
+    rows = _occs(db, rule.id)
+    assert [(o.due_date, o.status) for o in rows] == [
+        (date(2026, 11, 5), ScheduledStatus.PAID if settle == "pay" else ScheduledStatus.CANCELED),
+        (date(2026, 12, 10), ScheduledStatus.PENDING),
+        (date(2027, 1, 10), ScheduledStatus.PENDING),
+    ]
+    db.rollback(); db.close()
+
+
+def test_audit_yearly_month_change_does_not_duplicate_year(seed):
+    """#3 (YEARLY) — 2026's occurrence paid; moving the month inside 2026 adds nothing for 2026."""
+    db = TestSession()
+    today = date(2026, 10, 31)
+    rule, created = _new_rule(
+        db, seed["ws_id"], today, description="A3Y", frequency=RecurrenceFrequency.YEARLY,
+        month=11, day_of_month=20,
+    )
+    assert [o.due_date for o in created] == [date(2026, 11, 20)]
+    svc.mark_paid(db, created[0], paid_at=today)
+    _, rebuilt = svc.update_rule(db, rule, {"month": 12}, today=today)
+    assert rebuilt == []
+    assert [o.due_date for o in _occs(db, rule.id)] == [date(2026, 11, 20)]
+    db.rollback(); db.close()
+
+
+def test_audit_occurrence_moved_earlier_is_not_duplicated(seed):
+    """#4 — 05/11 moved to 30/10 (now overdue), then an edit: one November only."""
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A4")
+    svc.postpone(db, created[0], date(2026, 10, 30))
+    svc.update_rule(db, rule, {"notes": "y"}, today=AUDIT_TODAY)
+    rows = _occs(db, rule.id)
+    assert [o.slot_date for o in rows] == [date(2026, 11, 5), date(2026, 12, 5), date(2027, 1, 5)]
+    assert db.get(ScheduledTransaction, created[0].id).due_date == date(2026, 10, 30)
+    db.rollback(); db.close()
+
+
+def test_audit_postponed_then_paid_is_not_duplicated(seed):
+    """#13 — 05/11 postponed to 20/11 and paid, then an edit: no new 05/11."""
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A13")
+    svc.postpone(db, created[0], date(2026, 11, 20))
+    svc.mark_paid(db, created[0], paid_at=date(2026, 11, 20))
+    svc.update_rule(db, rule, {"notes": "z"}, today=AUDIT_TODAY)
+    assert _dues(db, rule.id) == [
+        (date(2026, 11, 5), date(2026, 11, 20), ScheduledStatus.PAID),
+        (date(2026, 12, 5), date(2026, 12, 5), ScheduledStatus.PENDING),
+        (date(2027, 1, 5), date(2027, 1, 5), ScheduledStatus.PENDING),
+    ]
+    db.rollback(); db.close()
+
+
+def test_audit_start_date_older_than_24_months_rejected(client, seed):
+    """#5/#10 — start_date < today − 24 months → 422 (PT); an old rule whose
+    start didn't change stays editable."""
+    db = TestSession()
+    with pytest.raises(svc.ScheduleError, match="24 meses"):
+        _new_rule(db, seed["ws_id"], AUDIT_TODAY, start_date=date(2024, 10, 30))
+    rule, _ = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A5 ok", start_date=date(2024, 10, 31))
+    with pytest.raises(svc.ScheduleError, match="24 meses"):
+        svc.update_rule(db, rule, {"start_date": date(1926, 1, 1)}, today=AUDIT_TODAY)
+    db.rollback()
+    # an edit far in the future, start untouched: fine
+    rule, _ = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A5 old", start_date=date(2025, 1, 1))
+    svc.update_rule(db, rule, {"notes": "anos depois", "start_date": date(2025, 1, 1)}, today=date(2028, 6, 1))
+    db.rollback(); db.close()
+    r = client.post("/api/recurrence-rules", json={
+        "direction": "PAYABLE", "description": "Velha", "amount": "10", "frequency": "MONTHLY",
+        "day_of_month": 5, "start_date": "1926-01-01",
+    }, headers=auth(seed["admin_token"]))
+    assert r.status_code == 422 and "24 meses" in r.json()["detail"]
+
+
+def test_audit_cap_hit_keeps_watermark_at_last_generated_slot(seed, monkeypatch):
+    """#5/#10 — when the per-run cap is hit the watermark stops at the last
+    generated slot, and the next runs carry on until today + 90."""
+    monkeypatch.setattr(svc, "MAX_SLOTS_PER_RUN", 4)
+    db = TestSession()
+    rule, created = _new_rule(db, seed["ws_id"], AUDIT_TODAY, description="A5 cap", start_date=date(2025, 1, 1))
+    assert [o.due_date for o in created] == [date(2025, 1, 5), date(2025, 2, 5), date(2025, 3, 5), date(2025, 4, 5)]
+    assert rule.materialized_through == date(2025, 4, 5)
+    for _ in range(10):
+        if not svc.materialize_rule(db, rule, today=AUDIT_TODAY):
+            break
+    slots = [o.slot_date for o in _occs(db, rule.id)]
+    assert slots[-1] == date(2027, 1, 5) and len(slots) == len(set(slots)) == 25
+    assert rule.materialized_through == svc.horizon(AUDIT_TODAY)
+    db.rollback(); db.close()
+
+
+def test_audit_tx_sign_flip_reverts_payment_amount_change_keeps_it(client, seed):
+    """#7/#14 — PATCH amount −100 → +250 on the settling tx: the occurrence
+    goes back to PENDING (audited); an amount-only change keeps it PAID."""
+    h = auth(seed["admin_token"])
+    occ = _one_off(client, seed, description="Sinal").json()
+    tx = _tx(client, seed, "-100.00", desc="Sinal tx")
+    assert client.post(f"/api/scheduled-transactions/{occ['id']}/pay",
+                       json={"paid_at": TODAY.isoformat(), "transaction_id": tx["id"]}, headers=h).status_code == 200
+    r = client.patch(f"/api/transactions/{tx['id']}", json={"amount": "-120.00"}, headers=h)
+    assert r.status_code == 200, r.text
+    still = client.get(f"/api/scheduled-transactions/{occ['id']}", headers=h).json()
+    assert still["status"] == "PAID" and still["paid_by_transaction_id"] == tx["id"]
+
+    r = client.patch(f"/api/transactions/{tx['id']}", json={"amount": "250.00"}, headers=h)
+    assert r.status_code == 200, r.text
+    back = client.get(f"/api/scheduled-transactions/{occ['id']}", headers=h).json()
+    assert back["status"] == "PENDING" and back["paid_by_transaction_id"] is None and back["paid_at"] is None
+    db = TestSession()
+    a = db.query(AuditLog).filter(
+        AuditLog.action == "scheduled_transaction.payment_reverted", AuditLog.resource_id == occ["id"],
+    ).one()
+    assert json.loads(a.details)["reason"] == "transaction sign changed" and json.loads(a.details)["transaction_id"] == tx["id"]
+    db.close()
+
+
+def test_audit_pay_records_inherited_fields(client, seed):
+    """#8 — the paid audit says which fields the tx inherited."""
+    h = auth(seed["admin_token"])
+    occ = _one_off(client, seed, description="Herda", category_id=seed["sub"], party_id=seed["party"]).json()
+    tx = _tx(client, seed, "-1200.00", desc="Herda tx")
+    assert client.post(f"/api/scheduled-transactions/{occ['id']}/pay",
+                       json={"paid_at": TODAY.isoformat(), "transaction_id": tx["id"]}, headers=h).status_code == 200
+    db = TestSession()
+    a = db.query(AuditLog).filter(
+        AuditLog.action == "scheduled_transaction.paid", AuditLog.resource_id == occ["id"],
+    ).one()
+    assert json.loads(a.details)["inherited"] == {"category_id": seed["sub"], "party_id": seed["party"]}
+    db.close()
+    # without a link nothing is inherited
+    occ2 = _one_off(client, seed, description="Herda nada", category_id=seed["sub"]).json()
+    client.post(f"/api/scheduled-transactions/{occ2['id']}/pay", json={"paid_at": TODAY.isoformat()}, headers=h)
+    db = TestSession()
+    a = db.query(AuditLog).filter(
+        AuditLog.action == "scheduled_transaction.paid", AuditLog.resource_id == occ2["id"],
+    ).one()
+    assert json.loads(a.details)["inherited"] == {}
+    db.close()
+
+
+def test_audit_inactive_expected_account_does_not_block_edits(client, seed):
+    """#9/#15/#19 — expected account deactivated after the fact: pause,
+    reactivate, rule edit resending the same account and occurrence edit
+    all work; the job keeps materializing; SETTING it is still rejected."""
+    h = auth(seed["admin_token"])
+    db = TestSession()
+    acc = _account(db, seed["ws_id"], seed["fi_id"], "CC que fecha")
+    db.commit(); acc_id = acc.id; db.close()
+    rule = client.post("/api/recurrence-rules", json={
+        "direction": "PAYABLE", "description": "Conta inativa", "amount": "10", "frequency": "MONTHLY",
+        "day_of_month": 7, "start_date": TODAY.isoformat(), "expected_account_id": acc_id,
+    }, headers=h).json()["rule"]
+    occ = _one_off(client, seed, description="Avulsa conta inativa", expected_account_id=acc_id).json()
+    db = TestSession()
+    db.get(Account, acc_id).is_active = False
+    db.commit(); db.close()
+
+    url = f"/api/recurrence-rules/{rule['id']}"
+    assert client.patch(url, json={"is_active": False}, headers=h).status_code == 200
+    assert client.patch(url, json={"is_active": True}, headers=h).status_code == 200
+    r = client.patch(url, json={"amount": "11", "expected_account_id": acc_id}, headers=h)
+    assert r.status_code == 200, r.text
+    r = client.patch(f"/api/scheduled-transactions/{occ['id']}", json={"notes": "n", "expected_account_id": acc_id}, headers=h)
+    assert r.status_code == 200, r.text
+    # SETTING an inactive account is still rejected
+    rule2 = client.post("/api/recurrence-rules", json={
+        "direction": "PAYABLE", "description": "Outra", "amount": "10", "frequency": "MONTHLY",
+        "day_of_month": 7, "start_date": TODAY.isoformat(),
+    }, headers=h).json()["rule"]
+    r = client.patch(f"/api/recurrence-rules/{rule2['id']}", json={"expected_account_id": acc_id}, headers=h)
+    assert r.status_code == 422 and r.json()["detail"] == "Conta inativa."
+    # the daily job keeps materializing the rule
+    db = TestSession()
+    rr = db.get(RecurrenceRule, rule["id"])
+    assert svc.materialize_rule(db, rr, today=TODAY + timedelta(days=40)) != []
+    db.rollback(); db.close()
+
+
+def test_audit_undo_payment(client, seed):
+    """#16 — Desfazer pagamento: PAID → PENDING, link cleared, audited,
+    admin+sysadmin only; non-PAID → 409."""
+    h = auth(seed["admin_token"])
+    occ = _one_off(client, seed, description="Desfazer").json()
+    url = f"/api/scheduled-transactions/{occ['id']}/unpay"
+    assert client.post(url, headers=h).status_code == 409  # still pending
+    tx = _tx(client, seed, "-1200.00", desc="Desfazer tx")
+    client.post(f"/api/scheduled-transactions/{occ['id']}/pay",
+                json={"paid_at": TODAY.isoformat(), "transaction_id": tx["id"]}, headers=h)
+    assert client.post(url, headers=auth(seed["member_token"])).status_code == 403
+    assert client.post(url, headers=auth(seed["admin2_token"])).status_code == 404
+    r = client.post(url, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "PENDING" and r.json()["paid_at"] is None and r.json()["paid_by_transaction_id"] is None
+    db = TestSession()
+    a = db.query(AuditLog).filter(
+        AuditLog.action == "scheduled_transaction.payment_undone", AuditLog.resource_id == occ["id"],
+    ).one()
+    assert json.loads(a.details)["before"]["paid_by_transaction_id"] == tx["id"]
+    db.close()
+    # the tx is free again → can settle it once more; sysadmin can also undo
+    assert client.post(f"/api/scheduled-transactions/{occ['id']}/pay",
+                       json={"paid_at": TODAY.isoformat(), "transaction_id": tx["id"]}, headers=h).status_code == 200
+    assert client.post(url, headers=auth(seed["sys_token"])).status_code == 200
+
+
+def test_audit_inherit_skips_inactive_refs_and_paid_invoice(client, seed):
+    """#17 — inherit category/party only when active and the tx is writable."""
+    from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
+    from numis_geek.models.transaction import Transaction, TransactionSourceType
+    from numis_geek.services import transactions as tx_svc
+    db = TestSession()
+    cat = Category(id=str(uuid.uuid4()), workspace_id=seed["ws_id"], name="Some", parent_id=seed["root"],
+                   kind=CategoryKind.EXPENSE)
+    db.add(cat)
+    db.flush()
+    occ = svc.create_one_off(db, seed["ws_id"], svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="Inativa", amount=Decimal("100"),
+        due_date=TODAY, category_id=cat.id, party_id=seed["party"],
+    ))
+    cat.is_active = False
+    tx = tx_svc.create_transaction(db, seed["ws_id"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=seed["itau"],
+        event_date=TODAY, description="sem categoria", amount=Decimal("-100"),
+    ))[0]
+    got: dict = {}
+    svc.settle_occurrence(db, occ, tx, inherited=got)
+    assert tx.category_id is None and tx.party_id == seed["party"]
+    assert got == {"party_id": seed["party"]}
+
+    # card tx in a PAID invoice: nothing is written on the tx
+    card = CreditCardAccount(
+        id=str(uuid.uuid4()), workspace_id=seed["ws_id"], financial_institution_id=seed["fi_id"],
+        name="Cartão herda", currency=Currency.BRL, close_day=5, due_day=15, is_active=True,
+    )
+    db.add(card)
+    db.flush()
+    ctx = tx_svc.create_transaction(db, seed["ws_id"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CREDIT_CARD, credit_card_account_id=card.id,
+        event_date=TODAY, description="compra", amount=Decimal("-50"),
+    ))[0]
+    db.get(Invoice, ctx.invoice_id).status = InvoiceStatus.PAID
+    occ2 = svc.create_one_off(db, seed["ws_id"], svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="Fatura paga", amount=Decimal("50"),
+        due_date=TODAY, category_id=seed["sub"], party_id=seed["party"],
+    ))
+    got = {}
+    svc.settle_occurrence(db, occ2, ctx, inherited=got)
+    assert occ2.status == ScheduledStatus.PAID
+    assert ctx.category_id is None and ctx.party_id is None and got == {}
+    assert isinstance(ctx, Transaction)
+    db.rollback(); db.close()
+
+
+def test_audit_installment_start_change_rebuilds_remaining_parcelas(seed):
+    """#18 / decision 2 — 12x from 05/01, today 31/10, start moved to 01/11:
+    the 2 unpaid parcelas come back as 11/12 (05/11) and 12/12 (05/12)."""
+    db = TestSession()
+    rule, created = _new_rule(
+        db, seed["ws_id"], AUDIT_TODAY, description="A18", start_date=date(2026, 1, 1),
+        frequency=RecurrenceFrequency.INSTALLMENT, installment_total=12, installment_paid=0,
+    )
+    assert [o.installment_number for o in created] == list(range(1, 13))
+    dropped, rebuilt = svc.update_rule(db, rule, {"start_date": date(2026, 11, 1)}, today=AUDIT_TODAY)
+    assert dropped == 2
+    assert [(o.due_date, o.installment_number) for o in rebuilt] == [(date(2026, 11, 5), 11), (date(2026, 12, 5), 12)]
+    # numbering continues from the first k nobody holds: 11 paid early, start moved again
+    svc.mark_paid(db, rebuilt[0], paid_at=AUDIT_TODAY)
+    _, again = svc.update_rule(db, rule, {"start_date": date(2027, 1, 1)}, today=AUDIT_TODAY)
+    assert [(o.due_date, o.installment_number) for o in again] == [(date(2027, 1, 5), 12)]
+    # raising "Parcelas já pagas" over held numbers never stalls the rebuild
+    rule2, _ = _new_rule(
+        db, seed["ws_id"], AUDIT_TODAY, description="A18b", start_date=date(2026, 1, 1),
+        frequency=RecurrenceFrequency.INSTALLMENT, installment_total=12, installment_paid=0,
+    )
+    _, r2 = svc.update_rule(db, rule2, {"installment_paid": 2}, today=AUDIT_TODAY)
+    assert [(o.due_date, o.installment_number) for o in r2] == [(date(2026, 11, 5), 11), (date(2026, 12, 5), 12)]
+    db.rollback(); db.close()
+
+
+def test_audit_rule_out_exposes_what_an_edit_keeps(client, seed):
+    """Decision 2/4 — the composer preview needs the held slots/parcelas."""
+    h = auth(seed["admin_token"])
+    r = client.post("/api/recurrence-rules", json={
+        "direction": "PAYABLE", "description": "Held", "amount": "10", "frequency": "INSTALLMENT",
+        "installment_total": 6, "installment_paid": 0, "day_of_month": 5,
+        "start_date": (TODAY - timedelta(days=62)).isoformat(),
+    }, headers=h).json()["rule"]
+    occs = client.get(f"/api/scheduled-transactions?recurrence_rule_id={r['id']}", headers=h).json()
+    future = [o for o in occs if o["slot_date"] >= TODAY.isoformat()]
+    past = [o for o in occs if o["slot_date"] < TODAY.isoformat()]
+    client.post(f"/api/scheduled-transactions/{future[0]['id']}/pay", json={"paid_at": TODAY.isoformat()}, headers=h)
+    rule = client.get(f"/api/recurrence-rules/{r['id']}", headers=h).json()
+    assert rule["held_installment_numbers"] == sorted(o["installment_number"] for o in past + [future[0]])
+    assert future[0]["slot_date"] in rule["held_slot_dates"]
+    assert all(o["slot_date"] not in rule["held_slot_dates"] for o in future[1:])

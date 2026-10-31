@@ -14,6 +14,7 @@
  * member vê tudo em modo leitura. Menu Novo → ?compose=scheduled.
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Loader2, MoreHorizontal, Plus, Repeat } from 'lucide-react'
 import {
@@ -88,12 +89,59 @@ export function StatusBadge({ status }: { status: ScheduledTransactionOut['displ
 
 type Tab = 'upcoming' | 'rules'
 
+type OccAction = 'pay' | 'postpone' | 'cancel' | 'edit' | 'unpay'
+
 type Dialog =
   | { kind: 'pay'; occ: ScheduledTransactionOut }
   | { kind: 'postpone'; occ: ScheduledTransactionOut }
   | { kind: 'cancel'; occ: ScheduledTransactionOut }
+  | { kind: 'unpay'; occ: ScheduledTransactionOut }
   | { kind: 'delete-rule'; rule: RecurrenceRuleOut }
   | null
+
+const MENU_WIDTH = 176
+const MENU_ITEM_H = 30
+
+/** Menu "Ações" renderizado num portal com position: fixed — fora do
+ * wrapper overflow-x-auto da tabela, que cortava o menu nas últimas linhas
+ * (audit #22). Abre pra cima quando não cabe embaixo. Fecha com ESC,
+ * clique fora, scroll ou resize. */
+function ActionsMenu({ anchor, items, onPick, onClose }: {
+  anchor: DOMRect
+  items: { kind: OccAction; label: string; danger?: boolean }[]
+  onPick: (kind: OccAction) => void
+  onClose: () => void
+}) {
+  useEscapeKey(onClose)
+  useEffect(() => {
+    window.addEventListener('resize', onClose)
+    window.addEventListener('scroll', onClose, true)
+    return () => {
+      window.removeEventListener('resize', onClose)
+      window.removeEventListener('scroll', onClose, true)
+    }
+  }, [onClose])
+  const height = items.length * MENU_ITEM_H + 8
+  const vh = window.innerHeight || 0
+  const up = vh > 0 && anchor.bottom + 4 + height > vh && anchor.top - 4 - height >= 0
+  const top = up ? anchor.top - 4 - height : anchor.bottom + 4
+  const left = Math.max(8, anchor.right - MENU_WIDTH)
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[58]" onMouseDown={onClose} data-testid="actions-menu-backdrop" />
+      <div role="menu" aria-label="Ações da conta" style={{ position: 'fixed', top, left, width: MENU_WIDTH }}
+        className="z-[59] rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg py-1 text-[12px] text-left">
+        {items.map(it => (
+          <button key={it.kind} type="button" role="menuitem" onClick={() => onPick(it.kind)}
+            className={`w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 ${it.danger ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'}`}>
+            {it.label}
+          </button>
+        ))}
+      </div>
+    </>,
+    document.body,
+  )
+}
 
 export default function ScheduledTransactions() {
   const navigate = useNavigate()
@@ -107,27 +155,37 @@ export default function ScheduledTransactions() {
   const [forecast, setForecast] = useState<ForecastOut | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [lookupError, setLookupError] = useState('')
   const [toast, setToast] = useState('')
   const [tab, setTab] = useState<Tab>('upcoming')
   const [showDone, setShowDone] = useState(false)
   const [composer, setComposer] = useState<ScheduledComposerMode | null>(null)
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const [menuFor, setMenuFor] = useState<{ id: string; rect: DOMRect } | null>(null)
   const [busyRule, setBusyRule] = useState<string | null>(null)
 
   const canWrite = me?.role === 'admin' || me?.role === 'sysadmin'
-
-  useEscapeKey(() => { if (menuFor) setMenuFor(null) })
 
   useEffect(() => {
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [navigate])
 
+  // Cadastros (contas/categorias/parties) carregam à parte: uma falha aqui
+  // vira aviso inline e NÃO esconde as listas que carregaram (audit #23).
   useEffect(() => {
     if (!me) return
-    Promise.all([api.listAccounts(), api.listCategories(), api.listParties()])
-      .then(([accs, cats, ps]) => { setAccounts(accs); setCategories(cats); setParties(ps) })
-      .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar cadastros.'))
+    Promise.allSettled([api.listAccounts(), api.listCategories(), api.listParties()])
+      .then(([accs, cats, ps]) => {
+        if (accs.status === 'fulfilled') setAccounts(accs.value)
+        if (cats.status === 'fulfilled') setCategories(cats.value)
+        if (ps.status === 'fulfilled') setParties(ps.value)
+        const failed = [
+          accs.status === 'rejected' ? 'contas' : null,
+          cats.status === 'rejected' ? 'categorias' : null,
+          ps.status === 'rejected' ? 'fornecedores/clientes' : null,
+        ].filter(Boolean)
+        setLookupError(failed.length ? `Não deu pra carregar ${failed.join(', ')} — os seletores do formulário podem vir incompletos.` : '')
+      })
   }, [me])
 
   const reload = useCallback(async () => {
@@ -261,6 +319,11 @@ export default function ScheduledTransactions() {
             )}
           </div>
 
+          {lookupError && (
+            <div className="mx-1 mb-3 px-3 py-2 rounded-md text-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300" role="alert" data-testid="lookup-error">
+              {lookupError}
+            </div>
+          )}
           {loadError ? (
             <div className="text-sm text-red-600 dark:text-red-400 text-center py-6">{loadError}</div>
           ) : loading ? (
@@ -290,8 +353,8 @@ export default function ScheduledTransactions() {
                         <tr><td colSpan={7} className="p-0"><MonthHeader ym={g.ym} first={gi === 0} /></td></tr>
                         {g.items.map(o => (
                           <OccurrenceRow key={o.id} o={o} canWrite={canWrite}
-                            menuOpen={menuFor === o.id}
-                            onOpenMenu={() => setMenuFor(menuFor === o.id ? null : o.id)}
+                            menuOpen={menuFor?.id === o.id}
+                            onOpenMenu={rect => setMenuFor(menuFor?.id === o.id ? null : { id: o.id, rect })}
                             onAction={kind => {
                               setMenuFor(null)
                               if (kind === 'edit') setComposer({ kind: 'occurrence', occ: o })
@@ -341,6 +404,30 @@ export default function ScheduledTransactions() {
           onClose={() => setDialog(null)}
           onConfirm={async () => { await api.cancelScheduled(dialog.occ.id); await afterWrite() }} />
       )}
+      {dialog?.kind === 'unpay' && (
+        <ConfirmDialog title="Desfazer pagamento?" confirmLabel="Desfazer pagamento"
+          body={<>{dialog.occ.description} · vence {fmtDate(dialog.occ.due_date)} · pago em {dialog.occ.paid_at ? fmtDate(dialog.occ.paid_at) : '—'}</>}
+          detail={dialog.occ.paid_by_transaction_id
+            ? 'A conta volta a pendente e perde o vínculo com a movimentação (a movimentação continua no extrato).'
+            : 'A conta volta a pendente.'}
+          onClose={() => setDialog(null)}
+          onConfirm={async () => { await api.unpayScheduled(dialog.occ.id); await afterWrite() }} />
+      )}
+      {menuFor && (() => {
+        const o = rows.find(r => r.id === menuFor.id)
+        if (!o) return null
+        const items: { kind: OccAction; label: string; danger?: boolean }[] = o.status === 'PENDING'
+          ? [{ kind: 'edit', label: 'Editar' }, { kind: 'postpone', label: 'Adiar' }, { kind: 'cancel', label: 'Cancelar', danger: true }]
+          : o.status === 'PAID' ? [{ kind: 'unpay', label: 'Desfazer pagamento' }] : []
+        return (
+          <ActionsMenu anchor={menuFor.rect} items={items} onClose={() => setMenuFor(null)}
+            onPick={kind => {
+              setMenuFor(null)
+              if (kind === 'edit') setComposer({ kind: 'occurrence', occ: o })
+              else setDialog({ kind, occ: o })
+            }} />
+        )
+      })()}
       {dialog?.kind === 'delete-rule' && (
         <ConfirmDialog title="Excluir recorrência?" confirmLabel="Excluir" danger
           body={<>{dialog.rule.description} · {ruleSchedule(dialog.rule)}</>}
@@ -409,10 +496,11 @@ function OccurrenceRow({ o, canWrite, menuOpen, onOpenMenu, onAction }: {
   o: ScheduledTransactionOut
   canWrite: boolean
   menuOpen: boolean
-  onOpenMenu: () => void
-  onAction: (kind: 'pay' | 'postpone' | 'cancel' | 'edit') => void
+  onOpenMenu: (rect: DOMRect) => void
+  onAction: (kind: OccAction) => void
 }) {
   const pending = o.status === 'PENDING'
+  const hasMenu = pending || o.status === 'PAID'
   return (
     <tr className={`border-t border-gray-100 dark:border-gray-800 ${o.status === 'CANCELED' ? 'opacity-60' : ''}`} data-testid={`occ-${o.id}`}>
       <td className={`px-2 py-2 tnum ${o.is_overdue ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-400'}`}>{fmtDay(o.due_date)}</td>
@@ -451,23 +539,20 @@ function OccurrenceRow({ o, canWrite, menuOpen, onOpenMenu, onAction }: {
         {fmtMoney(o.signed_amount, o.currency, { sign: true })}
       </td>
       <td className="px-2 text-center"><StatusBadge status={o.display_status} /></td>
-      <td className="px-2 text-gray-500 relative whitespace-nowrap text-right">
-        {canWrite && pending && (
+      <td className="px-2 text-gray-500 whitespace-nowrap text-right">
+        {canWrite && hasMenu && (
           <>
-            <button type="button" onClick={() => onAction('pay')}
-              className="h-6 px-2 mr-1 inline-flex items-center rounded-md text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20">
-              Marcar pago
-            </button>
-            <button type="button" onClick={onOpenMenu} aria-label="Ações" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 align-middle">
+            {pending && (
+              <button type="button" onClick={() => onAction('pay')}
+                className="h-6 px-2 mr-1 inline-flex items-center rounded-md text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20">
+                Marcar pago
+              </button>
+            )}
+            <button type="button" onClick={e => onOpenMenu(e.currentTarget.getBoundingClientRect())}
+              aria-label="Ações" aria-haspopup="menu" aria-expanded={menuOpen}
+              className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 align-middle">
               <MoreHorizontal className="w-4 h-4" />
             </button>
-            {menuOpen && (
-              <div className="absolute right-2 top-8 z-20 w-36 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg py-1 text-[12px] text-left">
-                <button type="button" onClick={() => onAction('edit')} className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-800">Editar</button>
-                <button type="button" onClick={() => onAction('postpone')} className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-800">Adiar</button>
-                <button type="button" onClick={() => onAction('cancel')} className="w-full text-left px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800">Cancelar</button>
-              </div>
-            )}
           </>
         )}
       </td>

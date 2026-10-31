@@ -4,7 +4,7 @@
  * Fixtures = shape real do backend (ScheduledTransactionOut /
  * RecurrenceRuleOut / ForecastOut completos) — lição jsdom_misses_backend_shape.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -45,6 +45,7 @@ function occ(p: Partial<ScheduledTransactionOut> & { id: string }): ScheduledTra
     installment_number: null, installment_total: null, expected_account_id: null, expected_account_name: null,
     status: 'PENDING', display_status: 'PENDING', is_overdue: false, paid_at: null, paid_by_transaction_id: null,
     notes: null, created_at: '2026-10-31T00:00:00', updated_at: '2026-10-31T00:00:00',
+    slot_date: p.due_date ?? '2026-11-05',
     ...p,
   }
 }
@@ -56,6 +57,7 @@ function rule(p: Partial<RecurrenceRuleOut> & { id: string }): RecurrenceRuleOut
     frequency: 'MONTHLY', day_of_month: 5, month: null, installment_total: null, installment_paid: null,
     expected_account_id: null, expected_account_name: null, start_date: '2026-10-31', end_date: null,
     is_active: true, notes: null, next_due_date: '2026-11-05', pending_count: 3,
+    held_slot_dates: [], held_installment_numbers: [],
     created_at: '2026-10-31T00:00:00', updated_at: '2026-10-31T00:00:00',
     ...p,
   }
@@ -263,7 +265,7 @@ describe('ScheduledTransactions page (spec 72)', () => {
 
     const row = () => within(m.getByTestId('occ-sal'))
     fireEvent.click(row().getByRole('button', { name: 'Ações' }))
-    fireEvent.click(row().getByRole('button', { name: 'Adiar' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Adiar' }))
     let dialog = within(await screen.findByRole('dialog', { name: 'Adiar vencimento' }))
     expect(dialog.getByRole('button', { name: 'Adiar' })).toBeDisabled()
     fireEvent.change(dialog.getByLabelText('Novo vencimento'), { target: { value: '2026-11-15' } })
@@ -272,7 +274,7 @@ describe('ScheduledTransactions page (spec 72)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     fireEvent.click(row().getByRole('button', { name: 'Ações' }))
-    fireEvent.click(row().getByRole('button', { name: 'Cancelar' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cancelar' }))
     dialog = within(await screen.findByRole('dialog', { name: 'Cancelar conta?' }))
     expect(dialog.getByText(/a recorrência continua gerando/)).toBeInTheDocument()
     fireEvent.click(dialog.getByRole('button', { name: 'Cancelar conta' }))
@@ -412,12 +414,235 @@ describe('Composer "Conta a pagar/receber"', () => {
     await m.findByText('Salário')
     const row = within(m.getByTestId('occ-sal'))
     fireEvent.click(row.getByRole('button', { name: 'Ações' }))
-    fireEvent.click(row.getByRole('button', { name: 'Editar' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Editar' }))
     const d = within(await screen.findByRole('dialog', { name: 'Editar conta' }))
     expect(d.queryByLabelText('Dia do vencimento')).not.toBeInTheDocument()
     fireEvent.change(d.getByLabelText('Valor'), { target: { value: '12.345,67' } })
     fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
     await waitFor(() => expect(update).toHaveBeenCalledWith('sal', expect.objectContaining({ amount: 12345.67 })))
     expect(update.mock.calls[0][1]).not.toHaveProperty('direction')
+  })
+})
+
+/* ── audit adversarial (2026-10-31) ─────────────────────────────────────── */
+
+describe('audit 2026-10-31 — prévia da edição espelha o backend', () => {
+  it('#6/#20 edição pula slots antes de hoje e meses já mantidos', () => {
+    // regra mensal desde jan; hoje 31/10 → próximos são nov/dez/jan
+    expect(previewDueDates({ frequency: 'MONTHLY', day: 5, start: '2026-01-01', notBefore: '2026-10-31' }).map(p => p.date))
+      .toEqual(['2026-11-05', '2026-12-05', '2027-01-05'])
+    // novembro pago adiantado (slot mantido) + dia muda pra 10: novembro não repete
+    expect(previewDueDates({
+      frequency: 'MONTHLY', day: 10, start: '2026-01-01', notBefore: '2026-10-31', heldSlotDates: ['2026-11-05'],
+    }).map(p => p.date)).toEqual(['2026-12-10', '2027-01-10', '2027-02-10'])
+    // anual: o ano que já tem ocorrência mantida fica de fora
+    expect(previewDueDates({
+      frequency: 'YEARLY', day: 20, month: 12, start: '2026-01-01', notBefore: '2026-10-31', heldSlotDates: ['2026-11-20'],
+    }).map(p => p.date)).toEqual(['2027-12-20', '2028-12-20', '2029-12-20'])
+  })
+
+  it('#18 parcelada: numeração continua da 1ª parcela que ninguém mantém', () => {
+    // 12x, parcelas 1..10 mantidas (passado), início movido pra 01/11
+    expect(previewDueDates({
+      frequency: 'INSTALLMENT', day: 5, start: '2026-11-01', installmentTotal: 12, installmentPaid: 0,
+      notBefore: '2026-10-31', heldInstallments: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    })).toEqual([{ date: '2026-11-05', k: 11 }, { date: '2026-12-05', k: 12 }])
+    // parcela 11 paga adiantada (nov mantido): dezembro vira 12 e acabou
+    expect(previewDueDates({
+      frequency: 'INSTALLMENT', day: 5, start: '2026-01-01', installmentTotal: 12, installmentPaid: 0,
+      notBefore: '2026-10-31', heldSlotDates: ['2026-11-05'], heldInstallments: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    })).toEqual([{ date: '2026-12-05', k: 12 }])
+    // "Parcelas já pagas" subindo sobre números mantidos não trava a prévia
+    expect(previewDueDates({
+      frequency: 'INSTALLMENT', day: 5, start: '2026-01-01', installmentTotal: 12, installmentPaid: 2,
+      notBefore: '2026-10-31', heldInstallments: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    })).toEqual([{ date: '2026-11-05', k: 11 }, { date: '2026-12-05', k: 12 }])
+  })
+})
+
+describe('audit 2026-10-31 — página e composer', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('#6/#18/#20 editar recorrência: prévia sem datas passadas e com a parcela certa', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 9, 31, 12, 0))
+    mockBase('admin', {
+      rules: [
+        rule({ id: 'm', description: 'Aluguel antigo', start_date: '2026-01-01', day_of_month: 5 }),
+        rule({
+          id: 'p', description: 'Boleto 12x', frequency: 'INSTALLMENT', installment_total: 12, installment_paid: 0,
+          start_date: '2026-01-01', day_of_month: 5,
+          held_installment_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        }),
+      ],
+    })
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Financiamento')
+    fireEvent.click(m.getByRole('button', { name: 'Recorrências (2)' }))
+    fireEvent.click(within(m.getByTestId('rule-m')).getByRole('button', { name: 'Editar' }))
+    let d = within(await screen.findByRole('dialog', { name: 'Editar recorrência' }))
+    expect(d.getByTestId('scheduled-preview-dates')).toHaveTextContent('05/11/2026 · 05/12/2026 · 05/01/2027')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    fireEvent.click(within(m.getByTestId('rule-p')).getByRole('button', { name: 'Editar' }))
+    d = within(await screen.findByRole('dialog', { name: 'Editar recorrência' }))
+    expect(d.getByTestId('scheduled-preview-dates')).toHaveTextContent('05/11/2026 (11/12) · 05/12/2026 (12/12)')
+    fireEvent.change(d.getByLabelText('Início'), { target: { value: '2026-11-01' } })
+    expect(d.getByTestId('scheduled-preview-dates')).toHaveTextContent('05/11/2026 (11/12) · 05/12/2026 (12/12)')
+    expect(d.getByTestId('scheduled-preview-dates')).not.toHaveTextContent('(1/12)')
+  })
+
+  it('#21 categoria e fornecedor inativos aparecem "(inativa)" e podem ser limpos', async () => {
+    mockBase('admin', {
+      rows: [occ({
+        id: 'ina', description: 'Com cadastro inativo', category_id: 'old-cat', category_name: 'Antiga',
+        party_id: 'old-party', party_name: 'Imobiliária Velha',
+      })],
+      overdue: [],
+    })
+    const update = vi.spyOn(api, 'updateScheduled').mockResolvedValue(occ({ id: 'ina' }))
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Com cadastro inativo')
+    fireEvent.click(within(m.getByTestId('occ-ina')).getByRole('button', { name: 'Ações' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Editar' }))
+    const d = within(await screen.findByRole('dialog', { name: 'Editar conta' }))
+    const cat = d.getByLabelText('Categoria') as HTMLSelectElement
+    expect(cat.value).toBe('old-cat')
+    expect(cat.selectedOptions[0].textContent).toBe('Antiga (inativa)')
+    const party = d.getByLabelText('Fornecedor/Cliente') as HTMLSelectElement
+    expect(party.value).toBe('old-party')
+    expect(party.selectedOptions[0].textContent).toBe('Imobiliária Velha (inativa)')
+    fireEvent.change(cat, { target: { value: '' } })
+    fireEvent.change(party, { target: { value: '' } })
+    fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('ina', expect.objectContaining({
+      category_id: null, party_id: null,
+    })))
+  })
+
+  it('#21 sem mexer, a categoria inativa é mantida (não vira "Sem categoria" escondida)', async () => {
+    mockBase('admin', {
+      rows: [occ({ id: 'ina2', description: 'Mantém', category_id: 'old-cat', category_name: 'Antiga' })],
+      overdue: [],
+    })
+    const update = vi.spyOn(api, 'updateScheduled').mockResolvedValue(occ({ id: 'ina2' }))
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Mantém')
+    fireEvent.click(within(m.getByTestId('occ-ina2')).getByRole('button', { name: 'Ações' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Editar' }))
+    const d = within(await screen.findByRole('dialog', { name: 'Editar conta' }))
+    expect(d.getByRole('option', { name: 'Antiga (inativa)' })).toBeInTheDocument()
+    fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('ina2', expect.objectContaining({ category_id: 'old-cat' })))
+  })
+
+  it('#22 menu Ações vai num portal fixo fora do wrapper com overflow; ESC e clique fora fecham', async () => {
+    mockBase()
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Salário')
+    const row = m.getByTestId('occ-sal')
+    fireEvent.click(within(row).getByRole('button', { name: 'Ações' }))
+    const menu = screen.getByRole('menu', { name: 'Ações da conta' })
+    expect(menu.style.position).toBe('fixed')
+    expect(row.closest('.overflow-x-auto')!.contains(menu)).toBe(false)
+    expect(within(menu).getAllByRole('menuitem').map(b => b.textContent)).toEqual(['Editar', 'Adiar', 'Cancelar'])
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    fireEvent.click(within(row).getByRole('button', { name: 'Ações' }))
+    fireEvent.mouseDown(screen.getByTestId('actions-menu-backdrop'))
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+
+  it('#22 menu abre pra cima quando não cabe embaixo (última linha)', async () => {
+    mockBase()
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Salário')
+    const btn = within(m.getByTestId('occ-sal')).getByRole('button', { name: 'Ações' })
+    const h = window.innerHeight
+    vi.spyOn(btn, 'getBoundingClientRect').mockReturnValue({
+      top: h - 30, bottom: h - 6, left: 900, right: 924, width: 24, height: 24, x: 900, y: h - 30, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(btn)
+    const menu = screen.getByRole('menu', { name: 'Ações da conta' })
+    expect(parseFloat(menu.style.top)).toBeLessThan(h - 30)
+  })
+
+  it('#16 Desfazer pagamento: só em conta paga, com confirmação e spinner; recarrega', async () => {
+    const list = mockBase()
+    let resolve!: () => void
+    const unpay = vi.spyOn(api, 'unpayScheduled').mockImplementation(() => new Promise(r => {
+      resolve = () => r(occ({ id: 'paid' }))
+    }))
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Financiamento')
+    fireEvent.click(m.getByLabelText(/mostrar pagas e canceladas/))
+    const row = within(m.getByTestId('occ-paid'))
+    expect(row.queryByRole('button', { name: 'Marcar pago' })).not.toBeInTheDocument()
+    fireEvent.click(row.getByRole('button', { name: 'Ações' }))
+    expect(screen.getAllByRole('menuitem').map(b => b.textContent)).toEqual(['Desfazer pagamento'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Desfazer pagamento' }))
+    const d = within(await screen.findByRole('dialog', { name: 'Desfazer pagamento?' }))
+    const before = list.mock.calls.length
+    const confirm = d.getByRole('button', { name: 'Desfazer pagamento' })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(unpay).toHaveBeenCalledWith('paid'))
+    expect(confirm).toBeDisabled()
+    resolve()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(list.mock.calls.length).toBeGreaterThan(before)
+  })
+
+  it('#16 Desfazer pagamento com erro fica no modal; ESC fecha', async () => {
+    mockBase()
+    vi.spyOn(api, 'unpayScheduled').mockRejectedValue(new Error('Só dá pra desfazer o pagamento de uma conta paga.'))
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Financiamento')
+    fireEvent.click(m.getByLabelText(/mostrar pagas e canceladas/))
+    fireEvent.click(within(m.getByTestId('occ-paid')).getByRole('button', { name: 'Ações' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Desfazer pagamento' }))
+    const d = within(await screen.findByRole('dialog', { name: 'Desfazer pagamento?' }))
+    fireEvent.click(d.getByRole('button', { name: 'Desfazer pagamento' }))
+    expect(await d.findByRole('alert')).toHaveTextContent('Só dá pra desfazer')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('member não vê o menu Ações nem Desfazer pagamento', async () => {
+    mockBase('member')
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Financiamento')
+    fireEvent.click(m.getByLabelText(/mostrar pagas e canceladas/))
+    expect(within(m.getByTestId('occ-paid')).queryByRole('button', { name: 'Ações' })).not.toBeInTheDocument()
+  })
+
+  it('#23 falha nos cadastros não esconde as listas; aviso inline; não desloga', async () => {
+    mockBase()
+    vi.spyOn(api, 'listParties').mockRejectedValue(new Error('500 parties'))
+    renderPage()
+    const m = await mainReady()
+    expect(await m.findByText('Financiamento')).toBeInTheDocument()
+    expect(await m.findByTestId('lookup-error')).toHaveTextContent('fornecedores/clientes')
+    expect(m.getByText('Condomínio')).toBeInTheDocument()
+    fireEvent.click(m.getByRole('button', { name: 'Recorrências (2)' }))
+    expect(m.getByTestId('rule-r1')).toBeInTheDocument()
+    expect(screen.queryByText('LOGIN PAGE')).not.toBeInTheDocument()
+    // o que carregou (contas) continua disponível no composer
+    fireEvent.click(m.getByRole('button', { name: /Nova conta/ }))
+    const d = within(await screen.findByRole('dialog', { name: 'Nova conta a pagar/receber' }))
+    expect(d.getByRole('option', { name: /Conta Corrente Itaú/ })).toBeInTheDocument()
   })
 })

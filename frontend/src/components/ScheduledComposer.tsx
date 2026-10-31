@@ -36,8 +36,16 @@ function isoOf(y: number, m: number, d: number): string {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 }
 
-/** Próximos vencimentos de uma recorrência — espelha `rule_slots` do
- * backend (dia 1–28, então nunca precisa de clamp). Só pra pré-visualização. */
+/** Próximos vencimentos de uma recorrência — espelha `slot_dates` +
+ * `materialize_rule` do backend (dia 1–28, então nunca precisa de clamp).
+ *
+ * - criação: todos os slots desde o início (o backend cria os passados como
+ *   em atraso), parcela k = já pagas + índice + 1;
+ * - edição (`notBefore` = hoje, `heldSlotDates`/`heldInstallments` = o que a
+ *   edição mantém, vindos do backend): o backend apaga as futuras pendentes e
+ *   recria só slots >= hoje, pulando mês (anual: ano) que já tem ocorrência
+ *   mantida; as parcelas recebem, em ordem, os números que ninguém mantém —
+ *   a numeração continua da primeira parcela livre (audit 2026-10-31). */
 export function previewDueDates(opts: {
   frequency: RecurrenceFrequency
   day: number
@@ -46,41 +54,48 @@ export function previewDueDates(opts: {
   end?: string | null
   installmentTotal?: number | null
   installmentPaid?: number | null
+  notBefore?: string | null
+  heldSlotDates?: string[]
+  heldInstallments?: number[]
 }, n = 3): { date: string; k: number | null }[] {
   const { frequency, day, start } = opts
   if (!start || !(day >= 1 && day <= 28)) return []
+  if (frequency === 'YEARLY' && !opts.month) return []
   const [sy, sm] = start.split('-').map(Number)
   const out: { date: string; k: number | null }[] = []
   const end = opts.end || null
-  if (frequency === 'YEARLY') {
-    if (!opts.month) return []
-    let y = sy
-    if (isoOf(y, opts.month, day) < start) y += 1
-    while (out.length < n) {
-      const d = isoOf(y, opts.month, day)
-      if (end && d > end) break
-      out.push({ date: d, k: null })
-      y += 1
-    }
-    return out
+  const yearly = frequency === 'YEARLY'
+  const period = (iso: string) => (yearly ? iso.slice(0, 4) : iso.slice(0, 7))
+  const held = new Set(opts.heldSlotDates ?? [])
+  const heldPeriods = new Set([...held].map(period))
+  let free: number[] = []
+  if (frequency === 'INSTALLMENT') {
+    if (!opts.installmentTotal) return []
+    const taken = new Set(opts.heldInstallments ?? [])
+    for (let k = (opts.installmentPaid ?? 0) + 1; k <= opts.installmentTotal; k++) if (!taken.has(k)) free.push(k)
   }
   let y = sy
-  let m = sm
-  if (isoOf(y, m, day) < start) { m += 1; if (m > 12) { m = 1; y += 1 } }
-  let i = 0
-  while (out.length < n) {
+  let m = yearly ? opts.month! : sm
+  if (isoOf(y, m, day) < start) {
+    if (yearly) y += 1
+    else { m += 1; if (m > 12) { m = 1; y += 1 } }
+  }
+  // guarda contra laço infinito (fim/limite sempre param antes na prática)
+  for (let guard = 0; out.length < n && guard < 2400; guard++) {
     const d = isoOf(y, m, day)
     if (end && d > end) break
-    if (frequency === 'INSTALLMENT') {
-      const k = (opts.installmentPaid ?? 0) + i + 1
-      if (!opts.installmentTotal || k > opts.installmentTotal) break
-      out.push({ date: d, k })
-    } else {
-      out.push({ date: d, k: null })
+    if (frequency === 'INSTALLMENT' && free.length === 0) break
+    const skip = (opts.notBefore && d < opts.notBefore) || held.has(d) || heldPeriods.has(period(d))
+    if (!skip) {
+      if (frequency === 'INSTALLMENT') {
+        out.push({ date: d, k: free[0] })
+        free = free.slice(1)
+      } else {
+        out.push({ date: d, k: null })
+      }
     }
-    i += 1
-    m += 1
-    if (m > 12) { m = 1; y += 1 }
+    if (yearly) y += 1
+    else { m += 1; if (m > 12) { m = 1; y += 1 } }
   }
   return out
 }
@@ -112,7 +127,13 @@ export default function ScheduledComposer({
   const occ = mode.kind === 'occurrence' ? mode.occ : undefined
   const src = rule ?? occ
   const checkings = accounts.filter(a => a.account_type === 'checking' && (a.is_active || a.id === src?.expected_account_id))
-  const activeParties = parties.filter(p => p.is_active || p.id === src?.party_id)
+  const activeParties = parties.filter(p => p.is_active)
+  // Party já gravado mas inativo (ou fora da lista, que só traz ativos):
+  // aparece pelo nome, marcado "(inativa)", e pode ser limpo.
+  const savedParty = src?.party_id ? parties.find(p => p.id === src.party_id) : undefined
+  const inactiveParty = src?.party_id && !(savedParty && savedParty.is_active)
+    ? { id: src.party_id, name: savedParty?.name ?? src.party_name ?? 'Fornecedor/cliente' }
+    : null
 
   const [direction, setDirection] = useState<ScheduledDirection>(src?.direction ?? 'PAYABLE')
   const [frequency, setFrequency] = useState<FrequencyChoice>(
@@ -144,9 +165,16 @@ export default function ScheduledComposer({
   const paidN = parseInt(instPaid || '0', 10)
   const isRecurring = frequency !== 'ONE_OFF'
 
+  // Na edição o backend só recria slots >= hoje e mantém o que já foi
+  // pago/cancelado/está em atraso — a prévia segue a mesma regra.
   const preview = isRecurring ? previewDueDates({
     frequency: frequency as RecurrenceFrequency, day: dayN, month: monthN, start, end: end || null,
     installmentTotal: totalN, installmentPaid: paidN,
+    ...(rule ? {
+      notBefore: todayISO(),
+      heldSlotDates: rule.held_slot_dates ?? [],
+      heldInstallments: rule.held_installment_numbers ?? [],
+    } : {}),
   }) : []
 
   let valid = desc.trim().length > 0 && amtN > 0
@@ -256,7 +284,7 @@ export default function ScheduledComposer({
         <Field label="Conta prevista" hint="opcional">
           <select value={accountId} onChange={e => setAccountId(e.target.value)} className={inputCls} aria-label="Conta prevista">
             <option value="">Sem conta definida</option>
-            {checkings.map(a => <option key={a.id} value={a.id}>{a.name} · {a.currency}</option>)}
+            {checkings.map(a => <option key={a.id} value={a.id}>{a.name} · {a.currency}{a.is_active ? '' : ' (inativa)'}</option>)}
           </select>
         </Field>
         {!account && (
@@ -268,11 +296,13 @@ export default function ScheduledComposer({
           </Field>
         )}
         <Field label="Categoria">
-          <CategorySelect categories={categories} value={catId} onChange={setCatId} />
+          <CategorySelect categories={categories} value={catId} onChange={setCatId}
+            currentName={catId && catId === src?.category_id ? src.category_name : null} />
         </Field>
         <Field label="Fornecedor/Cliente">
           <select value={partyId} onChange={e => setPartyId(e.target.value)} className={inputCls} aria-label="Fornecedor/Cliente">
             <option value="">—</option>
+            {inactiveParty && <option value={inactiveParty.id}>{inactiveParty.name} (inativa)</option>}
             {activeParties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </Field>

@@ -5,16 +5,21 @@ so the invariants hold for every caller (API today, statement import in
 spec 71, daily job):
 
 - `amount` always positive — `direction` gives the sign;
-- materialization is idempotent: a rule's slots up to `today + 90 days`
-  exist exactly once (UNIQUE(rule, due_date) + the rule's
-  `materialized_through` watermark, so a postponed occurrence never comes
-  back at its old date);
-- editing a rule only touches FUTURE occurrences still PENDING
-  (`due_date >= today`): they're dropped and re-materialized from the new
-  rule. Overdue, paid and canceled ones are history and never change;
+- every occurrence keeps its ORIGINAL slot (`slot_date`); postponing moves
+  only `due_date`. Materialization is idempotent and dedupes by slot: a
+  rule's slots up to `today + 90 days` exist exactly once
+  (UNIQUE(rule, slot_date)); MONTHLY/INSTALLMENT also never put a second
+  occurrence in a year-month the rule already holds (YEARLY: per year), and
+  INSTALLMENT never repeats a parcela number. The `materialized_through`
+  watermark keeps a canceled/deleted slot from coming back;
+- editing a rule only touches occurrences still PENDING whose slot AND due
+  date are both >= today: they're dropped and re-materialized from the new
+  rule. Overdue (by slot or by due date), paid and canceled ones are history
+  and never change — and since they keep holding their slot, the rebuild
+  never duplicates them (audit 2026-10-31);
 - `settle_occurrence(occ, tx)` is the single path that marks an occurrence
   PAID with a real transaction — the manual "Marcar pago" and the import
-  matcher (spec 71) both call it.
+  matcher (spec 71) both call it. `undo_payment` is the way back.
 
 Raises `ScheduleError` (→ 422) and `ScheduleConflict` (→ 409); routes
 translate. Flushes, never commits.
@@ -22,12 +27,13 @@ translate. Flushes, never commits.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account, AccountType, Currency
+from numis_geek.models.credit_card import Invoice, InvoiceStatus
 from numis_geek.models.ptax_rate import PTAXRate
 from numis_geek.models.scheduled_transaction import (
     RecurrenceFrequency, RecurrenceRule, ScheduledDirection, ScheduledStatus,
@@ -41,8 +47,12 @@ from numis_geek.services.transactions import (
 
 HORIZON_DAYS = 90
 # Safety net: a MONTHLY rule over 90 days yields ~3 slots; a rule back-dated
-# by decades must not spin forever.
+# by decades must not spin forever. When a run hits the cap the watermark
+# stops at the last generated slot, so the next run carries on from there.
 MAX_SLOTS_PER_RUN = 1200
+# A rule can't start more than this many months back (audit 2026-10-31):
+# past slots are born overdue, and decades of them are a typo.
+MAX_START_MONTHS_BACK = 24
 
 
 class ScheduleError(Exception):
@@ -93,9 +103,14 @@ def _validate_refs(db: Session, workspace_id: str, *, category_id, party_id) -> 
 
 def resolve_account_currency(
     db: Session, workspace_id: str, account_id: str | None, currency: Currency | None,
+    *, require_active: bool = True,
 ) -> Currency:
-    """Expected account must be an active checking account of the workspace;
-    the occurrence's currency defaults to (and must match) the account's."""
+    """Expected account must be a checking account of the workspace; the
+    occurrence's currency defaults to (and must match) the account's.
+
+    `require_active` only when the account is being SET (create, or the
+    value changed): a rule/occurrence that already points to an account
+    deactivated later stays editable and pausable (audit 2026-10-31)."""
     if account_id is None:
         return currency or Currency.BRL
     acc = db.get(Account, account_id)
@@ -103,7 +118,7 @@ def resolve_account_currency(
         raise ScheduleError("Conta não encontrada.")
     if acc.account_type != AccountType.checking:
         raise ScheduleError("Conta prevista deve ser conta corrente.")
-    if not acc.is_active:
+    if require_active and not acc.is_active:
         raise ScheduleError("Conta inativa.")
     if currency is not None and currency != acc.currency:
         raise ScheduleError(f"Moeda difere da conta ({acc.currency.value}).")
@@ -141,48 +156,82 @@ def validate_rule_shape(rule: RecurrenceRule) -> None:
         raise ScheduleError("Fim deve ser igual ou posterior ao início.")
 
 
+def validate_start_date(start: date, today: date | None = None) -> None:
+    """Checked on create and whenever `start_date` changes — an existing
+    rule that started long ago stays editable."""
+    floor = add_months(today or date.today(), -MAX_START_MONTHS_BACK)
+    if start < floor:
+        raise ScheduleError(
+            f"Início não pode ser anterior a {MAX_START_MONTHS_BACK} meses atrás "
+            f"({floor.strftime('%d/%m/%Y')})."
+        )
+
+
 # ── slot generation (pure) ────────────────────────────────────────────────────
 
+def _first_slot(rule: RecurrenceRule) -> date:
+    if rule.frequency == RecurrenceFrequency.YEARLY:
+        d = date(rule.start_date.year, rule.month, rule.day_of_month)
+        return d if d >= rule.start_date else date(d.year + 1, rule.month, rule.day_of_month)
+    first = add_months(rule.start_date, 0, rule.day_of_month)
+    return first if first >= rule.start_date else add_months(rule.start_date, 1, rule.day_of_month)
+
+
+def slot_dates(
+    rule: RecurrenceRule, until: date, *, after: date | None = None, limit: int | None = None,
+) -> tuple[list[date], bool]:
+    """Slot dates of `rule` (first on/after `start_date`, then every month /
+    year) in (`after`, min(until, end_date)]. Dates <= `after` are walked
+    but don't count toward `limit` (default MAX_SLOTS_PER_RUN). Returns
+    (dates, truncated) — truncated when the limit cut the list short.
+
+    No installment bound here: the parcela count is enforced by the
+    materializer, which hands out the free parcela numbers in order."""
+    cap = MAX_SLOTS_PER_RUN if limit is None else limit
+    last = min(until, rule.end_date) if rule.end_date else until
+    first = _first_slot(rule)
+    out: list[date] = []
+    i = 0
+    while True:
+        if rule.frequency == RecurrenceFrequency.YEARLY:
+            d = date(first.year + i, rule.month, rule.day_of_month)
+        else:
+            d = add_months(first, i, rule.day_of_month)
+        if d > last:
+            return out, False
+        i += 1
+        if after is not None and d <= after:
+            continue
+        if len(out) >= cap:
+            return out, True
+        out.append(d)
+
+
 def rule_slots(rule: RecurrenceRule, until: date) -> list[tuple[date, int | None]]:
-    """Every (due_date, installment_number) of `rule` from `start_date` up
-    to `until` (inclusive), respecting `end_date` and the installment count.
+    """Every (slot_date, installment_number) of a FRESH `rule` (no
+    occurrence yet) from `start_date` up to `until` (inclusive), respecting
+    `end_date` and the installment count.
 
     INSTALLMENT: the 1st slot on/after `start_date` is parcela
     `installment_paid + 1` (parcelas already paid before the rule existed
     are skipped), one per month until parcela `installment_total`."""
-    last = min(until, rule.end_date) if rule.end_date else until
-    out: list[tuple[date, int | None]] = []
-    if rule.frequency == RecurrenceFrequency.YEARLY:
-        d = date(rule.start_date.year, rule.month, rule.day_of_month)
-        if d < rule.start_date:
-            d = date(d.year + 1, rule.month, rule.day_of_month)
-        while d <= last and len(out) < MAX_SLOTS_PER_RUN:
-            out.append((d, None))
-            d = date(d.year + 1, rule.month, rule.day_of_month)
-        return out
+    dates, _ = slot_dates(rule, until)
+    if rule.frequency != RecurrenceFrequency.INSTALLMENT:
+        return [(d, None) for d in dates]
+    paid = rule.installment_paid or 0
+    return [(d, paid + i + 1) for i, d in enumerate(dates) if paid + i + 1 <= rule.installment_total]
 
-    first = add_months(rule.start_date, 0, rule.day_of_month)
-    if first < rule.start_date:
-        first = add_months(rule.start_date, 1, rule.day_of_month)
-    i = 0
-    while len(out) < MAX_SLOTS_PER_RUN:
-        d = add_months(first, i, rule.day_of_month)
-        if d > last:
-            break
-        if rule.frequency == RecurrenceFrequency.INSTALLMENT:
-            k = (rule.installment_paid or 0) + i + 1
-            if k > rule.installment_total:
-                break
-            out.append((d, k))
-        else:
-            out.append((d, None))
-        i += 1
-    return out
+
+def slot_period(rule: RecurrenceRule, d: date) -> tuple[int, ...]:
+    """Dedupe key: one occurrence per year-month (YEARLY: per year)."""
+    if rule.frequency == RecurrenceFrequency.YEARLY:
+        return (d.year,)
+    return (d.year, d.month)
 
 
 # ── materialization ───────────────────────────────────────────────────────────
 
-def _occurrence_from_rule(rule: RecurrenceRule, due: date, k: int | None, user_id: str | None) -> ScheduledTransaction:
+def _occurrence_from_rule(rule: RecurrenceRule, slot: date, k: int | None, user_id: str | None) -> ScheduledTransaction:
     return ScheduledTransaction(
         workspace_id=rule.workspace_id,
         direction=rule.direction,
@@ -192,7 +241,8 @@ def _occurrence_from_rule(rule: RecurrenceRule, due: date, k: int | None, user_i
         category_id=rule.category_id,
         amount=rule.amount,
         currency=rule.currency,
-        due_date=due,
+        due_date=slot,
+        slot_date=slot,
         installment_number=k,
         installment_total=rule.installment_total if k is not None else None,
         expected_account_id=rule.expected_account_id,
@@ -202,46 +252,76 @@ def _occurrence_from_rule(rule: RecurrenceRule, due: date, k: int | None, user_i
     )
 
 
+def free_installment_numbers(rule: RecurrenceRule, held: set[int]) -> list[int]:
+    """Parcela numbers still to be generated, ascending: (paid, total] minus
+    the numbers some existing occurrence already holds."""
+    if rule.frequency != RecurrenceFrequency.INSTALLMENT or not rule.installment_total:
+        return []
+    return [k for k in range((rule.installment_paid or 0) + 1, rule.installment_total + 1) if k not in held]
+
+
 def materialize_rule(
     db: Session, rule: RecurrenceRule, *, today: date | None = None, user_id: str | None = None,
 ) -> list[ScheduledTransaction]:
     """Ensure every slot of an active rule in (`materialized_through`,
-    today + 90d] exists. Idempotent: a slot whose due_date (or, for
-    INSTALLMENT, whose parcela number) already exists is skipped; the
-    watermark keeps postponed/deleted occurrences from coming back."""
+    today + 90d] exists. Dedupes by ORIGINAL slot (never by the current
+    due_date, which a postpone may have moved): a slot is skipped when its
+    slot_date — or, MONTHLY/INSTALLMENT, its year-month; YEARLY, its year —
+    is already held by an occurrence of the rule. INSTALLMENT hands out the
+    free parcela numbers in order (numbering continues from the first one
+    nobody holds) and stops when they run out. If the per-run cap is hit,
+    the watermark stops at the last generated slot."""
     if not rule.is_active:
         return []
     until = horizon(today)
     floor = rule.materialized_through
     existing = db.query(
-        ScheduledTransaction.due_date, ScheduledTransaction.installment_number,
+        ScheduledTransaction.slot_date, ScheduledTransaction.installment_number,
     ).filter(ScheduledTransaction.recurrence_rule_id == rule.id).all()
-    taken_dates = {d for d, _ in existing}
-    taken_k = {k for _, k in existing if k is not None}
+    taken_slots = {d for d, _ in existing}
+    taken_periods = {slot_period(rule, d) for d, _ in existing}
+    is_inst = rule.frequency == RecurrenceFrequency.INSTALLMENT
+    free_k = free_installment_numbers(rule, {k for _, k in existing if k is not None})
 
+    dates, truncated = slot_dates(rule, until, after=floor)
     created: list[ScheduledTransaction] = []
-    for due, k in rule_slots(rule, until):
-        if floor is not None and due <= floor:
+    for slot in dates:
+        if is_inst and not free_k:
+            break
+        if slot in taken_slots or slot_period(rule, slot) in taken_periods:
             continue
-        if due in taken_dates or (k is not None and k in taken_k):
-            continue
-        occ = _occurrence_from_rule(rule, due, k, user_id)
+        k = free_k.pop(0) if is_inst else None
+        occ = _occurrence_from_rule(rule, slot, k, user_id)
         db.add(occ)
         created.append(occ)
-        taken_dates.add(due)
-    if rule.materialized_through is None or rule.materialized_through < until:
-        rule.materialized_through = until
+        taken_slots.add(slot)
+        taken_periods.add(slot_period(rule, slot))
+    watermark = dates[-1] if truncated else until
+    if rule.materialized_through is None or rule.materialized_through < watermark:
+        rule.materialized_through = watermark
     db.flush()
     return created
 
 
+def is_dropped_on_edit(occ: ScheduledTransaction, today: date) -> bool:
+    """What a rule edit/pause deletes: PENDING whose slot AND due date are
+    both today or later. A postponed overdue occurrence (old slot) and one
+    moved to an already-past date survive, holding their slot."""
+    return (
+        occ.status == ScheduledStatus.PENDING
+        and occ.slot_date >= today
+        and occ.due_date >= today
+    )
+
+
 def drop_future_pending(db: Session, rule: RecurrenceRule, today: date | None = None) -> int:
-    """Delete the rule's PENDING occurrences with due_date >= today — the
-    only ones a rule edit may touch. Overdue/paid/canceled stay."""
+    """Delete the rule's future PENDING occurrences (`is_dropped_on_edit`) —
+    the only ones a rule edit may touch. Overdue/paid/canceled stay."""
     t = today or date.today()
     rows = db.query(ScheduledTransaction).filter(
         ScheduledTransaction.recurrence_rule_id == rule.id,
         ScheduledTransaction.status == ScheduledStatus.PENDING,
+        ScheduledTransaction.slot_date >= t,
         ScheduledTransaction.due_date >= t,
     ).all()
     for r in rows:
@@ -304,10 +384,12 @@ class RuleInput:
     notes: str | None = None
 
 
-def _normalize_rule(db: Session, rule: RecurrenceRule) -> None:
+def _normalize_rule(db: Session, rule: RecurrenceRule, *, account_changed: bool = True) -> None:
     rule.description = _clean_description(rule.description)
     rule.amount = positive_amount(rule.amount)
-    rule.currency = resolve_account_currency(db, rule.workspace_id, rule.expected_account_id, rule.currency)
+    rule.currency = resolve_account_currency(
+        db, rule.workspace_id, rule.expected_account_id, rule.currency, require_active=account_changed,
+    )
     if rule.frequency == RecurrenceFrequency.INSTALLMENT and rule.installment_paid is None:
         rule.installment_paid = 0
     validate_rule_shape(rule)
@@ -318,6 +400,8 @@ def create_rule(
     today: date | None = None,
 ) -> tuple[RecurrenceRule, list[ScheduledTransaction]]:
     _validate_refs(db, workspace_id, category_id=data.category_id, party_id=data.party_id)
+    if data.start_date is not None:
+        validate_start_date(data.start_date, today)
     rule = RecurrenceRule(workspace_id=workspace_id, created_by=user_id, updated_by=user_id)
     for f in RULE_FIELDS:
         setattr(rule, f, getattr(data, f))
@@ -332,10 +416,19 @@ def update_rule(
     today: date | None = None,
 ) -> tuple[int, list[ScheduledTransaction]]:
     """Partial update. Any change re-materializes the FUTURE PENDING
-    occurrences (dropped + rebuilt); everything else is untouched."""
+    occurrences (dropped + rebuilt, see `is_dropped_on_edit`); everything
+    else is untouched. Refs (account / category / party) and the start
+    date are only validated when they CHANGE, so a rule pointing to
+    something deactivated later can still be edited, paused, reactivated."""
+    t = today or date.today()
     for f in ("direction", "description", "amount", "frequency", "day_of_month", "start_date", "is_active"):
         if f in changes and changes[f] is None:
             raise ScheduleError(f"{f} não pode ser nulo.")
+    if "start_date" in changes and changes["start_date"] != rule.start_date:
+        validate_start_date(changes["start_date"], t)
+    account_changed = (
+        "expected_account_id" in changes and changes["expected_account_id"] != rule.expected_account_id
+    )
     if "category_id" in changes and changes["category_id"] != rule.category_id:
         _validate_refs(db, rule.workspace_id, category_id=changes["category_id"], party_id=None)
     if "party_id" in changes and changes["party_id"] != rule.party_id:
@@ -353,10 +446,9 @@ def update_rule(
             rule.installment_total = None
         if "installment_paid" not in changes:
             rule.installment_paid = None
-    _normalize_rule(db, rule)
+    _normalize_rule(db, rule, account_changed=account_changed)
     rule.updated_by = user_id
     db.flush()
-    t = today or date.today()
     if not rule.is_active:
         dropped = drop_future_pending(db, rule, t)
         rule.materialized_through = t - timedelta(days=1)
@@ -415,6 +507,7 @@ def create_one_off(
         amount=positive_amount(data.amount),
         currency=resolve_account_currency(db, workspace_id, data.expected_account_id, data.currency),
         due_date=data.due_date,
+        slot_date=data.due_date,
         expected_account_id=data.expected_account_id,
         status=ScheduledStatus.PENDING,
         notes=data.notes,
@@ -445,6 +538,9 @@ def update_occurrence(
         _validate_refs(db, occ.workspace_id, category_id=changes["category_id"], party_id=None)
     if "party_id" in changes and changes["party_id"] != occ.party_id:
         _validate_refs(db, occ.workspace_id, category_id=None, party_id=changes["party_id"])
+    account_changed = (
+        "expected_account_id" in changes and changes["expected_account_id"] != occ.expected_account_id
+    )
     if "expected_account_id" in changes and "currency" not in changes and changes["expected_account_id"]:
         occ.currency = None
     for f in OCC_EDITABLE:
@@ -452,7 +548,9 @@ def update_occurrence(
             setattr(occ, f, changes[f])
     occ.description = _clean_description(occ.description)
     occ.amount = positive_amount(occ.amount)
-    occ.currency = resolve_account_currency(db, occ.workspace_id, occ.expected_account_id, occ.currency)
+    occ.currency = resolve_account_currency(
+        db, occ.workspace_id, occ.expected_account_id, occ.currency, require_active=account_changed,
+    )
     occ.updated_by = user_id
     db.flush()
     return occ
@@ -481,31 +579,64 @@ def validate_settling_tx(db: Session, occ: ScheduledTransaction, tx: Transaction
         )
 
 
+def _tx_writable(db: Session, tx: Transaction) -> bool:
+    """A card tx inside a PAID invoice is frozen (same lock as
+    `transactions._ensure_invoice_writable`)."""
+    if not tx.invoice_id:
+        return True
+    inv = db.get(Invoice, tx.invoice_id)
+    return inv is None or inv.status != InvoiceStatus.PAID
+
+
+def _ref_active(db: Session, workspace_id: str, *, category_id=None, party_id=None) -> bool:
+    try:
+        _validate_refs(db, workspace_id, category_id=category_id, party_id=party_id)
+    except ScheduleError:
+        return False
+    return True
+
+
 def settle_occurrence(
     db: Session, occ: ScheduledTransaction, tx: Transaction, *,
-    paid_at: date | None = None, user_id: str | None = None,
+    paid_at: date | None = None, user_id: str | None = None, inherited: dict | None = None,
 ) -> ScheduledTransaction:
     """THE path that marks an occurrence PAID by a real transaction —
     manual "Marcar pago" with a link and the spec 71 import matcher both
     call this. Sets PAID + paid_at (default: tx date) +
-    paid_by_transaction_id; the tx inherits category/party when empty."""
+    paid_by_transaction_id.
+
+    The tx inherits the occurrence's category/party when its own is empty —
+    only if that category/party is still active and the tx is writable (not
+    in a PAID invoice). What was inherited goes into `inherited` (when
+    given) as {field: value}, so the caller can audit it."""
     _require_pending(occ, "quitar")
     validate_settling_tx(db, occ, tx)
     occ.status = ScheduledStatus.PAID
     occ.paid_at = paid_at or tx.event_date
     occ.paid_by_transaction_id = tx.id
     occ.updated_by = user_id
-    if tx.category_id is None and occ.category_id is not None:
-        tx.category_id = occ.category_id
-    if tx.party_id is None and occ.party_id is not None:
-        tx.party_id = occ.party_id
+    got: dict = {}
+    if _tx_writable(db, tx):
+        if (tx.category_id is None and occ.category_id is not None
+                and _ref_active(db, tx.workspace_id, category_id=occ.category_id)):
+            tx.category_id = occ.category_id
+            got["category_id"] = occ.category_id
+        if (tx.party_id is None and occ.party_id is not None
+                and _ref_active(db, tx.workspace_id, party_id=occ.party_id)):
+            tx.party_id = occ.party_id
+            got["party_id"] = occ.party_id
+    if got:
+        tx.updated_at = datetime.now(timezone.utc)
+        tx.updated_by = user_id
+    if inherited is not None:
+        inherited.update(got)
     db.flush()
     return occ
 
 
 def mark_paid(
     db: Session, occ: ScheduledTransaction, *, paid_at: date, transaction_id: str | None = None,
-    user_id: str | None = None,
+    user_id: str | None = None, inherited: dict | None = None,
 ) -> ScheduledTransaction:
     """Manual fallback. With a tx → `settle_occurrence`; without → PAID
     with no link (the UI warns that nothing ties it to the ledger)."""
@@ -513,7 +644,7 @@ def mark_paid(
         tx = db.get(Transaction, transaction_id)
         if not tx:
             raise ScheduleError("Movimentação não encontrada.")
-        return settle_occurrence(db, occ, tx, paid_at=paid_at, user_id=user_id)
+        return settle_occurrence(db, occ, tx, paid_at=paid_at, user_id=user_id, inherited=inherited)
     _require_pending(occ, "marcar como paga")
     occ.status = ScheduledStatus.PAID
     occ.paid_at = paid_at
@@ -526,17 +657,13 @@ def mark_paid(
 def postpone(
     db: Session, occ: ScheduledTransaction, new_due: date, *, user_id: str | None = None,
 ) -> ScheduledTransaction:
+    """Moves only `due_date` — `slot_date` stays, so the occurrence keeps
+    holding its original slot. Landing on another slot's date is fine: the
+    two occurrences stay distinct and the materializer still creates the
+    other slot (audit 2026-10-31)."""
     _require_pending(occ, "adiar")
     if new_due == occ.due_date:
         raise ScheduleError("Escolha uma data diferente do vencimento atual.")
-    if occ.recurrence_rule_id:
-        clash = db.query(ScheduledTransaction.id).filter(
-            ScheduledTransaction.recurrence_rule_id == occ.recurrence_rule_id,
-            ScheduledTransaction.due_date == new_due,
-            ScheduledTransaction.id != occ.id,
-        ).first()
-        if clash:
-            raise ScheduleConflict("Já existe uma ocorrência dessa recorrência nessa data.")
     occ.due_date = new_due
     occ.updated_by = user_id
     db.flush()
@@ -558,6 +685,42 @@ def delete_one_off(db: Session, occ: ScheduledTransaction) -> None:
         raise ScheduleConflict("Ocorrência de recorrência — use Cancelar (ou edite a recorrência).")
     db.delete(occ)
     db.flush()
+
+
+def undo_payment(db: Session, occ: ScheduledTransaction, *, user_id: str | None = None) -> dict:
+    """"Desfazer pagamento": PAID → PENDING, clearing paid_at and the tx
+    link. Returns what was cleared (for the audit). A category/party the tx
+    inherited on payment stays on the tx."""
+    if occ.status != ScheduledStatus.PAID:
+        raise ScheduleConflict("Só dá pra desfazer o pagamento de uma conta paga.")
+    before = {
+        "paid_at": occ.paid_at.isoformat() if occ.paid_at else None,
+        "paid_by_transaction_id": occ.paid_by_transaction_id,
+    }
+    occ.status = ScheduledStatus.PENDING
+    occ.paid_at = None
+    occ.paid_by_transaction_id = None
+    occ.updated_by = user_id
+    db.flush()
+    return before
+
+
+def unlink_on_sign_change(db: Session, tx: Transaction) -> list[ScheduledTransaction]:
+    """Hook for transaction edit: an occurrence settled by `tx` whose sign
+    no longer matches its direction goes back to PENDING, link cleared. An
+    amount-only change (same sign) keeps it PAID."""
+    rows = db.query(ScheduledTransaction).filter(ScheduledTransaction.paid_by_transaction_id == tx.id).all()
+    out = []
+    for r in rows:
+        ok = tx.amount < 0 if r.direction == ScheduledDirection.PAYABLE else tx.amount > 0
+        if not ok:
+            r.status = ScheduledStatus.PENDING
+            r.paid_at = None
+            r.paid_by_transaction_id = None
+            out.append(r)
+    if out:
+        db.flush()
+    return out
 
 
 def unlink_transaction(db: Session, tx_id: str) -> list[ScheduledTransaction]:

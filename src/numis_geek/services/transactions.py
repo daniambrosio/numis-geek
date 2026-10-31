@@ -438,9 +438,12 @@ EDITABLE_FIELDS = (
 
 def update_transaction(
     db: Session, tx: Transaction, changes: dict, *, user_id: str | None = None,
+    reverted_occurrences: list | None = None,
 ) -> list[Transaction]:
     """Apply a partial update. Returns every row touched (a transfer edit
-    also moves the other leg's date/description)."""
+    also moves the other leg's date/description). A conta a pagar/receber
+    (spec 72) settled by `tx` whose direction no longer matches the new
+    sign goes back to PENDING — appended to `reverted_occurrences`."""
     unknown = set(changes) - set(EDITABLE_FIELDS)
     if unknown:
         raise TransactionError(f"Campos não editáveis: {', '.join(sorted(unknown))}.")
@@ -477,6 +480,11 @@ def update_transaction(
         tx.description = changes["description"].strip()
     if "amount" in changes:
         tx.amount = Decimal(changes["amount"])
+        # Spec 72 (audit 2026-10-31): sign flip un-settles the occurrence.
+        from numis_geek.services.scheduled_transactions import unlink_on_sign_change
+        reverted = unlink_on_sign_change(db, tx)
+        if reverted_occurrences is not None:
+            reverted_occurrences.extend(reverted)
 
     # Re-roteia só quando a data MUDOU de fato: o composer manda event_date
     # sempre, e uma fatura escolhida à mão no create não pode ser desfeita

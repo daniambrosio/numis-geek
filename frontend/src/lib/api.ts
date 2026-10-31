@@ -407,6 +407,8 @@ export interface ScheduledTransactionOut {
   signed_amount: number
   currency: 'BRL' | 'USD'
   due_date: string
+  /** Slot original gerado pela recorrência (= due_date salvo se adiada). */
+  slot_date: string
   installment_number: number | null
   installment_total: number | null
   expected_account_id: string | null
@@ -447,6 +449,10 @@ export interface RecurrenceRuleOut {
   notes: string | null
   next_due_date: string | null
   pending_count: number
+  /** O que uma edição da regra MANTÉM (pagas, canceladas, em atraso) —
+   * a prévia do composer usa pra mostrar exatamente o que o backend cria. */
+  held_slot_dates: string[]
+  held_installment_numbers: number[]
   created_at: string
   updated_at: string
 }
@@ -1324,6 +1330,8 @@ export const api = {
     request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/postpone`, { method: 'POST', body: JSON.stringify({ due_date }) }),
   cancelScheduled: (id: string) =>
     request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/cancel`, { method: 'POST' }),
+  unpayScheduled: (id: string) =>
+    request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/unpay`, { method: 'POST' }),
   scheduledCandidates: (id: string) =>
     request<TransactionOut[]>(`/scheduled-transactions/${id}/candidate-transactions`),
   listRecurrenceRules: () => request<RecurrenceRuleOut[]>('/recurrence-rules'),
