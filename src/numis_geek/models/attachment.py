@@ -26,6 +26,7 @@ class AttachmentSourceType(str, enum.Enum):
     DISTRIBUTION = "distribution"
     SNAPSHOT = "snapshot"
     SNAPSHOT_ITEM = "snapshot_item"
+    TRANSACTION = "transaction"  # spec 70 — comprovante da movimentação
 
 
 class AttachmentKind(str, enum.Enum):

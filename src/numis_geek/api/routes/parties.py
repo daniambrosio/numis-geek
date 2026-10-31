@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.party import Party, PartyAlias, PartyKind
+from numis_geek.models.transaction import Transaction
 from numis_geek.models.user import User, UserRole
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
@@ -190,7 +191,7 @@ def merge_party(
 
     Re-points every referencing row to the survivor, moves aliases, then
     hard-deletes the source. Spec 68: the tables re-pointed grow as the
-    trilha lands — transaction.party_id (spec 70), recurrence_rule /
+    trilha lands — transaction.party_id (spec 70, done), recurrence_rule /
     scheduled_transaction (spec 72) are re-pointed here once they exist.
     """
     _require_admin(current_user)
@@ -205,8 +206,9 @@ def merge_party(
     # an alias points at exactly one party).
     db.query(PartyAlias).filter(PartyAlias.party_id == source.id).update({"party_id": survivor.id})
 
+    db.query(Transaction).filter(Transaction.party_id == source.id).update({"party_id": survivor.id})
+
     # Future re-points land here as the referencing tables ship:
-    #   transaction.party_id            (spec 70)
     #   recurrence_rule.party_id        (spec 72)
     #   scheduled_transaction.party_id  (spec 72)
 

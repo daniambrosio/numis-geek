@@ -30,10 +30,15 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    # SQLite: o app segue escrevendo durante o deploy — espera o lock em vez
+    # de cair com "database is locked" (incidente 2026-10-30, spec 65).
+    connect_args = {"timeout": 30} if url.startswith("sqlite") else {}
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

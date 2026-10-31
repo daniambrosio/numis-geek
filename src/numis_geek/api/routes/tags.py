@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.tag import Tag
+from numis_geek.models.transaction import transaction_tag
 from numis_geek.models.user import User, UserRole
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
@@ -135,9 +136,12 @@ def delete_tag(
     db: Session = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Spec 70 adds the transaction_tag usage check here (409 when in use)."""
+    """409 when the tag is in use by any transaction (spec 70)."""
     _require_admin(current_user)
     t = _get_scoped_or_404(db, tag_id, current_user)
+    in_use = db.query(transaction_tag.c.transaction_id).filter(transaction_tag.c.tag_id == t.id).first()
+    if in_use:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tag em uso por movimentações — remova das movimentações antes.")
     _audit(db, current_user, "tag.deleted", t)
     db.delete(t)
     db.flush()

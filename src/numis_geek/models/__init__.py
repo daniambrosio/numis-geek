@@ -61,6 +61,12 @@ from numis_geek.models.category import Category, CategoryKind
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
 from numis_geek.models.party import Party, PartyAlias, PartyKind
 from numis_geek.models.tag import Tag
+from numis_geek.models.transaction import (
+    Transaction,
+    TransactionSourceType,
+    FxSource,
+    transaction_tag,
+)
 
 __all__ = [
     "Workspace",
@@ -119,4 +125,8 @@ __all__ = [
     "PartyAlias",
     "PartyKind",
     "Tag",
+    "Transaction",
+    "TransactionSourceType",
+    "FxSource",
+    "transaction_tag",
 ]

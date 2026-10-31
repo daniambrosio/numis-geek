@@ -86,6 +86,8 @@ from numis_geek.models.portfolio_snapshot import (  # noqa: E402
 )
 _SOURCE_MODEL[AttachmentSourceType.SNAPSHOT] = _SnapModel
 _SOURCE_MODEL[AttachmentSourceType.SNAPSHOT_ITEM] = _SnapItemModel
+from numis_geek.models.transaction import Transaction as _TxModel  # noqa: E402
+_SOURCE_MODEL[AttachmentSourceType.TRANSACTION] = _TxModel
 
 
 def _parse_source_type(value: str) -> AttachmentSourceType:

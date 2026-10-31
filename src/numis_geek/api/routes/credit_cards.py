@@ -11,8 +11,11 @@ from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Currency
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
 from numis_geek.models.financial_institution import FinancialInstitution
+from numis_geek.models.transaction import Transaction
 from numis_geek.models.user import User, UserRole
+from numis_geek.services import transactions as tx_svc
 from numis_geek.services.audit import AuditService
+from numis_geek.services.transactions import invoice_open_total
 from numis_geek.services.auth import UserContext
 
 router = APIRouter(prefix="/credit-cards", tags=["credit-cards"])
@@ -129,6 +132,14 @@ class InvoiceCreateRequest(BaseModel):
         return v
 
 
+class InvoicePayRequest(BaseModel):
+    checking_account_id: str
+    paid_on: date
+    amount: Decimal | None = None   # na moeda da conta; default = total da fatura
+    fx_rate: Decimal | None = None
+    category_id: str | None = None
+
+
 class InvoiceCloseRequest(BaseModel):
     total_amount: Decimal | None = None  # opcional: congela valor informado
 
@@ -175,13 +186,17 @@ def _get_invoice_or_404(db: Session, invoice_id: str, current_user: UserContext)
 
 
 def _open_total(db: Session, card: CreditCardAccount) -> Decimal:
-    """Soma |tx| da invoice OPEN — chega com a spec 70. Por ora, o
-    total congelado da OPEN se existir (criada manual/import), senão 0."""
+    """Valor da fatura OPEN corrente (a de fechamento mais próximo): soma
+    das tx dela (spec 70); sem tx, o total informado à mão, senão 0."""
     inv = db.query(Invoice).filter(
         Invoice.credit_card_account_id == card.id,
         Invoice.status == InvoiceStatus.OPEN,
-    ).order_by(Invoice.close_date.desc()).first()
-    return inv.total_amount if inv and inv.total_amount is not None else Decimal("0")
+    ).order_by(Invoice.close_date.asc()).first()
+    if not inv:
+        return Decimal("0")
+    if db.query(Transaction.id).filter(Transaction.invoice_id == inv.id).first():
+        return invoice_open_total(db, inv)
+    return inv.total_amount if inv.total_amount is not None else Decimal("0")
 
 
 def _audit(db: Session, current_user: UserContext, action: str, resource_type: str, resource_id: str, ws_id: str, details: dict) -> None:
@@ -402,12 +417,13 @@ def close_invoice(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only OPEN invoices can be closed.")
     if body.total_amount is not None:
         inv.total_amount = body.total_amount
-    # Spec 70: quando as tx existirem, fechar sem total explícito congela
-    # a soma |tx| do período. Por ora exige total (ou já preenchido).
+    elif db.query(Transaction.id).filter(Transaction.invoice_id == inv.id).first():
+        # Spec 70: sem total explícito, congela a soma das tx da fatura.
+        inv.total_amount = invoice_open_total(db, inv)
     if inv.total_amount is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="total_amount required to close (transaction-derived totals arrive with spec 70).",
+            detail="Fatura sem lançamentos — informe o total para fechar.",
         )
     inv.status = InvoiceStatus.CLOSED
     inv.updated_at = datetime.now(timezone.utc)
@@ -415,4 +431,34 @@ def close_invoice(
     db.flush()
     card = db.get(CreditCardAccount, inv.credit_card_account_id)
     _audit(db, current_user, "invoice.closed", "invoice", inv.id, inv.workspace_id, {"total": float(inv.total_amount)})
+    return InvoiceOut.from_orm(inv, card.name if card else "—")
+
+
+@invoice_router.post("/{invoice_id}/pay", response_model=InvoiceOut)
+def pay_invoice(
+    invoice_id: str,
+    body: InvoicePayRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 70 — único caminho que quita fatura (contrato pay_invoice)."""
+    inv = _get_invoice_or_404(db, invoice_id, current_user)
+    try:
+        tx = tx_svc.pay_invoice(
+            db, inv,
+            checking_account_id=body.checking_account_id,
+            paid_on=body.paid_on,
+            amount=body.amount,
+            fx_rate=body.fx_rate,
+            category_id=body.category_id,
+            user_id=current_user.user_id,
+        )
+    except tx_svc.TransactionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except tx_svc.TransactionError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    card = db.get(CreditCardAccount, inv.credit_card_account_id)
+    _audit(db, current_user, "invoice.paid", "invoice", inv.id, inv.workspace_id, {
+        "transaction_id": tx.id, "amount": str(-tx.amount), "paid_on": body.paid_on.isoformat(),
+    })
     return InvoiceOut.from_orm(inv, card.name if card else "—")

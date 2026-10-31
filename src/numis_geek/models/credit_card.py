@@ -81,8 +81,12 @@ class Invoice(Base):
         Enum(InvoiceStatus), nullable=False, default=InvoiceStatus.OPEN,
     )
     paid_at: Mapped[date | None] = mapped_column(Date, nullable=True)
-    # paid_by_transaction_id chega na spec 70 (batch_alter) — espelho
-    # denormalizado do pagamento; lado autoritativo é transaction.paid_invoice_id.
+    # Spec 70 — espelho denormalizado do pagamento, mantido SÓ pelo serviço
+    # pay_invoice; lado autoritativo é transaction.paid_invoice_id.
+    paid_by_transaction_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("transaction.id", use_alter=True, name="fk_invoice_paid_by_transaction"),
+        nullable=True,
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(

@@ -164,12 +164,18 @@ def test_due_before_close_422(client, seed):
 
 
 def test_open_invoice_total_flows_to_card(client, seed):
-    # invoice OPEN com total manual reflete no derived do cartão
+    # Spec 70: com parcelas existem várias OPEN (as futuras); a "fatura
+    # aberta" do cartão é a de fechamento mais próximo. Total manual (sem
+    # tx) reflete no derived do cartão.
     client.post(f"/api/invoices/{seed['inv_id']}/close", json={}, headers=auth(seed["admin_token"]))  # sem total → 422, invoice segue OPEN
     r = client.post(f"/api/credit-cards/{seed['card_id']}/invoices", json={
-        "close_date": "2026-09-05", "due_date": "2026-09-15", "total_amount": "1000",
+        "close_date": "2026-07-05", "due_date": "2026-07-15", "total_amount": "1000",
     }, headers=auth(seed["admin_token"]))
     assert r.status_code == 201
+    later = client.post(f"/api/credit-cards/{seed['card_id']}/invoices", json={
+        "close_date": "2026-09-05", "due_date": "2026-09-15", "total_amount": "50",
+    }, headers=auth(seed["admin_token"]))
+    assert later.status_code == 201
     r2 = client.get("/api/credit-cards", headers=auth(seed["admin_token"]))
     card = next(c for c in r2.json() if c["id"] == seed["card_id"])
     assert card["open_invoice_total"] == 1000.0
@@ -206,7 +212,7 @@ def test_list_invoices_filters(client, seed):
     assert all(i["status"] == "CLOSED" for i in r.json())
     assert len(r.json()) == 1
     r2 = client.get(f"/api/invoices?card_id={seed['card_id']}", headers=auth(seed["admin_token"]))
-    assert len(r2.json()) == 2
+    assert len(r2.json()) == 3
     r3 = client.get("/api/invoices?status=NOPE", headers=auth(seed["admin_token"]))
     assert r3.status_code == 422
 

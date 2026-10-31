@@ -143,25 +143,34 @@ if [ "$MIGRATIONS_PENDING" = "true" ]; then
 fi
 
 # ── 5. Run migrations ─────────────────────────────────────────────────────────
+# `if !` keeps a failed migration from tripping `set -e` (pipefail carries
+# alembic's exit through tee) — it must fall through to the rollback below,
+# not abort with the repo on the new commit and the old container running.
+MIGRATION_OK=true
 if [ "$MIGRATIONS_PENDING" = "true" ]; then
   log "running alembic upgrade head"
-  docker compose -f "$CF" run --rm -T numis-geek uv run alembic upgrade head 2>&1 | tee -a "$LOG"
+  if ! docker compose -f "$CF" run --rm -T numis-geek uv run alembic upgrade head 2>&1 | tee -a "$LOG"; then
+    MIGRATION_OK=false
+    log "migration FAILED"
+  fi
 fi
 
-# ── 6. Restart container ──────────────────────────────────────────────────────
-log "restarting container"
-docker compose -f "$CF" up -d 2>&1 | tee -a "$LOG"
-
-# ── 7. Health check (6 attempts × 8 s = 48 s window) ─────────────────────────
 HEALTHY=false
-for i in 1 2 3 4 5 6; do
-  sleep 8
-  if curl -sf http://localhost:8100/health >/dev/null 2>&1; then
-    HEALTHY=true
-    break
-  fi
-  log "health check $i/6 failed, retrying..."
-done
+if [ "$MIGRATION_OK" = "true" ]; then
+  # ── 6. Restart container ────────────────────────────────────────────────────
+  log "restarting container"
+  docker compose -f "$CF" up -d 2>&1 | tee -a "$LOG"
+
+  # ── 7. Health check (6 attempts × 8 s = 48 s window) ───────────────────────
+  for i in 1 2 3 4 5 6; do
+    sleep 8
+    if curl -sf http://localhost:8100/health >/dev/null 2>&1; then
+      HEALTHY=true
+      break
+    fi
+    log "health check $i/6 failed, retrying..."
+  done
+fi
 
 if [ "$HEALTHY" = "true" ]; then
   log "health check OK"
@@ -170,7 +179,7 @@ if [ "$HEALTHY" = "true" ]; then
 fi
 
 # ── 8. Rollback ───────────────────────────────────────────────────────────────
-log "health check FAILED — rolling back to $OLD_SHORT"
+log "deploy FAILED (migration_ok=$MIGRATION_OK healthy=$HEALTHY) — rolling back to $OLD_SHORT"
 
 # Restore DB if we ran a migration
 if [ "$MIGRATIONS_PENDING" = "true" ] && [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then

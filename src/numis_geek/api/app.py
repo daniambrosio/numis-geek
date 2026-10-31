@@ -35,6 +35,7 @@ from numis_geek.api.routes import (
     snapshots,
     sysadmin_logs,
     tags,
+    transactions,
     target_allocation,
     users,
     valuation,
@@ -102,6 +103,7 @@ app.include_router(parties.router, prefix="/api")
 app.include_router(tags.router, prefix="/api")
 app.include_router(credit_cards.router, prefix="/api")
 app.include_router(credit_cards.invoice_router, prefix="/api")
+app.include_router(transactions.router, prefix="/api")
 
 
 @app.get("/health")

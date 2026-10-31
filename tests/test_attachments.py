@@ -280,7 +280,7 @@ def test_upload_rejects_unknown_source(client, seed):
 def test_upload_rejects_invalid_source_type(client, seed):
     r = client.post(
         "/api/attachments",
-        data={"source_type": "transaction", "source_id": seed["asset_a"]},
+        data={"source_type": "payslip", "source_id": seed["asset_a"]},
         files={"file": ("logo.png", io.BytesIO(png_bytes()), "image/png")},
         headers=auth(seed["admin_a_token"]),
     )
