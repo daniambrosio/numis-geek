@@ -86,13 +86,14 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   `Saldo em Conta (Nubank)`, com os lançamentos de 05–07/08 e os itens no fechamento
   de ago/26.
 
-- [ ] `[claude]` **Spec 80 fase 2 — junto com a spec 70.** Com `transaction` no ar, o
-  fechamento passa a puxar o saldo derivado (`opening_balance` + Σ transactions) dos 5
-  ativos CASH que hoje têm `linked_account_id`, em vez do valor digitado. E os 3 fluxos
-  de caixa desativados na fase 1 viram `transaction`:
-  `Saldo em Conta (Wise)` BUY R$ 6.050,00 (01/12/2025) e SELL R$ 4.600,00 (10/07/2026);
-  `Saldo em Conta Nomad` BUY US$ 1.007,38 (27/06/2026). A UI pra gerenciar o vínculo
-  também entra aí (hoje são 5 ativos e o vínculo não muda).
+- [ ] `[claude]` **Spec 80 fase 2 — junto com a spec 70.** Escopo detalhado na spec 70
+  (seção "Fase 2 da spec 80", decidido 2026-10-30): saldo derivado no fechamento aberto,
+  conferência mês a mês contra os CLOSED, abertura editável (vai recuar com os extratos
+  antigos), UI do vínculo, trava de lançamento em ativo vinculado e migração dos **4**
+  fluxos de caixa (inclui o BUY Wise R$ 5.279,79 de 20/08, lançado depois da spec 80).
+- [ ] `[user]` **Extratos antigos das contas correntes.** Mandar os extratos mais antigos
+  que tiver de cada conta — definem o saldo de abertura (spec 70) e entram pelo import
+  (spec 71).
 
 - [ ] `[user]` `[claude]` **`Terreno Paranapanema` em set/25 — item incoerente.** Único item
   pulado pela correção ampla: o terreno foi vendido em 2025-09-30 (SELL R$ 50.000, basis
