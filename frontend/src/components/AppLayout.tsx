@@ -12,6 +12,7 @@ import { getComfort, toggleComfort } from '../lib/comfort'
 import { clearToken, jwtMatchesMe, type UserOut } from '../lib/api'
 import { resetFiLogos } from '../lib/fiLogos'
 import { useInReviewSnapshot } from '../lib/useInReviewSnapshot'
+import { useCardCounts } from '../lib/useCardCounts'
 import PriceRefresh from './PriceRefresh'
 import VersionMismatchBanner from './VersionMismatchBanner'
 
@@ -128,6 +129,7 @@ export default function AppLayout({ user, children }: Props) {
   const novoRef = useRef<HTMLDivElement>(null)
   const novoDefault = defaultNovoItem(location.pathname)
   const inReview = useInReviewSnapshot()
+  const cardCounts = useCardCounts()
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -232,6 +234,9 @@ export default function AppLayout({ user, children }: Props) {
             }
             const active = location.pathname === n.href
             const Icon = n.icon
+            const count = n.href === '/credit-cards' ? cardCounts?.cards
+              : n.href === '/invoices' ? cardCounts?.invoices
+              : undefined
             return (
               <Link
                 key={n.href}
@@ -251,6 +256,17 @@ export default function AppLayout({ user, children }: Props) {
                     data-testid="sidebar-snapshot-badge"
                   >
                     !
+                  </span>
+                )}
+                {count != null && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded-md tnum font-semibold ${
+                      active
+                        ? 'bg-indigo-500/20 text-indigo-700 dark:text-indigo-300'
+                        : 'bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`}
+                    data-testid={`sidebar-count-${n.href.slice(1)}`}
+                  >
+                    {count}
                   </span>
                 )}
                 {n.placeholder && (

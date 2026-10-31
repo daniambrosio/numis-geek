@@ -13,6 +13,7 @@ import { Card, SectionTitle, FILogo, Field, INPUT_CLS } from '../components/ui'
 import KpiTile from '../components/KpiTile'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
+import { CARDS_CHANGED_EVENT } from '../lib/useCardCounts'
 
 export function fmtMoney(n: number, ccy: string) {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: ccy })
@@ -197,6 +198,7 @@ export default function CreditCards() {
     } else {
       const created = await api.createCreditCard(data)
       setCards(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      window.dispatchEvent(new Event(CARDS_CHANGED_EVENT))
     }
   }
 

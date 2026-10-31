@@ -100,12 +100,9 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   quantidade 0 e valor de mercado R$ 20.000. Recomputar daria qty 1 e invested
   −R$ 49.985,00 — ou seja, o item está errado de outro jeito e precisa de decisão: sai do
   fechamento de set/25 ou fica com que valor?
-- [ ] `[user]` `[claude]` **Specs 68/69 — deltas do Done a decidir (audit 2026-08-18):**
-  4 páginas sem `.test.tsx` próprio (CreditCards, CreditCardDetail — incl. fluxo
-  "Fechar fatura" —, Categories, Parties) apesar de os deliverables prometerem testes;
-  + badge de contagem no sidebar (spec 69) nunca feito; + spec 68 não reflete 4b014a6
-  (badge de tipo em todas as subs). Entregar os gaps ou anotá-los como delta declarado
-  no status das specs.
+- [x] ~~**Specs 68/69 — deltas do Done.**~~ Fechados em 2026-10-30: testes das 4 páginas
+  (CreditCards, CreditCardDetail com "Fechar fatura", Categories, Parties), badge de
+  contagem de Cartões/Faturas no sidebar e spec 68 atualizada com o 4b014a6.
 
 ## Import / extração
 

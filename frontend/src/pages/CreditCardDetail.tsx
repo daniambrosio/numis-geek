@@ -13,6 +13,7 @@ import AppLayout from '../components/AppLayout'
 import { Card, SectionTitle, FILogo, Field, INPUT_CLS } from '../components/ui'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
+import { CARDS_CHANGED_EVENT } from '../lib/useCardCounts'
 import { fmtMoney, fmtPct } from './CreditCards'
 import KpiTile from '../components/KpiTile'
 
@@ -219,7 +220,11 @@ export default function CreditCardDetail() {
 
       {newInvoiceOpen && card && (
         <InvoiceModal
-          onSave={async data => { await api.createInvoice(card.id, data); await reload() }}
+          onSave={async data => {
+            await api.createInvoice(card.id, data)
+            window.dispatchEvent(new Event(CARDS_CHANGED_EVENT))
+            await reload()
+          }}
           onClose={() => setNewInvoiceOpen(false)}
         />
       )}
