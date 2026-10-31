@@ -32,6 +32,7 @@ from numis_geek.api.routes import (
     portfolio_optimize,
     prices,
     ptax,
+    scheduled_transactions,
     snapshots,
     sysadmin_logs,
     tags,
@@ -104,6 +105,8 @@ app.include_router(tags.router, prefix="/api")
 app.include_router(credit_cards.router, prefix="/api")
 app.include_router(credit_cards.invoice_router, prefix="/api")
 app.include_router(transactions.router, prefix="/api")
+app.include_router(scheduled_transactions.rules_router, prefix="/api")
+app.include_router(scheduled_transactions.router, prefix="/api")
 
 
 @app.get("/health")

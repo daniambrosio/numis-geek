@@ -472,11 +472,22 @@ def delete_transaction(
 ):
     tx = _get_or_404(db, tx_id, current_user)
     ws = tx.workspace_id
+    reverted: list = []
     try:
-        rows = svc.delete_transaction(db, tx, cascade=cascade)
+        rows = svc.delete_transaction(db, tx, cascade=cascade, reverted_occurrences=reverted)
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.deleted", rows)
+    actor = db.get(User, current_user.user_id)
+    for occ in reverted:
+        AuditService(db).log(
+            user_email=actor.email if actor else current_user.user_id,
+            action="scheduled_transaction.payment_reverted",
+            resource_type="scheduled_transaction",
+            resource_id=occ.id,
+            details={"description": occ.description, "due_date": occ.due_date.isoformat(), "reason": "transaction deleted"},
+            workspace_id=ws,
+        )
     for r in rows:
         if r.paid_invoice_id:
             _audit_invoice(db, current_user, "invoice.payment_reverted", r.paid_invoice_id, ws, {

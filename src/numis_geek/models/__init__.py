@@ -67,6 +67,13 @@ from numis_geek.models.transaction import (
     FxSource,
     transaction_tag,
 )
+from numis_geek.models.scheduled_transaction import (
+    RecurrenceRule,
+    RecurrenceFrequency,
+    ScheduledDirection,
+    ScheduledStatus,
+    ScheduledTransaction,
+)
 
 __all__ = [
     "Workspace",
@@ -129,4 +136,9 @@ __all__ = [
     "TransactionSourceType",
     "FxSource",
     "transaction_tag",
+    "RecurrenceRule",
+    "RecurrenceFrequency",
+    "ScheduledDirection",
+    "ScheduledStatus",
+    "ScheduledTransaction",
 ]

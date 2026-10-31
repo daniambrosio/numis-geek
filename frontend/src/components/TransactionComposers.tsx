@@ -44,7 +44,7 @@ export interface AttachmentProps {
 
 /* ── shell ───────────────────────────────────────────────────────────── */
 
-function ComposerShell({
+export function ComposerShell({
   formId, title, subtitle, onClose, onSubmit, valid, saving, saveLabel, children,
 }: {
   formId: string
@@ -120,7 +120,7 @@ function ComposerShell({
 
 /* ── primitives ──────────────────────────────────────────────────────── */
 
-function Field({ label, hint, span2, children }: { label: string; hint?: string; span2?: boolean; children: React.ReactNode }) {
+export function Field({ label, hint, span2, children }: { label: string; hint?: string; span2?: boolean; children: React.ReactNode }) {
   return (
     <div className={span2 ? 'col-span-2' : undefined}>
       <div className="flex items-baseline justify-between mb-1.5">
@@ -132,10 +132,10 @@ function Field({ label, hint, span2, children }: { label: string; hint?: string;
   )
 }
 
-const inputCls =
+export const inputCls =
   'w-full h-9 px-3 text-[13px] rounded-md bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-800 text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60'
 
-function Preview({ children }: { children: React.ReactNode }) {
+export function Preview({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-lg bg-indigo-500/5 border border-indigo-500/20 p-3.5 space-y-2">
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold text-indigo-500 dark:text-indigo-400">
@@ -146,7 +146,7 @@ function Preview({ children }: { children: React.ReactNode }) {
   )
 }
 
-function PreviewLine({ label, children }: { label: string; children: React.ReactNode }) {
+export function PreviewLine({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between text-[12px]">
       <span className="text-gray-500 dark:text-gray-400">{label}</span>

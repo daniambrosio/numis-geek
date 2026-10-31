@@ -531,9 +531,13 @@ def installment_children(db: Session, parent_id: str) -> list[Transaction]:
     return db.query(Transaction).filter(Transaction.parent_transaction_id == parent_id).all()
 
 
-def delete_transaction(db: Session, tx: Transaction, *, cascade: bool = False) -> list[Transaction]:
+def delete_transaction(
+    db: Session, tx: Transaction, *, cascade: bool = False, reverted_occurrences: list | None = None,
+) -> list[Transaction]:
     """Delete `tx` (and its transfer pair / installment children when
-    `cascade`). Undoes an invoice payment. Returns the deleted rows."""
+    `cascade`). Undoes an invoice payment, and puts every conta a
+    pagar/receber (spec 72) it settled back to PENDING — appended to
+    `reverted_occurrences` when given. Returns the deleted rows."""
     rows = [tx]
     if tx.transfer_group_id:
         rows = transfer_legs(db, tx.transfer_group_id)
@@ -557,6 +561,13 @@ def delete_transaction(db: Session, tx: Transaction, *, cascade: bool = False) -
                 inv.paid_at = None
                 inv.paid_by_transaction_id = None
                 inv.updated_at = datetime.now(timezone.utc)
+    # Spec 72 — occurrences settled by these tx go back to PENDING (before
+    # the delete, so the FK never dangles).
+    from numis_geek.services.scheduled_transactions import unlink_transaction
+    for r in rows:
+        reverted = unlink_transaction(db, r.id)
+        if reverted_occurrences is not None:
+            reverted_occurrences.extend(reverted)
     db.flush()
     # children before the parent (self-FK)
     for r in sorted(rows, key=lambda x: x.parent_transaction_id is None):

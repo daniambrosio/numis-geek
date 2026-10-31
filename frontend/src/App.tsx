@@ -26,6 +26,7 @@ import CreditCards from './pages/CreditCards'
 import CreditCardDetail from './pages/CreditCardDetail'
 import Invoices from './pages/Invoices'
 import Transactions from './pages/Transactions'
+import ScheduledTransactions from './pages/ScheduledTransactions'
 import AccountDetail from './pages/AccountDetail'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
@@ -57,6 +58,7 @@ export default function App() {
 
         {/* Caixa & Cartões */}
         <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
+        <Route path="/scheduled-transactions" element={<PrivateRoute><ScheduledTransactions /></PrivateRoute>} />
         <Route path="/credit-cards" element={<PrivateRoute><CreditCards /></PrivateRoute>} />
         <Route path="/credit-cards/:id" element={<PrivateRoute><CreditCardDetail /></PrivateRoute>} />
         <Route path="/invoices" element={<PrivateRoute><Invoices /></PrivateRoute>} />

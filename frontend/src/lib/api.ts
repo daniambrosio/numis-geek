@@ -384,6 +384,165 @@ function txQuery(f: TransactionFilters): string {
   return s ? `?${s}` : ''
 }
 
+// ── Spec 72 — contas a pagar/receber ───────────────────────────────────────
+
+export type ScheduledDirection = 'PAYABLE' | 'RECEIVABLE'
+export type RecurrenceFrequency = 'MONTHLY' | 'YEARLY' | 'INSTALLMENT'
+export type ScheduledStatus = 'PENDING' | 'PAID' | 'CANCELED'
+
+export interface ScheduledTransactionOut {
+  id: string
+  workspace_id: string
+  direction: ScheduledDirection
+  recurrence_rule_id: string | null
+  frequency: RecurrenceFrequency | null
+  description: string
+  party_id: string | null
+  party_name: string | null
+  category_id: string | null
+  category_name: string | null
+  category_color: string | null
+  /** Sempre positivo — `direction` dá o sinal (`signed_amount`). */
+  amount: number
+  signed_amount: number
+  currency: 'BRL' | 'USD'
+  due_date: string
+  installment_number: number | null
+  installment_total: number | null
+  expected_account_id: string | null
+  expected_account_name: string | null
+  status: ScheduledStatus
+  /** PENDING com vencimento passado vira OVERDUE (derivado, não gravado). */
+  display_status: ScheduledStatus | 'OVERDUE'
+  is_overdue: boolean
+  paid_at: string | null
+  paid_by_transaction_id: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface RecurrenceRuleOut {
+  id: string
+  workspace_id: string
+  direction: ScheduledDirection
+  description: string
+  party_id: string | null
+  party_name: string | null
+  category_id: string | null
+  category_name: string | null
+  category_color: string | null
+  amount: number
+  currency: 'BRL' | 'USD'
+  frequency: RecurrenceFrequency
+  day_of_month: number
+  month: number | null
+  installment_total: number | null
+  installment_paid: number | null
+  expected_account_id: string | null
+  expected_account_name: string | null
+  start_date: string
+  end_date: string | null
+  is_active: boolean
+  notes: string | null
+  next_due_date: string | null
+  pending_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RecurrenceRulePayload {
+  direction?: ScheduledDirection
+  description?: string
+  amount?: number
+  currency?: 'BRL' | 'USD' | null
+  frequency?: RecurrenceFrequency
+  day_of_month?: number
+  month?: number | null
+  installment_total?: number | null
+  installment_paid?: number | null
+  start_date?: string
+  end_date?: string | null
+  party_id?: string | null
+  category_id?: string | null
+  expected_account_id?: string | null
+  is_active?: boolean
+  notes?: string | null
+}
+
+export interface RuleWriteOut {
+  rule: RecurrenceRuleOut
+  created_count: number
+  dropped_count: number
+}
+
+export interface ScheduledCreatePayload {
+  direction: ScheduledDirection
+  description: string
+  amount: number
+  currency?: 'BRL' | 'USD' | null
+  due_date: string
+  party_id?: string | null
+  category_id?: string | null
+  expected_account_id?: string | null
+  notes?: string | null
+}
+
+export interface ScheduledUpdatePayload {
+  description?: string
+  amount?: number
+  currency?: 'BRL' | 'USD' | null
+  party_id?: string | null
+  category_id?: string | null
+  expected_account_id?: string | null
+  notes?: string | null
+}
+
+export interface ScheduledFilters {
+  from?: string
+  to?: string
+  status?: ScheduledStatus[]
+  direction?: ScheduledDirection
+  recurrence_rule_id?: string
+  overdue?: boolean
+}
+
+export interface ForecastAccountOut {
+  account_id: string
+  account_name: string
+  currency: 'BRL' | 'USD'
+  payable: number
+  receivable: number
+  net: number
+}
+
+export interface ForecastMonthOut {
+  month: string
+  count: number
+  payable: MoneyPair
+  receivable: MoneyPair
+  net: MoneyPair
+  by_account: ForecastAccountOut[]
+}
+
+export interface ForecastOut {
+  months: ForecastMonthOut[]
+  overdue: { count: number; payable: MoneyPair; receivable: MoneyPair }
+  fx_rate: number | null
+}
+
+function scheduledQuery(f: ScheduledFilters): string {
+  const qs = new URLSearchParams()
+  if (f.from) qs.set('from', f.from)
+  if (f.to) qs.set('to', f.to)
+  f.status?.forEach(s => qs.append('status', s))
+  if (f.direction) qs.set('direction', f.direction)
+  if (f.recurrence_rule_id) qs.set('recurrence_rule_id', f.recurrence_rule_id)
+  if (f.overdue !== undefined) qs.set('overdue', String(f.overdue))
+  const s = qs.toString()
+  return s ? `?${s}` : ''
+}
+
 export interface InvoiceOut {
   id: string
   workspace_id: string
@@ -1147,6 +1306,33 @@ export const api = {
     request<void>(`/transactions/${id}${cascade ? '?cascade=true' : ''}`, { method: 'DELETE' }),
   createTransfer: (data: TransferPayload) =>
     request<TransactionOut[]>('/transactions/transfer', { method: 'POST', body: JSON.stringify(data) }),
+
+  // ── Spec 72 — contas a pagar/receber ───────────────────────────────────────
+  listScheduled: (f: ScheduledFilters = {}) =>
+    request<ScheduledTransactionOut[]>(`/scheduled-transactions${scheduledQuery(f)}`),
+  scheduledForecast: (months = 3) =>
+    request<ForecastOut>(`/scheduled-transactions/forecast?months=${months}`),
+  createScheduled: (data: ScheduledCreatePayload) =>
+    request<ScheduledTransactionOut>('/scheduled-transactions', { method: 'POST', body: JSON.stringify(data) }),
+  updateScheduled: (id: string, data: ScheduledUpdatePayload) =>
+    request<ScheduledTransactionOut>(`/scheduled-transactions/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteScheduled: (id: string) =>
+    request<void>(`/scheduled-transactions/${id}`, { method: 'DELETE' }),
+  payScheduled: (id: string, data: { paid_at: string; transaction_id?: string | null }) =>
+    request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/pay`, { method: 'POST', body: JSON.stringify(data) }),
+  postponeScheduled: (id: string, due_date: string) =>
+    request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/postpone`, { method: 'POST', body: JSON.stringify({ due_date }) }),
+  cancelScheduled: (id: string) =>
+    request<ScheduledTransactionOut>(`/scheduled-transactions/${id}/cancel`, { method: 'POST' }),
+  scheduledCandidates: (id: string) =>
+    request<TransactionOut[]>(`/scheduled-transactions/${id}/candidate-transactions`),
+  listRecurrenceRules: () => request<RecurrenceRuleOut[]>('/recurrence-rules'),
+  createRecurrenceRule: (data: RecurrenceRulePayload) =>
+    request<RuleWriteOut>('/recurrence-rules', { method: 'POST', body: JSON.stringify(data) }),
+  updateRecurrenceRule: (id: string, data: RecurrenceRulePayload) =>
+    request<RuleWriteOut>(`/recurrence-rules/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteRecurrenceRule: (id: string) =>
+    request<void>(`/recurrence-rules/${id}`, { method: 'DELETE' }),
 
   listTags: () => request<TagOut[]>('/tags'),
   createTag: (name: string) => request<TagOut>('/tags', { method: 'POST', body: JSON.stringify({ name }) }),

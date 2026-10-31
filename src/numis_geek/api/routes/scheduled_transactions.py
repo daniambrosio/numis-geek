@@ -1,0 +1,672 @@
+"""Spec 72 — Contas a Pagar e a Receber API.
+
+Two routers over `services/scheduled_transactions.py`:
+
+- `/recurrence-rules` — CRUD of the templates; create/edit materializes on
+  the spot (90 days ahead), edit only touches future PENDING occurrences;
+- `/scheduled-transactions` — list, one-off create, per-occurrence edit,
+  actions (pay / postpone / cancel), candidate tx for "Marcar pago" and
+  `GET /forecast?months=3`.
+
+Reads: any workspace user. Writes: admin + sysadmin only. Sysadmin passes
+`?workspace_id=` (defaults to its own) and skips the workspace check on
+by-id lookups. Every write is audited.
+"""
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from numis_geek.api.deps import get_current_user, get_db
+from numis_geek.api.fields import BoundedDate, Money
+from numis_geek.api.routes.transactions import TransactionOut, hydrate as hydrate_transactions
+from numis_geek.models.account import Account, Currency
+from numis_geek.models.category import Category
+from numis_geek.models.party import Party
+from numis_geek.models.scheduled_transaction import (
+    RecurrenceFrequency, RecurrenceRule, ScheduledDirection, ScheduledStatus,
+    ScheduledTransaction,
+)
+from numis_geek.models.user import User, UserRole
+from numis_geek.services import scheduled_transactions as svc
+from numis_geek.services.audit import AuditService
+from numis_geek.services.auth import UserContext
+
+rules_router = APIRouter(prefix="/recurrence-rules", tags=["scheduled-transactions"])
+router = APIRouter(prefix="/scheduled-transactions", tags=["scheduled-transactions"])
+
+
+# ── schemas ───────────────────────────────────────────────────────────────────
+
+class RecurrenceRuleOut(BaseModel):
+    id: str
+    workspace_id: str
+    direction: str
+    description: str
+    party_id: str | None
+    party_name: str | None
+    category_id: str | None
+    category_name: str | None
+    category_color: str | None
+    amount: float
+    currency: str
+    frequency: str
+    day_of_month: int
+    month: int | None
+    installment_total: int | None
+    installment_paid: int | None
+    expected_account_id: str | None
+    expected_account_name: str | None
+    start_date: str
+    end_date: str | None
+    is_active: bool
+    notes: str | None
+    next_due_date: str | None
+    pending_count: int
+    created_at: str
+    updated_at: str
+
+
+class ScheduledTransactionOut(BaseModel):
+    id: str
+    workspace_id: str
+    direction: str
+    recurrence_rule_id: str | None
+    frequency: str | None
+    description: str
+    party_id: str | None
+    party_name: str | None
+    category_id: str | None
+    category_name: str | None
+    category_color: str | None
+    amount: float
+    signed_amount: float
+    currency: str
+    due_date: str
+    installment_number: int | None
+    installment_total: int | None
+    expected_account_id: str | None
+    expected_account_name: str | None
+    status: str
+    display_status: str
+    is_overdue: bool
+    paid_at: str | None
+    paid_by_transaction_id: str | None
+    notes: str | None
+    created_at: str
+    updated_at: str
+
+
+class RuleCreateRequest(BaseModel):
+    direction: ScheduledDirection
+    description: str
+    amount: Money
+    currency: Currency | None = None
+    frequency: RecurrenceFrequency
+    day_of_month: int = Field(ge=1, le=28)
+    month: int | None = Field(default=None, ge=1, le=12)
+    installment_total: int | None = Field(default=None, ge=1, le=1200)
+    installment_paid: int | None = Field(default=None, ge=0, le=1199)
+    start_date: BoundedDate
+    end_date: BoundedDate | None = None
+    party_id: str | None = None
+    category_id: str | None = None
+    expected_account_id: str | None = None
+    is_active: bool = True
+    notes: str | None = None
+
+
+class RuleUpdateRequest(BaseModel):
+    direction: ScheduledDirection | None = None
+    description: str | None = None
+    amount: Money | None = None
+    currency: Currency | None = None
+    frequency: RecurrenceFrequency | None = None
+    day_of_month: int | None = Field(default=None, ge=1, le=28)
+    month: int | None = Field(default=None, ge=1, le=12)
+    installment_total: int | None = Field(default=None, ge=1, le=1200)
+    installment_paid: int | None = Field(default=None, ge=0, le=1199)
+    start_date: BoundedDate | None = None
+    end_date: BoundedDate | None = None
+    party_id: str | None = None
+    category_id: str | None = None
+    expected_account_id: str | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class RuleWriteOut(BaseModel):
+    rule: RecurrenceRuleOut
+    created_count: int
+    dropped_count: int
+
+
+class OccurrenceCreateRequest(BaseModel):
+    direction: ScheduledDirection
+    description: str
+    amount: Money
+    currency: Currency | None = None
+    due_date: BoundedDate
+    party_id: str | None = None
+    category_id: str | None = None
+    expected_account_id: str | None = None
+    notes: str | None = None
+
+
+class OccurrenceUpdateRequest(BaseModel):
+    description: str | None = None
+    amount: Money | None = None
+    currency: Currency | None = None
+    party_id: str | None = None
+    category_id: str | None = None
+    expected_account_id: str | None = None
+    notes: str | None = None
+
+
+class PayRequest(BaseModel):
+    paid_at: BoundedDate
+    transaction_id: str | None = None
+
+
+class PostponeRequest(BaseModel):
+    due_date: BoundedDate
+
+
+class MoneyPair(BaseModel):
+    brl: float
+    usd: float
+
+
+class ForecastAccountOut(BaseModel):
+    account_id: str
+    account_name: str
+    currency: str
+    payable: float
+    receivable: float
+    net: float
+
+
+class ForecastMonthOut(BaseModel):
+    month: str
+    count: int
+    payable: MoneyPair
+    receivable: MoneyPair
+    net: MoneyPair
+    by_account: list[ForecastAccountOut]
+
+
+class ForecastOverdueOut(BaseModel):
+    count: int
+    payable: MoneyPair
+    receivable: MoneyPair
+
+
+class ForecastOut(BaseModel):
+    months: list[ForecastMonthOut]
+    overdue: ForecastOverdueOut
+    fx_rate: float | None
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _require_admin(current_user: UserContext) -> None:
+    if current_user.role not in (UserRole.admin, UserRole.sysadmin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+
+def _resolve_ws(current_user: UserContext, workspace_id: str | None) -> str:
+    if current_user.role == UserRole.sysadmin:
+        target = workspace_id or current_user.workspace_id
+        if not target:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workspace_id required for sysadmin.")
+        return target
+    return current_user.workspace_id
+
+
+def _rule_or_404(db: Session, rule_id: str, current_user: UserContext) -> RecurrenceRule:
+    r = db.get(RecurrenceRule, rule_id)
+    if not r or (current_user.role != UserRole.sysadmin and r.workspace_id != current_user.workspace_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recurrence rule not found.")
+    return r
+
+
+def _occ_or_404(db: Session, occ_id: str, current_user: UserContext) -> ScheduledTransaction:
+    o = db.get(ScheduledTransaction, occ_id)
+    if not o or (current_user.role != UserRole.sysadmin and o.workspace_id != current_user.workspace_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled transaction not found.")
+    return o
+
+
+def _translate(exc: Exception) -> HTTPException:
+    if isinstance(exc, svc.ScheduleConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+
+
+def _audit(
+    db: Session, current_user: UserContext, action: str, resource_type: str, resource_id: str,
+    workspace_id: str, details: dict,
+) -> None:
+    actor = db.get(User, current_user.user_id)
+    AuditService(db).log(
+        user_email=actor.email if actor else current_user.user_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details=details,
+        workspace_id=workspace_id,
+    )
+
+
+def _occ_details(o: ScheduledTransaction) -> dict:
+    return {
+        "description": o.description,
+        "direction": o.direction.value,
+        "amount": str(o.amount),
+        "currency": o.currency.value,
+        "due_date": o.due_date.isoformat(),
+        "status": o.status.value,
+        "recurrence_rule_id": o.recurrence_rule_id,
+    }
+
+
+def _rule_details(r: RecurrenceRule) -> dict:
+    return {
+        "description": r.description,
+        "direction": r.direction.value,
+        "amount": str(r.amount),
+        "currency": r.currency.value,
+        "frequency": r.frequency.value,
+        "day_of_month": r.day_of_month,
+        "is_active": r.is_active,
+    }
+
+
+def _names(db: Session, rows) -> tuple[dict, dict, dict]:
+    cat_ids = {r.category_id for r in rows if r.category_id}
+    party_ids = {r.party_id for r in rows if r.party_id}
+    acc_ids = {r.expected_account_id for r in rows if r.expected_account_id}
+    cats = {c.id: c for c in db.query(Category).filter(Category.id.in_(cat_ids)).all()} if cat_ids else {}
+    parent_ids = {c.parent_id for c in cats.values() if c.parent_id and c.parent_id not in cats}
+    if parent_ids:
+        cats.update({c.id: c for c in db.query(Category).filter(Category.id.in_(parent_ids)).all()})
+    parties = {p.id: p for p in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    accounts = {a.id: a for a in db.query(Account).filter(Account.id.in_(acc_ids)).all()} if acc_ids else {}
+    return cats, parties, accounts
+
+
+def _cat_color(cats: dict, cat_id: str | None) -> str | None:
+    c = cats.get(cat_id) if cat_id else None
+    if not c:
+        return None
+    parent = cats.get(c.parent_id) if c.parent_id else None
+    return c.color or (parent.color if parent else None)
+
+
+def hydrate_occurrences(db: Session, rows: list[ScheduledTransaction]) -> list[ScheduledTransactionOut]:
+    if not rows:
+        return []
+    today = date.today()
+    cats, parties, accounts = _names(db, rows)
+    rule_ids = {r.recurrence_rule_id for r in rows if r.recurrence_rule_id}
+    freqs = dict(
+        db.query(RecurrenceRule.id, RecurrenceRule.frequency).filter(RecurrenceRule.id.in_(rule_ids)).all()
+    ) if rule_ids else {}
+    out = []
+    for r in rows:
+        cat = cats.get(r.category_id) if r.category_id else None
+        party = parties.get(r.party_id) if r.party_id else None
+        acc = accounts.get(r.expected_account_id) if r.expected_account_id else None
+        freq = freqs.get(r.recurrence_rule_id)
+        out.append(ScheduledTransactionOut(
+            id=r.id,
+            workspace_id=r.workspace_id,
+            direction=r.direction.value,
+            recurrence_rule_id=r.recurrence_rule_id,
+            frequency=freq.value if freq else None,
+            description=r.description,
+            party_id=r.party_id,
+            party_name=party.name if party else None,
+            category_id=r.category_id,
+            category_name=cat.name if cat else None,
+            category_color=_cat_color(cats, r.category_id),
+            amount=float(r.amount),
+            signed_amount=float(svc.signed_amount(r.direction, r.amount)),
+            currency=r.currency.value,
+            due_date=r.due_date.isoformat(),
+            installment_number=r.installment_number,
+            installment_total=r.installment_total,
+            expected_account_id=r.expected_account_id,
+            expected_account_name=acc.name if acc else None,
+            status=r.status.value,
+            display_status=svc.display_status(r, today),
+            is_overdue=svc.is_overdue(r, today),
+            paid_at=r.paid_at.isoformat() if r.paid_at else None,
+            paid_by_transaction_id=r.paid_by_transaction_id,
+            notes=r.notes,
+            created_at=r.created_at.isoformat(),
+            updated_at=r.updated_at.isoformat(),
+        ))
+    return out
+
+
+def hydrate_rules(db: Session, rows: list[RecurrenceRule]) -> list[RecurrenceRuleOut]:
+    if not rows:
+        return []
+    today = date.today()
+    cats, parties, accounts = _names(db, rows)
+    ids = [r.id for r in rows]
+    pending = db.query(ScheduledTransaction).filter(
+        ScheduledTransaction.recurrence_rule_id.in_(ids),
+        ScheduledTransaction.status == ScheduledStatus.PENDING,
+    ).all()
+    next_due: dict[str, date] = {}
+    count: dict[str, int] = {}
+    for p in pending:
+        count[p.recurrence_rule_id] = count.get(p.recurrence_rule_id, 0) + 1
+        if p.due_date >= today and (p.recurrence_rule_id not in next_due or p.due_date < next_due[p.recurrence_rule_id]):
+            next_due[p.recurrence_rule_id] = p.due_date
+    out = []
+    for r in rows:
+        cat = cats.get(r.category_id) if r.category_id else None
+        party = parties.get(r.party_id) if r.party_id else None
+        acc = accounts.get(r.expected_account_id) if r.expected_account_id else None
+        nd = next_due.get(r.id)
+        out.append(RecurrenceRuleOut(
+            id=r.id,
+            workspace_id=r.workspace_id,
+            direction=r.direction.value,
+            description=r.description,
+            party_id=r.party_id,
+            party_name=party.name if party else None,
+            category_id=r.category_id,
+            category_name=cat.name if cat else None,
+            category_color=_cat_color(cats, r.category_id),
+            amount=float(r.amount),
+            currency=r.currency.value,
+            frequency=r.frequency.value,
+            day_of_month=r.day_of_month,
+            month=r.month,
+            installment_total=r.installment_total,
+            installment_paid=r.installment_paid,
+            expected_account_id=r.expected_account_id,
+            expected_account_name=acc.name if acc else None,
+            start_date=r.start_date.isoformat(),
+            end_date=r.end_date.isoformat() if r.end_date else None,
+            is_active=r.is_active,
+            notes=r.notes,
+            next_due_date=nd.isoformat() if nd else None,
+            pending_count=count.get(r.id, 0),
+            created_at=r.created_at.isoformat(),
+            updated_at=r.updated_at.isoformat(),
+        ))
+    return out
+
+
+# ── recurrence rules ──────────────────────────────────────────────────────────
+
+@rules_router.get("", response_model=list[RecurrenceRuleOut])
+def list_rules(
+    include_inactive: bool = Query(default=True),
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    ws = _resolve_ws(current_user, workspace_id)
+    q = db.query(RecurrenceRule).filter(RecurrenceRule.workspace_id == ws)
+    if not include_inactive:
+        q = q.filter(RecurrenceRule.is_active.is_(True))
+    rows = q.order_by(RecurrenceRule.is_active.desc(), RecurrenceRule.description).all()
+    return hydrate_rules(db, rows)
+
+
+@rules_router.get("/{rule_id}", response_model=RecurrenceRuleOut)
+def get_rule(
+    rule_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    return hydrate_rules(db, [_rule_or_404(db, rule_id, current_user)])[0]
+
+
+@rules_router.post("", response_model=RuleWriteOut, status_code=status.HTTP_201_CREATED)
+def create_rule(
+    body: RuleCreateRequest,
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    ws = _resolve_ws(current_user, workspace_id)
+    try:
+        rule, created = svc.create_rule(db, ws, svc.RuleInput(**body.model_dump()), user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "recurrence_rule.created", "recurrence_rule", rule.id, ws, {
+        **_rule_details(rule), "materialized": len(created),
+    })
+    return RuleWriteOut(rule=hydrate_rules(db, [rule])[0], created_count=len(created), dropped_count=0)
+
+
+@rules_router.patch("/{rule_id}", response_model=RuleWriteOut)
+def update_rule(
+    rule_id: str,
+    body: RuleUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    rule = _rule_or_404(db, rule_id, current_user)
+    changes = body.model_dump(exclude_unset=True)
+    before = {k: str(getattr(rule, k, None)) for k in changes}
+    try:
+        dropped, created = svc.update_rule(db, rule, changes, user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "recurrence_rule.updated", "recurrence_rule", rule.id, rule.workspace_id, {
+        **_rule_details(rule),
+        "before": before, "after": {k: str(v) for k, v in changes.items()},
+        "future_pending_dropped": dropped, "materialized": len(created),
+    })
+    return RuleWriteOut(rule=hydrate_rules(db, [rule])[0], created_count=len(created), dropped_count=dropped)
+
+
+@rules_router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_rule(
+    rule_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    rule = _rule_or_404(db, rule_id, current_user)
+    details = _rule_details(rule)
+    ws, rid = rule.workspace_id, rule.id
+    deleted, detached = svc.delete_rule(db, rule)
+    _audit(db, current_user, "recurrence_rule.deleted", "recurrence_rule", rid, ws, {
+        **details, "pending_deleted": deleted, "history_detached": detached,
+    })
+
+
+# ── scheduled transactions (occurrences) ──────────────────────────────────────
+
+@router.get("", response_model=list[ScheduledTransactionOut])
+def list_occurrences(
+    date_from: date | None = Query(default=None, alias="from"),
+    date_to: date | None = Query(default=None, alias="to"),
+    status_: list[ScheduledStatus] | None = Query(default=None, alias="status"),
+    direction: ScheduledDirection | None = Query(default=None),
+    recurrence_rule_id: str | None = Query(default=None),
+    overdue: bool | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Ordered by due_date asc. `overdue=true` → PENDING with due_date < today."""
+    ws = _resolve_ws(current_user, workspace_id)
+    q = db.query(ScheduledTransaction).filter(ScheduledTransaction.workspace_id == ws)
+    if date_from:
+        q = q.filter(ScheduledTransaction.due_date >= date_from)
+    if date_to:
+        q = q.filter(ScheduledTransaction.due_date <= date_to)
+    if status_:
+        q = q.filter(ScheduledTransaction.status.in_(status_))
+    if direction:
+        q = q.filter(ScheduledTransaction.direction == direction)
+    if recurrence_rule_id:
+        q = q.filter(ScheduledTransaction.recurrence_rule_id == recurrence_rule_id)
+    if overdue is not None:
+        today = date.today()
+        if overdue:
+            q = q.filter(ScheduledTransaction.status == ScheduledStatus.PENDING, ScheduledTransaction.due_date < today)
+        else:
+            q = q.filter(~(
+                (ScheduledTransaction.status == ScheduledStatus.PENDING) & (ScheduledTransaction.due_date < today)
+            ))
+    rows = q.order_by(ScheduledTransaction.due_date, ScheduledTransaction.description).limit(2000).all()
+    return hydrate_occurrences(db, rows)
+
+
+@router.get("/forecast", response_model=ForecastOut)
+def get_forecast(
+    months: int = Query(default=3, ge=1, le=24),
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    ws = _resolve_ws(current_user, workspace_id)
+    return svc.forecast(db, ws, months=months)
+
+
+@router.get("/{occ_id}", response_model=ScheduledTransactionOut)
+def get_occurrence(
+    occ_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    return hydrate_occurrences(db, [_occ_or_404(db, occ_id, current_user)])[0]
+
+
+@router.get("/{occ_id}/candidate-transactions", response_model=list[TransactionOut])
+def candidate_transactions(
+    occ_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Tx that could settle this occurrence by hand (sign matches, ±45 days,
+    not settling another occurrence) — closest date first."""
+    occ = _occ_or_404(db, occ_id, current_user)
+    return hydrate_transactions(db, svc.candidate_transactions(db, occ))
+
+
+@router.post("", response_model=ScheduledTransactionOut, status_code=status.HTTP_201_CREATED)
+def create_occurrence(
+    body: OccurrenceCreateRequest,
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """One-off conta a pagar/receber (no rule)."""
+    _require_admin(current_user)
+    ws = _resolve_ws(current_user, workspace_id)
+    try:
+        occ = svc.create_one_off(db, ws, svc.OccurrenceInput(**body.model_dump()), user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.created", "scheduled_transaction", occ.id, ws, _occ_details(occ))
+    return hydrate_occurrences(db, [occ])[0]
+
+
+@router.patch("/{occ_id}", response_model=ScheduledTransactionOut)
+def update_occurrence(
+    occ_id: str,
+    body: OccurrenceUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    occ = _occ_or_404(db, occ_id, current_user)
+    changes = body.model_dump(exclude_unset=True)
+    before = {k: str(getattr(occ, k, None)) for k in changes}
+    try:
+        svc.update_occurrence(db, occ, changes, user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.updated", "scheduled_transaction", occ.id, occ.workspace_id, {
+        **_occ_details(occ), "before": before, "after": {k: str(v) for k, v in changes.items()},
+    })
+    return hydrate_occurrences(db, [occ])[0]
+
+
+@router.delete("/{occ_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_occurrence(
+    occ_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    occ = _occ_or_404(db, occ_id, current_user)
+    details = _occ_details(occ)
+    ws, oid = occ.workspace_id, occ.id
+    try:
+        svc.delete_one_off(db, occ)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.deleted", "scheduled_transaction", oid, ws, details)
+
+
+@router.post("/{occ_id}/pay", response_model=ScheduledTransactionOut)
+def pay(
+    occ_id: str,
+    body: PayRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Marcar pago: date + optional link to an existing tx (sign must match,
+    tx can't already settle another occurrence). Without tx → PAID, no link."""
+    _require_admin(current_user)
+    occ = _occ_or_404(db, occ_id, current_user)
+    try:
+        svc.mark_paid(db, occ, paid_at=body.paid_at, transaction_id=body.transaction_id, user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.paid", "scheduled_transaction", occ.id, occ.workspace_id, {
+        **_occ_details(occ), "paid_at": body.paid_at.isoformat(), "transaction_id": body.transaction_id,
+    })
+    return hydrate_occurrences(db, [occ])[0]
+
+
+@router.post("/{occ_id}/postpone", response_model=ScheduledTransactionOut)
+def postpone(
+    occ_id: str,
+    body: PostponeRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    occ = _occ_or_404(db, occ_id, current_user)
+    old = occ.due_date
+    try:
+        svc.postpone(db, occ, body.due_date, user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.postponed", "scheduled_transaction", occ.id, occ.workspace_id, {
+        **_occ_details(occ), "before": old.isoformat(), "after": body.due_date.isoformat(),
+    })
+    return hydrate_occurrences(db, [occ])[0]
+
+
+@router.post("/{occ_id}/cancel", response_model=ScheduledTransactionOut)
+def cancel(
+    occ_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    occ = _occ_or_404(db, occ_id, current_user)
+    try:
+        svc.cancel(db, occ, user_id=current_user.user_id)
+    except (svc.ScheduleError, svc.ScheduleConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "scheduled_transaction.canceled", "scheduled_transaction", occ.id, occ.workspace_id, _occ_details(occ))
+    return hydrate_occurrences(db, [occ])[0]

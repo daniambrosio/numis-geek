@@ -38,6 +38,8 @@ from numis_geek.services.fundamentals_ingest import refresh_workspace_fundamenta
 from numis_geek.services.option_lifecycle import auto_settle_expired_options
 from numis_geek.services.price_update import refresh_all_automated
 from numis_geek.services.ptax_sync import sync_ptax
+from numis_geek.services.scheduled_transactions import materialize_workspace
+from numis_geek.services.audit import AuditService
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -58,6 +60,9 @@ BACKUP_DIR = Path("data/backups")
 OPTION_SETTLE_JOB_ID = "option_auto_settle_daily"
 
 FUNDAMENTALS_JOB_ID = "fundamentals_refresh_daily"
+
+SCHEDULED_TX_JOB_ID = "scheduled_transactions_materialize_daily"
+SCHEDULED_TX_AUDIT_ACTION = "scheduled_transaction.materialized"
 
 
 def run_daily_price_refresh() -> None:
@@ -109,6 +114,38 @@ def run_daily_fundamentals_refresh() -> None:
             except Exception:
                 db.rollback()
                 logger.exception("cron fundamentals refresh failed ws=%s", ws_id)
+    finally:
+        db.close()
+
+
+def run_daily_scheduled_materialization() -> None:
+    """Spec 72 — keep every active recurrence rule materialized up to
+    today + 90 days (contas a pagar/receber). Idempotent: UNIQUE(rule,
+    due_date) + the rule watermark; re-running the same day creates
+    nothing. One audit row per rule that got new occurrences."""
+    db = SessionLocal()
+    try:
+        workspace_ids = [w.id for w in db.query(Workspace).all()]
+        for ws_id in workspace_ids:
+            try:
+                created = materialize_workspace(db, ws_id)
+                for rule_id, n in created.items():
+                    AuditService(db).log(
+                        user_email=CRON_USER_EMAIL,
+                        action=SCHEDULED_TX_AUDIT_ACTION,
+                        resource_type="recurrence_rule",
+                        resource_id=rule_id,
+                        details={"created": n},
+                        workspace_id=ws_id,
+                    )
+                db.commit()
+                logger.info(
+                    "cron scheduled-tx materialize ws=%s rules=%d occurrences=%d",
+                    ws_id, len(created), sum(created.values()),
+                )
+            except Exception:
+                db.rollback()
+                logger.exception("cron scheduled-tx materialize failed ws=%s", ws_id)
     finally:
         db.close()
 
@@ -297,6 +334,17 @@ def start_scheduler(app: "FastAPI") -> BackgroundScheduler | None:
         run_option_auto_settle,
         CronTrigger(hour=18, minute=5),
         id=OPTION_SETTLE_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Spec 72 — contas a pagar/receber: materializa as recorrências até
+    # hoje + 90 dias, 06:00 SP (antes do backup das 07h). Criar/editar
+    # recorrência já materializa na hora; o job só empurra a janela.
+    sched.add_job(
+        run_daily_scheduled_materialization,
+        CronTrigger(hour=6, minute=0),
+        id=SCHEDULED_TX_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,

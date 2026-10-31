@@ -4,7 +4,7 @@ import {
   LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
   CreditCard, FileText, ArrowLeftRight, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
-  Plug, DollarSign, Sparkles, ClipboardCheck, Sigma, BookUser,
+  Plug, DollarSign, Sparkles, ClipboardCheck, Sigma, BookUser, CalendarClock,
 } from 'lucide-react'
 import { getTheme, applyTheme, type Theme } from '../lib/theme'
 import { getPrivacy, togglePrivacy } from '../lib/privacy'
@@ -53,6 +53,7 @@ const NAV: NavEntry[] = [
 
   { kind: 'section', label: 'Caixa & Cartões' },
   { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet },
+  { kind: 'item', label: 'Contas a Pagar/Receber', href: '/scheduled-transactions', icon: CalendarClock },
   { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard },
   { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText },
   { kind: 'item', label: 'Categorias', href: '/categories', icon: Layers },
@@ -101,6 +102,8 @@ const NOVO_ITEMS: NovoItem[] = [
   { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: true, composeRoute: '/transactions' },
   // Spec 70 — delta: transferência entre contas próprias não existe no proto.
   { key: 'transfer',     label: 'Transferência',        desc: 'Entre contas correntes próprias',       icon: ArrowLeftRight, group: 'Caixa & Cartões', shortcut: 'T', enabled: true, composeRoute: '/transactions' },
+  // Spec 72 — contas a pagar/receber (avulsa, mensal, anual, parcelada).
+  { key: 'scheduled',    label: 'Conta a pagar/receber', desc: 'Vencimento futuro · avulso ou recorrente', icon: CalendarClock, group: 'Caixa & Cartões', shortcut: 'R', enabled: true, composeRoute: '/scheduled-transactions' },
   { key: 'asset',        label: 'Ativo',                desc: 'Cadastrar um novo ativo',               icon: LineChart,    group: 'Cadastros',        shortcut: 'A', enabled: true, composeRoute: '/assets' },
   { key: 'account',      label: 'Conta',                desc: 'Nova conta corrente ou de investimento',icon: Layers,       group: 'Cadastros',        shortcut: 'C', enabled: false },
   { key: 'card',         label: 'Cartão',               desc: 'Novo cartão de crédito',                icon: CreditCard,   group: 'Cadastros',        shortcut: 'K', enabled: true, composeRoute: '/credit-cards' },
@@ -112,6 +115,7 @@ function defaultNovoItem(pathname: string): string {
   if (pathname.startsWith('/asset-movements')) return 'movement'
   if (pathname.startsWith('/distributions'))   return 'distribution'
   if (pathname.startsWith('/transactions'))    return 'transaction'
+  if (pathname.startsWith('/scheduled-transactions')) return 'scheduled'
   if (pathname.startsWith('/credit-cards') || pathname.startsWith('/invoices')) return 'card-tx'
   if (pathname.startsWith('/assets'))          return 'asset'
   if (pathname.startsWith('/accounts'))        return 'account'
