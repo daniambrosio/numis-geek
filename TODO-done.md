@@ -4,6 +4,14 @@ Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não
 
 ## Outubro 2026
 
+- [x] **2026-10-31 — Coinbase: recompensas USDC→BTC de ago/set lançadas + julho deduplicado.**
+  8 pares (INTEREST USDC + BUY BTC, `coinbase-reward:*`) a partir dos prints do app.
+  BTC set/26 via `apply_recompute_to_snapshot` (IN_REVIEW); ago/26 CLOSED por UPDATE
+  cirúrgico (qty/mv/invested/PM + header). `total_received_brl` +766,19 (ago) e
+  +1.529,02 (set). Julho: 5 INTEREST duplicados da extração (`coinbase:*:INTEREST:*`,
+  job anotado "avenue proventos") desativados; −944,83 no recebido de jul/ago/set.
+  Backups `.bak-before-jul-usdc-dup-20261031-001006` e
+  `.bak-before-coinbase-rewards-ago-set-20261031-001315`.
 - [x] **2026-10-30 — Spec 65 Fase 1 (cleanup backend do SUSPICIOUS_DELTA).** Detector,
   endpoints `mom-deltas`/`recheck-deltas`/`confirm-delta`, enum e testes removidos;
   migration `spec65_drop_susp_delta` apaga as rows. Gatilho: BHIA3 (+109% em set/26)
