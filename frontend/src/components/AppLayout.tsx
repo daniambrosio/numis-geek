@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, Fragment } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, TrendingUp, Compass, LineChart, ArrowDownUp, Coins, Wallet,
-  CreditCard, FileText, Target, Building2, Layers, ScrollText, ShieldCheck,
+  CreditCard, FileText, ArrowLeftRight, Target, Building2, Layers, ScrollText, ShieldCheck,
   ChevronDown, Search, Plus, Sun, Moon, Monitor, Eye, EyeOff,
   Plug, DollarSign, Sparkles, ClipboardCheck, Sigma, BookUser,
 } from 'lucide-react'
@@ -52,7 +52,7 @@ const NAV: NavEntry[] = [
   { kind: 'item', label: 'Fechamentos', href: '/snapshots', icon: ClipboardCheck },
 
   { kind: 'section', label: 'Caixa & Cartões' },
-  { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet, placeholder: true },
+  { kind: 'item', label: 'Movimentações', href: '/transactions', icon: Wallet },
   { kind: 'item', label: 'Cartões', href: '/credit-cards', icon: CreditCard },
   { kind: 'item', label: 'Faturas', href: '/invoices', icon: FileText },
   { kind: 'item', label: 'Categorias', href: '/categories', icon: Layers },
@@ -97,8 +97,10 @@ const NOVO_ITEMS: NovoItem[] = [
   { key: 'movement',     label: 'Lançamento',           desc: 'Compra, venda, bonificação…',           icon: ArrowDownUp,  group: 'Investimentos',    shortcut: 'L', enabled: true, composeRoute: '/asset-movements' },
   { key: 'option',       label: 'Opção',                desc: 'PUT/CALL: cria + lança abertura',       icon: Sigma,        group: 'Investimentos',    shortcut: 'O', enabled: true, composeRoute: '/asset-movements' },
   { key: 'distribution', label: 'Provento',             desc: 'Dividendo, juros, JCP, aluguel',        icon: Coins,        group: 'Investimentos',    shortcut: 'P', enabled: true, composeRoute: '/distributions' },
-  { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: false },
-  { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: false },
+  { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: true, composeRoute: '/transactions' },
+  { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: true, composeRoute: '/transactions' },
+  // Spec 70 — delta: transferência entre contas próprias não existe no proto.
+  { key: 'transfer',     label: 'Transferência',        desc: 'Entre contas correntes próprias',       icon: ArrowLeftRight, group: 'Caixa & Cartões', shortcut: 'T', enabled: true, composeRoute: '/transactions' },
   { key: 'asset',        label: 'Ativo',                desc: 'Cadastrar um novo ativo',               icon: LineChart,    group: 'Cadastros',        shortcut: 'A', enabled: true, composeRoute: '/assets' },
   { key: 'account',      label: 'Conta',                desc: 'Nova conta corrente ou de investimento',icon: Layers,       group: 'Cadastros',        shortcut: 'C', enabled: false },
   { key: 'card',         label: 'Cartão',               desc: 'Novo cartão de crédito',                icon: CreditCard,   group: 'Cadastros',        shortcut: 'K', enabled: true, composeRoute: '/credit-cards' },

@@ -11,6 +11,7 @@ import { parseDecimal } from '../lib/parseDecimal'
 import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
+import { todayISO } from '../lib/format'
 
 interface TypeCfg {
   label: string
@@ -58,7 +59,7 @@ export default function DistributionComposer({
       ?? institutions[0]?.id ?? '',
   )
   const [assetId, setAssetId] = useState<string>(initial?.asset_id ?? preselectedAsset?.id ?? '')
-  const [eventDate, setEventDate] = useState(initial?.event_date ?? new Date().toISOString().slice(0, 10))
+  const [eventDate, setEventDate] = useState(initial?.event_date ?? todayISO())
   const [gross, setGross] = useState(initial?.gross_amount != null ? String(initial.gross_amount) : '')
   const [tax, setTax] = useState(initial?.tax != null ? String(initial.tax) : '')
   const [currency, setCurrency] = useState<'BRL' | 'USD'>(initial?.currency ?? preselectedAsset?.currency ?? 'BRL')

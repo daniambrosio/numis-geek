@@ -33,3 +33,12 @@ export function fmtMonthYY(iso: string): string {
   const [y, m] = iso.split('-')
   return `${MONTH_SHORT_PT[parseInt(m, 10) - 1]}/${y.slice(2)}`
 }
+
+/** Data LOCAL de hoje em YYYY-MM-DD. Nunca `toISOString().slice(0, 10)` —
+ *  isso é UTC: no Brasil, depois das 21h, vira o dia seguinte. */
+export function todayISO(d: Date = new Date()): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}

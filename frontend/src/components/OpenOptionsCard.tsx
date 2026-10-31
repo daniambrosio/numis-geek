@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ChevronRight, Plus } from 'lucide-react'
 import { api, type OpenOptionOut } from '../lib/api'
 import { KLASS } from '../lib/tokens'
+import { todayISO } from '../lib/format'
 
 interface Props {
   underlyingId: string
@@ -52,7 +53,7 @@ export default function OpenOptionsCard({ underlyingId, underlyingTicker, onActi
   }
 
   async function handleExercise(id: string) {
-    const d = prompt('Data do exercício (YYYY-MM-DD):', new Date().toISOString().slice(0, 10))
+    const d = prompt('Data do exercício (YYYY-MM-DD):', todayISO())
     if (!d) return
     setBusy(id)
     try {

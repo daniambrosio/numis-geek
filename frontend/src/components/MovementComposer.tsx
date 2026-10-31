@@ -13,6 +13,7 @@ import { parseDecimal } from '../lib/parseDecimal'
 import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
+import { todayISO } from '../lib/format'
 
 // Unified composer (Spec 36 follow-up v2 2026-06-24):
 // A grid mantém só os 6 tiles semânticos. Opção deixou de ser tile;
@@ -130,7 +131,7 @@ export default function MovementComposer({
       ?? preselectedAsset?.id
       ?? (initialNewOption ? NEW_OPTION_SENTINEL : ''),
   )
-  const [eventDate, setEventDate] = useState(initial?.event_date ?? new Date().toISOString().slice(0, 10))
+  const [eventDate, setEventDate] = useState(initial?.event_date ?? todayISO())
   const [quantity, setQuantity] = useState(initial?.quantity != null ? String(initial.quantity) : '')
   const [unitPrice, setUnitPrice] = useState(initial?.unit_price != null ? String(initial.unit_price) : '')
   const [grossAmount, setGrossAmount] = useState(initial?.gross_amount != null ? String(initial.gross_amount) : '')

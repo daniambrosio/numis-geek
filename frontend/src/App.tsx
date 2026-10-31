@@ -25,6 +25,7 @@ import Parties from './pages/Parties'
 import CreditCards from './pages/CreditCards'
 import CreditCardDetail from './pages/CreditCardDetail'
 import Invoices from './pages/Invoices'
+import Transactions from './pages/Transactions'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
 
@@ -54,7 +55,7 @@ export default function App() {
         <Route path="/snapshots/:ym" element={<PrivateRoute><SnapshotDetail /></PrivateRoute>} />
 
         {/* Caixa & Cartões */}
-        <Route path="/transactions" element={<PrivateRoute><ComingSoon title="Movimentações" hint="Transações de contas e cartões. Depende da entidade Transaction (Spec 23)." /></PrivateRoute>} />
+        <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
         <Route path="/credit-cards" element={<PrivateRoute><CreditCards /></PrivateRoute>} />
         <Route path="/credit-cards/:id" element={<PrivateRoute><CreditCardDetail /></PrivateRoute>} />
         <Route path="/invoices" element={<PrivateRoute><Invoices /></PrivateRoute>} />

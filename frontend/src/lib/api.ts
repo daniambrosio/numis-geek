@@ -228,6 +228,135 @@ export interface CreditCardPayload {
   due_day: number
 }
 
+// ── Spec 70 — transactions ─────────────────────────────────────────────────
+
+export interface TransactionOut {
+  id: string
+  workspace_id: string
+  source_type: 'CHECKING' | 'CREDIT_CARD'
+  checking_account_id: string | null
+  account_name: string | null
+  credit_card_account_id: string | null
+  card_name: string | null
+  financial_institution_name: string | null
+  fi_logo_slug: string | null
+  invoice_id: string | null
+  event_date: string
+  description: string
+  amount: number
+  currency: 'BRL' | 'USD'
+  fx_rate: number
+  fx_source: 'STATEMENT' | 'PTAX'
+  amount_brl: number
+  amount_usd: number
+  category_id: string | null
+  category_name: string | null
+  category_parent_name: string | null
+  category_color: string | null
+  category_kind: 'EXPENSE' | 'INCOME' | 'TRANSFER' | null
+  party_id: string | null
+  party_name: string | null
+  tags: { id: string; name: string }[]
+  installment_number: number | null
+  installment_total: number | null
+  parent_transaction_id: string | null
+  paid_invoice_id: string | null
+  transfer_group_id: string | null
+  is_reconciled: boolean
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TransactionListOut {
+  items: TransactionOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface MoneyPair { brl: number; usd: number }
+
+export interface TransactionSummaryOut {
+  inflows: MoneyPair
+  outflows: MoneyPair
+  net: MoneyPair
+  unreconciled_count: number
+  count: number
+}
+
+export interface TransactionFilters {
+  from?: string
+  to?: string
+  account_id?: string[]
+  card_id?: string[]
+  category_id?: string[]
+  party_id?: string
+  invoice_id?: string
+  search?: string
+  page_size?: number
+}
+
+export interface TransactionCreatePayload {
+  source_type: 'CHECKING' | 'CREDIT_CARD'
+  checking_account_id?: string | null
+  credit_card_account_id?: string | null
+  invoice_id?: string | null
+  event_date: string
+  description: string
+  amount: number
+  fx_rate?: number | null
+  category_id?: string | null
+  party_id?: string | null
+  notes?: string | null
+  installments?: number
+}
+
+export interface TransactionUpdatePayload {
+  event_date?: string
+  description?: string
+  amount?: number
+  fx_rate?: number | null
+  category_id?: string | null
+  party_id?: string | null
+  notes?: string | null
+  is_reconciled?: boolean
+}
+
+export interface TransferPayload {
+  from_account_id: string
+  to_account_id: string
+  event_date: string
+  amount_out: number
+  amount_in?: number | null
+  description?: string
+  category_id?: string | null
+  notes?: string | null
+}
+
+export interface InvoicePayPayload {
+  checking_account_id: string
+  paid_on: string
+  amount?: number | null
+  fx_rate?: number | null
+  category_id?: string | null
+}
+
+function txQuery(f: TransactionFilters): string {
+  const qs = new URLSearchParams()
+  if (f.from) qs.set('from', f.from)
+  if (f.to) qs.set('to', f.to)
+  f.account_id?.forEach(id => qs.append('account_id', id))
+  f.card_id?.forEach(id => qs.append('card_id', id))
+  f.category_id?.forEach(id => qs.append('category_id', id))
+  if (f.party_id) qs.set('party_id', f.party_id)
+  if (f.invoice_id) qs.set('invoice_id', f.invoice_id)
+  if (f.search) qs.set('search', f.search)
+  if (f.page_size) qs.set('page_size', String(f.page_size))
+  const s = qs.toString()
+  return s ? `?${s}` : ''
+}
+
 export interface InvoiceOut {
   id: string
   workspace_id: string
@@ -968,6 +1097,23 @@ export const api = {
   },
   closeInvoice: (id: string, total_amount?: number | null) =>
     request<InvoiceOut>(`/invoices/${id}/close`, { method: 'POST', body: JSON.stringify({ total_amount }) }),
+
+  payInvoice: (id: string, data: InvoicePayPayload) =>
+    request<InvoiceOut>(`/invoices/${id}/pay`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // ── Spec 70 — transactions ─────────────────────────────────────────────────
+  listTransactions: (f: TransactionFilters = {}) =>
+    request<TransactionListOut>(`/transactions${txQuery({ page_size: 500, ...f })}`),
+  transactionSummary: (f: TransactionFilters = {}) =>
+    request<TransactionSummaryOut>(`/transactions/summary${txQuery(f)}`),
+  createTransaction: (data: TransactionCreatePayload) =>
+    request<TransactionOut[]>('/transactions', { method: 'POST', body: JSON.stringify(data) }),
+  updateTransaction: (id: string, data: TransactionUpdatePayload) =>
+    request<TransactionOut[]>(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteTransaction: (id: string, cascade = false) =>
+    request<void>(`/transactions/${id}${cascade ? '?cascade=true' : ''}`, { method: 'DELETE' }),
+  createTransfer: (data: TransferPayload) =>
+    request<TransactionOut[]>('/transactions/transfer', { method: 'POST', body: JSON.stringify(data) }),
 
   listTags: () => request<TagOut[]>('/tags'),
   createTag: (name: string) => request<TagOut>('/tags', { method: 'POST', body: JSON.stringify({ name }) }),
@@ -1724,7 +1870,7 @@ export interface BulkExtractionJobSummary {
 }
 
 // ── Attachments (Spec 19) ────────────────────────────────────────────────────
-export type AttachmentSourceType = 'asset' | 'movement' | 'distribution' | 'snapshot' | 'snapshot_item'
+export type AttachmentSourceType = 'asset' | 'movement' | 'distribution' | 'snapshot' | 'snapshot_item' | 'transaction'
 export type AttachmentKind = 'image' | 'pdf' | 'csv' | 'other'
 
 export interface AttachmentOut {

@@ -5,6 +5,7 @@ import {
   type AssetOut, type OptionCreateRequest, type OptionOut, type OptionType,
   type ParsedOptionTicker,
 } from '../lib/api'
+import { todayISO } from '../lib/format'
 
 // Underlyings allowed for new options. Spec 36 §2.2: `STOCK/REIT/ETF` only —
 // no options-on-options, no FGTS, etc.
@@ -29,7 +30,7 @@ export default function OptionModal({ underlying, candidates, onClose, onSaved }
   const [expiration, setExpiration] = useState('')
   const [contractSize, setContractSize] = useState('100')
   const [movementType, setMovementType] = useState<'SELL_OPEN' | 'BUY_TO_OPEN'>('SELL_OPEN')
-  const [movementDate, setMovementDate] = useState(new Date().toISOString().slice(0, 10))
+  const [movementDate, setMovementDate] = useState(todayISO())
   const [quantity, setQuantity] = useState('')
   const [pricePerShare, setPricePerShare] = useState('')
   const [fee, setFee] = useState('0')
