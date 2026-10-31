@@ -83,6 +83,9 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   `Saldo em Conta (Nubank)`, com os lançamentos de 05–07/08 e os itens no fechamento
   de ago/26.
 
+- [ ] `[claude]` **PTAX catchup em fim de semana loga ERROR.** O BCB responde 400 quando a
+  janela é só sábado/domingo (visto em 2026-10-31 16:42 no boot do container). Tratar como
+  "sem cotação no dia" (info, não error) — não afeta dados, só polui o log.
 - [ ] `[user]` **Ligar "saldo vem das movimentações"** conta por conta (página da conta),
   depois que os extratos entrarem e a conferência com os fechamentos bater. Hoje as 5 estão
   desligadas — fechamento segue digitado.
