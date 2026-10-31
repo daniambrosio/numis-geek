@@ -36,8 +36,10 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 - [ ] `[claude]` **Spec 59 (Comparativo) — retomar da Fase 0.1.** Protótipo da 1ª tela
   plantado e funcionando; 3 perguntas de UX em aberto pro user; fila Fases 0.2→6 pendente.
   Contexto completo de retomada na memory `session_state_spec_59_fase_0_1`.
-- [ ] `[user]` `[claude]` **Spec 66 em Draft — retomar entrevista/implementação.**
-  66 = crypto rewards pagos em cripto (in-kind). (Spec 64 saiu Done em 2026-09-05.)
+- [ ] `[user]` **Spec 66 — validar com o print de out/26 da Coinbase.** Subir no
+  "Proventos do mês" da Coinbase; conferir no modal os pares (↳ recebido em BTC) e, depois
+  de registrar, a qtd do BTC no fechamento. Se o LLM errar quantidade ou não emitir
+  `payment_in_kind`, voltar com o job id pra ajustar o prompt v3.
 
 - [x] ~~**Spec 79 — resgate reduz o custo proporcionalmente.**~~ FEITA em 2026-09-05
   (`832d45b`). Modo valor: custo cai pela fração que saiu da posição, com o valor de

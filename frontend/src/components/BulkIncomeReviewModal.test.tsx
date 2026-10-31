@@ -77,6 +77,30 @@ describe('BulkIncomeReviewModal', () => {
     expect(screen.getByTestId('income-review-apply')).toHaveTextContent('Registrar 1 provento')
   })
 
+  it('spec 66 — provento pago em cripto mostra o aporte pareado e conta 2 eventos', async () => {
+    const reward = {
+      ...ROW, currency: 'BRL', type: 'INTEREST', ticker: 'USDC', asset_id: 'a-usdc', asset_name: 'USDC',
+      gross_amount: '189.15', tax_amount: null, net_amount: '189.15',
+      in_kind: { ticker: 'BTC', quantity: '0.000471', asset_id: 'a-btc', asset_name: 'BTC' },
+    }
+    mockPreview({
+      applied: [reward, { ...ROW, ticker: 'WMT', asset_id: 'a-wmt', asset_name: 'Walmart Inc' }],
+      orphan: [{
+        ...reward, external_id: 'x9',
+        in_kind: { ...reward.in_kind, ticker: 'ETH', asset_id: null, asset_name: null },
+        orphan_reason: 'ETH não cadastrado na Coinbase',
+      }],
+    })
+    render(<BulkIncomeReviewModal job={JOB} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('income-row-0')).toBeInTheDocument())
+    expect(screen.getByTestId('income-row-in-kind-0')).toHaveTextContent('recebido em BTC: +0,000471')
+    expect(screen.queryByTestId('income-row-in-kind-1')).toBeNull()
+    expect(screen.getByTestId('income-orphans')).toHaveTextContent('ETH não cadastrado na Coinbase')
+    expect(screen.getByTestId('income-orphans')).toHaveTextContent('só entra junto com o aporte')
+    // 2 proventos + 1 aporte.
+    expect(screen.getByTestId('income-review-apply')).toHaveTextContent('Registrar 3 eventos')
+  })
+
   it('confirma via confirmExtraction e devolve applied_count', async () => {
     mockPreview({ applied: [{ ...ROW, ticker: 'WMT', asset_id: 'a-wmt', asset_name: 'Walmart Inc' }] })
     vi.spyOn(api, 'confirmExtraction').mockResolvedValue({

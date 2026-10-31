@@ -47,6 +47,10 @@ from numis_geek.services.audit import AuditService
 from numis_geek.services.extraction_templates import Template, template_for
 from numis_geek.services.fx import resolve_fx_rate
 from numis_geek.services.positions import _COTADO_CLASSES
+from numis_geek.services.snapshot import (
+    apply_recompute_to_snapshot,
+    find_affected_snapshots,
+)
 from numis_geek.integrations.llm import (
     DEFAULT_MODEL, LLMClient, get_llm_client, parse_json_block,
 )
@@ -1486,6 +1490,38 @@ def _classify_bulk_income(
             gross_amount=float(gross),
         )
 
+        # Spec 66 — provento pago em cripto (Coinbase: recompensa de USDC
+        # paga em BTC). Vira par INTEREST + BUY do ativo recebido.
+        in_kind_raw = ev.get("payment_in_kind") or None
+        paid_asset: Asset | None = None
+        paid_qty: Decimal | None = None
+        in_kind_row: dict | None = None
+        in_kind_problem: str | None = None
+        if in_kind_raw:
+            paid_ticker = (in_kind_raw.get("ticker") or "").strip()
+            raw_qty = in_kind_raw.get("quantity")
+            paid_qty = Decimal(str(raw_qty)) if raw_qty is not None else None
+            if not paid_ticker or paid_qty is None or paid_qty <= 0:
+                errors.append(f"payment_in_kind inválido: {in_kind_raw!r}")
+                continue
+            paid_asset = _resolve_asset_by_ticker_or_name(
+                db, job.workspace_id, paid_ticker, institution_id=job.institution_id,
+            )
+            in_kind_row = {
+                "ticker": paid_ticker,
+                "quantity": str(paid_qty),
+                "asset_id": paid_asset.id if paid_asset else None,
+                "asset_name": paid_asset.name if paid_asset else None,
+                "external_id": f"{ext_id}:in_kind",
+            }
+            if paid_asset is None:
+                in_kind_problem = f"{paid_ticker} não cadastrado na {fi.short_name}"
+            elif paid_asset.currency != currency_enum:
+                in_kind_problem = (
+                    f"provento em {currency_str}, mas {paid_ticker} é "
+                    f"{paid_asset.currency.value}"
+                )
+
         existing = (
             db.query(Distribution)
             .filter(
@@ -1495,6 +1531,44 @@ def _classify_bulk_income(
             )
             .first()
         )
+        # Spec 66 — dedup semântico do par. O valor em R$ que o app da
+        # exchange mostra muda de um dia pro outro (e o lançamento manual
+        # usa outro formato de external_id), então não dá pra depender do
+        # external_id: mesmo provento do ativo no mesmo dia = já registrado,
+        # e o BUY do ativo pago com a mesma quantidade no mesmo dia também.
+        if existing is None and in_kind_raw and asset is not None:
+            existing = (
+                db.query(Distribution)
+                .filter(
+                    Distribution.workspace_id == job.workspace_id,
+                    Distribution.asset_id == asset.id,
+                    Distribution.type == dist_type,
+                    Distribution.event_date == event_d,
+                    Distribution.is_active.is_(True),
+                )
+                .first()
+            )
+        existing_buy: AssetMovement | None = None
+        if existing is None and paid_asset is not None:
+            same_day_buys = (
+                db.query(AssetMovement)
+                .filter(
+                    AssetMovement.workspace_id == job.workspace_id,
+                    AssetMovement.asset_id == paid_asset.id,
+                    AssetMovement.type == AssetMovementType.BUY,
+                    AssetMovement.event_date == event_d,
+                    AssetMovement.is_active.is_(True),
+                )
+                .all()
+            )
+            existing_buy = next(
+                (
+                    m for m in same_day_buys
+                    if m.quantity is not None
+                    and abs(Decimal(str(m.quantity)) - paid_qty) < Decimal("1e-8")
+                ),
+                None,
+            )
 
         row = {
             "external_id": ext_id,
@@ -1508,16 +1582,27 @@ def _classify_bulk_income(
             "net_amount": str(Decimal(str(net))),
             "currency": currency_str,
             "institution_short_name": fi.short_name,
+            "in_kind": in_kind_row,
         }
 
         if existing is not None:
             row["distribution_id"] = existing.id
             duplicate.append(row)
             continue
+        if existing_buy is not None:
+            row["movement_id"] = existing_buy.id
+            duplicate.append(row)
+            continue
 
         # Orphan = ticker present but no asset matched. Lending (ticker=None)
         # is allowed without an asset (Distribution.asset_id is nullable).
         if ticker and asset is None:
+            orphan.append(row)
+            continue
+        # Spec 66 — o par é tudo ou nada: sem o ativo recebido, nem o
+        # provento entra (senão o BTC some e o rendimento fica sem contraparte).
+        if in_kind_problem is not None:
+            row["orphan_reason"] = in_kind_problem
             orphan.append(row)
             continue
 
@@ -1529,6 +1614,8 @@ def _classify_bulk_income(
             "_gross": Decimal(str(gross)),
             "_net": Decimal(str(net)),
             "_tax": Decimal(str(tax)) if tax is not None else None,
+            "_paid_asset": paid_asset,
+            "_paid_qty": paid_qty,
         })
         preview.append(row)
 
@@ -1748,6 +1835,7 @@ def _apply_bulk_income_to_snapshot(
     errors = errors + opt_errors
 
     created: list[dict] = []
+    in_kind_asset_ids: set[str] = set()
     fi_id = job.institution_id
     now = datetime.now(timezone.utc)
     for item in apply_plan:
@@ -1770,7 +1858,7 @@ def _apply_bulk_income_to_snapshot(
             net_amount=item["_net"],
             currency=item["_currency_enum"],
             fx_rate=dist_fx,
-            notes=f"avenue proventos (job {job.id})",
+            notes=f"proventos {item['institution_short_name']} (job {job.id})",
             is_active=True,
             external_id=item["external_id"],
             external_source=ExternalSource.MANUAL_CSV,
@@ -1779,7 +1867,7 @@ def _apply_bulk_income_to_snapshot(
         )
         db.add(dist)
         db.flush()
-        created.append({
+        applied_row = {
             "distribution_id": dist.id,
             "external_id": item["external_id"],
             "event_date": item["event_date"],
@@ -1792,7 +1880,46 @@ def _apply_bulk_income_to_snapshot(
             "net_amount": item["net_amount"],
             "currency": item["currency"],
             "institution_short_name": item["institution_short_name"],
-        })
+            "in_kind": item.get("in_kind"),
+        }
+
+        # Spec 66 — contraparte do provento pago em cripto: BUY do ativo
+        # recebido pelo valor do provento. Não sai caixa da conta; entra
+        # quantidade e custo (o rendimento vira base de custo do BTC).
+        paid_asset: Asset | None = item.get("_paid_asset")
+        if paid_asset is not None:
+            paid_qty: Decimal = item["_paid_qty"]
+            mov = AssetMovement(
+                id=str(uuid.uuid4()),
+                workspace_id=job.workspace_id,
+                asset_id=paid_asset.id,
+                type=AssetMovementType.BUY,
+                event_date=item["_event_d"],
+                settlement_date=item["_event_d"],
+                quantity=paid_qty,
+                unit_price=item["_net"] / paid_qty,
+                gross_amount=item["_net"],
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                net_amount=item["_net"],
+                currency=item["_currency_enum"],
+                # Convenção AssetMovement: PTAX do dia sempre (BRL e USD).
+                fx_rate=resolve_fx_rate(db, item["_event_d"]),
+                notes=(
+                    f"Recompensa de {item['ticker']} paga em {paid_asset.ticker or paid_asset.name} "
+                    f"— contraparte do provento (job {job.id})"
+                ),
+                is_active=True,
+                external_id=item["in_kind"]["external_id"],
+                external_source=ExternalSource.MANUAL_CSV,
+                created_at=now, updated_at=now,
+                created_by=user_id, updated_by=user_id,
+            )
+            db.add(mov)
+            db.flush()
+            applied_row["in_kind"] = {**item["in_kind"], "movement_id": mov.id}
+            in_kind_asset_ids.add(paid_asset.id)
+        created.append(applied_row)
 
     # Option premium events → AssetMovement SELL_OPEN / BUY_TO_CLOSE.
     for item in opt_plan:
@@ -1840,6 +1967,14 @@ def _apply_bulk_income_to_snapshot(
             "row_kind": "option_event",
         })
 
+    # Spec 66 — o BUY cai dentro do mês do fechamento em revisão, cujo item
+    # do ativo recebido já está congelado. Recalcula só esse item (preço
+    # congelado preservado; qty/custo/valor andam juntos).
+    if in_kind_asset_ids and job.snapshot_id:
+        _recompute_in_kind_items(
+            db, job, in_kind_asset_ids, user_id=user_id, user_email=user_email,
+        )
+
     detail = BulkApplyDetail(
         applied=created,
         matched_no_pendency=duplicate_rows + opt_duplicate,  # repurposed: duplicates
@@ -1856,6 +1991,32 @@ def _apply_bulk_income_to_snapshot(
         errors=errors,
         bulk_detail=detail,
     )
+
+
+def _recompute_in_kind_items(
+    db: Session, job: ExtractionJob, asset_ids: set[str],
+    *,
+    user_id: str | None,
+    user_email: str | None,
+) -> None:
+    snap = db.get(PortfolioSnapshot, job.snapshot_id)
+    # Bulk income só roda em fechamento IN_REVIEW (rota devolve 409), mas
+    # apply_recompute reabriria um CLOSED — nunca deixar isso acontecer.
+    if snap is None or snap.status != SnapshotStatus.IN_REVIEW:
+        return
+    period_start, _ = _income_period_bounds(snap)
+    for asset_id in sorted(asset_ids):
+        affected = find_affected_snapshots(
+            db, workspace_id=job.workspace_id, asset_id=asset_id,
+            earliest_event_date=period_start,
+        )
+        if not any(a.snapshot_id == snap.id for a in affected):
+            continue
+        apply_recompute_to_snapshot(
+            db, snapshot_id=snap.id, asset_id=asset_id,
+            trigger_event_type="extraction_job", trigger_event_id=job.id,
+            user_id=user_id, user_email=user_email,
+        )
 
 
 def preview_bulk_income(

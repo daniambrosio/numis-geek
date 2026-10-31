@@ -166,6 +166,13 @@ BROKER_POSITION = Template(
 
 # Placeholder templates — schema defined, prompt TODO before production.
 
+class PaymentInKind(BaseModel):
+    """Spec 66 — provento pago em cripto (Coinbase paga recompensa de USDC
+    em BTC). Vira um BUY do ativo pago, pareado com o INTEREST."""
+    ticker: str
+    quantity: float
+
+
 class BrokerIncomeEvent(BaseModel):
     event_date: str
     ticker_raw: str
@@ -177,6 +184,7 @@ class BrokerIncomeEvent(BaseModel):
     currency: str = "BRL"
     notes: str | None = None
     confidence: float
+    payment_in_kind: PaymentInKind | None = None
 
 
 class BrokerOptionEvent(BaseModel):
@@ -206,7 +214,7 @@ class BrokerIncomeOutput(BaseModel):
 
 
 BROKER_INCOME = Template(
-    version="broker-income-v2",
+    version="broker-income-v3",
     system=(
         "Você extrai eventos de PROVENTOS de extratos de corretora "
         "(brasileiras ou exterior). Um arquivo pode conter movimentações "
@@ -232,6 +240,19 @@ BROKER_INCOME = Template(
         "rewards de USDC em BTC — ticker_raw='USDC', mas gross_amount em "
         "BRL/USD conforme mostrado).\n"
         "- SECURITIES_LENDING — empréstimo/aluguel de ações (BTC).\n\n"
+        "PAGAMENTO EM CRIPTO (payment_in_kind):\n"
+        "- Quando o rendimento é creditado como QUANTIDADE de uma cripto "
+        "(ex.: Coinbase 'USDC rewards  +R$ 187,72  +0.000571 BTC'), emita UM "
+        "evento INTEREST com ticker_raw = cripto que GEROU o rendimento "
+        "('USDC'), gross_amount/net_amount = valor em BRL/USD mostrado, e "
+        "payment_in_kind = { \"ticker\": cripto recebida ('BTC'), "
+        "\"quantity\": quantidade recebida (0.000571) }.\n"
+        "- Vale também quando a cripto recebida é a mesma que gerou "
+        "(recompensa de USDC paga em USDC → payment_in_kind.ticker='USDC').\n"
+        "- Copie a quantidade com TODAS as casas decimais visíveis. Não "
+        "emita um evento separado pra quantidade recebida.\n"
+        "- Rendimento creditado em dinheiro (BRL/USD na conta) → "
+        "payment_in_kind = null.\n\n"
         "NÃO EXTRAIR em events[] (ignore ou roteie diferente):\n"
         "- Compras/vendas de ação/ETF/FII (são trades, não proventos).\n"
         "- Taxa de custódia, taxa de administração, IOF de câmbio, "
@@ -274,6 +295,7 @@ BROKER_INCOME = Template(
         "- tax_amount: IRRF/IOF SE for retido no provento (caso contrário null).\n"
         "- net_amount: valor líquido recebido em conta (= gross - tax).\n"
         "- currency: BRL ou USD conforme a moeda do pagamento.\n"
+        "- payment_in_kind: { ticker, quantity } ou null (ver acima).\n"
         "- confidence: 0–1.\n\n"
         "Se nenhum provento for encontrado, retorne `events: []`."
     ),

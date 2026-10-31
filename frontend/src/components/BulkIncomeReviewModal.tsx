@@ -55,6 +55,32 @@ interface IncomeRow {
   currency: string
   institution_short_name: string | null
   distribution_id?: string
+  // Spec 66 — provento pago em cripto: par com o aporte do ativo recebido.
+  in_kind?: InKindReceipt | null
+  orphan_reason?: string
+}
+
+interface InKindReceipt {
+  ticker: string
+  quantity: string
+  asset_id: string | null
+  asset_name: string | null
+}
+
+function fmtQty(q: string): string {
+  return Number(q).toLocaleString('pt-BR', { maximumFractionDigits: 8 })
+}
+
+/** Linha secundária do par (spec 66): "↳ recebido em BTC: +0,000571". */
+function InKindLine({ r, testId }: { r: IncomeRow; testId?: string }) {
+  if (!r.in_kind) return null
+  return (
+    <div className="pl-6 text-[11px] text-gray-500 dark:text-gray-400" data-testid={testId}>
+      ↳ recebido em <span className="font-mono">{r.in_kind.ticker}</span>:{' '}
+      <span className="tnum">+{fmtQty(r.in_kind.quantity)}</span>
+      <span className="ml-1.5 italic">(aporte)</span>
+    </div>
+  )
 }
 
 interface IncomePreview {
@@ -145,6 +171,11 @@ export default function BulkIncomeReviewModal({
   const totalGross = rows.reduce((s, r) => s + Number(r.gross_amount || 0), 0)
   const totalNet = rows.reduce((s, r) => s + Number(r.net_amount || 0), 0)
   const currency = rows[0]?.currency ?? 'USD'
+  // Spec 66 — par provento + aporte conta como 2 eventos no botão.
+  const inKindCount = rows.filter(r => r.in_kind).length
+  const applyLabel = inKindCount > 0
+    ? `Registrar ${rows.length + inKindCount} eventos`
+    : `Registrar ${rows.length} provento${rows.length === 1 ? '' : 's'}`
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
@@ -196,9 +227,10 @@ export default function BulkIncomeReviewModal({
                 {rows.map((r, i) => (
                   <li
                     key={`${r.event_date}-${r.ticker ?? '_'}-${r.type}-${i}`}
-                    className="flex items-center justify-between text-[12px] py-1 border-b border-gray-100 dark:border-gray-800/60"
+                    className="text-[12px] py-1 border-b border-gray-100 dark:border-gray-800/60"
                     data-testid={`income-row-${i}`}
                   >
+                    <div className="flex items-center justify-between">
                     <div className="flex-1 min-w-0">
                       <span className="font-mono text-gray-500 tnum">{r.event_date}</span>
                       <span className="ml-2 text-[10px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
@@ -225,6 +257,8 @@ export default function BulkIncomeReviewModal({
                         = {fmtMoney(Number(r.net_amount), r.currency)}
                       </span>
                     </div>
+                    </div>
+                    <InKindLine r={r} testId={`income-row-in-kind-${i}`} />
                   </li>
                 ))}
               </ul>
@@ -255,6 +289,9 @@ export default function BulkIncomeReviewModal({
                           <span className="ml-2 font-mono text-red-600 dark:text-red-400">
                             {r.ticker ?? r.option_ticker ?? '—'}
                           </span>
+                          {r.orphan_reason && (
+                            <span className="ml-2 text-[11px] text-gray-500">· {r.orphan_reason}</span>
+                          )}
                         </div>
                         <div className="tnum text-[11px] text-gray-500">
                           {fmtMoney(Number(r.net_amount), r.currency)}
@@ -264,6 +301,7 @@ export default function BulkIncomeReviewModal({
                   </ul>
                   <div className="text-[11px] text-gray-500 italic mt-1">
                     Cadastre o ativo na {scopedFi ?? 'instituição'} e clique em Re-extrair.
+                    {orphans.some(r => r.in_kind) && ' Provento pago em cripto só entra junto com o aporte.'}
                   </div>
                 </div>
               )}
@@ -298,7 +336,8 @@ export default function BulkIncomeReviewModal({
               )}
               <div className="text-[11px] text-gray-500 italic mt-2">
                 Itens já registrados (mesma data + ticker + valor) são pulados
-                automaticamente.
+                automaticamente. Provento pago em cripto: basta mesma data e
+                ativo, mesmo que o valor em R$ tenha mudado no app.
               </div>
             </>
           )}
@@ -324,7 +363,7 @@ export default function BulkIncomeReviewModal({
           >
             {applying
               ? 'Registrando…'
-              : `Registrar ${rows.length} provento${rows.length === 1 ? '' : 's'}`}
+              : applyLabel}
           </button>
         </div>
       </div>
