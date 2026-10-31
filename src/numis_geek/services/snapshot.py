@@ -42,6 +42,7 @@ from numis_geek.models.portfolio_snapshot import (
     SnapshotSource,
     SnapshotStatus,
 )
+from numis_geek.services import account_balance
 from numis_geek.services import historical_price
 from numis_geek.services.audit import AuditService
 from numis_geek.services.fx import FxRateNotFound, fx_rate_on
@@ -371,16 +372,26 @@ def create_snapshot(
 
     for asset in assets:
         pos = compute_position(db, asset.id, as_of=period_end)
-        if not asset_has_position(pos, asset):
+        # Spec 70 fase 3 — ativo CASH espelho de conta corrente: o valor vem
+        # do ledger (saldo derivado) e o item entra sempre, sem pendência.
+        linked_acc = account_balance.linked_account(db, asset)
+        derived = account_balance.derives_on(linked_acc, period_end)
+        if not derived and not asset_has_position(pos, asset):
             continue
         qty = _effective_item_quantity(asset, pos["quantity_held"])
+        unit_price = pos["current_price"]
 
         mv_native = pos["current_value"]
         mv_brl = pos["current_value_brl"]
         mv_usd: Decimal | None = None
 
         currency = asset.currency.value
-        if mv_brl is not None:
+        if derived:
+            qty = Decimal("1")
+            unit_price, mv_native, mv_brl, mv_usd = account_balance.item_values(
+                account_balance.derived_balance(db, linked_acc, period_end), linked_acc.currency, fx,
+            )
+        elif mv_brl is not None:
             if currency == "USD":
                 mv_usd = mv_native
             elif currency == "BRL" and fx is not None and fx > 0:
@@ -391,7 +402,7 @@ def create_snapshot(
             snapshot_id=snap.id,
             asset_id=asset.id,
             quantity=qty,
-            unit_price=pos["current_price"],
+            unit_price=unit_price,
             market_value_native=mv_native,
             market_value_brl=mv_brl,
             market_value_usd=mv_usd,
@@ -409,7 +420,7 @@ def create_snapshot(
         total_rec_brl += pos["total_received_brl"]
 
         # Detect pendency for this asset at this snapshot.
-        det = detect_pendencies(db, asset, period_end=period_end, now=now)
+        det = None if derived else detect_pendencies(db, asset, period_end=period_end, now=now)
         if det is not None:
             reason, action, detail = det
             pen = SnapshotPendency(
@@ -1348,6 +1359,9 @@ def sync_snapshot_items(
         )
         db.flush()
 
+    # Spec 70 fase 3 — reaplica o saldo derivado dos ativos CASH vinculados.
+    derived_refreshed = account_balance.refresh_linked_cash_items(db, snap, now=now)
+
     AuditService(db).log(
         user_email=user_email or (user_id or "system"),
         action="snapshot.sync_items",
@@ -1359,6 +1373,7 @@ def sync_snapshot_items(
             "period_end_date": snap.period_end_date.isoformat(),
             "items_added": items_added,
             "pendencies_added": len(pendency_ids),
+            "derived_cash_items": derived_refreshed,
         },
     )
     return {

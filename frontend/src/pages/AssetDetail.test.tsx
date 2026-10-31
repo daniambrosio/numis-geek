@@ -16,7 +16,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-rou
 import AssetDetail from './AssetDetail'
 import {
   api,
-  type AccountOut, type AssetOut, type AssetPriceHistoryOut, type AssetPriceHistoryPoint,
+  type AccountDetailOut, type AssetOut, type AssetPriceHistoryOut, type AssetPriceHistoryPoint,
   type FinancialInstitutionOut, type UserOut,
 } from '../lib/api'
 
@@ -48,12 +48,15 @@ const fi: FinancialInstitutionOut = {
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
 
-const account: AccountOut = {
+// Shape real de GET /accounts/{id} (spec 70 fase 3) pra conta de investimento.
+const account: AccountDetailOut = {
   id: 'acc1', workspace_id: 'ws1',
   financial_institution_id: 'fi1', financial_institution_name: 'Avenue',
   name: 'Conta Investimento Avenue', account_type: 'investment',
-  currency: 'USD', opening_balance: 0, account_info: null,
+  currency: 'USD', opening_balance: 0, opening_balance_date: null, account_info: null,
   is_active: true, created_at: '2026-01-01T00:00:00Z',
+  fi_long_name: 'Avenue Securities', fi_logo_slug: null, balance: null, balance_brl: null,
+  balance_series: [], month: null, linked_asset: null,
 }
 
 function priceHistory(points: AssetPriceHistoryPoint[]): AssetPriceHistoryOut {

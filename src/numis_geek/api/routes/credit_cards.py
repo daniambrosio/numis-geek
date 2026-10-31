@@ -13,6 +13,7 @@ from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceSta
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.transaction import Transaction
 from numis_geek.models.user import User, UserRole
+from numis_geek.services import account_balance
 from numis_geek.services import transactions as tx_svc
 from numis_geek.services.audit import AuditService
 from numis_geek.services.transactions import invoice_open_total
@@ -461,4 +462,5 @@ def pay_invoice(
     _audit(db, current_user, "invoice.paid", "invoice", inv.id, inv.workspace_id, {
         "transaction_id": tx.id, "amount": str(-tx.amount), "paid_on": body.paid_on.isoformat(),
     })
+    account_balance.refresh_open_snapshots(db, inv.workspace_id)
     return InvoiceOut.from_orm(inv, card.name if card else "—")

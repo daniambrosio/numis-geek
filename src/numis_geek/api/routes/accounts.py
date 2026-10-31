@@ -8,11 +8,14 @@ from sqlalchemy.orm import Session
 
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.models.account import Account, AccountType, Currency
-from numis_geek.models.asset import Asset
+from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.financial_institution import FinancialInstitution
+from numis_geek.models.transaction import Transaction, TransactionSourceType
 from numis_geek.models.user import UserRole
 from numis_geek.models.workspace import Workspace
+from numis_geek.services import account_balance
 from numis_geek.services.audit import AuditService
+from numis_geek.services.fx import FxRateNotFound, fx_rate_on
 from numis_geek.services.auth import UserContext
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -354,3 +357,240 @@ def deactivate_account(
         details={"name": account.name},
     )
     return AccountOut.from_orm(account, fi_name)
+
+
+# ── Spec 70 fase 3 — detalhe da conta corrente, saldo derivado, conferência ──
+
+class LinkedAssetRef(BaseModel):
+    id: str
+    name: str
+
+
+class BalancePoint(BaseModel):
+    date: str
+    balance: float
+
+
+class MonthFlow(BaseModel):
+    inflows: float
+    outflows: float
+    net: float
+
+
+class AccountDetailOut(AccountOut):
+    fi_long_name: str | None
+    fi_logo_slug: str | None
+    # Saldo derivado hoje (checking); None em conta de investimento.
+    balance: float | None
+    # Conta em USD: saldo × PTAX de hoje (walkback); BRL = o próprio saldo.
+    balance_brl: float | None
+    balance_series: list[BalancePoint]
+    month: MonthFlow | None
+    linked_asset: LinkedAssetRef | None
+
+
+class BalanceCheckRowOut(BaseModel):
+    snapshot_id: str
+    period_end_date: str
+    status: str
+    typed: float | None
+    derived: float
+    difference: float | None
+
+
+class OpeningBalanceRequest(BaseModel):
+    opening_balance: Decimal | None = None
+    opening_balance_date: date | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "OpeningBalanceRequest":
+        if self.opening_balance is not None and self.opening_balance_date is None:
+            raise ValueError("opening_balance_date is required when opening_balance is set")
+        return self
+
+
+class LinkAssetRequest(BaseModel):
+    asset_id: str | None = None  # None desvincula
+
+
+def _scoped_or_404(db: Session, account_id: str, current_user: UserContext) -> Account:
+    acc = _get_or_404(db, account_id)
+    _check_workspace_access(acc, current_user)
+    return acc
+
+
+def _detail(db: Session, acc: Account) -> AccountDetailOut:
+    fi = db.get(FinancialInstitution, acc.financial_institution_id)
+    base = AccountOut.from_orm(acc, fi.short_name if fi else acc.financial_institution_id).model_dump()
+    linked = db.query(Asset).filter(Asset.linked_account_id == acc.id).first()
+    balance = None
+    balance_brl = None
+    series: list[BalancePoint] = []
+    month = None
+    if acc.account_type == AccountType.checking:
+        today = date.today()
+        balance_dec = account_balance.derived_balance(db, acc, today)
+        balance = float(balance_dec)
+        if acc.currency == Currency.BRL:
+            balance_brl = balance
+        else:
+            try:
+                balance_brl = float((balance_dec * fx_rate_on(db, today)).quantize(Decimal("0.01")))
+            except FxRateNotFound:
+                balance_brl = None
+        series = [
+            BalancePoint(date=d.isoformat(), balance=float(b))
+            for d, b in account_balance.month_end_series(db, acc, 6, today)
+        ]
+        rows = db.query(Transaction.amount).filter(
+            Transaction.source_type == TransactionSourceType.CHECKING,
+            Transaction.checking_account_id == acc.id,
+            Transaction.event_date >= today.replace(day=1),
+            Transaction.event_date <= today,
+        ).all()
+        inflows = sum((float(a) for (a,) in rows if a > 0), 0.0)
+        outflows = sum((float(a) for (a,) in rows if a < 0), 0.0)
+        month = MonthFlow(inflows=inflows, outflows=outflows, net=inflows + outflows)
+    return AccountDetailOut(
+        **base,
+        fi_long_name=fi.long_name if fi else None,
+        fi_logo_slug=fi.logo_slug if fi else None,
+        balance=balance,
+        balance_brl=balance_brl,
+        balance_series=series,
+        month=month,
+        linked_asset=LinkedAssetRef(id=linked.id, name=linked.name) if linked else None,
+    )
+
+
+@router.get("/{account_id}", response_model=AccountDetailOut)
+def get_account(
+    account_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    return _detail(db, _scoped_or_404(db, account_id, current_user))
+
+
+@router.get("/{account_id}/balance-check", response_model=list[BalanceCheckRowOut])
+def get_balance_check(
+    account_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Conferência mês a mês: fechamento × saldo derivado (spec 70 fase 3)."""
+    acc = _scoped_or_404(db, account_id, current_user)
+    return [
+        BalanceCheckRowOut(
+            snapshot_id=r.snapshot_id,
+            period_end_date=r.period_end_date.isoformat(),
+            status=r.status,
+            typed=float(r.typed) if r.typed is not None else None,
+            derived=float(r.derived),
+            difference=float(r.difference) if r.difference is not None else None,
+        )
+        for r in account_balance.balance_check(db, acc)
+    ]
+
+
+@router.patch("/{account_id}/opening-balance", response_model=AccountDetailOut)
+def update_opening_balance(
+    account_id: str,
+    body: OpeningBalanceRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Saldo de abertura editável — recua quando entram extratos antigos.
+    Reaplica o derivado nos fechamentos abertos; CLOSED não muda."""
+    _require_admin(current_user)
+    acc = _scoped_or_404(db, account_id, current_user)
+    if acc.account_type != AccountType.checking:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Saldo de abertura só existe em conta corrente.",
+        )
+    before = {
+        "opening_balance": str(acc.opening_balance) if acc.opening_balance is not None else None,
+        "opening_balance_date": acc.opening_balance_date.isoformat() if acc.opening_balance_date else None,
+    }
+    acc.opening_balance = body.opening_balance
+    acc.opening_balance_date = body.opening_balance_date
+    acc.updated_at = datetime.now(timezone.utc)
+    acc.updated_by = current_user.user_id
+    db.flush()
+    account_balance.refresh_open_snapshots(db, acc.workspace_id)
+    AuditService(db).log(
+        user_email=current_user.user_id,
+        action="account.opening_balance_updated",
+        workspace_id=acc.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="account",
+        resource_id=acc.id,
+        details={
+            "name": acc.name,
+            "before": before,
+            "after": {
+                "opening_balance": str(body.opening_balance) if body.opening_balance is not None else None,
+                "opening_balance_date": body.opening_balance_date.isoformat() if body.opening_balance_date else None,
+            },
+        },
+    )
+    return _detail(db, acc)
+
+
+@router.put("/{account_id}/linked-asset", response_model=AccountDetailOut)
+def set_linked_asset(
+    account_id: str,
+    body: LinkAssetRequest,
+    db: Session = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Vincula (ou desvincula, asset_id=null) o ativo CASH espelho desta conta.
+    Invariantes da spec 80: só CASH, só checking, 1:1, mesmo workspace."""
+    from numis_geek.api.routes.assets import _resolve_linked_account
+
+    _require_admin(current_user)
+    acc = _scoped_or_404(db, account_id, current_user)
+    current = db.query(Asset).filter(Asset.linked_account_id == acc.id).first()
+    now = datetime.now(timezone.utc)
+    if body.asset_id is None:
+        if current is not None:
+            current.linked_account_id = None
+            current.updated_at = now
+            current.updated_by = current_user.user_id
+    else:
+        asset = db.get(Asset, body.asset_id)
+        if asset is None or asset.workspace_id != acc.workspace_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
+        if asset.asset_class != AssetClass.CASH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Só ativo CASH pode espelhar conta corrente.",
+            )
+        if asset.linked_account_id and asset.linked_account_id != acc.id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Ativo já espelha outra conta corrente.",
+            )
+        # Troca de ativo: solta o atual antes de validar o 1:1.
+        if current is not None and current.id != asset.id:
+            current.linked_account_id = None
+            current.updated_at = now
+            current.updated_by = current_user.user_id
+            db.flush()
+        _resolve_linked_account(db, acc.id, acc.workspace_id, asset_id=asset.id)
+        asset.linked_account_id = acc.id
+        asset.updated_at = now
+        asset.updated_by = current_user.user_id
+    db.flush()
+    account_balance.refresh_open_snapshots(db, acc.workspace_id)
+    AuditService(db).log(
+        user_email=current_user.user_id,
+        action="account.linked_asset_updated",
+        workspace_id=acc.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="account",
+        resource_id=acc.id,
+        details={"name": acc.name, "before": current.id if current else None, "after": body.asset_id},
+    )
+    return _detail(db, acc)

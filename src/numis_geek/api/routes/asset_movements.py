@@ -238,6 +238,13 @@ def _resolve_asset(db: Session, asset_id: str, workspace_id: str, current_user: 
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Asset belongs to a different workspace.",
         )
+    # Spec 80/70 — ativo CASH espelho de conta corrente não tem lançamento:
+    # o saldo vem do ledger. Bloqueia criar e editar (o update também passa aqui).
+    if asset.linked_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Ativo vinculado a conta corrente: entrada e saída de conta corrente são Movimentações.",
+        )
     return asset
 
 

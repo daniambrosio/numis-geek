@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, TrendingUp, Wallet } from 'lucide-react'
 import { api, type AccountOut, type AssetOut, type FinancialInstitutionOut, type UserOut } from '../../lib/api'
 import AppLayout from '../../components/AppLayout'
@@ -288,6 +288,16 @@ export default function AdminAccounts() {
                               {fmtMoney(acc.opening_balance, acc.currency)}
                             </div>
                           </div>
+                          {acc.account_type === 'checking' && (
+                            <Link
+                              to={`/accounts/${acc.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[11px] px-2 py-1 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 transition-colors shrink-0"
+                              title="Saldo, movimentações e conferência com os fechamentos"
+                            >
+                              Abrir →
+                            </Link>
+                          )}
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setConfirmDeactivate(acc) }}

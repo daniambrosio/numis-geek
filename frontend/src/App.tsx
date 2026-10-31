@@ -26,6 +26,7 @@ import CreditCards from './pages/CreditCards'
 import CreditCardDetail from './pages/CreditCardDetail'
 import Invoices from './pages/Invoices'
 import Transactions from './pages/Transactions'
+import AccountDetail from './pages/AccountDetail'
 import { applyTheme, getTheme } from './lib/theme'
 import { getToken } from './lib/api'
 
@@ -66,6 +67,7 @@ export default function App() {
         {/* Estrutura */}
         <Route path="/financial-institutions" element={<PrivateRoute><ComingSoon title="Instituições" hint="FI Hub com contas, cartões e ativos agregados. Chega no Spec 22." /></PrivateRoute>} />
         <Route path="/accounts" element={<PrivateRoute><AdminAccounts /></PrivateRoute>} />
+        <Route path="/accounts/:id" element={<PrivateRoute><AccountDetail /></PrivateRoute>} />
 
         {/* Legacy PT routes — redirect to EN equivalents (mantido por 1 ciclo) */}
         <Route path="/patrimonio" element={<Navigate to="/portfolio" replace />} />

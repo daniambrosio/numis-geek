@@ -162,9 +162,32 @@ export interface AccountOut {
   account_type: 'checking' | 'investment'
   currency: 'BRL' | 'USD'
   opening_balance: number | null
+  opening_balance_date?: string | null
   account_info: string | null
   is_active: boolean
   created_at: string
+}
+
+// Spec 70 fase 3 — detalhe da conta corrente (saldo derivado do ledger)
+export interface AccountDetailOut extends AccountOut {
+  opening_balance_date: string | null
+  fi_long_name: string | null
+  fi_logo_slug: string | null
+  balance: number | null
+  /** Conta em USD: saldo × PTAX de hoje. */
+  balance_brl: number | null
+  balance_series: { date: string; balance: number }[]
+  month: { inflows: number; outflows: number; net: number } | null
+  linked_asset: { id: string; name: string } | null
+}
+
+export interface BalanceCheckRow {
+  snapshot_id: string
+  period_end_date: string
+  status: 'OPEN' | 'IN_REVIEW' | 'CLOSED'
+  typed: number | null
+  derived: number
+  difference: number | null
 }
 
 // Spec 68 — registry types
@@ -455,6 +478,8 @@ export interface AssetOut {
   created_at: string
   updated_at: string
   details: FixedIncomeDetails | PhysicalDetails | null
+  /** Spec 80 — ativo CASH espelho de conta corrente. */
+  linked_account_id?: string | null
 }
 
 /** Spec 81 — PATCH parcial: só os campos presentes mudam; null explícito limpa. */
@@ -1015,13 +1040,12 @@ export const api = {
 
   listAccounts: (workspace_id?: string) =>
     request<AccountOut[]>(`/accounts${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`),
-
-  getAccount: async (id: string) => {
-    const all = await request<AccountOut[]>('/accounts')
-    const a = all.find(ac => ac.id === id)
-    if (!a) throw new Error(`Account ${id} not found`)
-    return a
-  },
+  getAccount: (id: string) => request<AccountDetailOut>(`/accounts/${id}`),
+  accountBalanceCheck: (id: string) => request<BalanceCheckRow[]>(`/accounts/${id}/balance-check`),
+  updateOpeningBalance: (id: string, data: { opening_balance: number | null; opening_balance_date: string | null }) =>
+    request<AccountDetailOut>(`/accounts/${id}/opening-balance`, { method: 'PATCH', body: JSON.stringify(data) }),
+  setLinkedAsset: (id: string, asset_id: string | null) =>
+    request<AccountDetailOut>(`/accounts/${id}/linked-asset`, { method: 'PUT', body: JSON.stringify({ asset_id }) }),
 
   createAccount: (data: {
     name: string

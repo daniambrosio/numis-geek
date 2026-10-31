@@ -21,6 +21,7 @@ from numis_geek.models.party import Party
 from numis_geek.models.tag import Tag
 from numis_geek.models.transaction import Transaction, TransactionSourceType, transaction_tag
 from numis_geek.models.user import User, UserRole
+from numis_geek.services import account_balance
 from numis_geek.services import transactions as svc
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
@@ -401,6 +402,7 @@ def create_transaction(
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.created", rows)
+    account_balance.refresh_open_snapshots(db, ws)
     return hydrate(db, rows)
 
 
@@ -417,6 +419,7 @@ def create_transfer(
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.transfer_created", legs, {"transfer_group_id": legs[0].transfer_group_id})
+    account_balance.refresh_open_snapshots(db, ws)
     return hydrate(db, legs)
 
 
@@ -438,6 +441,7 @@ def update_transaction(
     _audit(db, current_user, "transaction.updated", rows, {
         "before": before, "after": {k: str(v) for k, v in changes.items()},
     })
+    account_balance.refresh_open_snapshots(db, tx.workspace_id)
     return hydrate(db, rows)
 
 
@@ -449,9 +453,11 @@ def delete_transaction(
     current_user: UserContext = Depends(get_current_user),
 ):
     tx = _get_or_404(db, tx_id, current_user)
+    ws = tx.workspace_id
     try:
         rows = svc.delete_transaction(db, tx, cascade=cascade)
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.deleted", rows)
+    account_balance.refresh_open_snapshots(db, ws)
 

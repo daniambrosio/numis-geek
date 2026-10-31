@@ -83,11 +83,13 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   `Saldo em Conta (Nubank)`, com os lançamentos de 05–07/08 e os itens no fechamento
   de ago/26.
 
-- [ ] `[claude]` **Spec 80 fase 2 — junto com a spec 70.** Escopo detalhado na spec 70
-  (seção "Fase 2 da spec 80", decidido 2026-10-30): saldo derivado no fechamento aberto,
-  conferência mês a mês contra os CLOSED, abertura editável (vai recuar com os extratos
-  antigos), UI do vínculo, trava de lançamento em ativo vinculado e migração dos **4**
-  fluxos de caixa (inclui o BUY Wise R$ 5.279,79 de 20/08, lançado depois da spec 80).
+- [ ] `[claude]` **Spec 70 fase 4 — migrar os 4 fluxos de caixa** dos ativos vinculados para
+  `transaction` (script dry-run/apply, backup antes, recompute do invested congelado do Wise).
+  A fase 3 (saldo derivado, conferência, abertura editável, vínculo, trava) está no código.
+- [ ] `[user]` `[claude]` **Antes do deploy da fase 3 da spec 70 — decidir a abertura.** Com a
+  abertura em 31/08 e sem movimentações, o fechamento seguinte puxaria o saldo de 31/08 nas
+  5 contas vinculadas, sem pendência. Mover a abertura pro último fechamento digitado (valor
+  daquele fechamento) ou segurar o deploy até os extratos entrarem. Detalhe na spec 70.
 - [ ] `[user]` **Extratos antigos das contas correntes.** Mandar os extratos mais antigos
   que tiver de cada conta — definem o saldo de abertura (spec 70) e entram pelo import
   (spec 71).
