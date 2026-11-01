@@ -41,6 +41,7 @@ const BUCKETS: { key: BankImportBucket; label: string; hint: string }[] = [
   { key: 'duplicate', label: 'Duplicadas', hint: 'já estão no sistema' },
   { key: 'invoice_payment', label: 'Pagamento de fatura', hint: 'quita a fatura pelo fluxo Pagar fatura' },
   { key: 'scheduled', label: 'Quita conta a pagar/receber', hint: 'marca a conta como paga' },
+  { key: 'blocked', label: 'Não importáveis', hint: 'moeda diferente da conta — lance à mão' },
 ]
 
 const DUP_REASON: Record<string, string> = {
@@ -62,7 +63,6 @@ function fmtDM(iso: string): string {
 }
 
 export default function BankImportReviewModal({ job, accounts, categories, onApplied, onClose }: Props) {
-  useEscapeKey(onClose)
   const [preview, setPreview] = useState<BankImportPreview | null>(null)
   const [loadError, setLoadError] = useState('')
   const [parties, setParties] = useState<PartyOut[]>([])
@@ -91,6 +91,7 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
     return () => { cancelled = true }
   }, [job.id])
 
+  // Pagamento de fatura só sai de conta na moeda da fatura (audit 2026-10-31).
   const checking = useMemo(() => accounts.filter(a => a.account_type === 'checking' && a.is_active), [accounts])
   const { toImport, toReconcile } = countDecisions(decisions)
   const isCard = job.source_hint === 'CARD_INVOICE'
@@ -102,6 +103,12 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
   const missingAccount = preview?.rows.some(r =>
     decisions[r.row_id]?.action === 'pay' && r.invoice_payment?.kind === 'card_payment_line'
     && !decisions[r.row_id]?.payment_account_id) ?? false
+
+  // X / ESC não fecham com o apply ou o descarte em voo — o resultado
+  // (ou o erro) precisa chegar a esta tela.
+  const busy = applying || discarding
+  const safeClose = () => { if (!busy) onClose() }
+  useEscapeKey(safeClose)
 
   async function handleApply() {
     setApplying(true)
@@ -148,7 +155,7 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
               )}
             </div>
           </div>
-          <button onClick={onClose} aria-label="Fechar"
+          <button onClick={safeClose} disabled={busy} aria-label="Fechar"
             className="w-7 h-7 shrink-0 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800">
             <X className="w-4 h-4" />
           </button>
@@ -243,7 +250,10 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
   const amount = Number(r.amount)
   const creates = decision.action === 'import' || decision.action === 'import_anyway' || decision.action === 'settle'
   const partyValue = decision.no_party ? 'none' : decision.party_id ? `p:${decision.party_id}` : 'suggested'
-  const suggestedLabel = r.party.mode === 'existing' ? r.party.party_name
+  const chosenOcc = r.scheduled?.candidates.find(c => c.occurrence_id === decision.occurrence_id)
+  const suggestedLabel = r.party.from_occurrence
+    ? `${chosenOcc?.party_name ?? 'Sem fornecedor/cliente'} (da conta a pagar/receber)`
+    : r.party.mode === 'existing' ? r.party.party_name
     : r.party.mode === 'new' ? `nova: ${r.party.new_party_name}` : 'Sem fornecedor/cliente'
   const ip = r.invoice_payment
   return (
@@ -258,6 +268,9 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
               {DUP_REASON[r.duplicate.reason ?? ''] ?? 'duplicada'}
               {r.duplicate.transaction_id && <> · {r.duplicate.is_reconciled ? 'já reconciliada' : 'manual, não reconciliada'}</>}
             </span>
+          )}
+          {ip?.existing_debit && (
+            <span>débito já lançado em {fmtDay(ip.existing_debit.event_date)} — vincula sem debitar de novo</span>
           )}
           {ip && ip.invoice_id && (
             <span>fatura {ip.card_name} · fecha {fmtDay(ip.close_date)}{ip.status === 'PAID' ? ' · já paga' : ''}</span>
@@ -303,7 +316,7 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
             <select value={decision.payment_account_id ?? ''} aria-label="Conta do pagamento" className={`${SELECT_CLS} max-w-[170px]`}
               onChange={e => onChange({ payment_account_id: e.target.value || null })}>
               <option value="">Conta de origem…</option>
-              {checking.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {checking.filter(a => a.currency === r.currency).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           )}
           <select value={decision.action} aria-label="Ação" className={SELECT_CLS} data-testid={`action-${r.row_id}`}

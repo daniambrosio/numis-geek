@@ -16,6 +16,7 @@ export const ACTION_LABEL: Record<BankImportAction, string> = {
   import_anyway: 'Importar mesmo assim',
   pay: 'Pagar fatura',
   settle: 'Marcar pago',
+  link: 'Vincular pagamento',
 }
 
 const CREATES: BankImportAction[] = ['import', 'import_anyway', 'settle', 'pay']
@@ -37,7 +38,7 @@ export function countDecisions(decisions: Record<string, BankImportDecision>) {
   let toReconcile = 0
   for (const d of Object.values(decisions)) {
     if (CREATES.includes(d.action)) toImport += 1
-    else if (d.action === 'reconcile') toReconcile += 1
+    else if (d.action === 'reconcile' || d.action === 'link') toReconcile += 1
   }
   return { toImport, toReconcile }
 }

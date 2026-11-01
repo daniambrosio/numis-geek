@@ -2131,8 +2131,8 @@ export interface StatementImportOut {
   resumed: boolean
 }
 
-export type BankImportBucket = 'new' | 'duplicate' | 'invoice_payment' | 'scheduled'
-export type BankImportAction = 'import' | 'skip' | 'reconcile' | 'import_anyway' | 'pay' | 'settle'
+export type BankImportBucket = 'new' | 'duplicate' | 'invoice_payment' | 'scheduled' | 'blocked'
+export type BankImportAction = 'import' | 'skip' | 'reconcile' | 'import_anyway' | 'pay' | 'settle' | 'link'
 
 export interface BankImportTxRef {
   transaction_id: string | null
@@ -2153,6 +2153,7 @@ export interface BankImportOccurrence {
   direction: string
   category_id: string | null
   party_id: string | null
+  party_name?: string | null
 }
 
 export interface BankImportRow {
@@ -2176,6 +2177,9 @@ export interface BankImportRow {
     party_name?: string
     new_party_name?: string
     alias?: string
+    // spec 71 audit: fornecedor herdado da conta a pagar/receber no quitar
+    from_occurrence?: boolean
+    inactive_party_name?: string
   }
   duplicate?: BankImportTxRef
   invoice_payment?: {
@@ -2188,6 +2192,8 @@ export interface BankImportRow {
     status?: string
     payment_account_id?: string | null
     payment_transaction?: BankImportTxRef
+    // débito já lançado (extrato chegou antes da fatura) → ação "link"
+    existing_debit?: BankImportTxRef
   }
   scheduled?: { occurrence_id: string; candidates: BankImportOccurrence[] }
 }

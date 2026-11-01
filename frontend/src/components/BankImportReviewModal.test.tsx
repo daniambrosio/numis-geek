@@ -131,7 +131,7 @@ describe('BankImportReviewModal', () => {
   })
 
   it('pagamento de fatura do cartão exige a conta de origem', async () => {
-    const accounts = [{ id: 'acc-9', name: 'Itaú CC', account_type: 'checking', is_active: true } as AccountOut]
+    const accounts = [{ id: 'acc-9', name: 'Itaú CC', account_type: 'checking', is_active: true, currency: 'BRL' } as AccountOut]
     mockPreview(preview({
       overlaps: [],
       rows: [row({
@@ -169,6 +169,83 @@ describe('BankImportReviewModal', () => {
     expect(screen.queryByTestId('row-r2')).not.toBeInTheDocument()
     await userEvent.click(within(screen.getByTestId('bucket-duplicate')).getByRole('button'))
     expect(screen.getByTestId('row-r2')).toBeInTheDocument()
+  })
+})
+
+describe('BankImportReviewModal — audit 2026-10-31', () => {
+  it('X e ESC não fecham com o apply em voo; o erro aparece', async () => {
+    mockPreview(preview())
+    let reject: (e: Error) => void = () => {}
+    vi.spyOn(api, 'confirmExtraction').mockImplementation(() => new Promise((_, rj) => { reject = rj }))
+    const onClose = vi.fn()
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={onClose} />)
+    await waitFor(() => expect(screen.getByTestId('bank-import-apply')).toBeEnabled())
+    await userEvent.click(screen.getByTestId('bank-import-apply'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('button', { name: 'Fechar' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar' }))
+    expect(onClose).not.toHaveBeenCalled()
+    reject(new Error('Fatura já paga.'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Fatura já paga.'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('linha em outra moeda vai pra "Não importáveis" e só pode ser pulada', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', bucket: 'blocked', actions: ['skip'], default_action: 'skip', party: { mode: 'none' },
+      warning: 'Linha em USD numa conta em BRL — não importável',
+    })] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('bucket-blocked')).toHaveTextContent('Não importáveis'))
+    expect(within(screen.getByTestId('action-r0')).getAllByRole('option').map(o => o.textContent)).toEqual(['Pular'])
+    expect(screen.getByTestId('bank-import-apply')).toBeDisabled()
+  })
+
+  it('conta do pagamento de fatura só lista contas na moeda da fatura', async () => {
+    const accounts = [
+      { id: 'brl', name: 'Itaú CC', account_type: 'checking', is_active: true, currency: 'BRL' } as AccountOut,
+      { id: 'usd', name: 'Nomad USD', account_type: 'checking', is_active: true, currency: 'USD' } as AccountOut,
+    ]
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'PAGAMENTO RECEBIDO', amount: '800.00', bucket: 'invoice_payment',
+      is_invoice_payment: true, actions: ['pay', 'skip'], default_action: 'pay', party: { mode: 'none' },
+      invoice_payment: { kind: 'card_payment_line', invoice_id: 'inv-1', status: 'CLOSED', payment_account_id: null },
+    })] }))
+    render(<BankImportReviewModal job={{ ...JOB, source_hint: 'CARD_INVOICE' }} accounts={accounts} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByLabelText('Conta do pagamento')).toBeInTheDocument())
+    const opts = within(screen.getByLabelText('Conta do pagamento')).getAllByRole('option').map(o => o.textContent)
+    expect(opts).toEqual(['Conta de origem…', 'Itaú CC'])
+  })
+
+  it('vincular débito já lançado conta como Reconciliar', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'PAGAMENTO RECEBIDO', amount: '1500.00', bucket: 'invoice_payment',
+      is_invoice_payment: true, actions: ['link', 'skip'], default_action: 'link', party: { mode: 'none' },
+      invoice_payment: { kind: 'card_payment_line', invoice_id: 'inv-1', status: 'CLOSED', payment_account_id: 'acc-1',
+        existing_debit: { transaction_id: 'tx-9', event_date: '2026-06-14' } },
+    })] }))
+    render(<BankImportReviewModal job={{ ...JOB, source_hint: 'CARD_INVOICE' }} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('row-r0')).toHaveTextContent('débito já lançado em 14/06/26'))
+    expect(screen.getByTestId('action-r0')).toHaveValue('link')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent('Importar 0 · Reconciliar 1')
+  })
+
+  it('quitar conta a pagar mostra o fornecedor da conta escolhida, não "nova"', async () => {
+    const sched = ROWS[3].scheduled!
+    mockPreview(preview({ overlaps: [], rows: [{
+      ...ROWS[3], party: { mode: 'none', from_occurrence: true },
+      scheduled: { ...sched, candidates: [
+        { ...sched.candidates[0], party_name: 'Imobiliária Z' },
+        { ...sched.candidates[1], party_name: null },
+      ] },
+    }] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('row-r3')).toBeInTheDocument())
+    const r3 = within(screen.getByTestId('row-r3'))
+    expect(r3.getByLabelText('Fornecedor/Cliente')).toHaveDisplayValue('Imobiliária Z (da conta a pagar/receber)')
+    await userEvent.selectOptions(r3.getByLabelText('Conta a pagar/receber'), 'occ-b')
+    expect(r3.getByLabelText('Fornecedor/Cliente')).toHaveDisplayValue('Sem fornecedor/cliente (da conta a pagar/receber)')
   })
 })
 
