@@ -96,6 +96,10 @@ class ExtractionError(Exception):
     pass
 
 
+class ExtractionConflict(ExtractionError):
+    """State conflict (already confirmed / concurrent confirm) — route → 409."""
+
+
 # ── disambiguator ────────────────────────────────────────────────────────────
 
 # Datas no notes vêm em três formatos vistos em extratos: DD/MM/YYYY,
@@ -325,7 +329,9 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         ):
             # Spec 71 — período do documento (base do aviso de overlap).
             from numis_geek.services.bank_import import statement_period
-            job.statement_period_start, job.statement_period_end = statement_period(job.extracted_json)
+            job.statement_period_start, job.statement_period_end = statement_period(
+                job.extracted_json, card_invoice=job.source_hint == ExtractionSourceHint.CARD_INVOICE,
+            )
         job.model = call.model
         job.input_tokens = call.input_tokens
         job.output_tokens = call.output_tokens
@@ -632,6 +638,13 @@ def reject_extraction(
     job = db.get(ExtractionJob, job_id)
     if job is None:
         raise ExtractionError(f"ExtractionJob {job_id} not found")
+    # Spec 71 (audit 2026-10-31): CONFIRMED é invariante — as transações
+    # apontam pro job, e o hash/overlap/bloqueio de exclusão dependem dele.
+    if job.status in (ExtractionStatus.CONFIRMED, ExtractionStatus.RUNNING):
+        raise ExtractionConflict(
+            f"Job {job.status.value} não pode ser descartado"
+            + (" — já foi aplicado." if job.status == ExtractionStatus.CONFIRMED else " — extração em curso.")
+        )
     job.status = ExtractionStatus.REJECTED
     job.error_message = reason
     job.confirmed_at = datetime.now(timezone.utc)
@@ -2151,17 +2164,31 @@ def _confirm_bank_import(
 ) -> ExtractionApplyResult:
     """Apply atômico: qualquer decisão inválida levanta ExtractionError e o
     caller (route → get_db) faz rollback de tudo."""
+    from sqlalchemy import update
     from numis_geek.services import bank_import
+
+    # Claim atômico (audit 2026-10-31): dois confirms concorrentes leem
+    # EXTRACTED; só um vence o UPDATE ... WHERE status = EXTRACTED. A
+    # transição fica na mesma transação do apply — erro no apply desfaz os
+    # dois.
+    now = datetime.now(timezone.utc)
+    res = db.execute(
+        update(ExtractionJob)
+        .where(ExtractionJob.id == job.id, ExtractionJob.status == ExtractionStatus.EXTRACTED)
+        .values(status=ExtractionStatus.CONFIRMED, confirmed_at=now, confirmed_by=user_id)
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:
+        raise ExtractionConflict("Import já aplicado (ou sendo aplicado em outra aba).")
+    job.status = ExtractionStatus.CONFIRMED
+    job.confirmed_at = now
+    job.confirmed_by = user_id
     try:
         out, c = bank_import.apply_bank_import(db, job, decisions, user_id=user_id)
     except bank_import.BankImportError as exc:
         raise ExtractionError(str(exc))
 
-    now = datetime.now(timezone.utc)
     job.user_edits = {"decisions": decisions} if decisions else None
-    job.status = ExtractionStatus.CONFIRMED
-    job.confirmed_at = now
-    job.confirmed_by = user_id
     db.flush()
 
     audit = AuditService(db)

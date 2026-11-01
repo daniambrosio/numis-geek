@@ -437,7 +437,7 @@ BANK_STATEMENT = Template(
 )
 
 CARD_INVOICE = Template(
-    version="card-invoice-v1",
+    version="card-invoice-v2",
     system=(
         "Você extrai os LANÇAMENTOS de uma fatura de cartão de crédito "
         "(inclui cartões adicionais — todos na mesma lista).\n\n"
@@ -458,8 +458,10 @@ CARD_INVOICE = Template(
         "amount POSITIVO e is_invoice_payment = true. Não é estorno.\n"
         "- Não emita linhas de resumo (Total da fatura, Saldo anterior, "
         "Encargos do próximo período, Limite).\n\n"
-        "invoice: { close_date, due_date, total (positivo, valor a pagar), "
-        "iof_total|null } em ISO.\n\n"
+        "invoice: { close_date, due_date, total (valor a pagar; saldo credor → "
+        "negativo ou 0), iof_total|null } em ISO.\n"
+        "period da fatura: o ciclo (dia seguinte ao fechamento anterior → "
+        "fechamento) — NUNCA a menor data de compra parcelada.\n\n"
         "Responda com: { \"period\": {...}, \"institution_name\": str|null, "
         "\"invoice\": {...}, \"transactions\": [ {event_date, description, "
         "amount, currency, installment, fx, is_invoice_payment, category_hint, "

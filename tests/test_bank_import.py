@@ -125,12 +125,12 @@ def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def new_account(seed, name="Conta") -> str:
+def new_account(seed, name="Conta", currency=Currency.BRL) -> str:
     db = TestSession()
     a = Account(
         id=str(uuid.uuid4()), workspace_id=seed["ws"], financial_institution_id=seed["fi"],
         name=f"{name} {uuid.uuid4().hex[:4]}", account_type=AccountType.checking,
-        currency=Currency.BRL, is_active=True,
+        currency=currency, is_active=True,
     )
     db.add(a)
     aid = a.id
@@ -762,3 +762,326 @@ def test_card_import_into_paid_invoice_only_reconciles(client, seed):
     assert p["invoice"]["blocked"] is True
     assert p["rows"][0]["actions"] == ["skip"]
     confirm(client, seed, job["id"], {"r0": {"action": "import"}}, expect=400)
+
+
+# ══ audit adversarial 2026-10-31 — regressões ═══════════════════════════════
+
+def _party_with_alias(seed, name, alias, active=True) -> str:
+    db = TestSession()
+    p = Party(id=str(uuid.uuid4()), workspace_id=seed["ws"], name=name, is_active=active)
+    db.add(p)
+    db.flush()
+    db.add(PartyAlias(id=str(uuid.uuid4()), workspace_id=seed["ws"], party_id=p.id, alias_normalized=alias))
+    pid = p.id
+    db.commit()
+    db.close()
+    return pid
+
+
+# A (#1, 8, 12, 16) — alias of an inactive party
+def test_alias_of_inactive_party_previews_and_applies_as_no_party(client, seed):
+    acc = new_account(seed)
+    _party_with_alias(seed, "Netflix antigo", "NETFLIX COM BR", active=False)
+    job = import_statement(client, seed, acc, statement([line(BASE + timedelta(days=100), "NETFLIX COM BR", -39.9)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["party"]["mode"] == "none" and "inativo" in row["warning"]
+    confirm(client, seed, job["id"])  # defaults never 400
+    db = TestSession()
+    tx = txs_of(db, account_id=acc)[0]
+    assert tx.party_id is None
+    db.close()
+
+
+# A (#15) — new_party_name honored even when the alias belongs to another party
+def test_new_party_name_creates_that_party_without_stealing_alias(client, seed):
+    acc = new_account(seed)
+    other = _party_with_alias(seed, "Uber", "UBER EATS PEDIDO")
+    job = import_statement(client, seed, acc, statement([
+        line(BASE + timedelta(days=101), "UBER EATS PEDIDO", -50),
+        line(BASE + timedelta(days=102), "UBER EATS PEDIDO", -60),
+    ]))
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "new_party_name": "Uber Eats"},
+                                       "r1": {"action": "import", "new_party_name": "Outro Nome"}})
+    db = TestSession()
+    t0, t1 = txs_of(db, account_id=acc)
+    assert db.get(Party, t0.party_id).name == "Uber Eats"
+    assert db.get(Party, t1.party_id).name == "Outro Nome"
+    alias = db.query(PartyAlias).filter(PartyAlias.alias_normalized == "UBER EATS PEDIDO").one()
+    assert alias.party_id == other
+    db.close()
+
+
+# B (#3) — payment line never attaches to an invoice older than the previous cycle
+def test_payment_line_without_previous_cycle_is_skip(client, seed):
+    card = new_card(seed)
+    _closed_invoice(card, date(2026, 8, 5), date(2026, 8, 15), "2300.00")   # Aug; Sep missing
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-10-05", "due_date": "2026-10-15", "total": 10},
+        "transactions": [line(date(2026, 9, 14), "PAGAMENTO RECEBIDO", 2300, is_invoice_payment=True),
+                         line(date(2026, 9, 20), "PADARIA", -10)],
+    })
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["actions"] == ["skip"] and "ciclo anterior" in row["warning"]
+
+
+# B (#6) — partial / multiple payment lines: skip, never N-1
+def test_multiple_and_partial_payment_lines_skip(client, seed):
+    acc = new_account(seed)
+    card = new_card(seed)
+    n_minus_1 = _closed_invoice(card, date(2026, 7, 5), date(2026, 7, 15), "500.00")
+    n = _closed_invoice(card, date(2026, 8, 5), date(2026, 8, 15), "1500.00")
+    db = TestSession()
+    tx_svc.pay_invoice(db, db.get(Invoice, n_minus_1), checking_account_id=acc, paid_on=date(2026, 7, 14))
+    db.commit()
+    db.close()
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-09-05", "due_date": "2026-09-15", "total": 10},
+        "transactions": [line(date(2026, 8, 10), "PAGAMENTO RECEBIDO", 1000, is_invoice_payment=True),
+                         line(date(2026, 8, 12), "PAGAMENTO RECEBIDO", 500, is_invoice_payment=True),
+                         line(date(2026, 8, 20), "LANCHE", -10)],
+    })
+    r0, r1, _ = preview(client, seed, job["id"])["rows"]
+    assert r0["invoice_payment"]["invoice_id"] == n and r0["actions"] == ["skip"] and "parcial" in r0["warning"]
+    assert r1["invoice_payment"]["invoice_id"] == n and r1["actions"] == ["skip"] and "múltiplo" in r1["warning"]
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    assert db.get(Invoice, n).status == InvoiceStatus.CLOSED
+    pay = db.get(Transaction, db.get(Invoice, n_minus_1).paid_by_transaction_id)
+    assert pay.extraction_job_id is None and not pay.is_reconciled
+    db.close()
+
+
+# C (#2) — statement imported before the invoice: link, never a 2nd debit
+def test_statement_first_then_invoice_links_existing_debit(client, seed):
+    acc = new_account(seed)
+    card = new_card(seed)
+    db = TestSession()
+    card_row = db.get(CreditCardAccount, card)
+    n = Invoice(id=str(uuid.uuid4()), workspace_id=seed["ws"], credit_card_account_id=card,
+                close_date=date(2026, 6, 5), due_date=date(2026, 6, 15), currency=Currency.BRL,
+                status=InvoiceStatus.OPEN)
+    db.add(n)
+    n_id = n.id
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([line(date(2026, 6, 14), "PGTO CARTAO NU", -1500)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "new" and row["party"]["mode"] == "none" and "fatura" in row["warning"]
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "category_id": seed["sub"]}})
+
+    db = TestSession()
+    inv = db.get(Invoice, n_id)
+    inv.status, inv.total_amount = InvoiceStatus.CLOSED, Decimal("1500.00")
+    debit_id = txs_of(db, account_id=acc)[0].id
+    db.commit()
+    db.close()
+    job2 = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-07-05", "due_date": "2026-07-15", "total": 30},
+        "transactions": [line(date(2026, 6, 14), "PAGAMENTO RECEBIDO", 1500, is_invoice_payment=True),
+                         line(date(2026, 6, 20), "MERCADO", -30)],
+    })
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["default_action"] == "link" and row["invoice_payment"]["existing_debit"]["transaction_id"] == debit_id
+    confirm(client, seed, job2["id"])
+    db = TestSession()
+    assert len(txs_of(db, account_id=acc)) == 1          # no second debit
+    inv = db.get(Invoice, n_id)
+    assert inv.status == InvoiceStatus.PAID and inv.paid_by_transaction_id == debit_id
+    debit = db.get(Transaction, debit_id)
+    assert debit.paid_invoice_id == n_id and debit.category_id is None and debit.party_id is None
+    db.close()
+    _ = card_row
+
+
+def test_link_invoice_payment_service_guards(client, seed):
+    acc = new_account(seed)
+    card = new_card(seed)
+    inv_id = _closed_invoice(card, date(2026, 5, 5), date(2026, 5, 15), "10.00")
+    db = TestSession()
+    credit = tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc,
+        event_date=date(2026, 5, 10), description="Estorno", amount=Decimal("10"),
+    ))[0]
+    with pytest.raises(tx_svc.TransactionError):
+        tx_svc.link_invoice_payment(db, db.get(Invoice, inv_id), credit)
+    db.rollback()
+    db.close()
+
+
+# D (#4, 9) — card payment from an account in another currency is refused
+def test_pay_card_from_other_currency_account_refused(client, seed):
+    brl = new_account(seed)
+    usd = new_account(seed, "Nomad", currency=Currency.USD)
+    card = new_card(seed)
+    prev = _closed_invoice(card, date(2026, 4, 5), date(2026, 4, 15), "700.00")
+    db = TestSession()   # last payment of this card came from the USD account (manual)
+    old = _closed_invoice(card, date(2026, 3, 5), date(2026, 3, 15), "100.00")
+    tx_svc.pay_invoice(db, db.get(Invoice, old), checking_account_id=usd, paid_on=date(2026, 3, 14), amount=Decimal("20"))
+    db.commit()
+    db.close()
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-05-05", "due_date": "2026-05-15", "total": 5},
+        "transactions": [line(date(2026, 4, 14), "PAGAMENTO RECEBIDO", 700, is_invoice_payment=True),
+                         line(date(2026, 4, 20), "CAFE", -5)],
+    })
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["invoice_payment"]["invoice_id"] == prev
+    assert row["invoice_payment"]["payment_account_id"] is None    # USD default ignored
+    r = confirm(client, seed, job["id"], {"r0": {"action": "pay", "payment_account_id": usd}}, expect=400)
+    assert "USD" in r["detail"]
+    confirm(client, seed, job["id"], {"r0": {"action": "pay", "payment_account_id": brl}})
+
+
+# D (#19) — line in another currency never stored with the same number
+def test_line_in_other_currency_is_blocked(client, seed):
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([
+        {**line(BASE + timedelta(days=110), "AMAZON US", -100), "currency": "USD"},
+        line(BASE + timedelta(days=110), "PADARIA", -8),
+    ]))
+    r0, r1 = preview(client, seed, job["id"])["rows"]
+    assert r0["bucket"] == "blocked" and r0["actions"] == ["skip"] and "USD" in r0["warning"]
+    assert r1["bucket"] == "new"
+    confirm(client, seed, job["id"], {"r0": {"action": "import"}}, expect=400)
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    assert [t.description for t in txs_of(db, account_id=acc)] == ["PADARIA"]
+    db.close()
+
+
+# E (#5) — a second confirm (stale session / second tab) never applies again
+def test_concurrent_confirm_applies_once(client, seed):
+    from numis_geek.services import extraction as extraction_service
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([line(BASE + timedelta(days=120), "LOJA X", -10)]))
+    stale = TestSession()
+    stale_job = stale.get(ExtractionJob, job["id"])  # keep a ref: identity map is weak
+    assert stale_job.status == ExtractionStatus.EXTRACTED
+    confirm(client, seed, job["id"])
+    with pytest.raises(extraction_service.ExtractionConflict):
+        extraction_service.confirm_extraction(stale, job_id=job["id"], user_id=None)
+    stale.rollback()
+    stale.close()
+    db = TestSession()
+    assert len(txs_of(db, account_id=acc)) == 1
+    db.close()
+    r = client.post(f"/api/extractions/{job['id']}/confirm", json={}, headers=auth(seed["token"]))
+    assert r.status_code == 400   # status check: no longer EXTRACTED
+
+
+# F (#7, 13, 21) — settling inherits the occurrence's party; no junk party
+def test_settle_by_description_inherits_occurrence_party(client, seed):
+    acc = new_account(seed)
+    landlord = _party_with_alias(seed, "Imobiliária Z", "IMOBILIARIA Z LTDA")
+    due = BASE + timedelta(days=130)
+    db = TestSession()
+    occ = sched_svc.create_one_off(db, seed["ws"], sched_svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="Aluguel Apto", amount=Decimal("3000"),
+        due_date=due, currency=Currency.BRL, party_id=landlord))
+    occ_id = occ.id
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([line(due, "TED ALUGUEL APTO MAIO", -3000)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled"
+    assert row["party"]["mode"] == "none" and row["party"]["from_occurrence"] is True
+    assert row["scheduled"]["candidates"][0]["party_name"] == "Imobiliária Z"
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    tx = db.get(Transaction, db.get(ScheduledTransaction, occ_id).paid_by_transaction_id)
+    assert tx.party_id == landlord
+    assert db.query(PartyAlias).filter(PartyAlias.alias_normalized == "TED ALUGUEL APTO MAIO").count() == 0
+    db.close()
+
+
+# G (#10) — FX keeps precision and matches usd_amount
+def test_fx_rate_precision_from_usd_amount(client, seed):
+    card = new_card(seed)
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-09-05", "due_date": "2026-09-15", "total": 545.67},
+        "transactions": [line(date(2026, 8, 20), "GITHUB", -545.67, fx={"usd_amount": 100.0, "rate": 5.4567})],
+    })
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    tx = txs_of(db, card_id=card)[0]
+    assert tx.fx_rate == Decimal("5.45670000") and tx.amount_usd == Decimal("-100.00")
+    db.close()
+
+
+# H (#11) — credit balance invoice is not an amount owed
+def test_negative_invoice_total_stored_as_zero(client, seed):
+    acc = new_account(seed)
+    card = new_card(seed)
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-10-05", "due_date": "2026-10-15", "total": -200},
+        "transactions": [line(date(2026, 9, 20), "ESTORNO LOJA", 250), line(date(2026, 9, 21), "CAFE", -50)],
+    })
+    p = preview(client, seed, job["id"])
+    assert p["invoice"]["total_amount"] == "0.00" and any("credor" in w for w in p["warnings"])
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    inv = db.query(Invoice).filter(Invoice.credit_card_account_id == card).one()
+    assert inv.total_amount == Decimal("0.00")
+    db.close()
+    job2 = import_statement(client, seed, acc, statement([line(date(2026, 10, 10), "DEBITO QUALQUER", -200)]))
+    assert preview(client, seed, job2["id"])["rows"][0]["bucket"] == "new"
+
+
+# I (#14) — best match across lines, not file order
+def test_occurrence_assignment_is_global_best_match(client, seed):
+    acc = new_account(seed)
+    due = BASE + timedelta(days=140)
+    db = TestSession()
+    occ = sched_svc.create_one_off(db, seed["ws"], sched_svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="Escola", amount=Decimal("3000"),
+        due_date=due, currency=Currency.BRL))
+    occ_id = occ.id
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([
+        line(due - timedelta(days=4), "TED ESCOLA", -2950),
+        line(due, "TED ESCOLA", -3000),
+    ]))
+    r0, r1 = preview(client, seed, job["id"])["rows"]
+    assert r1["bucket"] == "scheduled" and r1["scheduled"]["occurrence_id"] == occ_id
+    assert r0["bucket"] == "new" and "settle" in r0["actions"]
+    assert [c["occurrence_id"] for c in r0["scheduled"]["candidates"]] == [occ_id]
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    tx = db.get(Transaction, db.get(ScheduledTransaction, occ_id).paid_by_transaction_id)
+    assert tx.amount == Decimal("-3000.00")
+    db.close()
+
+
+# J (#17) — discarded on the wrong account → importable on the right one
+def test_file_discarded_on_wrong_account_can_go_to_right_one(client, seed):
+    a, b = new_account(seed), new_account(seed)
+    content = b"wrong-account-" + uuid.uuid4().hex.encode()
+    payload = statement([line(BASE, "X", -1)])
+    job = import_statement(client, seed, a, payload, content=content)
+    r = client.post(f"/api/extractions/{job['id']}/reject", json={}, headers=auth(seed["token"]))
+    assert r.status_code == 200
+    r, _ = upload(client, seed, f"/accounts/{b}/statement-imports", payload, content=content)
+    assert r.status_code == 201 and r.json()["status"] == "EXTRACTED"
+    assert r.json()["attachment_id"] != job["attachment_id"]
+
+
+# K (#18) — a confirmed import can't be rejected
+def test_reject_confirmed_import_is_409(client, seed):
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([line(BASE + timedelta(days=150), "Y", -1)]))
+    confirm(client, seed, job["id"])
+    r = client.post(f"/api/extractions/{job['id']}/reject", json={}, headers=auth(seed["token"]))
+    assert r.status_code == 409
+    assert client.delete(f"/api/attachments/{job['attachment_id']}", headers=auth(seed["token"])).status_code == 409
+
+
+# L (#20) — card invoice period is the cycle, not the oldest installment date
+def test_card_invoice_period_is_the_cycle(client, seed):
+    card = new_card(seed)
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-03-05", "due_date": "2026-03-15", "total": 110},
+        "transactions": [line(date(2026, 1, 10), "NOTEBOOK", -100, installment="3/10"),
+                         line(date(2026, 2, 20), "CAFE", -10)],
+    })
+    assert job["statement_period_start"] == "2026-02-06" and job["statement_period_end"] == "2026-03-05"

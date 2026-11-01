@@ -707,6 +707,46 @@ def pay_invoice(
     return tx
 
 
+def link_invoice_payment(
+    db: Session, invoice: Invoice, tx: Transaction, *, user_id: str | None = None,
+) -> Transaction:
+    """Spec 71 — the other half of `pay_invoice`: the payment debit is
+    ALREADY in the ledger (statement imported before the card invoice), so
+    instead of creating a second debit, mark that tx as the payment.
+
+    Same effects as pay_invoice (tx.paid_invoice_id + invoice PAID with the
+    mirror FK, paid_at = tx date). An invoice payment is a transfer, not an
+    expense: the tx loses the category/party it got as a plain line."""
+    if invoice.status == InvoiceStatus.PAID:
+        raise TransactionConflict("Fatura já paga.")
+    if invoice.status != InvoiceStatus.CLOSED:
+        raise TransactionConflict("Feche a fatura antes de pagar.")
+    if tx.workspace_id != invoice.workspace_id:
+        raise TransactionError("Movimentação não encontrada.")
+    if tx.source_type != TransactionSourceType.CHECKING or tx.amount >= 0:
+        raise TransactionError("Pagamento de fatura é um débito de conta corrente.")
+    if tx.paid_invoice_id is not None:
+        raise TransactionConflict("Essa movimentação já paga outra fatura.")
+    if tx.transfer_group_id is not None:
+        raise TransactionConflict("Transferência entre contas não pode ser pagamento de fatura.")
+    if tx.currency != invoice.currency:
+        raise TransactionError("Débito em outra moeda — pague a fatura informando o valor debitado.")
+    now = datetime.now(timezone.utc)
+    tx.paid_invoice_id = invoice.id
+    tx.category_id = None
+    tx.party_id = None
+    tx.updated_at = now
+    tx.updated_by = user_id
+    db.flush()
+    invoice.status = InvoiceStatus.PAID
+    invoice.paid_at = tx.event_date
+    invoice.paid_by_transaction_id = tx.id
+    invoice.updated_at = now
+    invoice.updated_by = user_id
+    db.flush()
+    return tx
+
+
 def invoice_open_total(db: Session, invoice: Invoice) -> Decimal:
     """Positive invoice value from its tx: purchases (negative) minus
     refunds/credits (positive)."""

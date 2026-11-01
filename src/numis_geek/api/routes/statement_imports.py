@@ -181,15 +181,19 @@ def _import(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Esse arquivo já está sendo extraído (anexo {a.id}). Aguarde terminar.",
             )
+        pending = next((j for j in jobs if j.status == ExtractionStatus.EXTRACTED), None)
         if a.source_type != source_type or a.source_id != source_id:
+            if pending is None:
+                # Descartado/falhou em outra conta (upload no lugar errado):
+                # não segura o arquivo — sobe um anexo novo nesta.
+                continue
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Esse arquivo já foi enviado para outra conta/cartão: \"{a.filename}\" "
-                    f"em {_fmt_day(a.uploaded_at)} (anexo {a.id})."
+                    f"Esse arquivo está aguardando revisão em outra conta/cartão: \"{a.filename}\" "
+                    f"em {_fmt_day(a.uploaded_at)} (anexo {a.id}). Descarte a revisão lá antes."
                 ),
             )
-        pending = next((j for j in jobs if j.status == ExtractionStatus.EXTRACTED), None)
         if pending is not None:
             # Review interrompido — retoma o mesmo job, sem novo custo de LLM.
             return JSONResponse(status_code=status.HTTP_200_OK,

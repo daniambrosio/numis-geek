@@ -108,6 +108,32 @@ def _looks_like_payment(desc: str, amount: Decimal) -> bool:
     return amount > 0 and norm.startswith(_PAYMENT_PREFIXES)
 
 
+def _looks_like_card_payment_debit(desc: str) -> bool:
+    """Débito do extrato com cara de pagamento de cartão ("PGTO CARTAO NU",
+    "PAGAMENTO FATURA") — usado só pra avisar e não criar fornecedor."""
+    norm = normalize_description(desc)
+    return "FATURA" in norm or (norm.startswith(_PAYMENT_PREFIXES) and ("CARTAO" in norm or "CARTÃO" in norm))
+
+
+RATE_Q = Decimal("0.00000001")  # Numeric(18, 8) de transaction.fx_rate
+
+
+def _rate(raw) -> Decimal | None:
+    try:
+        r = Decimal(str(raw)).quantize(RATE_Q)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return r if r > 0 else None
+
+
+def _warn(r: dict, msg: str) -> None:
+    r["warning"] = f"{r['warning']} · {msg}" if r.get("warning") else msg
+
+
+def _within_pct(a: Decimal, b: Decimal, pct: Decimal) -> bool:
+    return b > 0 and abs(abs(a) - b) <= b * pct
+
+
 def _fp_suffix(fp: str) -> int:
     if ":" not in fp:
         return 1
@@ -161,8 +187,22 @@ def _scope(db: Session, job: ExtractionJob) -> _Scope:
     raise BankImportError(f"Hint {job.source_hint.value} não é import de extrato/fatura.")
 
 
-def statement_period(payload: dict) -> tuple[date | None, date | None]:
-    """Período declarado pelo documento; fallback min/max das linhas."""
+def statement_period(payload: dict, *, card_invoice: bool = False) -> tuple[date | None, date | None]:
+    """Período declarado pelo documento; fallback min/max das linhas.
+
+    Fatura de cartão: o período é o CICLO (fechamento anterior + 1 dia →
+    fechamento). A data das linhas parceladas é a da compra original — usá-
+    la no min/max abria o período meses pra trás e disparava overlap todo
+    mês (audit 2026-10-31)."""
+    if card_invoice:
+        close = _parse_date((payload.get("invoice") or {}).get("close_date"))
+        if close is not None:
+            return tx_svc.add_months(close, -1) + timedelta(days=1), close
+        dates = [
+            d for d, t in ((_parse_date(t.get("event_date")), t) for t in payload.get("transactions") or [])
+            if d and not _parse_installment(t.get("installment"))
+        ]
+        return (min(dates), max(dates)) if dates else (None, None)
     period = payload.get("period") or {}
     start = _parse_date(period.get("start"))
     end = _parse_date(period.get("end"))
@@ -201,23 +241,30 @@ def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
     p = aliases.get(alias)
     if p is not None and p.is_active:
         return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias}
+    if p is not None:
+        # Alias de fornecedor desativado: sem fornecedor (o alias é único —
+        # "criar novo" não teria como apontar pra ele). Preview e apply
+        # concordam; o review deixa escolher outro.
+        return {"mode": "none", "alias": alias, "inactive_party_name": p.name}
     if not alias:
         return {"mode": "none", "alias": alias}
     return {"mode": "new", "new_party_name": desc.strip()[:120], "alias": alias}
 
 
 def _default_payment_account(db: Session, card: CreditCardAccount) -> str | None:
-    """Última conta corrente usada pra pagar este cartão."""
-    row = db.query(Transaction.checking_account_id).join(
+    """Última conta corrente (ativa, na moeda do cartão) usada pra pagar
+    este cartão."""
+    rows = db.query(Transaction.checking_account_id).join(
         Invoice, Invoice.id == Transaction.paid_invoice_id,
     ).filter(
         Invoice.credit_card_account_id == card.id,
         Transaction.checking_account_id.isnot(None),
-    ).order_by(Transaction.event_date.desc(), Transaction.created_at.desc()).first()
-    if not row:
-        return None
-    acc = db.get(Account, row[0])
-    return acc.id if acc and acc.is_active else None
+    ).order_by(Transaction.event_date.desc(), Transaction.created_at.desc()).all()
+    for (acc_id,) in rows:
+        acc = db.get(Account, acc_id)
+        if acc and acc.is_active and acc.currency == card.currency:
+            return acc.id
+    return None
 
 
 def _invoice_brief(db: Session, inv: Invoice) -> dict:
@@ -251,11 +298,16 @@ def _doc_invoice(db: Session, sc: _Scope, payload: dict, line_dates: list[date])
         due = tx_svc.theoretical_due_date(sc.card, close)
     total = _money(info.get("total"))
     iof = _money(info.get("iof_total"))
+    if total is not None and total <= 0:
+        # Saldo credor (estornos > compras): nada a pagar — nunca vira valor devido.
+        if total < 0:
+            warnings.append(f"Fatura com saldo credor de {abs(total)} — gravada com total 0 (nada a pagar).")
+        total = Decimal("0.00")
     existing = tx_svc.find_invoice_near(db, sc.card, close)
     out = {
         "close_date": close.isoformat(),
         "due_date": due.isoformat(),
-        "total_amount": str(abs(total)) if total is not None else None,
+        "total_amount": str(total) if total is not None else None,
         "iof_total": str(abs(iof)) if iof is not None else None,
         "existing_invoice_id": existing.id if existing else None,
         "existing_status": existing.status.value if existing else None,
@@ -284,14 +336,15 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
             warnings.append(f"Linha {i + 1} ignorada (data/valor/descrição inválidos): {desc or '—'}")
             continue
         line_ccy = (line.get("currency") or sc.currency.value).upper()
-        if line_ccy != sc.currency.value:
-            warnings.append(f"Linha {i + 1} em {line_ccy} — gravada na moeda da conta ({sc.currency.value}).")
         inst = _parse_installment(line.get("installment")) if sc.card else None
         eff = tx_svc.add_months(d, inst[0] - 1) if inst else d
-        fx = line.get("fx") or {}
-        fx_rate = _money(fx.get("rate")) if isinstance(fx, dict) and fx.get("rate") else None
-        if fx_rate is not None and fx_rate <= 0:
-            fx_rate = None
+        fx = line.get("fx") if isinstance(line.get("fx"), dict) else {}
+        usd_amount = _money(fx.get("usd_amount")) if fx.get("usd_amount") is not None else None
+        fx_rate = _rate(fx.get("rate")) if fx.get("rate") else None
+        if sc.currency == Currency.BRL and usd_amount is not None and usd_amount != 0:
+            # amount_usd tem que bater com o documento: a taxa sai de BRL/USD
+            # com 8 casas, não da cotação arredondada.
+            fx_rate = _rate(abs(amount) / abs(usd_amount)) or fx_rate
         is_payment = bool(sc.card) and (bool(line.get("is_invoice_payment")) or _looks_like_payment(desc, amount))
         parsed.append({
             "row_id": rid,
@@ -302,7 +355,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
             "amount": str(amount),
             "currency": sc.currency.value,
             "fx_rate": str(fx_rate) if fx_rate is not None else None,
-            "usd_amount": str(_money(fx.get("usd_amount"))) if isinstance(fx, dict) and fx.get("usd_amount") is not None else None,
+            "usd_amount": str(usd_amount) if usd_amount is not None else None,
+            "line_currency": line_ccy,
             "installment_number": inst[0] if inst else None,
             "installment_total": inst[1] if inst else None,
             "balance_after": str(_money(line.get("balance_after"))) if line.get("balance_after") is not None else None,
@@ -330,7 +384,6 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
         lst.sort(key=lambda t: (_fp_suffix(t.fingerprint), t.created_at or datetime.min, t.id))
     used_tx: set[str] = set()
     used_invoices: set[str] = set()
-    used_occ: set[str] = set()
     seen_in_file: dict[str, int] = defaultdict(int)
     default_pay_acc = _default_payment_account(db, sc.card) if sc.card else None
 
@@ -347,18 +400,29 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
 
     rows: list[dict] = []
     occurrence_ids: dict[str, list[str]] = {}
+    pending_sched: list[tuple[dict, list[ScheduledTransaction]]] = []
     for r in parsed:
         d, amount = r["_date"], r["_amount"]
         r["party"] = {"mode": "none"} if r["is_invoice_payment"] else _party_for(r["description"], aliases)
         r["category_id"] = None
         r["warning"] = None
         r["parent_transaction_id"] = None
+        if r["party"].get("inactive_party_name"):
+            _warn(r, f"Fornecedor/cliente \"{r['party']['inactive_party_name']}\" está inativo — sem fornecedor")
+
+        # ── linha em outra moeda: nunca grava o número na moeda da conta ───
+        if r["line_currency"] != sc.currency.value:
+            r["fingerprint"] = None
+            r["party"] = {"mode": "none"}
+            r.update(bucket="blocked", actions=["skip"], default_action="skip")
+            _warn(r, f"Linha em {r['line_currency']} numa conta em {sc.currency.value} — não importável; lance à mão com o valor convertido")
+            rows.append(r)
+            continue
 
         # ── card "Pagamento recebido" — never a card tx ────────────────────
         if r["is_invoice_payment"]:
             _classify_card_payment_line(
-                db, sc, r, used_invoices, default_pay_acc,
-                doc_invoice_id=invoice_info.get("existing_invoice_id") if invoice_info else None,
+                db, sc, r, used_invoices, default_pay_acc, invoice_info, used_tx,
             )
             rows.append(r)
             continue
@@ -409,21 +473,25 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
                          actions=["pay", "import", "skip"], default_action="pay")
                 rows.append(r)
                 continue
+            if _looks_like_card_payment_debit(r["description"]):
+                # Pagamento de cartão sem fatura FECHADA que bata: entra como
+                # movimentação comum, mas sem fornecedor automático. Quando a
+                # fatura chegar, a linha "Pagamento recebido" oferece vincular
+                # este débito (não paga de novo).
+                r["party"] = {"mode": "none"}
+                _warn(r, "Parece pagamento de fatura, mas nenhuma fatura fechada bate — importe/feche a fatura para vincular")
 
-        # ── settles a conta a pagar/receber ────────────────────────────────
-        cands = _match_scheduled(occ_pool, r, amount, d, sc.currency, used_occ)
+        # ── settles a conta a pagar/receber: assignment global depois ──────
+        cands = _match_scheduled(occ_pool, r, amount, d, sc.currency, set())
         if cands:
-            best = cands[0]
-            used_occ.add(best.id)
-            occurrence_ids[r["row_id"]] = [o.id for o in cands]
-            r.update(bucket="scheduled",
-                     scheduled={"occurrence_id": best.id, "candidates": [_occ_brief(o) for o in cands]},
-                     actions=["settle", "import", "skip"], default_action="settle")
+            pending_sched.append((r, cands))
             rows.append(r)
             continue
 
         r.update(bucket="new", actions=["import", "skip"], default_action="import")
         rows.append(r)
+
+    _assign_occurrences(db, pending_sched, occurrence_ids)
 
     # new card lines into a PAID invoice can't go in
     if invoice_info and invoice_info["blocked"]:
@@ -443,7 +511,7 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
 
     period = (job.statement_period_start, job.statement_period_end)
     if period[0] is None or period[1] is None:
-        period = statement_period(payload)
+        period = statement_period(payload, card_invoice=sc.card is not None)
     overlaps = _overlaps(db, sc, period, rows)
 
     for r in rows:
@@ -453,50 +521,141 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
                           period=period, occurrence_ids=occurrence_ids)
 
 
+def _assign_occurrences(
+    db: Session, pending: list[tuple[dict, list[ScheduledTransaction]]], occurrence_ids: dict[str, list[str]],
+) -> None:
+    """Best-match global (audit 2026-10-31): todos os pares (linha,
+    ocorrência) ordenados por distância de data e de valor; atribui do mais
+    próximo pro mais longe. Uma linha pior que veio antes no arquivo não
+    rouba a ocorrência da linha exata. Cada linha guarda TODOS os candidatos
+    (o dropdown mostra todos; o apply barra uso duplo)."""
+    pairs = []
+    for r, cands in pending:
+        d = date.fromisoformat(r["event_date"])
+        value = abs(Decimal(r["amount"]))
+        for o in cands:
+            pairs.append((abs((o.due_date - d).days), abs(value - Decimal(o.amount)), r["index"], r, o))
+    pairs.sort(key=lambda x: (x[0], x[1], x[2]))
+    assigned: dict[str, ScheduledTransaction] = {}
+    used: set[str] = set()
+    for _, _, _, r, o in pairs:
+        if r["row_id"] in assigned or o.id in used:
+            continue
+        assigned[r["row_id"]] = o
+        used.add(o.id)
+    for r, cands in pending:
+        occurrence_ids[r["row_id"]] = [o.id for o in cands]
+        best = assigned.get(r["row_id"])
+        sched = {"occurrence_id": (best or cands[0]).id, "candidates": [_occ_brief(db, o) for o in cands]}
+        if best is None:
+            # todas as candidatas ficaram com linhas mais próximas
+            r.update(bucket="new", scheduled=sched, actions=["import", "settle", "skip"], default_action="import")
+            continue
+        # Fornecedor vem da conta a pagar/receber (spec 72: a tx herda). Sem
+        # alias, nada de criar fornecedor a partir da descrição do banco.
+        if r["party"]["mode"] != "existing":
+            r["party"] = {"mode": "none", "alias": r["party"].get("alias"), "from_occurrence": True}
+        r.update(bucket="scheduled", scheduled=sched, actions=["settle", "import", "skip"], default_action="settle")
+
+
 def _classify_card_payment_line(
     db: Session, sc: _Scope, r: dict, used_invoices: set[str], default_pay_acc: str | None,
-    doc_invoice_id: str | None = None,
+    invoice_info: dict | None, used_tx: set[str],
 ) -> None:
-    """"Pagamento recebido" on invoice N+1 → invoice N: PAID → reconcile its
-    payment tx; CLOSED → suggest pay_invoice from a checking account."""
-    d = date.fromisoformat(r["original_date"])
-    exclude = set(used_invoices)
-    if doc_invoice_id:
-        exclude.add(doc_invoice_id)
-    q = db.query(Invoice).filter(
-        Invoice.credit_card_account_id == sc.card.id,
-        Invoice.close_date < d,
-    )
-    if exclude:
-        q = q.filter(~Invoice.id.in_(exclude))
-    prev = q.order_by(Invoice.close_date.desc()).first()
+    """"Pagamento recebido" on invoice N+1 → invoice N, the cycle right
+    before the document's invoice — never an older one. The amount must
+    match N (total, or its payment tx) within ±1%; a second payment line
+    for the same N, a partial payment or a missing N → skip + warning.
+
+    N PAID → reconcile its payment tx. N CLOSED → link an existing checking
+    debit of that amount (statement imported first) or pay via pay_invoice."""
     r["fingerprint"] = None
+    amount = Decimal(r["amount"])
+    line_d = date.fromisoformat(r["original_date"])
+    doc_close = date.fromisoformat(invoice_info["close_date"]) if invoice_info else line_d
+    target = tx_svc.add_months(doc_close, -1)
+    exclude = {invoice_info["existing_invoice_id"]} if invoice_info and invoice_info.get("existing_invoice_id") else set()
+    cands = [
+        i for i in db.query(Invoice).filter(
+            Invoice.credit_card_account_id == sc.card.id,
+            Invoice.close_date >= target - timedelta(days=12),
+            Invoice.close_date <= target + timedelta(days=12),
+            Invoice.close_date < doc_close,
+        ).all()
+        if i.id not in exclude
+    ]
+    prev = min(cands, key=lambda i: abs((i.close_date - target).days)) if cands else None
+
+    def skip(msg: str, brief: dict | None = None) -> None:
+        r.update(bucket="invoice_payment",
+                 invoice_payment=brief or {"kind": "card_payment_line", "invoice_id": None},
+                 actions=["skip"], default_action="skip")
+        _warn(r, msg)
+
     if prev is None:
-        r.update(bucket="invoice_payment", invoice_payment={"kind": "card_payment_line", "invoice_id": None},
-                 actions=["skip"], default_action="skip",
-                 warning="Pagamento de fatura anterior não encontrada no sistema — nada a fazer.")
+        skip("Fatura do ciclo anterior não está no sistema — importe-a antes para registrar o pagamento.")
+        return
+    brief = {**_invoice_brief(db, prev), "kind": "card_payment_line"}
+    if prev.id in used_invoices:
+        skip("Pagamento parcial/múltiplo da mesma fatura — confira manualmente.", brief)
         return
     used_invoices.add(prev.id)
-    brief = {**_invoice_brief(db, prev), "kind": "card_payment_line"}
+
     if prev.status == InvoiceStatus.PAID:
         pay_tx = db.get(Transaction, prev.paid_by_transaction_id) if prev.paid_by_transaction_id else None
         if pay_tx is None:
-            r.update(bucket="invoice_payment", invoice_payment=brief, actions=["skip"], default_action="skip")
+            skip("Fatura já paga sem movimentação de pagamento ligada.", brief)
+            return
+        brief["payment_transaction"] = _tx_brief(pay_tx)
+        if not _within_pct(amount, abs(Decimal(pay_tx.amount)), INVOICE_PAYMENT_PCT):
+            skip("Valor diferente do pagamento registrado — confira manualmente.", brief)
             return
         linked = _already_linked(pay_tx)
-        r.update(bucket="invoice_payment", invoice_payment={**brief, "payment_transaction": _tx_brief(pay_tx)},
+        r.update(bucket="invoice_payment", invoice_payment=brief,
                  actions=["skip"] if pay_tx.extraction_job_id else ["reconcile", "skip"],
                  default_action="skip" if linked else "reconcile")
         return
-    if prev.status == InvoiceStatus.CLOSED:
-        r.update(bucket="invoice_payment",
-                 invoice_payment={**brief, "payment_account_id": default_pay_acc},
-                 actions=["pay", "skip"], default_action="pay" if default_pay_acc else "skip")
-        if not default_pay_acc:
-            r["warning"] = "Escolha a conta de onde saiu o pagamento."
+    if prev.status != InvoiceStatus.CLOSED:
+        skip("Fatura anterior ainda aberta — feche-a para registrar o pagamento.", brief)
         return
-    r.update(bucket="invoice_payment", invoice_payment=brief, actions=["skip"], default_action="skip",
-             warning="Fatura anterior ainda aberta — feche-a para registrar o pagamento.")
+    total = Decimal(prev.total_amount) if prev.total_amount is not None else Decimal("0")
+    if not _within_pct(amount, total, INVOICE_PAYMENT_PCT):
+        skip("Pagamento parcial ou valor diferente do total da fatura — confira manualmente.", brief)
+        return
+
+    # statement imported first: an unlinked debit of this payment already exists
+    debit = _match_unlinked_debit(db, sc, prev, amount, line_d, used_tx)
+    if debit is not None:
+        used_tx.add(debit.id)
+        r.update(bucket="invoice_payment", invoice_payment={**brief, "existing_debit": _tx_brief(debit),
+                                                            "payment_account_id": debit.checking_account_id},
+                 actions=["link", "skip"], default_action="link")
+        return
+    r.update(bucket="invoice_payment",
+             invoice_payment={**brief, "payment_account_id": default_pay_acc},
+             actions=["pay", "skip"], default_action="pay" if default_pay_acc else "skip")
+    if not default_pay_acc:
+        _warn(r, "Escolha a conta de onde saiu o pagamento.")
+
+
+def _match_unlinked_debit(
+    db: Session, sc: _Scope, inv: Invoice, amount: Decimal, d: date, used: set[str],
+) -> Transaction | None:
+    """Débito de conta corrente (moeda da fatura) com o valor do pagamento,
+    perto da data, que ainda não paga fatura nenhuma nem é transferência."""
+    rows = db.query(Transaction).join(Account, Account.id == Transaction.checking_account_id).filter(
+        Transaction.workspace_id == sc.workspace_id,
+        Transaction.source_type == TransactionSourceType.CHECKING,
+        Account.currency == inv.currency,
+        Transaction.paid_invoice_id.is_(None),
+        Transaction.transfer_group_id.is_(None),
+        Transaction.amount < 0,
+        Transaction.event_date >= d - timedelta(days=PAYMENT_TX_DATE_TOL_DAYS),
+        Transaction.event_date <= d + timedelta(days=PAYMENT_TX_DATE_TOL_DAYS),
+    ).all()
+    cands = [t for t in rows if t.id not in used and abs(abs(Decimal(t.amount)) - abs(amount)) <= CENT]
+    cands.sort(key=lambda t: abs((t.event_date - d).days))
+    return cands[0] if cands else None
 
 
 def _match_installment(existing: list[Transaction], r: dict, used: set[str]) -> Transaction | None:
@@ -563,6 +722,7 @@ def _match_invoice(db: Session, sc: _Scope, d: date, amount: Decimal, used: set[
         Invoice.status == InvoiceStatus.CLOSED,
         Invoice.currency == sc.currency,
         Invoice.total_amount.isnot(None),
+        Invoice.total_amount > 0,
         Invoice.close_date <= d,
         Invoice.due_date >= d - timedelta(days=INVOICE_PAYMENT_GRACE_DAYS),
     ).all()
@@ -575,8 +735,10 @@ def _match_invoice(db: Session, sc: _Scope, d: date, amount: Decimal, used: set[
     return cands[0] if cands else None
 
 
-def _occ_brief(o: ScheduledTransaction) -> dict:
+def _occ_brief(db: Session, o: ScheduledTransaction) -> dict:
+    party = db.get(Party, o.party_id) if o.party_id else None
     return {
+        "party_name": party.name if party and party.is_active else None,
         "occurrence_id": o.id,
         "description": o.description,
         "due_date": o.due_date.isoformat(),
@@ -709,19 +871,54 @@ def _finalize_doc_invoice(db: Session, inv: Invoice, info: dict, user_id: str | 
     db.flush()
 
 
+def _alias_row(db: Session, workspace_id: str, key: str) -> PartyAlias | None:
+    if not key:
+        return None
+    return db.query(PartyAlias).filter(
+        PartyAlias.workspace_id == workspace_id, PartyAlias.alias_normalized == key,
+    ).first()
+
+
 def _get_or_create_party(
     db: Session, workspace_id: str, name: str, alias: str, amount: Decimal,
-    cache: dict[str, str], out: ApplyOutcome, user_id: str | None,
-) -> str:
+    cache: dict[str, str | None], out: ApplyOutcome, user_id: str | None,
+) -> str | None:
+    """Fornecedor do alias (ativo) ou um novo com o alias. Alias de
+    fornecedor INATIVO → None (sem fornecedor), igual ao preview."""
     key = alias or normalize_description(name)
     if key in cache:
         return cache[key]
-    existing = db.query(PartyAlias).filter(
-        PartyAlias.workspace_id == workspace_id, PartyAlias.alias_normalized == key,
-    ).first()
+    existing = _alias_row(db, workspace_id, key)
     if existing is not None:
-        cache[key] = existing.party_id
-        return existing.party_id
+        p = db.get(Party, existing.party_id)
+        cache[key] = p.id if p is not None and p.is_active else None
+        return cache[key]
+    pid = _new_party(db, workspace_id, name, key, amount, out, user_id)
+    cache[key] = pid
+    return pid
+
+
+def _named_party(
+    db: Session, workspace_id: str, name: str, alias: str, amount: Decimal,
+    cache: dict[str, str | None], out: ApplyOutcome, user_id: str | None,
+) -> str:
+    """Decisão explícita `new_party_name`: SEMPRE um fornecedor com esse
+    nome (reaproveitado se o mesmo nome já foi pedido neste import). Leva o
+    alias só se ele estiver livre — nunca rouba o alias de outro."""
+    key = "name:" + normalize_description(name)
+    if cache.get(key):
+        return cache[key]  # type: ignore[return-value]
+    free = alias if alias and _alias_row(db, workspace_id, alias) is None and alias not in cache else ""
+    pid = _new_party(db, workspace_id, name, free, amount, out, user_id)
+    cache[key] = pid
+    if free:
+        cache[free] = pid
+    return pid
+
+
+def _new_party(
+    db: Session, workspace_id: str, name: str, key: str, amount: Decimal, out: ApplyOutcome, user_id: str | None,
+) -> str:
     now = datetime.now(timezone.utc)
     p = Party(
         id=str(uuid.uuid4()), workspace_id=workspace_id, name=name.strip()[:120],
@@ -734,7 +931,6 @@ def _get_or_create_party(
         db.add(PartyAlias(id=str(uuid.uuid4()), workspace_id=workspace_id, party_id=p.id,
                           alias_normalized=key, created_at=now))
         db.flush()
-    cache[key] = p.id
     out.new_parties.append(p.id)
     return p.id
 
@@ -779,7 +975,7 @@ def apply_bank_import(
         doc_invoice = _resolve_doc_invoice(db, sc, c.invoice, user_id)
         out.invoice_id = doc_invoice.id
 
-    party_cache: dict[str, str] = {}
+    party_cache: dict[str, str | None] = {}
     chosen_occ: set[str] = set()
     taken_fps: set[str] = set()
 
@@ -809,6 +1005,14 @@ def apply_bank_import(
                 raise BankImportError(f"Escolha a conta de origem do pagamento da fatura ({r['description']}).")
             if ip["kind"] == "statement_debit" and acc_id != sc.source_id:
                 raise BankImportError("Débito do extrato paga a fatura a partir desta conta.")
+            acc = db.get(Account, acc_id)
+            if acc is None or acc.workspace_id != sc.workspace_id:
+                raise BankImportError("Conta de origem do pagamento não encontrada.")
+            if acc.currency != inv.currency:
+                raise BankImportError(
+                    f"Conta {acc.name} em {acc.currency.value} e fatura em {inv.currency.value} — pague pela "
+                    "tela de faturas informando o valor debitado na conta."
+                )
             try:
                 tx = tx_svc.pay_invoice(
                     db, inv, checking_account_id=acc_id, paid_on=date.fromisoformat(r["event_date"]),
@@ -820,6 +1024,21 @@ def apply_bank_import(
             out.created.append(tx.id)
             out.paid_invoices.append({"invoice_id": inv.id, "transaction_id": tx.id, "amount": str(-tx.amount),
                                       "paid_on": r["event_date"], "checking_account_id": acc_id})
+            continue
+
+        if action == "link":
+            ip = r["invoice_payment"]
+            inv = db.get(Invoice, ip["invoice_id"])
+            debit = db.get(Transaction, ip["existing_debit"]["transaction_id"])
+            try:
+                tx_svc.link_invoice_payment(db, inv, debit, user_id=user_id)
+            except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+                raise BankImportError(f"{r['description']}: {exc}")
+            _mark_reconciled(debit, job, user_id)
+            out.reconciled.append(debit.id)
+            out.paid_invoices.append({"invoice_id": inv.id, "transaction_id": debit.id, "amount": str(-debit.amount),
+                                      "paid_on": debit.event_date.isoformat(),
+                                      "checking_account_id": debit.checking_account_id, "linked": True})
             continue
 
         # import / import_anyway / settle → create the tx
@@ -859,10 +1078,14 @@ def _create_from_row(
         party_id = None
     elif dec.get("party_id"):
         party_id = dec["party_id"]
-    elif dec.get("new_party_name"):
+    elif dec.get("new_party_name") and dec["new_party_name"].strip():
         name = dec["new_party_name"].strip()
-        party_id = _get_or_create_party(db, sc.workspace_id, name, r["party"].get("alias") or normalize_description(name),
-                                        amount, party_cache, out, user_id)
+        party_id = _named_party(db, sc.workspace_id, name, r["party"].get("alias") or "",
+                                amount, party_cache, out, user_id)
+    elif r["party"].get("from_occurrence"):
+        # quita conta a pagar/receber: settle_occurrence herda o fornecedor
+        # da ocorrência escolhida (qualquer candidata)
+        party_id = None
     elif r["party"]["mode"] == "existing":
         party_id = r["party"]["party_id"]
     elif r["party"]["mode"] == "new":

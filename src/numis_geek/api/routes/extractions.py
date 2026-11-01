@@ -259,7 +259,9 @@ def confirm_extraction(
     except extraction_service.ExtractionError as exc:
         # Spec 71 — apply atômico: nada do que já foi escrito sobrevive.
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        code = (status.HTTP_409_CONFLICT if isinstance(exc, extraction_service.ExtractionConflict)
+                else status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status_code=code, detail=str(exc))
     if j.checking_account_id or j.credit_card_account_id:
         from numis_geek.services import account_balance
         account_balance.refresh_open_snapshots(db, j.workspace_id)
@@ -336,11 +338,14 @@ def reject_extraction(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     _check_access(j, current_user)
     user_email = _actor_email(db, current_user.user_id)
-    job = extraction_service.reject_extraction(
-        db,
-        job_id=job_id,
-        user_id=current_user.user_id,
-        user_email=user_email,
-        reason=body.reason,
-    )
+    try:
+        job = extraction_service.reject_extraction(
+            db,
+            job_id=job_id,
+            user_id=current_user.user_id,
+            user_email=user_email,
+            reason=body.reason,
+        )
+    except extraction_service.ExtractionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return ExtractionJobOut.from_orm(job)
