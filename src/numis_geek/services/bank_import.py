@@ -1,0 +1,902 @@
+"""Spec 71 — classify + apply of a statement (BANK_STATEMENT) or card
+invoice (CARD_INVOICE) extraction job.
+
+Rides on the ExtractionJob pipeline (specs 38/48/58): the LLM output lives
+in `job.extracted_json`; `_classify_bank_import` turns it into buckets
+(read-only — used by both preview and apply, so the review modal shows
+exactly what apply will do), and `apply_bank_import` executes the user's
+decisions on top of that classification.
+
+Buckets per line:
+
+- **new** — becomes a transaction (`is_reconciled=true`,
+  `extraction_job_id` set), party resolved by alias or auto-created;
+- **duplicate** — dedup layer 2: fingerprint (or installment match, or an
+  existing invoice-payment tx) already in the ledger. Default *skip* when the
+  existing tx is already reconciled, *reconcile* when it is a manual tx never
+  reconciled (the statement line confirms it). A k-th identical line in the
+  same file (2 coffees) also lands here and can be promoted to "importar
+  mesmo assim" (fingerprint persisted with suffix `:k`);
+- **invoice_payment** — a checking debit matching a CLOSED unpaid invoice
+  (±1%, close_date..due_date+10) or the "Pagamento recebido" line on the
+  next card invoice. Applied via `transactions.pay_invoice` — never by
+  writing PAID / FKs here. The card line never becomes a card tx;
+- **scheduled** — settles a PENDING conta a pagar/receber (spec 72 rules:
+  ±5% amount, ±5 days of due_date, party via alias or description contains
+  the occurrence's; closest date wins). Applied via
+  `scheduled_transactions.settle_occurrence`.
+
+Layer 1 (file hash) is enforced at upload; layer 3 (period overlap with a
+previous CONFIRMED job of the same account/card) is reported here as a
+warning.
+"""
+from __future__ import annotations
+
+import uuid
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+
+from sqlalchemy.orm import Session
+
+from numis_geek.models.account import Account, Currency
+from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
+from numis_geek.models.extraction_job import (
+    ExtractionJob, ExtractionSourceHint, ExtractionStatus,
+)
+from numis_geek.models.party import Party, PartyAlias, PartyKind
+from numis_geek.models.scheduled_transaction import (
+    ScheduledDirection, ScheduledStatus, ScheduledTransaction,
+)
+from numis_geek.models.transaction import Transaction, TransactionSourceType
+from numis_geek.services import scheduled_transactions as sched_svc
+from numis_geek.services import transactions as tx_svc
+from numis_geek.services.normalize import normalize_description
+
+BANK_HINTS = (ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE)
+
+CENT = Decimal("0.01")
+INSTALLMENT_AMOUNT_TOL = Decimal("0.05")     # R$ 0,05 — arredondamento do emissor
+INSTALLMENT_DATE_TOL_DAYS = 3
+INVOICE_PAYMENT_PCT = Decimal("0.01")        # ±1% (deliberadamente estrito)
+INVOICE_PAYMENT_GRACE_DAYS = 10              # até due_date + 10
+PAYMENT_TX_DATE_TOL_DAYS = 5                 # débito do extrato × tx de pagamento já criada
+SCHEDULED_PCT = Decimal("0.05")              # spec 72: ±5%
+SCHEDULED_DAYS = 5                           # spec 72: ±5 dias do due_date
+
+_PAYMENT_PREFIXES = ("PAGAMENTO", "PAGTO", "PGTO", "PAG FATURA", "PAG. FATURA")
+
+
+class BankImportError(Exception):
+    """Invalid decisions / state — the route maps to 400."""
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_date(raw) -> date | None:
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def _money(raw) -> Decimal | None:
+    try:
+        return Decimal(str(raw)).quantize(CENT)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _parse_installment(raw) -> tuple[int, int] | None:
+    if not raw:
+        return None
+    try:
+        a, b = str(raw).replace(" ", "").split("/", 1)
+        x, y = int(a), int(b)
+    except ValueError:
+        return None
+    if y < 2 or not 1 <= x <= y or y > 48:
+        return None
+    return x, y
+
+
+def _looks_like_payment(desc: str, amount: Decimal) -> bool:
+    norm = normalize_description(desc)
+    return amount > 0 and norm.startswith(_PAYMENT_PREFIXES)
+
+
+def _fp_suffix(fp: str) -> int:
+    if ":" not in fp:
+        return 1
+    try:
+        return int(fp.split(":", 1)[1])
+    except ValueError:
+        return 1
+
+
+def _tx_brief(tx: Transaction) -> dict:
+    return {
+        "transaction_id": tx.id,
+        "event_date": tx.event_date.isoformat(),
+        "description": tx.description,
+        "amount": str(tx.amount),
+        "is_reconciled": tx.is_reconciled,
+        "extraction_job_id": tx.extraction_job_id,
+    }
+
+
+def _already_linked(tx: Transaction) -> bool:
+    """Conciliada por import anterior (ou marcada à mão) — default skip."""
+    return tx.extraction_job_id is not None or tx.is_reconciled
+
+
+@dataclass
+class _Scope:
+    job: ExtractionJob
+    workspace_id: str
+    hint: ExtractionSourceHint
+    source_type: TransactionSourceType
+    source_id: str
+    currency: Currency
+    account: Account | None = None
+    card: CreditCardAccount | None = None
+
+
+def _scope(db: Session, job: ExtractionJob) -> _Scope:
+    if job.source_hint == ExtractionSourceHint.BANK_STATEMENT:
+        acc = db.get(Account, job.checking_account_id) if job.checking_account_id else None
+        if acc is None:
+            raise BankImportError("Import de extrato sem conta corrente.")
+        return _Scope(job, job.workspace_id, job.source_hint, TransactionSourceType.CHECKING,
+                      acc.id, acc.currency, account=acc)
+    if job.source_hint == ExtractionSourceHint.CARD_INVOICE:
+        card = db.get(CreditCardAccount, job.credit_card_account_id) if job.credit_card_account_id else None
+        if card is None:
+            raise BankImportError("Import de fatura sem cartão.")
+        return _Scope(job, job.workspace_id, job.source_hint, TransactionSourceType.CREDIT_CARD,
+                      card.id, card.currency, card=card)
+    raise BankImportError(f"Hint {job.source_hint.value} não é import de extrato/fatura.")
+
+
+def statement_period(payload: dict) -> tuple[date | None, date | None]:
+    """Período declarado pelo documento; fallback min/max das linhas."""
+    period = payload.get("period") or {}
+    start = _parse_date(period.get("start"))
+    end = _parse_date(period.get("end"))
+    if start is None or end is None:
+        dates = [d for d in (_parse_date(t.get("event_date")) for t in payload.get("transactions") or []) if d]
+        if dates:
+            start = start or min(dates)
+            end = end or max(dates)
+    if start and end and start > end:
+        start, end = end, start
+    return start, end
+
+
+# ── classify ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class Classification:
+    rows: list[dict]
+    invoice: dict | None
+    overlaps: list[dict]
+    warnings: list[str]
+    period: tuple[date | None, date | None]
+    # internals for apply
+    occurrence_ids: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _alias_map(db: Session, workspace_id: str) -> dict[str, Party]:
+    rows = db.query(PartyAlias, Party).join(Party, Party.id == PartyAlias.party_id).filter(
+        PartyAlias.workspace_id == workspace_id,
+    ).all()
+    return {a.alias_normalized: p for a, p in rows}
+
+
+def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
+    alias = normalize_description(desc)
+    p = aliases.get(alias)
+    if p is not None and p.is_active:
+        return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias}
+    if not alias:
+        return {"mode": "none", "alias": alias}
+    return {"mode": "new", "new_party_name": desc.strip()[:120], "alias": alias}
+
+
+def _default_payment_account(db: Session, card: CreditCardAccount) -> str | None:
+    """Última conta corrente usada pra pagar este cartão."""
+    row = db.query(Transaction.checking_account_id).join(
+        Invoice, Invoice.id == Transaction.paid_invoice_id,
+    ).filter(
+        Invoice.credit_card_account_id == card.id,
+        Transaction.checking_account_id.isnot(None),
+    ).order_by(Transaction.event_date.desc(), Transaction.created_at.desc()).first()
+    if not row:
+        return None
+    acc = db.get(Account, row[0])
+    return acc.id if acc and acc.is_active else None
+
+
+def _invoice_brief(db: Session, inv: Invoice) -> dict:
+    card = db.get(CreditCardAccount, inv.credit_card_account_id)
+    return {
+        "invoice_id": inv.id,
+        "card_id": inv.credit_card_account_id,
+        "card_name": card.name if card else None,
+        "close_date": inv.close_date.isoformat(),
+        "due_date": inv.due_date.isoformat(),
+        "total_amount": str(inv.total_amount) if inv.total_amount is not None else None,
+        "status": inv.status.value,
+        "payment_transaction_id": inv.paid_by_transaction_id,
+    }
+
+
+def _doc_invoice(db: Session, sc: _Scope, payload: dict, line_dates: list[date]) -> tuple[dict | None, list[str]]:
+    """CARD_INVOICE: the invoice the document is (close/due/total/iof + the
+    existing row it resolves to, if any)."""
+    if sc.card is None:
+        return None, []
+    warnings: list[str] = []
+    info = payload.get("invoice") or {}
+    close = _parse_date(info.get("close_date"))
+    due = _parse_date(info.get("due_date"))
+    if close is None:
+        base = max(line_dates) if line_dates else date.today()
+        close = tx_svc.theoretical_close_date(sc.card, base)
+        warnings.append("Fatura sem data de fechamento no documento — usei o fechamento teórico do cartão.")
+    if due is None or due < close:
+        due = tx_svc.theoretical_due_date(sc.card, close)
+    total = _money(info.get("total"))
+    iof = _money(info.get("iof_total"))
+    existing = tx_svc.find_invoice_near(db, sc.card, close)
+    out = {
+        "close_date": close.isoformat(),
+        "due_date": due.isoformat(),
+        "total_amount": str(abs(total)) if total is not None else None,
+        "iof_total": str(abs(iof)) if iof is not None else None,
+        "existing_invoice_id": existing.id if existing else None,
+        "existing_status": existing.status.value if existing else None,
+        "blocked": bool(existing and existing.status == InvoiceStatus.PAID),
+    }
+    if out["blocked"]:
+        warnings.append("Fatura já paga — lançamentos novos não entram nela (só conciliação).")
+    return out, warnings
+
+
+def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None = None) -> Classification:
+    """Read-only. Same input → same output; apply re-runs it."""
+    payload = payload if payload is not None else (job.extracted_json or {})
+    sc = _scope(db, job)
+    warnings: list[str] = []
+    aliases = _alias_map(db, sc.workspace_id)
+
+    # 1. parse lines
+    parsed: list[dict] = []
+    for i, line in enumerate(payload.get("transactions") or []):
+        rid = f"r{i}"
+        d = _parse_date(line.get("event_date"))
+        amount = _money(line.get("amount"))
+        desc = (line.get("description") or "").strip()
+        if d is None or amount is None or amount == 0 or not desc:
+            warnings.append(f"Linha {i + 1} ignorada (data/valor/descrição inválidos): {desc or '—'}")
+            continue
+        line_ccy = (line.get("currency") or sc.currency.value).upper()
+        if line_ccy != sc.currency.value:
+            warnings.append(f"Linha {i + 1} em {line_ccy} — gravada na moeda da conta ({sc.currency.value}).")
+        inst = _parse_installment(line.get("installment")) if sc.card else None
+        eff = tx_svc.add_months(d, inst[0] - 1) if inst else d
+        fx = line.get("fx") or {}
+        fx_rate = _money(fx.get("rate")) if isinstance(fx, dict) and fx.get("rate") else None
+        if fx_rate is not None and fx_rate <= 0:
+            fx_rate = None
+        is_payment = bool(sc.card) and (bool(line.get("is_invoice_payment")) or _looks_like_payment(desc, amount))
+        parsed.append({
+            "row_id": rid,
+            "index": i,
+            "event_date": eff.isoformat(),
+            "original_date": d.isoformat(),
+            "description": desc[:255],
+            "amount": str(amount),
+            "currency": sc.currency.value,
+            "fx_rate": str(fx_rate) if fx_rate is not None else None,
+            "usd_amount": str(_money(fx.get("usd_amount"))) if isinstance(fx, dict) and fx.get("usd_amount") is not None else None,
+            "installment_number": inst[0] if inst else None,
+            "installment_total": inst[1] if inst else None,
+            "balance_after": str(_money(line.get("balance_after"))) if line.get("balance_after") is not None else None,
+            "category_hint": line.get("category_hint"),
+            "is_invoice_payment": is_payment,
+            "_date": eff,
+            "_amount": amount,
+        })
+
+    line_dates = [r["_date"] for r in parsed if not r["installment_number"]] or [r["_date"] for r in parsed]
+    invoice_info, inv_warnings = _doc_invoice(db, sc, payload, line_dates)
+    warnings.extend(inv_warnings)
+
+    # 2. existing tx of this source, for dedup
+    src_filter = (
+        Transaction.checking_account_id == sc.source_id
+        if sc.source_type == TransactionSourceType.CHECKING
+        else Transaction.credit_card_account_id == sc.source_id
+    )
+    existing = db.query(Transaction).filter(Transaction.workspace_id == sc.workspace_id, src_filter).all()
+    by_base: dict[str, list[Transaction]] = defaultdict(list)
+    for t in existing:
+        by_base[t.fingerprint.split(":", 1)[0]].append(t)
+    for lst in by_base.values():
+        lst.sort(key=lambda t: (_fp_suffix(t.fingerprint), t.created_at or datetime.min, t.id))
+    used_tx: set[str] = set()
+    used_invoices: set[str] = set()
+    used_occ: set[str] = set()
+    seen_in_file: dict[str, int] = defaultdict(int)
+    default_pay_acc = _default_payment_account(db, sc.card) if sc.card else None
+
+    occ_pool: list[ScheduledTransaction] = []
+    if parsed:
+        lo = min(r["_date"] for r in parsed) - timedelta(days=SCHEDULED_DAYS)
+        hi = max(r["_date"] for r in parsed) + timedelta(days=SCHEDULED_DAYS)
+        occ_pool = db.query(ScheduledTransaction).filter(
+            ScheduledTransaction.workspace_id == sc.workspace_id,
+            ScheduledTransaction.status == ScheduledStatus.PENDING,
+            ScheduledTransaction.due_date >= lo,
+            ScheduledTransaction.due_date <= hi,
+        ).all()
+
+    rows: list[dict] = []
+    occurrence_ids: dict[str, list[str]] = {}
+    for r in parsed:
+        d, amount = r["_date"], r["_amount"]
+        r["party"] = {"mode": "none"} if r["is_invoice_payment"] else _party_for(r["description"], aliases)
+        r["category_id"] = None
+        r["warning"] = None
+        r["parent_transaction_id"] = None
+
+        # ── card "Pagamento recebido" — never a card tx ────────────────────
+        if r["is_invoice_payment"]:
+            _classify_card_payment_line(
+                db, sc, r, used_invoices, default_pay_acc,
+                doc_invoice_id=invoice_info.get("existing_invoice_id") if invoice_info else None,
+            )
+            rows.append(r)
+            continue
+
+        base = tx_svc.compute_fingerprint(sc.source_type, sc.source_id, d, amount, sc.currency, r["description"])
+        seen_in_file[base] += 1
+        k = seen_in_file[base]
+        r["fingerprint"] = base if k == 1 else f"{base}:{k}"
+        r["fingerprint_base"] = base
+        r["occurrence_in_file"] = k
+
+        dup: Transaction | None = None
+        reason = None
+        # installment convergence with the composer
+        if r["installment_number"]:
+            dup = _match_installment(existing, r, used_tx)
+            reason = "installment" if dup else None
+        if dup is None:
+            dup = next((t for t in by_base.get(base, []) if t.id not in used_tx), None)
+            reason = "fingerprint" if dup else None
+        if dup is None and sc.account is not None and amount < 0:
+            dup = _match_payment_tx(existing, r, used_tx)
+            reason = "invoice_payment_tx" if dup else None
+
+        if dup is not None:
+            used_tx.add(dup.id)
+            linked = _already_linked(dup)
+            r.update(bucket="duplicate", duplicate={**_tx_brief(dup), "reason": reason},
+                     actions=["skip", "import_anyway"] if linked else ["reconcile", "skip", "import_anyway"],
+                     default_action="skip" if linked else "reconcile")
+            rows.append(r)
+            continue
+        if k >= 2:
+            r.update(bucket="duplicate", duplicate={"reason": "in_file", "transaction_id": None},
+                     actions=["skip", "import_anyway"], default_action="skip")
+            rows.append(r)
+            continue
+
+        # ── checking debit paying a CLOSED invoice ─────────────────────────
+        if sc.account is not None and amount < 0:
+            inv = _match_invoice(db, sc, d, amount, used_invoices)
+            if inv is not None:
+                used_invoices.add(inv.id)
+                r["party"] = {"mode": "none"}
+                r.update(bucket="invoice_payment",
+                         invoice_payment={**_invoice_brief(db, inv), "kind": "statement_debit",
+                                          "payment_account_id": sc.account.id},
+                         actions=["pay", "import", "skip"], default_action="pay")
+                rows.append(r)
+                continue
+
+        # ── settles a conta a pagar/receber ────────────────────────────────
+        cands = _match_scheduled(occ_pool, r, amount, d, sc.currency, used_occ)
+        if cands:
+            best = cands[0]
+            used_occ.add(best.id)
+            occurrence_ids[r["row_id"]] = [o.id for o in cands]
+            r.update(bucket="scheduled",
+                     scheduled={"occurrence_id": best.id, "candidates": [_occ_brief(o) for o in cands]},
+                     actions=["settle", "import", "skip"], default_action="settle")
+            rows.append(r)
+            continue
+
+        r.update(bucket="new", actions=["import", "skip"], default_action="import")
+        rows.append(r)
+
+    # new card lines into a PAID invoice can't go in
+    if invoice_info and invoice_info["blocked"]:
+        for r in rows:
+            if r["bucket"] in ("new", "scheduled") or (r["bucket"] == "duplicate" and "import_anyway" in r["actions"]):
+                r["actions"] = [a for a in r["actions"] if a not in ("import", "import_anyway", "settle")] or ["skip"]
+                if r["default_action"] not in r["actions"]:
+                    r["default_action"] = "skip"
+                r["warning"] = r["warning"] or "Fatura já paga"
+
+    # installment parent (best-effort) for lines that will be created
+    if sc.card is not None:
+        for r in rows:
+            if r.get("installment_number") and r["installment_number"] > 1:
+                parent = _match_installment_parent(existing, r)
+                r["parent_transaction_id"] = parent.id if parent else None
+
+    period = (job.statement_period_start, job.statement_period_end)
+    if period[0] is None or period[1] is None:
+        period = statement_period(payload)
+    overlaps = _overlaps(db, sc, period, rows)
+
+    for r in rows:
+        r.pop("_date", None)
+        r.pop("_amount", None)
+    return Classification(rows=rows, invoice=invoice_info, overlaps=overlaps, warnings=warnings,
+                          period=period, occurrence_ids=occurrence_ids)
+
+
+def _classify_card_payment_line(
+    db: Session, sc: _Scope, r: dict, used_invoices: set[str], default_pay_acc: str | None,
+    doc_invoice_id: str | None = None,
+) -> None:
+    """"Pagamento recebido" on invoice N+1 → invoice N: PAID → reconcile its
+    payment tx; CLOSED → suggest pay_invoice from a checking account."""
+    d = date.fromisoformat(r["original_date"])
+    exclude = set(used_invoices)
+    if doc_invoice_id:
+        exclude.add(doc_invoice_id)
+    q = db.query(Invoice).filter(
+        Invoice.credit_card_account_id == sc.card.id,
+        Invoice.close_date < d,
+    )
+    if exclude:
+        q = q.filter(~Invoice.id.in_(exclude))
+    prev = q.order_by(Invoice.close_date.desc()).first()
+    r["fingerprint"] = None
+    if prev is None:
+        r.update(bucket="invoice_payment", invoice_payment={"kind": "card_payment_line", "invoice_id": None},
+                 actions=["skip"], default_action="skip",
+                 warning="Pagamento de fatura anterior não encontrada no sistema — nada a fazer.")
+        return
+    used_invoices.add(prev.id)
+    brief = {**_invoice_brief(db, prev), "kind": "card_payment_line"}
+    if prev.status == InvoiceStatus.PAID:
+        pay_tx = db.get(Transaction, prev.paid_by_transaction_id) if prev.paid_by_transaction_id else None
+        if pay_tx is None:
+            r.update(bucket="invoice_payment", invoice_payment=brief, actions=["skip"], default_action="skip")
+            return
+        linked = _already_linked(pay_tx)
+        r.update(bucket="invoice_payment", invoice_payment={**brief, "payment_transaction": _tx_brief(pay_tx)},
+                 actions=["skip"] if pay_tx.extraction_job_id else ["reconcile", "skip"],
+                 default_action="skip" if linked else "reconcile")
+        return
+    if prev.status == InvoiceStatus.CLOSED:
+        r.update(bucket="invoice_payment",
+                 invoice_payment={**brief, "payment_account_id": default_pay_acc},
+                 actions=["pay", "skip"], default_action="pay" if default_pay_acc else "skip")
+        if not default_pay_acc:
+            r["warning"] = "Escolha a conta de onde saiu o pagamento."
+        return
+    r.update(bucket="invoice_payment", invoice_payment=brief, actions=["skip"], default_action="skip",
+             warning="Fatura anterior ainda aberta — feche-a para registrar o pagamento.")
+
+
+def _match_installment(existing: list[Transaction], r: dict, used: set[str]) -> Transaction | None:
+    norm = normalize_description(r["description"])
+    amount = Decimal(r["amount"])
+    d = date.fromisoformat(r["event_date"])
+    cands = [
+        t for t in existing
+        if t.id not in used
+        and t.installment_number == r["installment_number"]
+        and t.installment_total == r["installment_total"]
+        and normalize_description(t.description) == norm
+        and abs(Decimal(t.amount) - amount) <= INSTALLMENT_AMOUNT_TOL
+        and abs((t.event_date - d).days) <= INSTALLMENT_DATE_TOL_DAYS
+    ]
+    cands.sort(key=lambda t: (abs((t.event_date - d).days), abs(Decimal(t.amount) - amount)))
+    return cands[0] if cands else None
+
+
+def _match_installment_parent(existing: list[Transaction], r: dict) -> Transaction | None:
+    """Parcela 1/Y da mesma compra (mesma descrição normalizada, valor
+    ±R$ 0,05, data original ±3 dias); ou o parent de uma irmã já ligada."""
+    norm = normalize_description(r["description"])
+    amount = Decimal(r["amount"])
+    original = date.fromisoformat(r["original_date"])
+    y = r["installment_total"]
+    for t in existing:
+        if (t.installment_total != y or not t.installment_number
+                or normalize_description(t.description) != norm
+                or abs(Decimal(t.amount) - amount) > INSTALLMENT_AMOUNT_TOL):
+            continue
+        t_original = tx_svc.add_months(t.event_date, -(t.installment_number - 1))
+        if abs((t_original - original).days) > INSTALLMENT_DATE_TOL_DAYS:
+            continue
+        if t.installment_number == 1:
+            return t
+        if t.parent_transaction_id:
+            parent = next((p for p in existing if p.id == t.parent_transaction_id), None)
+            if parent is not None:
+                return parent
+    return None
+
+
+def _match_payment_tx(existing: list[Transaction], r: dict, used: set[str]) -> Transaction | None:
+    """A checking debit for an invoice already paid via `pay_invoice` (e.g.
+    created from the card's next invoice): the descriptions differ, so the
+    fingerprint can't see it — match by amount + date."""
+    amount = Decimal(r["amount"])
+    d = date.fromisoformat(r["event_date"])
+    cands = [
+        t for t in existing
+        if t.id not in used and t.paid_invoice_id
+        and abs(Decimal(t.amount) - amount) <= CENT
+        and abs((t.event_date - d).days) <= PAYMENT_TX_DATE_TOL_DAYS
+    ]
+    cands.sort(key=lambda t: abs((t.event_date - d).days))
+    return cands[0] if cands else None
+
+
+def _match_invoice(db: Session, sc: _Scope, d: date, amount: Decimal, used: set[str]) -> Invoice | None:
+    value = abs(amount)
+    invs = db.query(Invoice).filter(
+        Invoice.workspace_id == sc.workspace_id,
+        Invoice.status == InvoiceStatus.CLOSED,
+        Invoice.currency == sc.currency,
+        Invoice.total_amount.isnot(None),
+        Invoice.close_date <= d,
+        Invoice.due_date >= d - timedelta(days=INVOICE_PAYMENT_GRACE_DAYS),
+    ).all()
+    cands = [
+        i for i in invs
+        if i.id not in used
+        and abs(value - Decimal(i.total_amount)) <= Decimal(i.total_amount) * INVOICE_PAYMENT_PCT
+    ]
+    cands.sort(key=lambda i: (abs((i.due_date - d).days), abs(value - Decimal(i.total_amount))))
+    return cands[0] if cands else None
+
+
+def _occ_brief(o: ScheduledTransaction) -> dict:
+    return {
+        "occurrence_id": o.id,
+        "description": o.description,
+        "due_date": o.due_date.isoformat(),
+        "amount": str(o.amount),
+        "currency": o.currency.value,
+        "direction": o.direction.value,
+        "category_id": o.category_id,
+        "party_id": o.party_id,
+    }
+
+
+def _match_scheduled(
+    pool: list[ScheduledTransaction], r: dict, amount: Decimal, d: date, currency: Currency, used: set[str],
+) -> list[ScheduledTransaction]:
+    """Spec 72 rules. Returns candidates, closest date first."""
+    direction = ScheduledDirection.PAYABLE if amount < 0 else ScheduledDirection.RECEIVABLE
+    norm = normalize_description(r["description"])
+    party_id = r["party"].get("party_id") if r["party"]["mode"] == "existing" else None
+    value = abs(amount)
+    out = []
+    for o in pool:
+        if o.id in used or o.direction != direction or o.currency != currency:
+            continue
+        if abs((o.due_date - d).days) > SCHEDULED_DAYS:
+            continue
+        if abs(value - Decimal(o.amount)) > Decimal(o.amount) * SCHEDULED_PCT:
+            continue
+        occ_norm = normalize_description(o.description)
+        if not ((party_id and o.party_id == party_id) or (occ_norm and occ_norm in norm)):
+            continue
+        out.append(o)
+    out.sort(key=lambda o: (abs((o.due_date - d).days), abs(value - Decimal(o.amount))))
+    return out
+
+
+def _overlaps(db: Session, sc: _Scope, period: tuple[date | None, date | None], rows: list[dict]) -> list[dict]:
+    start, end = period
+    if start is None or end is None:
+        return []
+    col = (ExtractionJob.checking_account_id if sc.account is not None else ExtractionJob.credit_card_account_id)
+    jobs = db.query(ExtractionJob).filter(
+        ExtractionJob.workspace_id == sc.workspace_id,
+        col == sc.source_id,
+        ExtractionJob.status == ExtractionStatus.CONFIRMED,
+        ExtractionJob.id != sc.job.id,
+        ExtractionJob.statement_period_start.isnot(None),
+        ExtractionJob.statement_period_end.isnot(None),
+        ExtractionJob.statement_period_start <= end,
+        ExtractionJob.statement_period_end >= start,
+    ).order_by(ExtractionJob.statement_period_start).all()
+    out = []
+    for j in jobs:
+        lo, hi = max(start, j.statement_period_start), min(end, j.statement_period_end)
+        n = sum(
+            1 for r in rows
+            if r["bucket"] == "duplicate" and r.get("duplicate", {}).get("transaction_id")
+            and lo <= date.fromisoformat(r["event_date"]) <= hi
+        )
+        out.append({
+            "job_id": j.id,
+            "start": j.statement_period_start.isoformat(),
+            "end": j.statement_period_end.isoformat(),
+            "duplicate_count": n,
+        })
+    return out
+
+
+def preview_payload(c: Classification) -> dict:
+    counts: dict[str, int] = defaultdict(int)
+    for r in c.rows:
+        counts[r["bucket"]] += 1
+    return {
+        "rows": c.rows,
+        "invoice": c.invoice,
+        "overlaps": c.overlaps,
+        "warnings": c.warnings,
+        "period": {
+            "start": c.period[0].isoformat() if c.period[0] else None,
+            "end": c.period[1].isoformat() if c.period[1] else None,
+        },
+        "counts": dict(counts),
+    }
+
+
+# ── apply ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ApplyOutcome:
+    created: list[str] = field(default_factory=list)
+    reconciled: list[str] = field(default_factory=list)
+    skipped: int = 0
+    paid_invoices: list[dict] = field(default_factory=list)
+    settled: list[dict] = field(default_factory=list)
+    new_parties: list[str] = field(default_factory=list)
+    invoice_id: str | None = None
+
+
+def _resolve_doc_invoice(db: Session, sc: _Scope, info: dict, user_id: str | None) -> Invoice:
+    close = date.fromisoformat(info["close_date"])
+    due = date.fromisoformat(info["due_date"])
+    inv = tx_svc.find_invoice_near(db, sc.card, close)
+    if inv is None:
+        inv = tx_svc.invoice_for_close(db, sc.card, close, user_id=user_id)
+    if inv.status != InvoiceStatus.PAID:
+        clash = db.query(Invoice.id).filter(
+            Invoice.credit_card_account_id == sc.card.id, Invoice.close_date == close, Invoice.id != inv.id,
+        ).first()
+        if not clash:
+            inv.close_date = close
+        inv.due_date = due
+        inv.updated_at = datetime.now(timezone.utc)
+        inv.updated_by = user_id
+        db.flush()
+    return inv
+
+
+def _finalize_doc_invoice(db: Session, inv: Invoice, info: dict, user_id: str | None) -> None:
+    """Total/IOF do documento + CLOSED (fatura importada = fechada)."""
+    if inv.status == InvoiceStatus.PAID:
+        return
+    if info.get("total_amount") is not None:
+        inv.total_amount = Decimal(info["total_amount"])
+    elif inv.total_amount is None:
+        inv.total_amount = tx_svc.invoice_open_total(db, inv)
+    if info.get("iof_total") is not None:
+        inv.iof_total = Decimal(info["iof_total"])
+    inv.status = InvoiceStatus.CLOSED
+    inv.updated_at = datetime.now(timezone.utc)
+    inv.updated_by = user_id
+    db.flush()
+
+
+def _get_or_create_party(
+    db: Session, workspace_id: str, name: str, alias: str, amount: Decimal,
+    cache: dict[str, str], out: ApplyOutcome, user_id: str | None,
+) -> str:
+    key = alias or normalize_description(name)
+    if key in cache:
+        return cache[key]
+    existing = db.query(PartyAlias).filter(
+        PartyAlias.workspace_id == workspace_id, PartyAlias.alias_normalized == key,
+    ).first()
+    if existing is not None:
+        cache[key] = existing.party_id
+        return existing.party_id
+    now = datetime.now(timezone.utc)
+    p = Party(
+        id=str(uuid.uuid4()), workspace_id=workspace_id, name=name.strip()[:120],
+        kind=PartyKind.SUPPLIER if amount < 0 else PartyKind.CLIENT, is_active=True,
+        created_at=now, updated_at=now, created_by=user_id, updated_by=user_id,
+    )
+    db.add(p)
+    db.flush()
+    if key:
+        db.add(PartyAlias(id=str(uuid.uuid4()), workspace_id=workspace_id, party_id=p.id,
+                          alias_normalized=key, created_at=now))
+        db.flush()
+    cache[key] = p.id
+    out.new_parties.append(p.id)
+    return p.id
+
+
+def _free_suffix(db: Session, workspace_id: str, base: str, start: int, taken: set[str]) -> str:
+    k = max(start, 2)
+    while True:
+        fp = f"{base}:{k}"
+        if fp not in taken and not db.query(Transaction.id).filter(
+            Transaction.workspace_id == workspace_id, Transaction.fingerprint == fp,
+        ).first():
+            taken.add(fp)
+            return fp
+        k += 1
+
+
+def _mark_reconciled(tx: Transaction, job: ExtractionJob, user_id: str | None) -> None:
+    tx.is_reconciled = True
+    if tx.extraction_job_id is None:  # re-conciliação não sobrescreve
+        tx.extraction_job_id = job.id
+    tx.updated_at = datetime.now(timezone.utc)
+    tx.updated_by = user_id
+
+
+def apply_bank_import(
+    db: Session, job: ExtractionJob, decisions: dict | None, *, user_id: str | None,
+) -> tuple[ApplyOutcome, Classification]:
+    """Execute the classification with the user's per-row decisions.
+    Raises BankImportError on any invalid decision — caller rolls back
+    (apply is all-or-nothing)."""
+    decisions = decisions or {}
+    c = _classify_bank_import(db, job)
+    sc = _scope(db, job)
+    by_id = {r["row_id"]: r for r in c.rows}
+    unknown = set(decisions) - set(by_id)
+    if unknown:
+        raise BankImportError(f"Linhas desconhecidas: {', '.join(sorted(unknown))}.")
+
+    out = ApplyOutcome()
+    doc_invoice: Invoice | None = None
+    if sc.card is not None and c.invoice is not None:
+        doc_invoice = _resolve_doc_invoice(db, sc, c.invoice, user_id)
+        out.invoice_id = doc_invoice.id
+
+    party_cache: dict[str, str] = {}
+    chosen_occ: set[str] = set()
+    taken_fps: set[str] = set()
+
+    for r in c.rows:
+        dec = decisions.get(r["row_id"]) or {}
+        action = dec.get("action") or r["default_action"]
+        if action not in r["actions"]:
+            raise BankImportError(f"Ação '{action}' inválida para a linha {r['index'] + 1} ({r['description']}).")
+        if action == "skip":
+            out.skipped += 1
+            continue
+
+        if action == "reconcile":
+            if r["bucket"] == "invoice_payment":
+                tx = db.get(Transaction, r["invoice_payment"]["payment_transaction"]["transaction_id"])
+            else:
+                tx = db.get(Transaction, r["duplicate"]["transaction_id"])
+            _mark_reconciled(tx, job, user_id)
+            out.reconciled.append(tx.id)
+            continue
+
+        if action == "pay":
+            ip = r["invoice_payment"]
+            inv = db.get(Invoice, ip["invoice_id"])
+            acc_id = dec.get("payment_account_id") or ip.get("payment_account_id")
+            if not acc_id:
+                raise BankImportError(f"Escolha a conta de origem do pagamento da fatura ({r['description']}).")
+            if ip["kind"] == "statement_debit" and acc_id != sc.source_id:
+                raise BankImportError("Débito do extrato paga a fatura a partir desta conta.")
+            try:
+                tx = tx_svc.pay_invoice(
+                    db, inv, checking_account_id=acc_id, paid_on=date.fromisoformat(r["event_date"]),
+                    amount=abs(Decimal(r["amount"])), category_id=dec.get("category_id"), user_id=user_id,
+                )
+            except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+                raise BankImportError(f"{r['description']}: {exc}")
+            _mark_reconciled(tx, job, user_id)
+            out.created.append(tx.id)
+            out.paid_invoices.append({"invoice_id": inv.id, "transaction_id": tx.id, "amount": str(-tx.amount),
+                                      "paid_on": r["event_date"], "checking_account_id": acc_id})
+            continue
+
+        # import / import_anyway / settle → create the tx
+        tx = _create_from_row(db, sc, job, r, dec, doc_invoice, party_cache, out, taken_fps, user_id)
+        out.created.append(tx.id)
+
+        if action == "settle":
+            occ_id = dec.get("occurrence_id") or r["scheduled"]["occurrence_id"]
+            if occ_id not in c.occurrence_ids.get(r["row_id"], []):
+                raise BankImportError(f"Conta a pagar/receber inválida para a linha {r['index'] + 1}.")
+            if occ_id in chosen_occ:
+                raise BankImportError("A mesma conta a pagar/receber foi escolhida para duas linhas.")
+            chosen_occ.add(occ_id)
+            occ = db.get(ScheduledTransaction, occ_id)
+            inherited: dict = {}
+            try:
+                sched_svc.settle_occurrence(db, occ, tx, user_id=user_id, inherited=inherited)
+            except (sched_svc.ScheduleError, sched_svc.ScheduleConflict) as exc:
+                raise BankImportError(f"{r['description']}: {exc}")
+            out.settled.append({"occurrence_id": occ.id, "transaction_id": tx.id,
+                                "paid_at": occ.paid_at.isoformat(), "inherited": inherited})
+
+    if doc_invoice is not None:
+        _finalize_doc_invoice(db, doc_invoice, c.invoice, user_id)
+    db.flush()
+    return out, c
+
+
+def _create_from_row(
+    db: Session, sc: _Scope, job: ExtractionJob, r: dict, dec: dict, doc_invoice: Invoice | None,
+    party_cache: dict[str, str], out: ApplyOutcome, taken_fps: set[str], user_id: str | None,
+) -> Transaction:
+    amount = Decimal(r["amount"])
+    # party: decision overrides the classification
+    party_id: str | None = None
+    if dec.get("no_party"):
+        party_id = None
+    elif dec.get("party_id"):
+        party_id = dec["party_id"]
+    elif dec.get("new_party_name"):
+        name = dec["new_party_name"].strip()
+        party_id = _get_or_create_party(db, sc.workspace_id, name, r["party"].get("alias") or normalize_description(name),
+                                        amount, party_cache, out, user_id)
+    elif r["party"]["mode"] == "existing":
+        party_id = r["party"]["party_id"]
+    elif r["party"]["mode"] == "new":
+        party_id = _get_or_create_party(db, sc.workspace_id, r["party"]["new_party_name"], r["party"]["alias"],
+                                        amount, party_cache, out, user_id)
+
+    data = tx_svc.TxInput(
+        source_type=sc.source_type,
+        event_date=date.fromisoformat(r["event_date"]),
+        description=r["description"],
+        amount=amount,
+        checking_account_id=sc.source_id if sc.account is not None else None,
+        credit_card_account_id=sc.source_id if sc.card is not None else None,
+        invoice_id=doc_invoice.id if doc_invoice is not None else None,
+        fx_rate=Decimal(r["fx_rate"]) if r.get("fx_rate") else None,
+        category_id=dec.get("category_id") or r.get("category_id"),
+        party_id=party_id,
+        is_reconciled=True,
+    )
+    try:
+        tx = tx_svc.create_transaction(db, sc.workspace_id, data, user_id=user_id)[0]
+    except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+        raise BankImportError(f"Linha {r['index'] + 1} ({r['description']}): {exc}")
+    tx.extraction_job_id = job.id
+    if r.get("installment_number"):
+        tx.installment_number = r["installment_number"]
+        tx.installment_total = r["installment_total"]
+        if r.get("parent_transaction_id"):
+            tx.parent_transaction_id = r["parent_transaction_id"]
+    # k-ésima linha idêntica (ou promovida sobre uma duplicata): sufixo ":k"
+    base = r["fingerprint_base"]
+    if r["bucket"] == "duplicate" or tx.fingerprint in taken_fps:
+        tx.fingerprint = _free_suffix(db, sc.workspace_id, base, r.get("occurrence_in_file") or 2, taken_fps)
+    else:
+        taken_fps.add(tx.fingerprint)
+    db.flush()
+    return tx

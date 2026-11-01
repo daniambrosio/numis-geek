@@ -35,7 +35,18 @@ _ALLOWED_MIME: dict[str, tuple[AttachmentKind, str]] = {
         AttachmentKind.CSV, "xlsx",
     ),
     "application/vnd.ms-excel": (AttachmentKind.CSV, "xls"),
+    # Spec 71 — extrato OFX (texto SGML/XML). Browsers costumam mandar
+    # vazio/octet-stream; o route de import normaliza pela extensão.
+    "application/x-ofx": (AttachmentKind.OTHER, "ofx"),
 }
+
+OFX_MIMES = ("application/x-ofx",)
+
+
+def content_hash(payload: bytes) -> str:
+    """SHA-256 hex do conteúdo (spec 71 — dedup camada 1)."""
+    import hashlib
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass

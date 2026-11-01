@@ -88,6 +88,8 @@ class ExtractionApplyResult:
     skipped_count: int
     errors: list[str]
     bulk_detail: BulkApplyDetail | None = None
+    # Spec 71 — classificação/resultado do import de extrato/fatura.
+    bank_import: dict | None = None
 
 
 class ExtractionError(Exception):
@@ -169,6 +171,8 @@ def create_and_run(
     snapshot_id: str | None = None,
     asset_id: str | None = None,
     institution_id: str | None = None,
+    checking_account_id: str | None = None,
+    credit_card_account_id: str | None = None,
     user_id: str | None = None,
     user_email: str | None = None,
 ) -> ExtractionJob:
@@ -190,6 +194,8 @@ def create_and_run(
         pendency_id=pendency_id,
         asset_id=asset_id,
         institution_id=institution_id,
+        checking_account_id=checking_account_id,
+        credit_card_account_id=credit_card_account_id,
         attachment_id=attachment_id,
         source_hint=source_hint,
         status=ExtractionStatus.PENDING,
@@ -210,6 +216,8 @@ def create_and_run(
                 "attachment_id": attachment_id,
                 "source_hint": source_hint.value,
                 "pendency_id": pendency_id,
+                "checking_account_id": checking_account_id,
+                "credit_card_account_id": credit_card_account_id,
             },
         )
 
@@ -312,6 +320,12 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         _disambiguate_duplicate_tickers(validated)
 
         job.extracted_json = validated.model_dump()
+        if job.source_hint in (
+            ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE,
+        ):
+            # Spec 71 — período do documento (base do aviso de overlap).
+            from numis_geek.services.bank_import import statement_period
+            job.statement_period_start, job.statement_period_end = statement_period(job.extracted_json)
         job.model = call.model
         job.input_tokens = call.input_tokens
         job.output_tokens = call.output_tokens
@@ -443,6 +457,13 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
         return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
     if attachment.kind == AttachmentKind.CSV:
         return _Payload(text=blob.decode("utf-8", errors="replace"), image_bytes=None, image_mime=None)
+    if attachment.mime_type in attachment_storage.OFX_MIMES:
+        # Spec 71 — OFX é texto (SGML/XML); bancos BR costumam mandar latin-1.
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            text = blob.decode("latin-1")
+        return _Payload(text=text, image_bytes=None, image_mime=None)
     # PDF and others — try utf-8 first, else send as base64 image-fallback.
     # V1 simplification: pass the raw bytes as the prompt for non-image
     # attachments. Real PDF-to-image conversion (pypdfium / pdf2image) is a
@@ -483,7 +504,7 @@ def _overall_confidence(parsed: Any) -> Decimal | None:
         if "confidence" in parsed and isinstance(parsed["confidence"], (int, float)):
             return Decimal(str(parsed["confidence"])).quantize(Decimal("0.01"))
         # For list-based hints, average the per-row confidence.
-        for list_key in ("positions", "events", "trades"):
+        for list_key in ("positions", "events", "trades", "transactions"):
             items = parsed.get(list_key)
             if isinstance(items, list) and items:
                 values = [
@@ -510,6 +531,7 @@ def confirm_extraction(
     manual_mappings: dict[str, str] | None = None,
     manual_prices: dict[str, float] | None = None,
     manual_modes: dict[str, str] | None = None,
+    bank_decisions: dict | None = None,
 ) -> ExtractionApplyResult:
     """Apply the (possibly edited) extracted JSON to the domain model.
 
@@ -533,6 +555,11 @@ def confirm_extraction(
     payload = edited_payload if edited_payload is not None else job.extracted_json
     if payload is None:
         raise ExtractionError("No extracted JSON to apply")
+
+    if job.source_hint in (ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE):
+        if edited_payload is not None:
+            raise ExtractionError("Import de extrato/fatura não aceita edited_payload — use as decisões por linha.")
+        return _confirm_bank_import(db, job, bank_decisions, user_id=user_id, user_email=user_email)
 
     result = _apply_payload(
         db, job, payload,
@@ -1271,6 +1298,8 @@ def preview_bulk_extract(
     job = db.get(ExtractionJob, job_id)
     if job is None:
         raise ExtractionError(f"Job {job_id} not found")
+    if job.source_hint in (ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE):
+        return preview_bank_import(db, job)
     if job.snapshot_id is None:
         raise ExtractionError("Preview only available for bulk jobs (snapshot_id set)")
     # BROKER_INCOME (proventos) tem classificação própria — espelha o
@@ -2092,4 +2121,97 @@ def preview_bulk_income(
         ),
         errors=errors + opt_errors,
         bulk_detail=detail,
+    )
+
+
+# ── Spec 71 — import de extrato / fatura ─────────────────────────────────────
+
+def preview_bank_import(db: Session, job: ExtractionJob) -> ExtractionApplyResult:
+    """Read-only classification (buckets novas / duplicadas / pagamento de
+    fatura / quita agendamento) — the same one apply executes."""
+    from numis_geek.services import bank_import
+    if job.extracted_json is None:
+        raise ExtractionError("Job sem JSON extraído.")
+    try:
+        c = bank_import._classify_bank_import(db, job)
+    except bank_import.BankImportError as exc:
+        raise ExtractionError(str(exc))
+    preview = bank_import.preview_payload(c)
+    return ExtractionApplyResult(
+        applied_count=sum(1 for r in c.rows if r["default_action"] != "skip"),
+        skipped_count=sum(1 for r in c.rows if r["default_action"] == "skip"),
+        errors=c.warnings,
+        bank_import=preview,
+    )
+
+
+def _confirm_bank_import(
+    db: Session, job: ExtractionJob, decisions: dict | None, *,
+    user_id: str | None, user_email: str | None,
+) -> ExtractionApplyResult:
+    """Apply atômico: qualquer decisão inválida levanta ExtractionError e o
+    caller (route → get_db) faz rollback de tudo."""
+    from numis_geek.services import bank_import
+    try:
+        out, c = bank_import.apply_bank_import(db, job, decisions, user_id=user_id)
+    except bank_import.BankImportError as exc:
+        raise ExtractionError(str(exc))
+
+    now = datetime.now(timezone.utc)
+    job.user_edits = {"decisions": decisions} if decisions else None
+    job.status = ExtractionStatus.CONFIRMED
+    job.confirmed_at = now
+    job.confirmed_by = user_id
+    db.flush()
+
+    audit = AuditService(db)
+    actor = user_email or "system"
+    for p in out.paid_invoices:
+        audit.log(
+            user_email=actor, action="invoice.paid", workspace_id=job.workspace_id, user_id=user_id,
+            resource_type="invoice", resource_id=p["invoice_id"],
+            details={**p, "extraction_job_id": job.id},
+        )
+    for s in out.settled:
+        audit.log(
+            user_email=actor, action="scheduled_transaction.paid", workspace_id=job.workspace_id,
+            user_id=user_id, resource_type="scheduled_transaction", resource_id=s["occurrence_id"],
+            details={**s, "extraction_job_id": job.id},
+        )
+    summary = {
+        "source_hint": job.source_hint.value,
+        "checking_account_id": job.checking_account_id,
+        "credit_card_account_id": job.credit_card_account_id,
+        "attachment_id": job.attachment_id,
+        "created": len(out.created),
+        "reconciled": len(out.reconciled),
+        "skipped": out.skipped,
+        "created_ids": out.created,
+        "reconciled_ids": out.reconciled,
+        "paid_invoices": [p["invoice_id"] for p in out.paid_invoices],
+        "settled_occurrences": [s["occurrence_id"] for s in out.settled],
+        "new_parties": out.new_parties,
+        "invoice_id": out.invoice_id,
+        "model": job.model,
+        "input_tokens": job.input_tokens,
+        "output_tokens": job.output_tokens,
+        "cost_usd": str(job.cost_usd) if job.cost_usd is not None else None,
+    }
+    audit.log(
+        user_email=actor, action="extraction.confirmed", workspace_id=job.workspace_id, user_id=user_id,
+        resource_type="extraction_job", resource_id=job.id, details=summary,
+    )
+    return ExtractionApplyResult(
+        applied_count=len(out.created) + len(out.reconciled),
+        skipped_count=out.skipped,
+        errors=c.warnings,
+        bank_import={
+            "created": len(out.created),
+            "reconciled": len(out.reconciled),
+            "skipped": out.skipped,
+            "paid_invoices": len(out.paid_invoices),
+            "settled": len(out.settled),
+            "new_parties": len(out.new_parties),
+            "invoice_id": out.invoice_id,
+        },
     )

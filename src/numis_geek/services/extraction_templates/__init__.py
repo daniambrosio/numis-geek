@@ -350,6 +350,126 @@ FGTS_BALANCE = Template(
 )
 
 
+# ── Spec 71 — extrato bancário e fatura de cartão (Numis) ───────────────────
+
+
+class StatementPeriod(BaseModel):
+    start: str | None = None
+    end: str | None = None
+
+
+class StatementFx(BaseModel):
+    """Compra internacional: valor em USD e a cotação usada pelo emissor."""
+    usd_amount: float | None = None
+    rate: float | None = None
+
+
+class StatementLine(BaseModel):
+    event_date: str
+    description: str
+    # Sinal da movimentação: saída/compra NEGATIVA, entrada/estorno POSITIVA.
+    amount: float
+    currency: str = "BRL"
+    balance_after: float | None = None
+    # CARD_INVOICE apenas.
+    installment: str | None = None          # "5/12"
+    fx: StatementFx | None = None
+    is_invoice_payment: bool = False        # "Pagamento recebido" da fatura anterior
+    category_hint: str | None = None        # sugestão; aplicar é spec futura
+    confidence: float | None = None
+
+
+class BankStatementOutput(BaseModel):
+    period: StatementPeriod | None = None
+    institution_name: str | None = None
+    transactions: list[StatementLine]
+    confidence: float | None = None
+
+
+class InvoiceSummary(BaseModel):
+    close_date: str | None = None
+    due_date: str | None = None
+    total: float | None = None
+    iof_total: float | None = None
+
+
+class CardInvoiceOutput(BankStatementOutput):
+    invoice: InvoiceSummary | None = None
+
+
+_STATEMENT_COMMON = (
+    "FORMATO: o arquivo pode chegar como OFX, CSV, XLSX, PDF ou screenshot. "
+    "Use o conteúdo, não a extensão.\n\n"
+    "RESPOSTA: APENAS o objeto JSON. Sem markdown, sem ```json fence, sem "
+    "texto antes ou depois. O parser falha em qualquer caractere fora do "
+    "objeto JSON.\n\n"
+    "CAMPOS POR LINHA (transactions[]):\n"
+    "- event_date: ISO YYYY-MM-DD.\n"
+    "- description: texto da linha EXATAMENTE como aparece (não traduza, não "
+    "resuma, não corrija maiúsculas). É a base da detecção de duplicatas.\n"
+    "- amount: decimal COM SINAL — saída/débito/compra NEGATIVO; "
+    "entrada/crédito/estorno POSITIVO.\n"
+    "- currency: BRL ou USD (moeda da conta/cartão).\n"
+    "- category_hint: opcional, uma palavra (Mercado, Transporte, …) ou null.\n"
+    "- confidence: 0–1.\n\n"
+    "period: { start, end } em ISO — o período que o documento declara "
+    "cobrir (\"Extrato de 01/10 a 31/10\"). Se não declarar, use a menor "
+    "e a maior data das linhas.\n\n"
+    "NÃO invente linhas. Linhas de SALDO (\"Saldo anterior\", \"Saldo do "
+    "dia\", \"SALDO TOTAL\") NÃO são movimentações — não emita; use o valor "
+    "em balance_after da linha anterior quando fizer sentido.\n"
+)
+
+BANK_STATEMENT = Template(
+    version="bank-statement-v1",
+    system=(
+        "Você extrai as MOVIMENTAÇÕES de um extrato de conta corrente "
+        "(banco, fintech, conta global — Itaú, Nubank, Wise, Nomad, etc.).\n\n"
+        + _STATEMENT_COMMON
+        + "- balance_after: saldo após a linha, quando o extrato mostrar; senão null.\n\n"
+        "Responda com: { \"period\": {\"start\": str, \"end\": str}, "
+        "\"institution_name\": str|null, \"transactions\": [ {event_date, "
+        "description, amount, currency, balance_after, category_hint, "
+        "confidence} ], \"confidence\": float }"
+    ),
+    user_prefix="Extraia TODAS as movimentações deste extrato de conta.",
+    output_model=BankStatementOutput,
+)
+
+CARD_INVOICE = Template(
+    version="card-invoice-v1",
+    system=(
+        "Você extrai os LANÇAMENTOS de uma fatura de cartão de crédito "
+        "(inclui cartões adicionais — todos na mesma lista).\n\n"
+        + _STATEMENT_COMMON
+        + "\nESPECÍFICO DE FATURA:\n"
+        "- Compras são NEGATIVAS; estornos/créditos POSITIVOS.\n"
+        "- event_date de compra parcelada: a data ORIGINAL da compra, como a "
+        "fatura mostra (\"10/01 NOTEBOOK 05/12\" → event_date do dia 10/01, "
+        "installment \"5/12\"). O sistema calcula o mês da parcela.\n"
+        "- installment: \"X/Y\" quando a linha é parcela; senão null. Tire o "
+        "\"05/12\" da description.\n"
+        "- fx: compra internacional → { usd_amount, rate } (valor em USD e "
+        "cotação aplicada); amount continua no valor cobrado na moeda do cartão.\n"
+        "- IOF de compra internacional: linha própria (amount negativo) e some "
+        "em invoice.iof_total.\n"
+        "- A linha \"Pagamento recebido\" / \"Pagamento efetuado\" / "
+        "\"Pagto. fatura\" (pagamento da fatura ANTERIOR) → emita com "
+        "amount POSITIVO e is_invoice_payment = true. Não é estorno.\n"
+        "- Não emita linhas de resumo (Total da fatura, Saldo anterior, "
+        "Encargos do próximo período, Limite).\n\n"
+        "invoice: { close_date, due_date, total (positivo, valor a pagar), "
+        "iof_total|null } em ISO.\n\n"
+        "Responda com: { \"period\": {...}, \"institution_name\": str|null, "
+        "\"invoice\": {...}, \"transactions\": [ {event_date, description, "
+        "amount, currency, installment, fx, is_invoice_payment, category_hint, "
+        "confidence} ], \"confidence\": float }"
+    ),
+    user_prefix="Extraia TODOS os lançamentos desta fatura de cartão.",
+    output_model=CardInvoiceOutput,
+)
+
+
 # ── Spec 58 Stage 3 — per-FI BROKER_POSITION templates ─────────────────────
 
 
@@ -432,6 +552,8 @@ TEMPLATES: dict[ExtractionSourceHint, Template] = {
     ExtractionSourceHint.BROKER_INCOME: BROKER_INCOME,
     ExtractionSourceHint.B3_TRADE_NOTE: B3_TRADE_NOTE,
     ExtractionSourceHint.FGTS_BALANCE: FGTS_BALANCE,
+    ExtractionSourceHint.BANK_STATEMENT: BANK_STATEMENT,
+    ExtractionSourceHint.CARD_INVOICE: CARD_INVOICE,
 }
 
 

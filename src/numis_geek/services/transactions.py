@@ -309,9 +309,14 @@ def _fill(
     tx.fx_source = source
     tx.amount_brl, tx.amount_usd = convert_amounts(tx.amount, currency, rate)
     source_id = tx.checking_account_id if tx.source_type == TransactionSourceType.CHECKING else tx.credit_card_account_id
+    # Spec 71: a k-ésima linha idêntica de um extrato ("2 cafés de R$ 5")
+    # guarda o sufixo ":k" — preservado em toda reescrita.
+    suffix = ""
+    if tx.fingerprint and ":" in tx.fingerprint:
+        suffix = ":" + tx.fingerprint.split(":", 1)[1]
     tx.fingerprint = compute_fingerprint(
         tx.source_type, source_id, tx.event_date, tx.amount, currency, tx.description,
-    )
+    ) + suffix
 
 
 def _new_tx(workspace_id: str, user_id: str | None, **fields) -> Transaction:
