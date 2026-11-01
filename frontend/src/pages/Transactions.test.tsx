@@ -404,3 +404,19 @@ describe('Transactions page (spec 70)', () => {
   })
 })
 
+describe('Transactions — rastreabilidade do import (spec 71)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('?extraction_job_id filtra pelo arquivo, sem corte de data, e mostra o clipe', async () => {
+    const list = mockBase([tx({ id: 't1', extraction_job_id: 'job-1', source_attachment_id: 'att-1', source_attachment_filename: 'itau-out.ofx', is_reconciled: true })])
+    renderPage('/transactions?extraction_job_id=job-1')
+    const m = await mainReady()
+    await waitFor(() => expect(m.getByTestId('import-filter')).toHaveTextContent('Movimentações do arquivo "itau-out.ofx"'))
+    await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ extraction_job_id: 'job-1', from: undefined })))
+    expect(m.getByRole('button', { name: 'Abrir arquivo de origem: itau-out.ofx' })).toBeInTheDocument()
+    fireEvent.click(m.getByRole('button', { name: 'limpar filtro' }))
+    await waitFor(() => expect(m.queryByTestId('import-filter')).not.toBeInTheDocument())
+  })
+})

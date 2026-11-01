@@ -288,6 +288,10 @@ export interface TransactionOut {
   paid_invoice_id: string | null
   transfer_group_id: string | null
   is_reconciled: boolean
+  // Spec 71 — import (job) que criou/conciliou + arquivo de origem.
+  extraction_job_id?: string | null
+  source_attachment_id?: string | null
+  source_attachment_filename?: string | null
   notes: string | null
   created_at: string
   updated_at: string
@@ -318,6 +322,7 @@ export interface TransactionFilters {
   category_id?: string[]
   party_id?: string
   invoice_id?: string
+  extraction_job_id?: string
   search?: string
   page?: number
   page_size?: number
@@ -377,6 +382,7 @@ function txQuery(f: TransactionFilters): string {
   f.category_id?.forEach(id => qs.append('category_id', id))
   if (f.party_id) qs.set('party_id', f.party_id)
   if (f.invoice_id) qs.set('invoice_id', f.invoice_id)
+  if (f.extraction_job_id) qs.set('extraction_job_id', f.extraction_job_id)
   if (f.search) qs.set('search', f.search)
   if (f.page && f.page > 1) qs.set('page', String(f.page))
   if (f.page_size) qs.set('page_size', String(f.page_size))
@@ -1134,6 +1140,32 @@ export interface PTAXSyncResultOut {
   duration_ms: number
 }
 
+/** Spec 71 — upload multipart do extrato/fatura (dispara o job de extração). */
+async function uploadImport(path: string, file: File): Promise<StatementImportOut> {
+  const token = getToken()
+  const form = new FormData()
+  form.append('file', file, file.name)
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+  } catch {
+    throw new Error('Não foi possível conectar ao servidor. Verifique se o backend está rodando.')
+  }
+  if (!res.ok) {
+    let detail: string | null = null
+    try {
+      const body = await res.json() as { detail?: unknown }
+      detail = typeof body?.detail === 'string' ? body.detail : null
+    } catch { /* not JSON */ }
+    throw new Error(detail ?? `HTTP ${res.status} ${res.statusText}`)
+  }
+  return res.json() as Promise<StatementImportOut>
+}
+
 export const api = {
   login: (email: string, password: string, remember_me = false) =>
     request<{ access_token: string }>('/auth/login', {
@@ -1730,6 +1762,7 @@ export const api = {
       institution_short_name?: string | null
       manual_mappings?: Record<string, string> | null
       manual_prices?: Record<string, number> | null
+      bank_decisions?: Record<string, BankImportDecision> | null
     } = {},
   ) =>
     request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
@@ -1739,6 +1772,7 @@ export const api = {
         institution_short_name: opts.institution_short_name ?? null,
         manual_mappings: opts.manual_mappings ?? null,
         manual_prices: opts.manual_prices ?? null,
+        bank_decisions: opts.bank_decisions ?? null,
       }),
     }),
   rejectExtraction: (id: string, reason?: string) =>
@@ -1762,6 +1796,15 @@ export const api = {
         manual_prices: opts.manual_prices ?? null,
       }),
     }),
+  // Spec 71 — import de extrato (conta corrente) / fatura (cartão).
+  importStatement: (account_id: string, file: File) =>
+    uploadImport(`/accounts/${account_id}/statement-imports`, file),
+  importInvoice: (card_id: string, file: File) =>
+    uploadImport(`/credit-cards/${card_id}/invoice-imports`, file),
+  listStatementImports: (account_id: string) =>
+    request<StatementImportOut[]>(`/accounts/${account_id}/statement-imports`),
+  listInvoiceImports: (card_id: string) =>
+    request<StatementImportOut[]>(`/credit-cards/${card_id}/invoice-imports`),
   // Spec 48 — bulk extract for a snapshot.
   createBulkExtract: (snapshot_id: string, attachment_id: string) =>
     request<BulkExtractJobOut>(`/snapshots/${snapshot_id}/bulk-extract`, {
@@ -1974,6 +2017,8 @@ export type ExtractionSourceHint =
   | 'FGTS_BALANCE'
   | 'SCREENSHOT_PRICE'
   | 'GENERIC'
+  | 'BANK_STATEMENT'
+  | 'CARD_INVOICE'
 
 export type ExtractionStatus =
   | 'PENDING' | 'RUNNING' | 'EXTRACTED' | 'CONFIRMED' | 'REJECTED' | 'FAILED'
@@ -2061,6 +2106,127 @@ export interface ExtractionApplyResultOut {
   skipped_count: number
   errors: string[]
   bulk_detail: BulkApplyDetailOut | null
+  // Spec 71 — preview (BankImportPreview) ou resultado do apply (BankImportResult).
+  bank_import?: BankImportPreview | BankImportResult | null
+}
+
+// ── Spec 71 — import de extrato / fatura ────────────────────────────────────
+
+export interface StatementImportOut {
+  id: string
+  status: ExtractionStatus
+  source_hint: ExtractionSourceHint
+  attachment_id: string
+  filename: string | null
+  checking_account_id: string | null
+  credit_card_account_id: string | null
+  statement_period_start: string | null
+  statement_period_end: string | null
+  line_count: number
+  transaction_count: number
+  error_message: string | null
+  cost_usd: string | null
+  created_at: string
+  confirmed_at: string | null
+  resumed: boolean
+}
+
+export type BankImportBucket = 'new' | 'duplicate' | 'invoice_payment' | 'scheduled'
+export type BankImportAction = 'import' | 'skip' | 'reconcile' | 'import_anyway' | 'pay' | 'settle'
+
+export interface BankImportTxRef {
+  transaction_id: string | null
+  event_date?: string
+  description?: string
+  amount?: string
+  is_reconciled?: boolean
+  extraction_job_id?: string | null
+  reason?: 'fingerprint' | 'installment' | 'invoice_payment_tx' | 'in_file'
+}
+
+export interface BankImportOccurrence {
+  occurrence_id: string
+  description: string
+  due_date: string
+  amount: string
+  currency: string
+  direction: string
+  category_id: string | null
+  party_id: string | null
+}
+
+export interface BankImportRow {
+  row_id: string
+  index: number
+  event_date: string
+  original_date: string
+  description: string
+  amount: string
+  currency: string
+  installment_number: number | null
+  installment_total: number | null
+  is_invoice_payment: boolean
+  bucket: BankImportBucket
+  actions: BankImportAction[]
+  default_action: BankImportAction
+  warning: string | null
+  party: {
+    mode: 'existing' | 'new' | 'none'
+    party_id?: string
+    party_name?: string
+    new_party_name?: string
+    alias?: string
+  }
+  duplicate?: BankImportTxRef
+  invoice_payment?: {
+    kind: 'statement_debit' | 'card_payment_line'
+    invoice_id: string | null
+    card_name?: string | null
+    close_date?: string
+    due_date?: string
+    total_amount?: string | null
+    status?: string
+    payment_account_id?: string | null
+    payment_transaction?: BankImportTxRef
+  }
+  scheduled?: { occurrence_id: string; candidates: BankImportOccurrence[] }
+}
+
+export interface BankImportPreview {
+  rows: BankImportRow[]
+  invoice: {
+    close_date: string
+    due_date: string
+    total_amount: string | null
+    iof_total: string | null
+    existing_invoice_id: string | null
+    existing_status: string | null
+    blocked: boolean
+  } | null
+  overlaps: Array<{ job_id: string; start: string; end: string; duplicate_count: number }>
+  warnings: string[]
+  period: { start: string | null; end: string | null }
+  counts: Partial<Record<BankImportBucket, number>>
+}
+
+export interface BankImportResult {
+  created: number
+  reconciled: number
+  skipped: number
+  paid_invoices: number
+  settled: number
+  new_parties: number
+  invoice_id: string | null
+}
+
+export interface BankImportDecision {
+  action: BankImportAction
+  category_id?: string | null
+  party_id?: string | null
+  new_party_name?: string | null
+  no_party?: boolean
+  occurrence_id?: string | null
+  payment_account_id?: string | null
 }
 
 export interface BulkExtractJobOut {

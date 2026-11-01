@@ -3,16 +3,17 @@
  * card lateral "Faturas anteriores", navegação entre cartões.
  * Spec 70: KPIs Lançamentos / Compras parceladas / Próx. fatura vêm das tx;
  * tabela "Lançamentos da fatura aberta" é real; "Pagar fatura" nas faturas
- * fechadas (contrato pay_invoice). Botão "Importar fatura" disabled até a
- * spec 71. "Fechar fatura", "Nova fatura" e "Pagar fatura" são deltas
- * declarados (proto não modela o ciclo).
+ * fechadas (contrato pay_invoice). Spec 71: "Importar fatura" sobe o
+ * PDF/print → revisão com dedup; card "Faturas importadas". "Fechar
+ * fatura", "Nova fatura" e "Pagar fatura" são deltas declarados (proto não
+ * modela o ciclo).
  *
  * "Fatura aberta" = a OPEN de fechamento mais próximo — com parcelas,
  * existem OPEN futuras.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Check, CreditCard as CreditCardIcon, FileText, Pencil, Plus, Wallet } from 'lucide-react'
+import { Check, CreditCard as CreditCardIcon, Pencil, Plus, Wallet } from 'lucide-react'
 import {
   api, type AccountOut, type CategoryOut, type CreditCardOut, type InvoiceOut, type InvoicePayPayload,
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload, type UserOut,
@@ -27,6 +28,10 @@ import KpiTile from '../components/KpiTile'
 import { CardTxComposer, CategorySelect } from '../components/TransactionComposers'
 import { todayISO } from '../lib/format'
 import { useTransactionAttachments } from '../lib/useTransactionAttachments'
+import BankImportReviewModal from '../components/BankImportReviewModal'
+import { ImportButton, ImportHistory } from '../components/BankImport'
+import { summarizeResult, useBankImport } from '../lib/bankImport'
+import SourceFileClip from '../components/SourceFileClip'
 
 /** Fatura CLOSED cujo total congelado não bate mais com a soma das tx
  * (lançamento entrou/mudou depois do fechamento — import da spec 71). */
@@ -68,6 +73,8 @@ export default function CreditCardDetail() {
   const [closingInvoice, setClosingInvoice] = useState<InvoiceOut | null>(null)
   const [payingInvoice, setPayingInvoice] = useState<InvoiceOut | null>(null)
   const [actionError, setActionError] = useState('')
+  const [notice, setNotice] = useState('')
+  const imports = useBankImport('card', id, setActionError)
   // Lançamentos da fatura aberta — filtrados no servidor por invoice_id
   // (antes: todas as tx do cartão, cortadas em 500 sem aviso).
   const [txs, setTxs] = useState<TransactionOut[]>([])
@@ -200,9 +207,8 @@ export default function CreditCardDetail() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button disabled title="Chega com a spec 71 (import de fatura)" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
-                    <FileText className="w-3.5 h-3.5" /> Importar fatura
-                  </button>
+                  <ImportButton label="Importar fatura" importing={imports.importing}
+                    inputRef={imports.inputRef} onPick={imports.onPick} />
                   <button onClick={() => openComposer()} className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                     <Plus className="w-3.5 h-3.5" /> Lançamento
                   </button>
@@ -303,6 +309,7 @@ export default function CreditCardDetail() {
                         <td className="px-2 text-gray-900 dark:text-white">
                           {t.description}
                           {t.installment_total && <span className="ml-1.5 text-[10px] text-gray-500">parc. {t.installment_number}/{t.installment_total}</span>}
+                          <span className="ml-1 align-middle"><SourceFileClip attachmentId={t.source_attachment_id} filename={t.source_attachment_filename} onError={setActionError} /></span>
                         </td>
                         <td className="px-2 text-[11px] text-gray-500">{t.category_name ?? <span className="italic">Sem categoria</span>}</td>
                         <td className={`px-2 text-right tnum money font-medium ${t.amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
@@ -315,6 +322,9 @@ export default function CreditCardDetail() {
               )}
               <LoadMore shown={openTxs.length} total={openInvoice ? txTotal : 0} loading={loadingMore} onLoadMore={loadMore} />
             </Card>
+
+            <ImportHistory title="Faturas importadas" history={imports.history}
+              onReview={imports.setReviewing} onError={setActionError} />
 
             {cards.length > 1 && (
               <Card padding="p-4" className="bg-gray-50 dark:bg-gray-900/40">
@@ -342,6 +352,26 @@ export default function CreditCardDetail() {
           </div>
         )}
       </div>
+
+      {imports.reviewing && (
+        <BankImportReviewModal
+          job={imports.reviewing} accounts={accounts} categories={categories}
+          onApplied={result => {
+            imports.setReviewing(null)
+            setNotice(summarizeResult(result))
+            void imports.reloadHistory()
+            void afterTxWrite()
+          }}
+          onClose={() => { imports.setReviewing(null); void imports.reloadHistory() }}
+        />
+      )}
+
+      {notice && (
+        <div className="fixed bottom-4 left-4 z-[70] max-w-sm bg-emerald-600 text-white text-[12px] rounded-lg shadow-lg px-4 py-3" role="status">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-3 underline">fechar</button>
+        </div>
+      )}
 
       {newInvoiceOpen && card && (
         <InvoiceModal

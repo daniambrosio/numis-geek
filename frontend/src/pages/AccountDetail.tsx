@@ -11,10 +11,14 @@
  * - card novo "Conferência com os fechamentos": digitado × derivado × diferença
  *   mês a mês — fechamento CLOSED nunca é sobrescrito, a decisão é do user;
  * - conta de investimento: só o header (o detalhe dela é o de Ativos).
+ *
+ * Spec 71: "Reconciliar" do proto vira "Importar extrato" (upload → revisão
+ * com dedup); card "Extratos importados" com "ver N movimentações"; clipe
+ * na linha abre o arquivo de origem.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { FileText, Link2, Loader2, Pencil, Plus } from 'lucide-react'
+import { Link2, Loader2, Pencil, Plus } from 'lucide-react'
 import {
   api, type AccountDetailOut, type AssetOut, type BalanceCheckRow, type CategoryOut,
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload, type UserOut,
@@ -28,6 +32,10 @@ import { fmtBRL } from '../lib/money'
 import { parseDecimal } from '../lib/parseDecimal'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { useTransactionAttachments } from '../lib/useTransactionAttachments'
+import BankImportReviewModal from '../components/BankImportReviewModal'
+import { ImportButton, ImportHistory } from '../components/BankImport'
+import { summarizeResult, useBankImport } from '../lib/bankImport'
+import SourceFileClip from '../components/SourceFileClip'
 
 const ACCOUNT_TYPE_LABEL: Record<string, string> = { checking: 'Conta corrente', investment: 'Conta investimento' }
 const STATUS_LABEL: Record<BalanceCheckRow['status'], string> = { OPEN: 'Aberto', IN_REVIEW: 'Em revisão', CLOSED: 'Fechado' }
@@ -72,6 +80,8 @@ export default function AccountDetail() {
   const [editingLink, setEditingLink] = useState(false)
   const [togglingSource, setTogglingSource] = useState(false)
   const [sourceError, setSourceError] = useState('')
+  const [notice, setNotice] = useState('')
+  const imports = useBankImport('account', id, setToast)
 
   useEscapeKey(() => {
     if (editingOpening) setEditingOpening(false)
@@ -188,10 +198,8 @@ export default function AccountDetail() {
                 </div>
                 {acc.account_type === 'checking' && (
                   <div className="flex items-center gap-2">
-                    <button disabled title="Chega com o import de extrato (spec 71)"
-                      className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
-                      <FileText className="w-3.5 h-3.5" /> Reconciliar
-                    </button>
+                    <ImportButton label="Importar extrato" importing={imports.importing}
+                      inputRef={imports.inputRef} onPick={imports.onPick} />
                     <button onClick={() => openComposer()}
                       className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-indigo-500 hover:bg-indigo-400 text-white transition-colors">
                       <Plus className="w-3.5 h-3.5" /> Movimentação
@@ -350,6 +358,9 @@ export default function AccountDetail() {
                   )}
                 </Card>
 
+                <ImportHistory title="Extratos importados" history={imports.history}
+                  onReview={imports.setReviewing} onError={setToast} />
+
                 <Card>
                   <SectionTitle>Movimentações</SectionTitle>
                   {txs.length === 0 ? (
@@ -370,7 +381,12 @@ export default function AccountDetail() {
                             <tr key={t.id} onClick={() => openComposer(t)}
                               className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 cursor-pointer">
                               <td className="px-2 py-2 tnum text-gray-400">{fmtDay(t.event_date)}</td>
-                              <td className="px-2 text-gray-900 dark:text-white">{t.description}</td>
+                              <td className="px-2 text-gray-900 dark:text-white">
+                                <span className="inline-flex items-center gap-1">
+                                  {t.description}
+                                  <SourceFileClip attachmentId={t.source_attachment_id} filename={t.source_attachment_filename} onError={setToast} />
+                                </span>
+                              </td>
                               <td className="px-2">
                                 {t.category_name ? (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
@@ -406,6 +422,26 @@ export default function AccountDetail() {
           onUploadDrafts={attachments.uploadDrafts}
           onRemovePersistedAttachment={attachments.removePersisted}
         />
+      )}
+
+      {imports.reviewing && (
+        <BankImportReviewModal
+          job={imports.reviewing} accounts={[]} categories={categories}
+          onApplied={result => {
+            imports.setReviewing(null)
+            setNotice(summarizeResult(result))
+            void imports.reloadHistory()
+            void refresh()
+          }}
+          onClose={() => { imports.setReviewing(null); void imports.reloadHistory() }}
+        />
+      )}
+
+      {notice && (
+        <div className="fixed bottom-4 left-4 z-[70] max-w-sm bg-emerald-600 text-white text-[12px] rounded-lg shadow-lg px-4 py-3" role="status">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-3 underline">fechar</button>
+        </div>
       )}
 
       {editingOpening && acc && (

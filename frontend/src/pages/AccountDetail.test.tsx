@@ -302,3 +302,63 @@ describe('AccountDetail page (spec 70 fase 3)', () => {
   })
 })
 
+describe('AccountDetail — import de extrato (spec 71)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const JOB = {
+    id: 'job-1', status: 'EXTRACTED' as const, source_hint: 'BANK_STATEMENT' as const, attachment_id: 'att-1',
+    filename: 'itau.ofx', checking_account_id: 'itau', credit_card_account_id: null,
+    statement_period_start: '2026-10-01', statement_period_end: '2026-10-31', line_count: 1,
+    transaction_count: 0, error_message: null, cost_usd: null, created_at: '2026-10-31T00:00:00', confirmed_at: null,
+    resumed: false,
+  }
+
+  it('Importar extrato sobe o arquivo e abre a revisão', async () => {
+    mockBase()
+    vi.spyOn(api, 'listStatementImports').mockResolvedValue([])
+    vi.spyOn(api, 'listParties').mockResolvedValue([])
+    const imp = vi.spyOn(api, 'importStatement').mockResolvedValue(JOB)
+    vi.spyOn(api, 'previewExtraction').mockResolvedValue({
+      applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
+      bank_import: { rows: [], invoice: null, overlaps: [], warnings: [], period: { start: null, end: null }, counts: {} },
+    })
+    renderPage()
+    const m = await mainReady()
+    const btn = await m.findByRole('button', { name: /Importar extrato/ })
+    expect(btn).toBeEnabled()
+    const file = new File(['OFXHEADER'], 'itau.ofx', { type: '' })
+    await userEvent.upload(screen.getByTestId('import-file-input'), file)
+    await waitFor(() => expect(imp).toHaveBeenCalledWith('itau', file))
+    expect(await screen.findByRole('dialog', { name: 'Revisar extrato importado' })).toBeInTheDocument()
+  })
+
+  it('arquivo já importado (409) vira toast, sem modal', async () => {
+    mockBase()
+    vi.spyOn(api, 'listStatementImports').mockResolvedValue([])
+    vi.spyOn(api, 'importStatement').mockRejectedValue(new Error('Arquivo já importado: "itau.ofx"'))
+    renderPage()
+    const m = await mainReady()
+    await m.findByRole('button', { name: /Importar extrato/ })
+    await userEvent.upload(screen.getByTestId('import-file-input'), new File(['x'], 'itau.ofx'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Arquivo já importado')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('histórico mostra "ver N movimentações" e o clipe abre o arquivo da linha', async () => {
+    mockBase()
+    vi.spyOn(api, 'listTransactions').mockResolvedValue({
+      items: [tx({ id: 't1', extraction_job_id: 'job-1', source_attachment_id: 'att-1', source_attachment_filename: 'itau.ofx', is_reconciled: true })],
+      total: 1, page: 1, page_size: 500,
+    })
+    vi.spyOn(api, 'listStatementImports').mockResolvedValue([{ ...JOB, status: 'CONFIRMED', transaction_count: 3 }])
+    renderPage()
+    const m = await mainReady()
+    const link = await m.findByRole('link', { name: 'ver 3 movimentações' })
+    expect(link).toHaveAttribute('href', '/transactions?extraction_job_id=job-1')
+    expect(within(m.getByTestId('import-history')).getByText('01/10/26 – 31/10/26')).toBeInTheDocument()
+    expect(m.getAllByRole('button', { name: 'Abrir arquivo de origem: itau.ofx' }).length).toBeGreaterThanOrEqual(2)
+  })
+})
+

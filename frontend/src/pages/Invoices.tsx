@@ -86,7 +86,7 @@ export default function Invoices() {
           count={invoices.length}
           countLabel={`faturas · ${cards.length} ${cards.length === 1 ? 'cartão' : 'cartões'}`}
           action={
-            <button disabled title="Chega com a spec 71 (import de fatura)" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
+            <button disabled title="Importe pela página do cartão (Cartões → cartão → Importar fatura)" className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
               <FileText className="w-3.5 h-3.5" /> Importar fatura
             </button>
           }

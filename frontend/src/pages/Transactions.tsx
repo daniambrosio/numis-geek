@@ -29,6 +29,7 @@ import {
 } from '../components/TransactionComposers'
 import { todayISO } from '../lib/format'
 import { useTransactionAttachments } from '../lib/useTransactionAttachments'
+import SourceFileClip from '../components/SourceFileClip'
 
 const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
 
@@ -128,15 +129,18 @@ export default function Transactions() {
   }, [search])
 
   const checkingIds = useMemo(() => new Set(accounts.filter(a => a.account_type === 'checking').map(a => a.id)), [accounts])
+  // Spec 71 — "ver N movimentações deste arquivo" (histórico de imports).
+  const importJobId = searchParams.get('extraction_job_id') ?? ''
   const filters = useMemo(() => ({
-    from: from || undefined,
+    extraction_job_id: importJobId || undefined,
+    from: importJobId ? undefined : (from || undefined),
     to: to || undefined,
     account_id: sources.filter(s => checkingIds.has(s)),
     card_id: sources.filter(s => !checkingIds.has(s)),
     category_id: rootCats.length ? subIdsForRoots(categories, rootCats) : undefined,
     party_id: partyId || undefined,
     search: debounced || undefined,
-  }), [from, to, sources, checkingIds, rootCats, categories, partyId, debounced])
+  }), [importJobId, from, to, sources, checkingIds, rootCats, categories, partyId, debounced])
 
   const reload = useCallback(() => {
     // Raiz selecionada sem subs → nada casa; evita mandar filtro vazio (= todos).
@@ -265,6 +269,17 @@ export default function Transactions() {
           }
         />
 
+        {importJobId && (
+          <div data-testid="import-filter" className="flex items-center gap-2 text-[12px] rounded-lg px-3 py-2 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300">
+            <span>Movimentações do arquivo {rows[0]?.source_attachment_filename ? `"${rows[0].source_attachment_filename}"` : 'importado'}</span>
+            <button type="button" className="underline" onClick={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete('extraction_job_id')
+              setSearchParams(next, { replace: true })
+            }}>limpar filtro</button>
+          </div>
+        )}
+
         <div className="grid grid-cols-12 gap-4">
           <Card className="col-span-12 lg:col-span-3">
             <SectionTitle>Entradas · período</SectionTitle>
@@ -356,6 +371,7 @@ export default function Transactions() {
                           menuOpen={menuFor === t.id}
                           onOpenMenu={() => setMenuFor(menuFor === t.id ? null : t.id)}
                           onEdit={() => openEdit(t)}
+                          onError={setToast}
                           onDelete={() => { setMenuFor(null); setConfirmDelete(t) }}
                         />
                       ))}
@@ -413,12 +429,13 @@ function MonthHeader({ ym, first }: { ym: string; first?: boolean }) {
   )
 }
 
-function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete }: {
+function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete, onError }: {
   t: TransactionOut
   menuOpen: boolean
   onOpenMenu: () => void
   onEdit: () => void
   onDelete: () => void
+  onError: (message: string) => void
 }) {
   const isCard = t.source_type === 'CREDIT_CARD'
   const isIncome = t.amount > 0
@@ -442,6 +459,7 @@ function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete }: {
           <span>{t.description}</span>
           {t.transfer_group_id && <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">transf.</span>}
           {t.paid_invoice_id && <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">fatura</span>}
+          <SourceFileClip attachmentId={t.source_attachment_id} filename={t.source_attachment_filename} onError={onError} />
         </div>
         {t.notes && <div className="text-[10px] text-gray-500 tnum money">{t.notes}</div>}
       </td>

@@ -352,5 +352,46 @@ describe('CreditCardDetail page (spec 69)', () => {
     fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
     await waitFor(() => expect(upload).toHaveBeenCalledWith('transaction', 'nova', expect.any(File)))
   })
+
+  it('spec 71: Importar fatura está ativo, sobe pelo cartão e abre a revisão da fatura', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv])
+    vi.spyOn(api, 'listInvoiceImports').mockResolvedValue([])
+    vi.spyOn(api, 'listParties').mockResolvedValue([])
+    const imp = vi.spyOn(api, 'importInvoice').mockResolvedValue({
+      id: 'job-c', status: 'EXTRACTED', source_hint: 'CARD_INVOICE', attachment_id: 'att-c', filename: 'fatura.pdf',
+      checking_account_id: null, credit_card_account_id: 'c1', statement_period_start: null, statement_period_end: null,
+      line_count: 0, transaction_count: 0, error_message: null, cost_usd: null, created_at: '2026-10-31T00:00:00',
+      confirmed_at: null, resumed: false,
+    })
+    vi.spyOn(api, 'previewExtraction').mockResolvedValue({
+      applied_count: 0, skipped_count: 0, errors: [], bulk_detail: null,
+      bank_import: { rows: [], invoice: null, overlaps: [], warnings: [], period: { start: null, end: null }, counts: {} },
+    })
+    renderPage()
+    const btn = await screen.findByRole('button', { name: /Importar fatura/ })
+    expect(btn).toBeEnabled()
+    const file = new File(['%PDF'], 'fatura.pdf', { type: 'application/pdf' })
+    await userEvent.upload(screen.getByTestId('import-file-input'), file)
+    await waitFor(() => expect(imp).toHaveBeenCalledWith('c1', file))
+    expect(await screen.findByRole('dialog', { name: 'Revisar fatura importada' })).toBeInTheDocument()
+  })
+
+  it('spec 71: extração que falhou vira toast', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(admin)
+    vi.spyOn(api, 'listCardInvoices').mockResolvedValue([openInv])
+    vi.spyOn(api, 'listInvoiceImports').mockResolvedValue([])
+    vi.spyOn(api, 'importInvoice').mockResolvedValue({
+      id: 'job-c', status: 'FAILED', source_hint: 'CARD_INVOICE', attachment_id: 'att-c', filename: 'fatura.pdf',
+      checking_account_id: null, credit_card_account_id: 'c1', statement_period_start: null, statement_period_end: null,
+      line_count: 0, transaction_count: 0, error_message: 'Parse/validate: x', cost_usd: null,
+      created_at: '2026-10-31T00:00:00', confirmed_at: null, resumed: false,
+    })
+    renderPage()
+    await screen.findByRole('button', { name: /Importar fatura/ })
+    await userEvent.upload(screen.getByTestId('import-file-input'), new File(['x'], 'fatura.pdf', { type: 'application/pdf' }))
+    expect(await screen.findByText(/Extração falhou: Parse\/validate: x/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
 })
 
