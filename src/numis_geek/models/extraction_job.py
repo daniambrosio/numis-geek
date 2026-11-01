@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    Date, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +41,9 @@ class ExtractionSourceHint(str, enum.Enum):
     FGTS_BALANCE = "FGTS_BALANCE"
     SCREENSHOT_PRICE = "SCREENSHOT_PRICE"
     GENERIC = "GENERIC"
+    # Spec 71 — extrato de conta corrente / fatura de cartão (Numis).
+    BANK_STATEMENT = "BANK_STATEMENT"
+    CARD_INVOICE = "CARD_INVOICE"
 
 
 class ExtractionJob(Base):
@@ -71,6 +74,20 @@ class ExtractionJob(Base):
         String(36), ForeignKey("financial_institution.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # Spec 71 — scoping do import de extrato (conta corrente) / fatura
+    # (cartão), análogo ao institution_id da spec 58. Jobs desse fluxo não
+    # têm snapshot_id.
+    checking_account_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("account.id"), nullable=True,
+    )
+    credit_card_account_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("credit_card_account.id"), nullable=True,
+    )
+    # Período coberto pelo documento (o LLM extrai; fallback: min/max das
+    # datas das linhas). Base do aviso de overlap (dedup camada 3).
+    statement_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    statement_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # The uploaded file (Spec 19 Attachment).
     attachment_id: Mapped[str] = mapped_column(
@@ -122,4 +139,6 @@ class ExtractionJob(Base):
     __table_args__ = (
         Index("ix_extraction_workspace_status", "workspace_id", "status"),
         Index("ix_extraction_pendency", "pendency_id"),
+        Index("ix_extraction_checking", "checking_account_id"),
+        Index("ix_extraction_card", "credit_card_account_id"),
     )

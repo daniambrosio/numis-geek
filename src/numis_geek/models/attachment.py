@@ -27,6 +27,9 @@ class AttachmentSourceType(str, enum.Enum):
     SNAPSHOT = "snapshot"
     SNAPSHOT_ITEM = "snapshot_item"
     TRANSACTION = "transaction"  # spec 70 — comprovante da movimentação
+    # Spec 71 — extrato bancário ancorado na conta corrente / fatura no cartão.
+    ACCOUNT = "account"
+    CREDIT_CARD_ACCOUNT = "credit_card_account"
 
 
 class AttachmentKind(str, enum.Enum):
@@ -88,7 +91,13 @@ class Attachment(Base):
         Enum(AttachmentPurpose), nullable=True
     )
 
+    # Spec 71 — SHA-256 do conteúdo (dedup camada 1: o mesmo extrato não
+    # entra duas vezes). Nullable: anexo antigo cujo arquivo sumiu do disco
+    # fica sem hash no backfill.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     __table_args__ = (
         Index("ix_attachment_source", "source_type", "source_id"),
         Index("ix_attachment_workspace", "workspace_id"),
+        Index("ix_attachment_ws_hash", "workspace_id", "content_hash"),
     )

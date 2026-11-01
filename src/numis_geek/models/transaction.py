@@ -85,8 +85,14 @@ class Transaction(Base):
     )
     paid_invoice_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("invoice.id"), nullable=True)
     transfer_group_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    fingerprint: Mapped[str] = mapped_column(String(40), nullable=False)
+    # sha1 hex (40) + sufixo ":k" da k-ésima linha idêntica no mesmo arquivo (spec 71).
+    fingerprint: Mapped[str] = mapped_column(String(48), nullable=False)
     is_reconciled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Spec 71 — import (extraction_job) que criou ou conciliou esta tx.
+    # NULL = manual nunca conciliada. Re-conciliação não sobrescreve.
+    extraction_job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("extraction_job.id"), nullable=True,
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -110,4 +116,5 @@ class Transaction(Base):
         Index("ix_transaction_ws_fingerprint", "workspace_id", "fingerprint"),
         Index("ix_transaction_checking", "checking_account_id", "event_date"),
         Index("ix_transaction_transfer_group", "transfer_group_id"),
+        Index("ix_transaction_extraction_job", "extraction_job_id"),
     )
