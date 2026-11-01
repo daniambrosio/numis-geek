@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.api.fields import BoundedDate, Money, Rate
 from numis_geek.models.account import Account
+from numis_geek.models.attachment import Attachment
+from numis_geek.models.extraction_job import ExtractionJob
 from numis_geek.models.category import Category
 from numis_geek.models.credit_card import CreditCardAccount
 from numis_geek.models.financial_institution import FinancialInstitution
@@ -70,6 +72,10 @@ class TransactionOut(BaseModel):
     paid_invoice_id: str | None
     transfer_group_id: str | None
     is_reconciled: bool
+    # Spec 71 — rastreabilidade arquivo → transação.
+    extraction_job_id: str | None = None
+    source_attachment_id: str | None = None
+    source_attachment_filename: str | None = None
     notes: str | None
     created_at: str
     updated_at: str
@@ -238,6 +244,15 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
     tags: dict[str, list[TagRef]] = {}
     for tx_id, tag_id, tag_name in tag_rows:
         tags.setdefault(tx_id, []).append(TagRef(id=tag_id, name=tag_name))
+    job_ids = {r.extraction_job_id for r in rows if r.extraction_job_id}
+    sources: dict[str, tuple[str, str]] = {}
+    if job_ids:
+        for job_id, att_id, filename in db.query(
+            ExtractionJob.id, Attachment.id, Attachment.filename,
+        ).join(Attachment, Attachment.id == ExtractionJob.attachment_id).filter(
+            ExtractionJob.id.in_(job_ids), Attachment.is_active == True,  # noqa: E712
+        ).all():
+            sources[job_id] = (att_id, filename)
 
     out = []
     for r in rows:
@@ -280,6 +295,9 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
             paid_invoice_id=r.paid_invoice_id,
             transfer_group_id=r.transfer_group_id,
             is_reconciled=r.is_reconciled,
+            extraction_job_id=r.extraction_job_id,
+            source_attachment_id=sources[r.extraction_job_id][0] if r.extraction_job_id in sources else None,
+            source_attachment_filename=sources[r.extraction_job_id][1] if r.extraction_job_id in sources else None,
             notes=r.notes,
             created_at=r.created_at.isoformat(),
             updated_at=r.updated_at.isoformat(),
@@ -301,6 +319,7 @@ def _filtered(
     search: str | None,
     reconciled: bool | None,
     invoice_id: str | None = None,
+    extraction_job_id: str | None = None,
 ):
     q = db.query(Transaction).filter(Transaction.workspace_id == ws)
     if date_from:
@@ -329,6 +348,8 @@ def _filtered(
         q = q.filter(Transaction.is_reconciled == reconciled)
     if invoice_id:
         q = q.filter(Transaction.invoice_id == invoice_id)
+    if extraction_job_id:
+        q = q.filter(Transaction.extraction_job_id == extraction_job_id)
     return q
 
 
@@ -344,6 +365,7 @@ def list_transactions(
     party_id: str | None = Query(default=None),
     tag_id: str | None = Query(default=None),
     invoice_id: str | None = Query(default=None),
+    extraction_job_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
     reconciled: bool | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -356,7 +378,7 @@ def list_transactions(
     q = _filtered(
         db, ws, date_from=date_from, date_to=date_to, account_ids=account_id, card_ids=card_id,
         category_ids=category_id, party_id=party_id, tag_id=tag_id, search=search,
-        reconciled=reconciled, invoice_id=invoice_id,
+        reconciled=reconciled, invoice_id=invoice_id, extraction_job_id=extraction_job_id,
     )
     total = q.count()
     rows = (

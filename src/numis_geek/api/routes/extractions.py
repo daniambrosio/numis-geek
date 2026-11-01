@@ -53,6 +53,10 @@ class ConfirmExtractionBody(BaseModel):
     # auto-detected price semantic. By default the backend infers from
     # asset_class (STOCK/REIT/ETF → unit; FUND/FIXED_INCOME/etc → total).
     manual_modes: dict[str, str] | None = None
+    # Spec 71 — decisões por linha do import de extrato/fatura:
+    # { row_id: { action, category_id?, party_id?, new_party_name?,
+    #             no_party?, occurrence_id?, payment_account_id? } }
+    bank_decisions: dict[str, dict[str, Any]] | None = None
 
 
 class RejectExtractionBody(BaseModel):
@@ -72,6 +76,11 @@ class ExtractionJobOut(BaseModel):
     # múltiplos meses; só interessa o mês do fechamento em revisão).
     snapshot_period_end_date: str | None
     asset_id: str | None
+    # Spec 71 — scoping do import de extrato/fatura + período do documento.
+    checking_account_id: str | None = None
+    credit_card_account_id: str | None = None
+    statement_period_start: str | None = None
+    statement_period_end: str | None = None
     extracted_json: dict | None
     confidence: float | None
     detected_hint: str | None
@@ -101,6 +110,10 @@ class ExtractionJobOut(BaseModel):
             snapshot_id=j.snapshot_id,
             snapshot_period_end_date=snap_period_end,
             asset_id=j.asset_id,
+            checking_account_id=j.checking_account_id,
+            credit_card_account_id=j.credit_card_account_id,
+            statement_period_start=j.statement_period_start.isoformat() if j.statement_period_start else None,
+            statement_period_end=j.statement_period_end.isoformat() if j.statement_period_end else None,
             extracted_json=j.extracted_json,
             confidence=float(j.confidence) if j.confidence is not None else None,
             detected_hint=j.detected_hint.value if j.detected_hint else None,
@@ -139,6 +152,8 @@ class ApplyResultOut(BaseModel):
     skipped_count: int
     errors: list[str]
     bulk_detail: BulkApplyDetailOut | None = None
+    # Spec 71 — preview (rows/buckets/overlaps) ou resultado do apply.
+    bank_import: dict | None = None
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -239,9 +254,15 @@ def confirm_extraction(
             manual_mappings=body.manual_mappings,
             manual_prices=body.manual_prices,
             manual_modes=body.manual_modes,
+            bank_decisions=body.bank_decisions,
         )
     except extraction_service.ExtractionError as exc:
+        # Spec 71 — apply atômico: nada do que já foi escrito sobrevive.
+        db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if j.checking_account_id or j.credit_card_account_id:
+        from numis_geek.services import account_balance
+        account_balance.refresh_open_snapshots(db, j.workspace_id)
     detail_out = None
     if result.bulk_detail is not None:
         detail_out = BulkApplyDetailOut(
@@ -256,6 +277,7 @@ def confirm_extraction(
         skipped_count=result.skipped_count,
         errors=result.errors,
         bulk_detail=detail_out,
+        bank_import=result.bank_import,
     )
 
 
@@ -298,6 +320,7 @@ def preview_extraction(
         skipped_count=result.skipped_count,
         errors=result.errors,
         bulk_detail=detail_out,
+        bank_import=result.bank_import,
     )
 
 

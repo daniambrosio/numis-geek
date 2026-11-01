@@ -88,6 +88,11 @@ _SOURCE_MODEL[AttachmentSourceType.SNAPSHOT] = _SnapModel
 _SOURCE_MODEL[AttachmentSourceType.SNAPSHOT_ITEM] = _SnapItemModel
 from numis_geek.models.transaction import Transaction as _TxModel  # noqa: E402
 _SOURCE_MODEL[AttachmentSourceType.TRANSACTION] = _TxModel
+# Spec 71 — extrato ancorado na conta corrente; fatura no cartão.
+from numis_geek.models.account import Account as _AccountModel  # noqa: E402
+from numis_geek.models.credit_card import CreditCardAccount as _CardModel  # noqa: E402
+_SOURCE_MODEL[AttachmentSourceType.ACCOUNT] = _AccountModel
+_SOURCE_MODEL[AttachmentSourceType.CREDIT_CARD_ACCOUNT] = _CardModel
 
 
 def _parse_source_type(value: str) -> AttachmentSourceType:
@@ -214,6 +219,7 @@ async def upload_attachment(
         uploaded_by=current_user.user_id,
         institution_id=slot_fi,
         purpose=slot_purpose,
+        content_hash=attachment_storage.content_hash(payload),
     )
     db.add(att)
     db.flush()
@@ -324,7 +330,9 @@ def delete_attachment(
 
     def _snapshot_alive(job: ExtractionJob) -> bool:
         if not job.snapshot_id:
-            return False
+            # Spec 71 — import de extrato/fatura confirmado: as transações
+            # apontam pro job (rastreabilidade); o arquivo fica.
+            return bool(job.checking_account_id or job.credit_card_account_id)
         return db.get(PortfolioSnapshot, job.snapshot_id) is not None
 
     confirmed_live = next(
@@ -333,6 +341,14 @@ def delete_attachment(
         None,
     )
     if confirmed_live is not None:
+        if not confirmed_live.snapshot_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Esse arquivo já foi importado (job "
+                    f"{confirmed_live.id}) — as movimentações apontam pra ele."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
