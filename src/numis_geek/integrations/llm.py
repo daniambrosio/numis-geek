@@ -144,6 +144,10 @@ class AnthropicClient:
         message = self._sdk.messages.create(
             model=model,
             max_tokens=max_tokens,
+            # Extração de dados: determinístico. Sem isso a API usa 1.0 e o
+            # mesmo extrato oscilava entre formatos (Bradesco Out/26: 1 ou 4
+            # linhas pro mesmo plano de previdência, rodadas idênticas).
+            temperature=0,
             system=system,
             messages=[{"role": "user", "content": content}],
         )

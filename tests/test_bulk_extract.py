@@ -1460,7 +1460,7 @@ def test_bulk_extract_uses_avenue_template_when_scoped_to_avenue(db):
         user_id=w["user_id"],
         user_email="generic@test.com",
     )
-    assert legacy_job.prompt_version == "v4"
+    assert legacy_job.prompt_version == "v5"
 
 
 def test_bulk_apply_legacy_path_unscoped_still_works(db):
@@ -1954,3 +1954,16 @@ def test_integrity_catches_out26_invested_instead_of_current_value():
         "section_totals": [{"section": "Renda fixa", "market_value": 97218.11, "currency": "USD"}],
     })
     assert len(issues) == 1 and "Renda fixa" in issues[0]
+
+
+def test_integrity_skips_section_whose_total_is_in_another_currency():
+    """Wise Ago/26: total da conta multimoeda em BRL, linhas em USD —
+    comparar somaria moedas diferentes (alarme falso)."""
+    issues = extraction_service._integrity_issues({
+        "positions": [
+            {"ticker_raw": "USD Cash", "market_value": 1475.61, "currency": "USD", "section": "Everyday account"},
+            {"ticker_raw": "BRL Cash", "market_value": 2.5, "currency": "BRL", "section": "Everyday account"},
+        ],
+        "section_totals": [{"section": "Everyday account", "market_value": 7624.54, "currency": "BRL"}],
+    })
+    assert issues == []

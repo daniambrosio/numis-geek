@@ -102,7 +102,9 @@ SCREENSHOT_PRICE = Template(
 
 
 BROKER_POSITION = Template(
-    version="v4",
+    # v5 (2026-11-02): section + section_totals pra checagem de integridade
+    # (extraction._integrity_issues) — antes só o template da Avenue pedia.
+    version="v5",
     system=(
         "Você é um extrator de extratos de posição de corretora (PDF/imagem/CSV). "
         "Extraia CADA linha visível como uma posição JSON — inclusive fundos, "
@@ -156,12 +158,45 @@ BROKER_POSITION = Template(
         "- CDB/LCI/LCA: emissor + vencimento (ex.: 'CDB Itaú 2027-05-10')\n"
         "Use `ticker_normalized` SOMENTE quando houver uma forma canônica "
         "de bolsa; deixe null pra fundos, renda fixa, treasuries e bonds.\n\n"
+        "SEÇÕES E TOTAIS (checagem de integridade):\n"
+        "- Preencha `section` de cada posição com o título do grupo de TOPO "
+        "onde ela aparece — o bloco que tem o total ('Saldo') no cabeçalho "
+        "(ex.: 'Ações', 'Fundos Imobiliários', 'Renda Fixa', 'Tesouro "
+        "Direto', 'Previdência Privada'). Subgrupos dentro dele (ex.: na XP, "
+        "'Renda Variável Brasil', 'Pós-Fixado', 'Alternativos' dentro de "
+        "'Ações') NÃO são seções: as linhas deles levam o nome do grupo de "
+        "topo. Sem agrupamento visível → null.\n"
+        "- Blocos que não são posição (ex.: 'Proventos' provisionados, "
+        "'Custódia Remunerada' — ações emprestadas já listadas em Ações —, "
+        "histórico de movimentações) não geram posições nem totais.\n"
+        "- SALDO EM CONTA / caixa disponível É posição: emita uma linha "
+        "'Saldo em conta <MOEDA>' (ex.: 'Saldo em conta USD') com "
+        "quantity=1, unit_price=market_value=saldo, uma por moeda com "
+        "saldo.\n"
+        "- EXCEÇÃO à regra 'cada linha é uma posição' — PREVIDÊNCIA: um "
+        "plano é UMA posição, mesmo que o extrato o quebre em várias "
+        "contas (ex.: bloco 'Saldo do Período Final' com linhas 'BASICA "
+        "PARTICIPANTE', 'NORMAL PATROCINADORA', 'AUTOPATROCINIO…' e uma "
+        "linha TOTAL). Emita UMA posição: ticker_raw = nome do plano (ex.: "
+        "'FOLHAPREV'), quantity=1, unit_price=market_value= o TOTAL do "
+        "saldo final; as contas vão em notes. Ignore o histórico de "
+        "contribuições/rentabilidade.\n"
+        "- Em `section_totals`, liste SÓ os totais que o extrato MOSTRA "
+        "escritos no cabeçalho ou rodapé de cada seção — copie o número, "
+        "NUNCA some você mesmo. Seção sem total impresso → não inclua. Use "
+        "exatamente o mesmo texto de `section` das posições. Se o total da "
+        "seção inclui algo que não é linha de posição (ex.: provisões, "
+        "juros a receber, saldo), NÃO inclua essa seção.\n"
+        "- Se o documento não tem seções com total, devolva "
+        "`section_totals: []`.\n\n"
         "Responda SOMENTE com um objeto JSON validando o schema:\n"
         '{ "as_of_date": str|null (YYYY-MM-DD), "broker_name": str|null, '
         '"positions": [{ "ticker_raw": str, "ticker_normalized": str|null, '
         '"quantity": float, "unit_price": float, "currency": "BRL"|"USD", '
         '"market_value": float|null, "confidence": float (0..1), '
-        '"notes": str|null }], '
+        '"notes": str|null, "section": str|null }], '
+        '"section_totals": [{ "section": str, "market_value": float, '
+        '"currency": "BRL"|"USD" }], '
         '"summary_total_brl": float|null, "summary_total_usd": float|null }'
     ),
     user_prefix=(
@@ -170,8 +205,9 @@ BROKER_POSITION = Template(
         "responder, VERIFIQUE: pra cada linha, quantity × unit_price bate "
         "com market_value? Se não, releia — provavelmente confundiu com a "
         "coluna de custo médio. Lembre: dois ticker_raw não podem ser "
-        "iguais. Não invente; se uma coluna estiver ilegível deixe null e "
-        "diminua a confidence."
+        "iguais; previdência com várias contas do mesmo plano = UMA linha "
+        "com o saldo total; saldo em conta é linha. Não invente; se uma "
+        "coluna estiver ilegível deixe null e diminua a confidence."
     ),
     output_model=BrokerPositionOutput,
 )

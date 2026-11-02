@@ -654,8 +654,30 @@ def _user_message(
         )
     if payload.text:
         parts.append("\n\n----\n")
-        parts.append(payload.text[:50_000])  # safety cap
+        parts.append(_cap_text(payload.text))
     return "".join(parts)
+
+
+# ~70k tokens. Antes era 50k caracteres cortando o FIM: o XLSX da
+# previdência Bradesco (Out/26, 69k chars de histórico desde 2008) perdia o
+# "Saldo do Período Final" — justo a posição — e o LLM inventava valores.
+_TEXT_CAP = 200_000
+_TEXT_HEAD = 40_000
+
+
+def _cap_text(text: str) -> str:
+    """Corta no MEIO (preserva começo e fim) quando passa do teto: extratos
+    longos têm cabeçalho no início e saldos/totais no final."""
+    if len(text) <= _TEXT_CAP:
+        return text
+    tail = _TEXT_CAP - _TEXT_HEAD
+    omitted = len(text) - _TEXT_CAP
+    return (
+        text[:_TEXT_HEAD]
+        + f"\n\n[... {omitted} caracteres do meio omitidos por tamanho — "
+        "o fim do documento segue abaixo ...]\n\n"
+        + text[-tail:]
+    )
 
 
 def _overall_confidence(parsed: Any) -> Decimal | None:
@@ -1151,6 +1173,11 @@ def _integrity_issues(payload: dict) -> list[str]:
         key = _norm_section(name)
         ccy = (st.get("currency") or "").upper() or None
         rows = [p for p in positions if _norm_section(p.get("section")) == key]
+        # Total convertido pra outra moeda (ex.: Wise mostra o total da conta
+        # multimoeda em BRL e as linhas em USD) — não dá pra comparar sem
+        # câmbio; pula a seção em vez de dar alarme falso.
+        if ccy and any((p.get("currency") or ccy).upper() != ccy for p in rows):
+            continue
         got = 0.0
         missing_mv = 0
         for p in rows:

@@ -506,3 +506,18 @@ def test_llm_cost_resolves_dated_model_id():
     call = LLMCall(text="", input_tokens=1_000_000, output_tokens=0,
                    model="claude-sonnet-4-5-20250929")
     assert call.cost_usd() == Decimal("3.0000")
+
+
+def test_long_text_keeps_the_end_where_balances_live():
+    """Bradesco Out/26: XLSX de 69k chars com o saldo final na última linha
+    era cortado em 50k (só o início) — o LLM nunca via a posição."""
+    from numis_geek.services import extraction as ex
+    body = "linha de histórico\n" * 3600  # ~68k chars
+    text = body + "Saldo do Período Final,508528.32"
+    assert len(text) > 50_000
+    assert "508528.32" in ex._cap_text(text)
+
+    huge = "x" * (ex._TEXT_CAP + 10_000) + "TOTAL FINAL 123"
+    capped = ex._cap_text(huge)
+    assert len(capped) < ex._TEXT_CAP + 200
+    assert capped.endswith("TOTAL FINAL 123") and "omitidos" in capped
