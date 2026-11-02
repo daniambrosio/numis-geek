@@ -1699,3 +1699,18 @@ def test_first_real_import_exact_school_bills_settle_and_junk_is_not_a_candidate
     assert r_lara["default_action"] == "settle" and r_lara["scheduled"]["occurrence_id"] == lara[date(2026, 10, 5)]
     assert r_caio["default_action"] == "settle" and r_caio["scheduled"]["occurrence_id"] == caio[date(2026, 10, 5)]
     assert not r_maria.get("scheduled")
+
+
+def test_rule_payment_method_from_notion_blocks_wrong_kind(client, seed):
+    """AXSECURITY (boleto, 248,89) não quita o Piscineiro (Pix, 250)."""
+    acc = new_account(seed)
+    _, pisc = _rule_day(seed, "Piscineiro", "250", 10, expected_account_id=acc,
+                        notes="[notion:x] Meio de pagamento no Notion: PIX")
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 10, 13), "PAG BOLETO AXSECURITY ALARME", -248.89, line_kind="BOLETO"),
+        line(date(2026, 10, 13), "PIX TRANSF GEAN LI10/10", -250, line_kind="PIX", counterparty="GEAN LI"),
+    ]))
+    boleto, pix = preview(client, seed, job["id"])["rows"]
+    assert not boleto.get("scheduled")
+    assert pix["scheduled"]["occurrence_id"] == pisc[date(2026, 10, 10)]
+    assert "meio de pagamento" in pix["scheduled"]["candidates"][0]["signals"]

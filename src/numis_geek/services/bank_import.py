@@ -50,7 +50,7 @@ from numis_geek.models.extraction_job import (
 )
 from numis_geek.models.party import Party, PartyAlias, PartyKind
 from numis_geek.models.scheduled_transaction import (
-    ScheduledDirection, ScheduledStatus, ScheduledTransaction,
+    RecurrenceRule, ScheduledDirection, ScheduledStatus, ScheduledTransaction,
 )
 from numis_geek.models.transaction import Transaction, TransactionSourceType
 from numis_geek.services import scheduled_transactions as sched_svc
@@ -513,6 +513,7 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
         ).all()
 
     rule_aliases = _rule_aliases(db, occ_pool)
+    rule_kinds = _rule_pay_kinds(db, occ_pool)
     s1_lines = (job.classification_json or {}).get("lines") or {}
     active_subs = _active_subcategories(db, sc.workspace_id)
 
@@ -606,7 +607,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
 
         # ── settles a conta a pagar/receber: assignment global depois ──────
         cands = _score_scheduled(occ_pool, r, amount, d, sc, rule_aliases,
-                                 (s1_lines.get(str(r["index"])) or {}).get("occurrence_id"))
+                                 (s1_lines.get(str(r["index"])) or {}).get("occurrence_id"),
+                                 rule_kinds=rule_kinds)
         if cands:
             pending_sched.append((r, cands))
             rows.append(r)
@@ -676,6 +678,35 @@ def _rule_aliases(db: Session, pool: list[ScheduledTransaction]) -> dict[str, se
         RecurrenceRuleAlias.recurrence_rule_id.in_(rule_ids),
     ).all():
         out[rid].add(alias)
+    return out
+
+
+def _pay_kind_of_line(r: dict) -> str | None:
+    """PIX / BOLETO / DEBIT (débito automático) — None quando não dá pra dizer."""
+    desc = (r.get("description") or "").upper()
+    if desc.startswith(("DA ", "DEB AUT", "DEBITO AUT")):
+        return "DEBIT"
+    kind = r.get("line_kind")
+    if kind in ("PIX", "BOLETO"):
+        return kind
+    return None
+
+
+def _rule_pay_kinds(db: Session, pool: list[ScheduledTransaction]) -> dict[str, str]:
+    """Meio de pagamento esperado por regra, lido do "Meio de pagamento no
+    Notion: X" que a spec 73 grava em notes. Regra criada à mão fica fora."""
+    rule_ids = {o.recurrence_rule_id for o in pool if o.recurrence_rule_id}
+    if not rule_ids:
+        return {}
+    out: dict[str, str] = {}
+    for rid, notes in db.query(RecurrenceRule.id, RecurrenceRule.notes).filter(RecurrenceRule.id.in_(rule_ids)).all():
+        meio = (notes or "").split("Meio de pagamento no Notion:", 1)[-1].strip().upper() if notes and "Meio de pagamento no Notion:" in notes else ""
+        if meio.startswith("PIX"):
+            out[rid] = "PIX"
+        elif meio.startswith(("DDA", "BOLETO")):
+            out[rid] = "BOLETO"
+        elif meio.startswith("DÉB. AUT") or meio.startswith("DEB. AUT"):
+            out[rid] = "DEBIT"
     return out
 
 
@@ -924,6 +955,7 @@ def _occ_brief(db: Session, o: ScheduledTransaction) -> dict:
 def _score_scheduled(
     pool: list[ScheduledTransaction], r: dict, amount: Decimal, d: date, sc: "_Scope",
     rule_aliases: dict[str, set[str]], s1_occurrence_id: str | None,
+    *, rule_kinds: dict[str, str] | None = None,
 ) -> list[tuple[float, ScheduledTransaction, list[str]]]:
     """Matcher pontuado de contas a pagar/receber (2026-11-02: "valores
     flutuam mês a mês e datas mudam quando o vencimento cai em
@@ -981,7 +1013,20 @@ def _score_scheduled(
                 sig.append("conta esperada")
             else:
                 score -= 0.15
-        debit_auto = r["description"].upper().startswith(("DA ", "DEB AUT", "DEBITO AUT"))
+        line_pay = _pay_kind_of_line(r)
+        rule_pay = (rule_kinds or {}).get(o.recurrence_rule_id or "")
+        if rule_pay and line_pay:
+            # Meio de pagamento da conta (Notion) contra o da linha: boleto do
+            # alarme não quita o Piscineiro, que é pago por Pix.
+            if rule_pay == line_pay:
+                score += 0.1
+                sig.append("meio de pagamento")
+            else:
+                score -= 0.25
+            if score >= SCHED_MIN_SCORE:
+                out.append((score, o, sig))
+            continue
+        debit_auto = line_pay == "DEBIT"
         if (direction == ScheduledDirection.PAYABLE and (kind == "BOLETO" or debit_auto)) or (
             direction == ScheduledDirection.RECEIVABLE and kind == "SALARY"
         ):
