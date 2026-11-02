@@ -380,6 +380,15 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
                 {parties.filter(p => p.id !== r.party.party_id).map(p => <option key={p.id} value={`p:${p.id}`}>{p.name}</option>)}
               </select>
             )}
+            {/* Nome do novo fornecedor logo abaixo do select dele, mesma
+                largura — antes caía na linha de extras, alinhado à direita
+                embaixo da ação. */}
+            {creates && decision.new_party_name != null && (
+              <input type="text" value={decision.new_party_name} aria-label="Nome do novo fornecedor/cliente"
+                placeholder="Nome do fornecedor/cliente"
+                onChange={e => onChange({ new_party_name: e.target.value })}
+                className={`${SELECT_CLS} w-full mt-1`} autoFocus />
+            )}
           </div>
           <select value={decision.action} aria-label="Ação" className={`${SELECT_CLS} w-full`} data-testid={`action-${r.row_id}`}
             onChange={e => onChange({ action: e.target.value as BankImportAction })}>
@@ -387,11 +396,6 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
           </select>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5 justify-end">
-          {creates && decision.new_party_name != null && (
-            <input type="text" value={decision.new_party_name} aria-label="Nome do novo fornecedor/cliente"
-              onChange={e => onChange({ new_party_name: e.target.value })}
-              className={`${SELECT_CLS} w-[11rem]`} autoFocus />
-          )}
           {creates && mates.length > 0 && (
             <button type="button" onClick={onApplyToMates} data-testid={`apply-mates-${r.row_id}`}
               className="text-[10px] text-indigo-600 dark:text-indigo-300 underline">
