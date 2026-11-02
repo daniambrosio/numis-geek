@@ -58,6 +58,7 @@ from numis_geek.models.asset_fundamentals import (
     FundamentalsSource,
 )
 from numis_geek.models.category import Category, CategoryKind
+from numis_geek.models.category_example import CategoryExample
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
 from numis_geek.models.party import Party, PartyAlias, PartyKind
 from numis_geek.models.tag import Tag
@@ -125,6 +126,7 @@ __all__ = [
     "AssetFundamentals",
     "FundamentalsSource",
     "Category",
+    "CategoryExample",
     "CategoryKind",
     "CreditCardAccount",
     "Invoice",

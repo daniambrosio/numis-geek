@@ -265,6 +265,8 @@ _FEE_WORDS = ("TARIFA", "ANUIDADE", "CESTA", "ENCARGO", "JUROS", "MULTA")
 
 
 _DATE_TOKEN = re.compile(r"^\d{1,2}/\d{1,2}(/\d{2,4})?$")
+# Itaú cola a data no último nome: "PIX TRANSF GEAN LI10/06"
+_GLUED_DATE = re.compile(r"^(.*\D)\d{1,2}/\d{1,2}(/\d{2,4})?$")
 
 
 def alias_key(text: str) -> str:
@@ -272,8 +274,13 @@ def alias_key(text: str) -> str:
     datas no fim ("PIX MARIA N 18/09" → "PIX MARIA N"). Usada pra gravar e
     procurar alias aprendido; o fingerprint continua no normalize puro."""
     tokens = normalize_description(text).split()
-    while tokens and _DATE_TOKEN.match(tokens[-1]):
-        tokens.pop()
+    while tokens:
+        if _DATE_TOKEN.match(tokens[-1]):
+            tokens.pop()
+        elif (m := _GLUED_DATE.match(tokens[-1])):
+            tokens[-1] = m.group(1)
+        else:
+            break
         tokens = normalize_description(" ".join(tokens)).split()
     return " ".join(tokens)
 
@@ -421,8 +428,19 @@ def _doc_invoice(db: Session, sc: _Scope, payload: dict, line_dates: list[date])
     return out, warnings
 
 
-def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None = None) -> Classification:
-    """Read-only. Same input → same output; apply re-runs it."""
+def _classify_bank_import(
+    db: Session, job: ExtractionJob, payload: dict | None = None, *, refresh_system1: bool = True,
+) -> Classification:
+    """Read-only. Same input → same output; apply re-runs it (with
+    `refresh_system1=False`, so what apply executes is what was previewed).
+
+    Preview of a job whose System 1 result is missing or from an older
+    SYSTEM1_VERSION re-runs it once (no re-extraction) — e.g. prod job
+    5d6dd50f after the Notion examples landed."""
+    if refresh_system1 and job.status == ExtractionStatus.EXTRACTED:
+        from numis_geek.services.bank_classifier import SYSTEM1_VERSION, classify_job_safely
+        if (job.classification_json or {}).get("version") != SYSTEM1_VERSION:
+            classify_job_safely(db, job)
     payload = payload if payload is not None else (job.extracted_json or {})
     sc = _scope(db, job)
     warnings: list[str] = []
@@ -1251,7 +1269,7 @@ def apply_bank_import(
     Raises BankImportError on any invalid decision — caller rolls back
     (apply is all-or-nothing)."""
     decisions = decisions or {}
-    c = _classify_bank_import(db, job)
+    c = _classify_bank_import(db, job, refresh_system1=False)
     sc = _scope(db, job)
     by_id = {r["row_id"]: r for r in c.rows}
     unknown = set(decisions) - set(by_id)

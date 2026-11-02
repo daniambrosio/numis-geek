@@ -1483,7 +1483,8 @@ def test_system1_suggests_category_by_confidence_and_persists(client, seed):
     assert r2["category_id"] is None and "category_suggestion" not in r2   # ids outside the list ignored
     db = TestSession()
     j = db.get(ExtractionJob, job["id"])
-    assert j.classification_json["version"] == "system1-v1"
+    from numis_geek.services.bank_classifier import SYSTEM1_VERSION
+    assert j.classification_json["version"] == SYSTEM1_VERSION
     assert j.cost_usd >= Decimal("0.15")                 # 1M in × $0.10 + 100k out × $0.50 added
     db.close()
     confirm(client, seed, job["id"], {"r2": {"action": "import", "category_id": None}})
@@ -1714,3 +1715,106 @@ def test_rule_payment_method_from_notion_blocks_wrong_kind(client, seed):
     assert not boleto.get("scheduled")
     assert pix["scheduled"]["occurrence_id"] == pisc[date(2026, 10, 10)]
     assert "meio de pagamento" in pix["scheduled"]["candidates"][0]["signals"]
+
+
+# ── exemplos do Notion (category_example) no System 1 ───────────────────────
+
+def _notion_example(seed, key, category_id, count, direction="out", lo=200, hi=500):
+    from numis_geek.models.category_example import CategoryExample
+    db = TestSession()
+    db.add(CategoryExample(id=str(uuid.uuid4()), workspace_id=seed["ws"], alias_key=key, sample_description=key,
+                           direction=direction, category_id=category_id, count=count, avg_amount=Decimal(lo + hi) / 2,
+                           min_amount=Decimal(lo), max_amount=Decimal(hi), source="notion"))
+    db.commit()
+    db.close()
+
+
+def _other_sub(seed, name):
+    db = TestSession()
+    root = db.query(Category).filter(Category.workspace_id == seed["ws"], Category.parent_id.is_(None)).first()
+    c = Category(id=str(uuid.uuid4()), workspace_id=seed["ws"], name=name, parent_id=root.id, kind=CategoryKind.EXPENSE)
+    db.add(c)
+    cid = c.id
+    db.commit()
+    db.close()
+    return cid
+
+
+def test_notion_examples_reach_the_llm_and_dominant_category_shortcut(client, seed):
+    acc = new_account(seed)
+    other = _other_sub(seed, f"Faxina {uuid.uuid4().hex[:3]}")
+    _notion_example(seed, "PIX TRANSF GEAN LI", seed["sub"], 18)
+    _notion_example(seed, "PIX TRANSF GEAN LI", other, 2)
+    _notion_example(seed, "PIX TRANSF GEAN LI", seed["sub"], 50, direction="in")   # other direction: ignored
+    job, fake = import_with(client, seed, acc, statement([
+        line(date(2026, 9, 10), "PIX TRANSF GEAN LI10/06", -420, line_kind="PIX"),
+    ]), {"lines": [{"i": 0, "category_id": None, "confidence": 0.2, "reason": "genérico"}]})
+    sent = json.loads(fake.s1_calls[0].split("\n\n", 1)[1])["LINHAS"][0]["historico_notion"]
+    assert sent[0] == {"fonte": "Notion", "category": "Moradia › Aluguel", "count": 18,
+                       "faixa": "200.00–500.00", "media": "350.00"}
+    assert len(sent) == 2
+    row = preview(client, seed, job["id"])["rows"][0]
+    sug = row["category_suggestion"]
+    assert row["category_id"] == seed["sub"] and sug["applied"] is True
+    assert sug["reason"] == "igual a 18 lançamentos do Notion em Moradia › Aluguel"
+    # examples are never transactions
+    db = TestSession()
+    assert txs_of(db, account_id=acc) == []
+    db.close()
+
+
+def test_no_shortcut_when_not_dominant(client, seed):
+    acc = new_account(seed)
+    other = _other_sub(seed, f"Feira {uuid.uuid4().hex[:3]}")
+    _notion_example(seed, "PIX TRANSF ZEZE", seed["sub"], 6)
+    _notion_example(seed, "PIX TRANSF ZEZE", other, 4)            # 60% < 80%
+    job, _ = import_with(client, seed, acc, statement([line(date(2026, 9, 11), "PIX TRANSF ZEZE", -100)]))
+    assert preview(client, seed, job["id"])["rows"][0]["category_id"] is None
+
+
+def test_confirmed_numis_history_beats_notion(client, seed):
+    acc = new_account(seed)
+    newer = _other_sub(seed, f"Pet {uuid.uuid4().hex[:3]}")
+    _notion_example(seed, "PIX TRANSF BIDU", seed["sub"], 20)
+    db = TestSession()
+    tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc, event_date=date(2026, 8, 20),
+        description="PIX TRANSF BIDU 20/08", amount=Decimal("-90"), category_id=newer,
+    ))
+    db.commit()
+    db.close()
+    job, fake = import_with(client, seed, acc, statement([line(date(2026, 9, 20), "PIX TRANSF BIDU 20/09", -95)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["category_id"] is None                             # no Notion shortcut against newer history
+    linha = json.loads(fake.s1_calls[0].split("\n\n", 1)[1])["LINHAS"][0]
+    assert linha["historico"] and linha["historico_notion"]          # both reach the LLM
+
+
+def test_older_system1_version_is_reclassified_on_preview(client, seed):
+    from numis_geek.services.bank_classifier import SYSTEM1_VERSION
+    acc = new_account(seed)
+    job, fake = import_with(client, seed, acc, statement([line(date(2026, 9, 12), "QUALQUER COISA", -10)]))
+    db = TestSession()
+    j = db.get(ExtractionJob, job["id"])
+    j.classification_json = {"version": "system1-v1", "lines": {}, "errors": []}   # cached by the old code
+    db.commit()
+    db.close()
+    fake.s1 = {"lines": [{"i": 0, "category_id": seed["sub"], "confidence": 0.9, "reason": "nova versão"}]}
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert len(fake.s1_calls) == 2 and row["category_id"] == seed["sub"]
+    db = TestSession()
+    cj = db.get(ExtractionJob, job["id"]).classification_json
+    assert cj["version"] == SYSTEM1_VERSION and cj["previous_version"] == "system1-v1"
+    db.close()
+    preview(client, seed, job["id"])
+    assert len(fake.s1_calls) == 2                                 # current version: cached
+    confirm(client, seed, job["id"])                               # apply never re-runs System 1
+    assert len(fake.s1_calls) == 2
+
+
+def test_alias_key_strips_glued_itau_dates():
+    from numis_geek.services.bank_import import alias_key
+    assert alias_key("PIX TRANSF GEAN LI10/06") == "PIX TRANSF GEAN LI"
+    assert alias_key("PIX TRANSF MARIA N13/12") == "PIX TRANSF MARIA N"
+    assert alias_key("PIX TRANSF MARIA N 13/12") == "PIX TRANSF MARIA N"
+    assert alias_key("PARCELA 3/10") == "PARCELA"

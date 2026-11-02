@@ -38,7 +38,13 @@ from numis_geek.services.normalize import normalize_description
 
 # Fast/cheap classifier (claude-api skill, 2026-11-02): $0.10 in / $0.50 out per MTok.
 SYSTEM1_MODEL = "claude-haiku-5-5"
-SYSTEM1_VERSION = "system1-v1"
+# v2 (2026-11-02): exemplos do Notion (category_example) + atalho de
+# categoria dominante. Versão diferente no job → re-classifica no preview.
+SYSTEM1_VERSION = "system1-v2"
+NOTION_PER_LINE = 3
+DOMINANT_SHARE = 0.8          # categoria com ≥80% dos lançamentos do grupo…
+DOMINANT_MIN_COUNT = 3        # … e pelo menos 3 → sugestão determinística
+DOMINANT_CONFIDENCE = 0.85
 CHUNK_LINES = 30  # 60 linhas davam ~7,3k tokens de saída — encostava no max_tokens e cortava o JSON
 HISTORY_PER_LINE = 3
 HISTORY_POOL = 3000          # most recent categorized tx scanned for examples
@@ -55,7 +61,10 @@ SYSTEM_PROMPT = (
     "- A categoria vem da LINHA EM CONTEXTO (descrição, valor, sinal, tipo, "
     "contraparte). NÃO existe categoria fixa por fornecedor: a mesma empresa pode "
     "pagar salário (receita), vender no marketplace (despesa) e prestar serviço "
-    "financeiro (tarifa/juros). Use os EXEMPLOS DO HISTÓRICO como evidência de como "
+    "financeiro (tarifa/juros). `historico` = lançamentos JÁ CONFIRMADOS no Numis "
+    "(mais recentes — quando discordam do Notion, ganham). `historico_notion` = "
+    "grupos de lançamentos que o usuário classificou no Notion (count, faixa de "
+    "valor). Use os EXEMPLOS DO HISTÓRICO como evidência de como "
     "ESTE usuário classifica linhas parecidas — mas confira se o contexto (sinal, "
     "valor, tipo) é o mesmo.\n"
     "- Entrada (valor positivo) só vai pra categoria de RECEITA ou TRANSFERÊNCIA; "
@@ -120,6 +129,90 @@ def _history_index(db: Session, workspace_id: str, paths: dict[str, str]) -> tup
     return by_key, by_party
 
 
+def _notion_index(db: Session, workspace_id: str, paths: dict[str, str]) -> dict[tuple[str, str], list[dict]]:
+    """category_example (Notion) → {(alias_key, direction): [grupo, …]} só
+    com categorias ainda ativas. Não são transações: só evidência."""
+    from numis_geek.models.category_example import CategoryExample
+    idx: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for e in db.query(CategoryExample).filter(CategoryExample.workspace_id == workspace_id).all():
+        if e.category_id not in paths:
+            continue
+        idx[(e.alias_key, e.direction)].append({
+            "fonte": "Notion", "category_id": e.category_id, "category": paths[e.category_id],
+            "count": e.count,
+            "faixa": f"{e.min_amount}–{e.max_amount}" if e.min_amount is not None else None,
+            "media": str(e.avg_amount) if e.avg_amount is not None else None,
+        })
+    for lst in idx.values():
+        lst.sort(key=lambda g: -g["count"])
+    return idx
+
+
+def _direction(amount: str) -> str:
+    return "out" if Decimal(amount) < 0 else "in"
+
+
+def _notion_for_line(ln: dict, idx: dict) -> list[dict]:
+    """Grupos do Notion da linha: contraparte do Pix primeiro, depois a
+    descrição sem datas; mesmo sentido (entrada/saída)."""
+    d = _direction(ln["amount"])
+    for k in (_alias_key(ln.get("counterparty")), _alias_key(ln["description"])):
+        if k and idx.get((k, d)):
+            return idx[(k, d)]
+    return []
+
+
+def _dominant(groups: list[dict]) -> dict | None:
+    total = sum(g["count"] for g in groups)
+    if not groups or total <= 0:
+        return None
+    top = groups[0]
+    if top["count"] >= DOMINANT_MIN_COUNT and top["count"] / total >= DOMINANT_SHARE:
+        return {"category_id": top["category_id"], "category": top["category"], "count": top["count"]}
+    return None
+
+
+def _real_majority(by_key, by_party, alias_party, ln: dict, paths: dict[str, str]) -> str | None:
+    """Categoria mais frequente nas transações JÁ confirmadas no Numis com o
+    mesmo texto (e sinal) — ganha do Notion quando discorda."""
+    neg = Decimal(ln["amount"]) < 0
+    by_path = {p: cid for cid, p in paths.items()}
+    counts: dict[str, int] = defaultdict(int)
+    for k in (_alias_key(ln.get("counterparty")), _alias_key(ln["description"])):
+        if not k:
+            continue
+        exs = list(by_key.get(k, []))
+        pid = alias_party.get(k)
+        if pid:
+            exs += by_party.get(pid, [])
+        for e in exs:
+            if (Decimal(e["amount"]) < 0) == neg and e["category"] in by_path:
+                counts[by_path[e["category"]]] += 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _apply_dominant(lines: dict[str, dict], dominant: dict[int, dict]) -> None:
+    """Atalho determinístico: grupo do Notion com uma categoria dominante.
+    LLM inseguro (ou sem resposta) → vira a sugestão, com o motivo; LLM
+    concordando → sobe a confiança; LLM confiante noutra categoria (viu o
+    contexto) → fica a do LLM."""
+    for i, dom in dominant.items():
+        cur = lines.get(str(i)) or {}
+        reason = f"igual a {dom['count']} lançamentos do Notion em {dom['category']}"
+        if cur.get("category_id") == dom["category_id"]:
+            cur["confidence"] = max(cur.get("confidence") or 0, DOMINANT_CONFIDENCE)
+            cur["reason"] = cur.get("reason") or reason
+        elif not cur.get("category_id") or (cur.get("confidence") or 0) < CONFIDENT:
+            cur.update(category_id=dom["category_id"], category_path=dom["category"],
+                       confidence=DOMINANT_CONFIDENCE, reason=reason, source="notion")
+            cur.setdefault("occurrence_id", None)
+        else:
+            continue
+        lines[str(i)] = cur
+
+
 def _party_by_alias(db: Session, workspace_id: str) -> dict[str, str]:
     rows = db.query(PartyAlias.alias_normalized, PartyAlias.party_id).join(
         Party, Party.id == PartyAlias.party_id,
@@ -144,11 +237,18 @@ def build_lines(job: ExtractionJob) -> list[dict]:
     return out
 
 
-def _user_text(cats: list[dict], lines: list[dict], occs: list[dict], hist: dict[int, list[dict]]) -> str:
+def _user_text(
+    cats: list[dict], lines: list[dict], occs: list[dict], hist: dict[int, list[dict]],
+    notion: dict[int, list[dict]] | None = None,
+) -> str:
+    notion = notion or {}
     payload = {
         "CATEGORIAS": cats,
         "CONTAS_A_PAGAR_RECEBER": occs,
-        "LINHAS": [{**ln, "historico": hist.get(ln["i"], [])} for ln in lines],
+        "LINHAS": [{**ln, "historico": hist.get(ln["i"], []),
+                    "historico_notion": [{k: v for k, v in e.items() if k != "category_id"}
+                                         for e in notion.get(ln["i"], [])]}
+                   for ln in lines],
     }
     return "Classifique cada linha.\n\n" + json.dumps(payload, ensure_ascii=False)
 
@@ -172,14 +272,17 @@ def _pending_occurrences(db: Session, workspace_id: str, lines: list[dict]) -> l
 def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dict:
     """Run System 1 once for `job` and persist it. Returns the stored dict
     {version, model, lines: {str(i): {...}}, errors: [...]}"""
-    if job.classification_json is not None and not force:
-        return job.classification_json
+    cached = job.classification_json
+    if cached is not None and not force and cached.get("version") == SYSTEM1_VERSION:
+        return cached
     result: dict = {"version": SYSTEM1_VERSION, "model": SYSTEM1_MODEL, "lines": {}, "errors": []}
     lines = build_lines(job)
     if not lines:
         job.classification_json = result
         db.flush()
         return result
+    if cached is not None:
+        result["previous_version"] = cached.get("version")
 
     cats = category_tree(db, job.workspace_id)
     paths = {c["id"]: c["path"] for c in cats}
@@ -201,6 +304,18 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
                 seen.add(sig)
                 uniq.append(e)
         hist[ln["i"]] = uniq[:HISTORY_PER_LINE]
+    notion_idx = _notion_index(db, job.workspace_id, paths)
+    notion: dict[int, list[dict]] = {}
+    dominant: dict[int, dict] = {}
+    for ln in lines:
+        groups = _notion_for_line(ln, notion_idx)
+        notion[ln["i"]] = groups[:NOTION_PER_LINE]
+        dom = _dominant(groups)
+        if dom is not None:
+            real = _real_majority(by_key, by_party, alias_party, ln, paths)
+            # Numis confirmado é mais novo: discordou do Notion → sem atalho.
+            if real is None or real == dom["category_id"]:
+                dominant[ln["i"]] = dom
     occs = _pending_occurrences(db, job.workspace_id, lines)
     occ_ids = {o["id"] for o in occs}
 
@@ -209,6 +324,7 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
         client = get_llm_client(db)
     except Exception as exc:  # no credential configured etc.
         result["errors"].append(f"System 1 indisponível: {exc}")
+        _apply_dominant(result["lines"], dominant)   # o atalho do Notion não depende do LLM
         job.classification_json = result
         db.flush()
         return result
@@ -220,7 +336,7 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
         err: str | None = None
         for _ in range(2):
             try:
-                call = client.call(system=SYSTEM_PROMPT, user_text=_user_text(cats, chunk, occs, hist),
+                call = client.call(system=SYSTEM_PROMPT, user_text=_user_text(cats, chunk, occs, hist, notion),
                                    model=SYSTEM1_MODEL, max_tokens=16000)
             except Exception as exc:
                 return total, None, f"System 1 falhou: {exc}"
@@ -266,6 +382,8 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
                 "occurrence_id": occ if occ in occ_ids else None,
                 "reason": str(item.get("reason") or "")[:160],
             }
+
+    _apply_dominant(result["lines"], dominant)
 
     job.input_tokens = (job.input_tokens or 0) + in_tok
     job.output_tokens = (job.output_tokens or 0) + out_tok
