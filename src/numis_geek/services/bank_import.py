@@ -32,6 +32,7 @@ warning.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -55,6 +56,7 @@ from numis_geek.models.transaction import Transaction, TransactionSourceType
 from numis_geek.services import scheduled_transactions as sched_svc
 from numis_geek.services import transactions as tx_svc
 from numis_geek.services.normalize import normalize_description
+from numis_geek.utils.business_day import first_business_day
 
 BANK_HINTS = (ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE)
 
@@ -64,8 +66,13 @@ INSTALLMENT_DATE_TOL_DAYS = 3
 INVOICE_PAYMENT_PCT = Decimal("0.01")        # ±1% (deliberadamente estrito)
 INVOICE_PAYMENT_GRACE_DAYS = 10              # até due_date + 10
 PAYMENT_TX_DATE_TOL_DAYS = 5                 # débito do extrato × tx de pagamento já criada
-SCHEDULED_PCT = Decimal("0.05")              # spec 72: ±5%
-SCHEDULED_DAYS = 5                           # spec 72: ±5 dias do due_date
+# Matcher pontuado de contas a pagar/receber (2026-11-02). Ver _score_scheduled.
+SCHED_EARLY_DAYS = 7                         # linha até 7 dias ANTES do vencimento
+SCHED_LATE_DAYS = 10                         # … e até 10 dias depois
+SCHED_AMOUNT_BAND = Decimal("0.30")          # |valor| a ±30%
+SCHED_MIN_SCORE = 0.40                       # abaixo disso nem aparece como candidata
+SCHED_CONFIDENT = 0.70                       # "Marcar pago" default a partir daqui…
+SCHED_MARGIN = 0.15                          # … e com essa folga sobre a 2ª candidata
 
 _PAYMENT_PREFIXES = ("PAGAMENTO", "PAGTO", "PGTO", "PAG FATURA", "PAG. FATURA")
 
@@ -255,6 +262,20 @@ LINE_KINDS = ("PURCHASE", "IOF", "BANK_FEE", "PIX", "TED", "BOLETO", "SALARY", "
 _FEE_WORDS = ("TARIFA", "ANUIDADE", "CESTA", "ENCARGO", "JUROS", "MULTA")
 
 
+_DATE_TOKEN = re.compile(r"^\d{1,2}/\d{1,2}(/\d{2,4})?$")
+
+
+def alias_key(text: str) -> str:
+    """Chave de memória de fornecedor/regra: `normalize_description` sem as
+    datas no fim ("PIX MARIA N 18/09" → "PIX MARIA N"). Usada pra gravar e
+    procurar alias aprendido; o fingerprint continua no normalize puro."""
+    tokens = normalize_description(text).split()
+    while tokens and _DATE_TOKEN.match(tokens[-1]):
+        tokens.pop()
+        tokens = normalize_description(" ".join(tokens)).split()
+    return " ".join(tokens)
+
+
 def line_kind_of(desc: str, amount: Decimal, emitted: str | None) -> str | None:
     """Tipo da linha: o do LLM quando válido; senão heurística na descrição."""
     k = (emitted or "").strip().upper()
@@ -269,6 +290,12 @@ def line_kind_of(desc: str, amount: Decimal, emitted: str | None) -> str | None:
         return "BANK_FEE"
     if tokens and tokens[0] in ("TED", "DOC"):
         return "TED"
+    norm = " ".join(tokens)
+    if amount < 0 and ("DDA" in tokens or "BOLETO" in tokens or "DEB AUT" in norm
+                       or "DEBITO AUTOMATICO" in norm or "PAG TIT" in norm):
+        return "BOLETO"
+    if amount > 0 and any(t.startswith(("SALARIO", "PROVENTO", "FOLHA")) for t in tokens):
+        return "SALARY"
     return None
 
 
@@ -292,17 +319,18 @@ def _resolve_party(
     2. IOF → Receita Federal; 3. tarifa/juros do banco → a instituição da
     conta/cartão; 4. contraparte extraída (Pix/TED/boleto); 5. Pix sem
     contraparte → sem fornecedor + aviso; 6. senão, novo pela descrição."""
-    alias = normalize_description(desc)
-    p = aliases.get(alias)
-    if p is not None and p.is_active:
-        return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": "alias"}
+    alias = alias_key(desc)
+    for k in dict.fromkeys((alias, normalize_description(desc))):
+        p = aliases.get(k)
+        if p is not None and p.is_active:
+            return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": k, "source": "alias"}
     if kind == "IOF":
         return _by_alias(normalize_description(IOF_PARTY_NAME), IOF_PARTY_NAME, aliases, "iof")
     if kind == "BANK_FEE" and fi_name:
         return _by_alias(normalize_description(fi_name), fi_name, aliases, "bank_fee")
     cp = (counterparty or "").strip()
-    if cp and normalize_description(cp):
-        return _by_alias(normalize_description(cp), cp, aliases, "counterparty")
+    if cp and alias_key(cp):
+        return _by_alias(alias_key(cp), cp, aliases, "counterparty")
     if kind == "PIX":
         return {"mode": "none", "alias": alias, "source": "pix_unknown",
                 "warning": "Pix sem recebedor identificável — escolha o fornecedor/cliente"}
@@ -310,8 +338,8 @@ def _resolve_party(
 
 
 def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
-    alias = normalize_description(desc)
-    p = aliases.get(alias)
+    alias = alias_key(desc)
+    p = aliases.get(alias) or aliases.get(normalize_description(desc))
     if p is not None and p.is_active:
         return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias}
     if p is not None:
@@ -472,8 +500,9 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
 
     occ_pool: list[ScheduledTransaction] = []
     if parsed:
-        lo = min(r["_date"] for r in parsed) - timedelta(days=SCHEDULED_DAYS)
-        hi = max(r["_date"] for r in parsed) + timedelta(days=SCHEDULED_DAYS)
+        # janela: linha entre due −7 e due +10 (vencimento em feriado/fds)
+        lo = min(r["_date"] for r in parsed) - timedelta(days=SCHED_LATE_DAYS)
+        hi = max(r["_date"] for r in parsed) + timedelta(days=SCHED_EARLY_DAYS)
         occ_pool = db.query(ScheduledTransaction).filter(
             ScheduledTransaction.workspace_id == sc.workspace_id,
             ScheduledTransaction.status == ScheduledStatus.PENDING,
@@ -481,9 +510,13 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
             ScheduledTransaction.due_date <= hi,
         ).all()
 
+    rule_aliases = _rule_aliases(db, occ_pool)
+    s1_lines = (job.classification_json or {}).get("lines") or {}
+    active_subs = _active_subcategories(db, sc.workspace_id)
+
     rows: list[dict] = []
     occurrence_ids: dict[str, list[str]] = {}
-    pending_sched: list[tuple[dict, list[ScheduledTransaction]]] = []
+    pending_sched: list[tuple[dict, list[tuple[float, ScheduledTransaction, list[str]]]]] = []
     for r in parsed:
         d, amount = r["_date"], r["_amount"]
         r["party"] = {"mode": "none"} if r["is_invoice_payment"] else _resolve_party(
@@ -492,6 +525,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
         r["category_id"] = None
         r["warning"] = None
         r["parent_transaction_id"] = None
+        r["group_key"] = alias_key(r["counterparty"]) if r["counterparty"] else alias_key(r["description"])
+        _apply_system1(r, s1_lines.get(str(r["index"])), active_subs)
         if r["party"].get("warning"):
             _warn(r, r["party"].pop("warning"))
         if r["party"].get("inactive_party_name"):
@@ -568,7 +603,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
                 _warn(r, "Parece pagamento de fatura, mas nenhuma fatura fechada bate — importe/feche a fatura para vincular")
 
         # ── settles a conta a pagar/receber: assignment global depois ──────
-        cands = _match_scheduled(occ_pool, r, amount, d, sc.currency, set())
+        cands = _score_scheduled(occ_pool, r, amount, d, sc, rule_aliases,
+                                 (s1_lines.get(str(r["index"])) or {}).get("occurrence_id"))
         if cands:
             pending_sched.append((r, cands))
             rows.append(r)
@@ -607,20 +643,53 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
                           period=period, occurrence_ids=occurrence_ids)
 
 
+def _apply_system1(r: dict, sug: dict | None, active_subs: dict[str, str]) -> None:
+    """Categoria sugerida pelo System 1: pré-seleciona com confiança alta;
+    abaixo disso fica só como dica (Sem categoria)."""
+    if not sug or not sug.get("category_id") or sug["category_id"] not in active_subs:
+        return
+    from numis_geek.services.bank_classifier import CONFIDENT
+    conf = float(sug.get("confidence") or 0)
+    r["category_suggestion"] = {
+        "category_id": sug["category_id"], "path": active_subs[sug["category_id"]],
+        "confidence": conf, "reason": sug.get("reason") or "", "applied": conf >= CONFIDENT,
+    }
+    if conf >= CONFIDENT:
+        r["category_id"] = sug["category_id"]
+        r["category_source"] = "system1"
+
+
+def _active_subcategories(db: Session, workspace_id: str) -> dict[str, str]:
+    from numis_geek.services.bank_classifier import category_tree
+    return {c["id"]: c["path"] for c in category_tree(db, workspace_id)}
+
+
+def _rule_aliases(db: Session, pool: list[ScheduledTransaction]) -> dict[str, set[str]]:
+    from numis_geek.models.scheduled_transaction import RecurrenceRuleAlias
+    rule_ids = {o.recurrence_rule_id for o in pool if o.recurrence_rule_id}
+    if not rule_ids:
+        return {}
+    out: dict[str, set[str]] = defaultdict(set)
+    for rid, alias in db.query(RecurrenceRuleAlias.recurrence_rule_id, RecurrenceRuleAlias.alias_normalized).filter(
+        RecurrenceRuleAlias.recurrence_rule_id.in_(rule_ids),
+    ).all():
+        out[rid].add(alias)
+    return out
+
+
 def _assign_occurrences(
-    db: Session, pending: list[tuple[dict, list[ScheduledTransaction]]], occurrence_ids: dict[str, list[str]],
+    db: Session, pending: list[tuple[dict, list[tuple[float, ScheduledTransaction, list[str]]]]],
+    occurrence_ids: dict[str, list[str]],
 ) -> None:
-    """Best-match global (audit 2026-10-31): todos os pares (linha,
-    ocorrência) ordenados por distância de data e de valor; atribui do mais
-    próximo pro mais longe. Uma linha pior que veio antes no arquivo não
-    rouba a ocorrência da linha exata. Cada linha guarda TODOS os candidatos
-    (o dropdown mostra todos; o apply barra uso duplo)."""
+    """Best-match global: todos os pares (linha, ocorrência) por score
+    decrescente; uma linha por ocorrência. "Marcar pago" vira default só com
+    score alto E folga sobre a 2ª candidata da linha; senão a linha fica
+    "Importar" mostrando as candidatas (o usuário escolhe)."""
     pairs = []
     for r, cands in pending:
         d = date.fromisoformat(r["event_date"])
-        value = abs(Decimal(r["amount"]))
-        for o in cands:
-            pairs.append((abs((o.due_date - d).days), abs(value - Decimal(o.amount)), r["index"], r, o))
+        for score, o, _ in cands:
+            pairs.append((-score, abs((o.due_date - d).days), r["index"], r, o))
     pairs.sort(key=lambda x: (x[0], x[1], x[2]))
     assigned: dict[str, ScheduledTransaction] = {}
     used: set[str] = set()
@@ -630,17 +699,29 @@ def _assign_occurrences(
         assigned[r["row_id"]] = o
         used.add(o.id)
     for r, cands in pending:
-        occurrence_ids[r["row_id"]] = [o.id for o in cands]
+        occurrence_ids[r["row_id"]] = [o.id for _, o, _ in cands]
         best = assigned.get(r["row_id"])
-        sched = {"occurrence_id": (best or cands[0]).id, "candidates": [_occ_brief(db, o) for o in cands]}
-        if best is None:
-            # todas as candidatas ficaram com linhas mais próximas
+        scores = {o.id: (sc_, sig) for sc_, o, sig in cands}
+        chosen = best or cands[0][1]
+        sched = {
+            "occurrence_id": chosen.id,
+            "candidates": [{**_occ_brief(db, o), "score": round(sc_, 2), "signals": sig} for sc_, o, sig in cands],
+        }
+        confident = False
+        if best is not None:
+            s_best = scores[best.id][0]
+            others = [sc_ for sc_, o, _ in cands if o.id != best.id]
+            confident = s_best >= SCHED_CONFIDENT and (not others or s_best - max(others) >= SCHED_MARGIN)
+        if not confident:
             r.update(bucket="new", scheduled=sched, actions=["import", "settle", "skip"], default_action="import")
             continue
         # Fornecedor vem da conta a pagar/receber (spec 72: a tx herda). Sem
         # alias, nada de criar fornecedor a partir da descrição do banco.
         if r["party"]["mode"] != "existing":
             r["party"] = {"mode": "none", "alias": r["party"].get("alias"), "from_occurrence": True}
+        if best.category_id and r.get("category_source") != "user":
+            r["category_id"] = best.category_id   # curado pelo usuário na conta
+            r["category_source"] = "occurrence"
         r.update(bucket="scheduled", scheduled=sched, actions=["settle", "import", "skip"], default_action="settle")
 
 
@@ -838,28 +919,75 @@ def _occ_brief(db: Session, o: ScheduledTransaction) -> dict:
     }
 
 
-def _match_scheduled(
-    pool: list[ScheduledTransaction], r: dict, amount: Decimal, d: date, currency: Currency, used: set[str],
-) -> list[ScheduledTransaction]:
-    """Spec 72 rules. Returns candidates, closest date first."""
+def _score_scheduled(
+    pool: list[ScheduledTransaction], r: dict, amount: Decimal, d: date, sc: "_Scope",
+    rule_aliases: dict[str, set[str]], s1_occurrence_id: str | None,
+) -> list[tuple[float, ScheduledTransaction, list[str]]]:
+    """Matcher pontuado de contas a pagar/receber (2026-11-02: "valores
+    flutuam mês a mês e datas mudam quando o vencimento cai em
+    feriado/fim de semana").
+
+    Restrições duras: sentido, moeda, linha entre due −7 e due +10 dias,
+    |valor| a ±30%. Pontos: proximidade de valor (0–0,25) e de data (0–0,25,
+    vencimento rolado pro próximo dia útil conta como exato), alias aprendido
+    da regra (+0,5), fornecedor (+0,35), descrição contém a da conta (+0,35),
+    System 1 apontou esta conta (+0,3), conta esperada (+0,1 / −0,15),
+    tipo de linha compatível (+0,1). Devolve candidatas ≥ SCHED_MIN_SCORE,
+    da melhor pra pior."""
     direction = ScheduledDirection.PAYABLE if amount < 0 else ScheduledDirection.RECEIVABLE
     norm = normalize_description(r["description"])
+    keys = {k for k in (alias_key(r["description"]), alias_key(r.get("counterparty") or "")) if k}
     party_id = r["party"].get("party_id") if r["party"]["mode"] == "existing" else None
+    kind = r.get("line_kind")
     value = abs(amount)
     out = []
     for o in pool:
-        if o.id in used or o.direction != direction or o.currency != currency:
+        if o.direction != direction or o.currency != sc.currency:
             continue
-        if abs((o.due_date - d).days) > SCHEDULED_DAYS:
+        lag = (d - o.due_date).days            # >0: pago depois do vencimento
+        if lag < -SCHED_EARLY_DAYS or lag > SCHED_LATE_DAYS:
             continue
-        if abs(value - Decimal(o.amount)) > Decimal(o.amount) * SCHEDULED_PCT:
+        expected = Decimal(o.amount)
+        if expected <= 0 or abs(value - expected) > expected * SCHED_AMOUNT_BAND:
             continue
+        sig: list[str] = []
+        rel = float(abs(value - expected) / expected)
+        score = 0.25 * (1 - rel / float(SCHED_AMOUNT_BAND))
+        if rel == 0:
+            sig.append("valor exato")
+        rolled = first_business_day(o.due_date)
+        days = min(abs((d - o.due_date).days), abs((d - rolled).days))
+        score += 0.25 * max(0.0, 1 - days / 10)
+        if days == 0:
+            sig.append("data do vencimento" if d == o.due_date else "próximo dia útil")
+        if o.recurrence_rule_id and keys & rule_aliases.get(o.recurrence_rule_id, set()):
+            score += 0.5
+            sig.append("já quitou esta conta antes")
+        if party_id and o.party_id == party_id:
+            score += 0.35
+            sig.append("mesmo fornecedor")
         occ_norm = normalize_description(o.description)
-        if not ((party_id and o.party_id == party_id) or (occ_norm and occ_norm in norm)):
-            continue
-        out.append(o)
-    out.sort(key=lambda o: (abs((o.due_date - d).days), abs(value - Decimal(o.amount))))
-    return out
+        if occ_norm and occ_norm in norm:
+            score += 0.35
+            sig.append("descrição")
+        if s1_occurrence_id == o.id:
+            score += 0.3
+            sig.append("sugerida pela IA")
+        if o.expected_account_id and sc.account is not None:
+            if o.expected_account_id == sc.account.id:
+                score += 0.1
+                sig.append("conta esperada")
+            else:
+                score -= 0.15
+        if (direction == ScheduledDirection.PAYABLE and kind == "BOLETO") or (
+            direction == ScheduledDirection.RECEIVABLE and kind == "SALARY"
+        ):
+            score += 0.1
+            sig.append("tipo de lançamento")
+        if score >= SCHED_MIN_SCORE:
+            out.append((score, o, sig))
+    out.sort(key=lambda x: (-x[0], abs((x[1].due_date - d).days)))
+    return out[:5]
 
 
 def _overlaps(db: Session, sc: _Scope, period: tuple[date | None, date | None], rows: list[dict]) -> list[dict]:
@@ -923,6 +1051,7 @@ class ApplyOutcome:
     new_parties: list[str] = field(default_factory=list)
     invoice_id: str | None = None
     learned: list[dict] = field(default_factory=list)
+    aliases: list[dict] = field(default_factory=list)
 
 
 def _resolve_doc_invoice(db: Session, sc: _Scope, info: dict, user_id: str | None) -> Invoice:
@@ -1003,7 +1132,28 @@ def _named_party(
     cache[key] = pid
     if free:
         cache[free] = pid
+    elif alias:
+        # escolha explícita do usuário: o texto passa a apontar pro novo
+        _remember_party_alias(db, workspace_id, alias, pid, out)
     return pid
+
+
+def _remember_party_alias(db: Session, workspace_id: str, key: str, party_id: str, out: "ApplyOutcome") -> None:
+    """Memória de fornecedor (2026-11-02): o usuário escolheu/criou o
+    fornecedor desta linha → alias(texto sem datas) aponta pra ele, e a
+    próxima "PIX MARIA N 02/10" já vem como "Maria (diarista)". Escolha
+    explícita ganha de um alias anterior (re-aponta)."""
+    if not key:
+        return
+    row = _alias_row(db, workspace_id, key)
+    if row is None:
+        db.add(PartyAlias(id=str(uuid.uuid4()), workspace_id=workspace_id, party_id=party_id,
+                          alias_normalized=key, created_at=datetime.now(timezone.utc)))
+        out.aliases.append({"alias": key, "party_id": party_id, "previous_party_id": None})
+    elif row.party_id != party_id:
+        out.aliases.append({"alias": key, "party_id": party_id, "previous_party_id": row.party_id})
+        row.party_id = party_id
+    db.flush()
 
 
 def _new_party(
@@ -1151,6 +1301,7 @@ def apply_bank_import(
                 raise BankImportError(f"{r['description']}: {exc}")
             out.settled.append({"occurrence_id": occ.id, "transaction_id": tx.id,
                                 "paid_at": occ.paid_at.isoformat(), "inherited": inherited})
+            sched_svc.remember_rule_alias(db, occ, r["group_key"])
             learned = sched_svc.learn_amount_from_payment(db, occ, tx, user_id=user_id)
             if learned:
                 out.learned.append(learned)
@@ -1172,10 +1323,14 @@ def _create_from_row(
         party_id = None
     elif dec.get("party_id"):
         party_id = dec["party_id"]
+        _remember_party_alias(db, sc.workspace_id, r["group_key"], party_id, out)
     elif dec.get("new_party_name") and dec["new_party_name"].strip():
         name = dec["new_party_name"].strip()
-        party_id = _named_party(db, sc.workspace_id, name, r["party"].get("alias") or "",
+        party_id = _named_party(db, sc.workspace_id, name, r["group_key"] or r["party"].get("alias") or "",
                                 amount, party_cache, out, user_id)
+    elif (dec.get("action") or r["default_action"]) == "settle" and r["party"]["mode"] in ("new", "none"):
+        # quitar herda o fornecedor da ocorrência escolhida (settle_occurrence)
+        party_id = None
     elif r["party"].get("from_occurrence"):
         # quita conta a pagar/receber: settle_occurrence herda o fornecedor
         # da ocorrência escolhida (qualquer candidata)
@@ -1197,7 +1352,8 @@ def _create_from_row(
         credit_card_account_id=sc.source_id if sc.card is not None else None,
         invoice_id=doc_invoice.id if doc_invoice is not None else None,
         fx_rate=Decimal(r["fx_rate"]) if r.get("fx_rate") else None,
-        category_id=dec.get("category_id") or r.get("category_id"),
+        # decisão explícita (inclusive "Sem categoria" = null) ganha da sugestão
+        category_id=dec["category_id"] if "category_id" in dec else r.get("category_id"),
         party_id=party_id,
         is_reconciled=True,
     )

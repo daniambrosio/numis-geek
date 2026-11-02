@@ -32,6 +32,8 @@ PRICING: dict[str, tuple[Decimal, Decimal]] = {
     "claude-sonnet-4-6": (Decimal("3.00"), Decimal("15.00")),
     "claude-opus-4-7":   (Decimal("15.00"), Decimal("75.00")),
     "claude-haiku-4-5":  (Decimal("1.00"),  Decimal("5.00")),
+    # Spec 71 System 1 (classificação de categorias), prompts < 100K tokens.
+    "claude-haiku-5-5":  (Decimal("0.10"),  Decimal("0.50")),
 }
 
 

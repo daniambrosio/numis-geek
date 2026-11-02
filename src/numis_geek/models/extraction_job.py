@@ -129,6 +129,11 @@ class ExtractionJob(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     confirmed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    # Spec 71 (2026-11-02) — resultado do "System 1" (classificação por LLM
+    # rápido: categoria sugerida, ocorrência, motivo por linha). Persistido
+    # pra classify/apply serem determinísticos; rodado uma vez por job.
+    classification_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # Final applied payload (== extracted_json XOR user edits at confirm time).
     user_edits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

@@ -88,6 +88,30 @@ class RecurrenceRule(Base):
     )
 
 
+class RecurrenceRuleAlias(Base):
+    """Spec 71 (2026-11-02) — texto do banco que já quitou esta regra.
+
+    Quando o import quita uma ocorrência, grava a descrição normalizada da
+    linha (ou a contraparte do Pix) aqui; no próximo extrato o matcher
+    pontua forte uma linha com o mesmo texto ("DDA PAG TIT" → Condomínio).
+    `hits` conta quantas vezes casou."""
+    __tablename__ = "recurrence_rule_alias"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workspace_id: Mapped[str] = mapped_column(String(36), ForeignKey("workspace.id"), nullable=False)
+    recurrence_rule_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("recurrence_rule.id", ondelete="CASCADE"), nullable=False,
+    )
+    alias_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    hits: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    __table_args__ = (
+        UniqueConstraint("recurrence_rule_id", "alias_normalized", name="uq_rule_alias"),
+        Index("ix_rule_alias_ws_alias", "workspace_id", "alias_normalized"),
+    )
+
+
 class ScheduledTransaction(Base):
     __tablename__ = "scheduled_transaction"
 

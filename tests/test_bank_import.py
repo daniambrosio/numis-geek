@@ -623,13 +623,15 @@ def test_scheduled_occurrence_settled_by_import(client, seed):
     db.close()
 
     job = import_statement(client, seed, acc, statement([
-        line(due + timedelta(days=1), "TED ALUGUEL APTO", -3090),   # +3% → within ±5%
+        line(due + timedelta(days=1), "TED ALUGUEL APTO", -3090),   # +3%
     ]))
     row = preview(client, seed, job["id"])["rows"][0]
-    assert row["bucket"] == "scheduled" and row["default_action"] == "settle"
-    assert row["scheduled"]["occurrence_id"] == near_id       # tie-break: closest date
+    # 2026-11-02 scored matcher: two "Aluguel" 3 days apart are too close to
+    # call → stays Importar, candidates shown best first (closest date).
+    assert row["bucket"] == "new" and row["default_action"] == "import" and "settle" in row["actions"]
+    assert row["scheduled"]["occurrence_id"] == near_id
     assert [c["occurrence_id"] for c in row["scheduled"]["candidates"]] == [near_id, far_id]
-    confirm(client, seed, job["id"])
+    confirm(client, seed, job["id"], {"r0": {"action": "settle"}})
 
     db = TestSession()
     occ = db.get(ScheduledTransaction, near_id)
@@ -807,8 +809,10 @@ def test_new_party_name_creates_that_party_without_stealing_alias(client, seed):
     t0, t1 = txs_of(db, account_id=acc)
     assert db.get(Party, t0.party_id).name == "Uber Eats"
     assert db.get(Party, t1.party_id).name == "Outro Nome"
+    # 2026-11-02 party memory: the user's explicit choice re-points the text
+    # (last explicit choice in the file wins)
     alias = db.query(PartyAlias).filter(PartyAlias.alias_normalized == "UBER EATS PEDIDO").one()
-    assert alias.party_id == other
+    assert alias.party_id == t1.party_id != other
     db.close()
 
 
@@ -1356,6 +1360,9 @@ def test_long_statement_is_extracted_in_chunks_and_merged(client, seed):
 
         def call(self, *, system, user_text, image_bytes=None, image_mime=None,
                  image_parts=None, model="claude-sonnet-4-5", max_tokens=4096):
+            from numis_geek.services.bank_classifier import SYSTEM1_MODEL
+            if model == SYSTEM1_MODEL:   # System 1 pass (categorias) — não é extração
+                return LLMCall(text='{"lines": []}', input_tokens=1, output_tokens=1, model=model)
             self.calls += 1
             rows = [l for l in user_text.splitlines() if l[:2].isdigit()]
             txs = [line(date(2026, 3, int(r.split("/")[0])), r.split(",")[1], r.split(",")[2]) for r in rows]
@@ -1423,3 +1430,215 @@ def test_four_identical_indemnities_in_one_file_all_import(client, seed):
     job3 = import_statement(client, seed, acc, statement([line(d, "LATAM AIRLINES INDENIZ", 3395.41) for _ in range(5)]))
     rows = preview(client, seed, job3["id"])["rows"]
     assert [r["bucket"] for r in rows] == ["duplicate"] * 4 + ["new"]
+
+
+# ── System 1 (categoria por LLM rápido) ─────────────────────────────────────
+
+class RoutedLLM:
+    """Extraction calls get `payload`; System 1 calls get `s1` (or raise)."""
+
+    def __init__(self, payload, s1=None, s1_error=None):
+        self.payload, self.s1, self.s1_error = payload, s1, s1_error
+        self.s1_calls: list[str] = []
+
+    def call(self, *, system, user_text, image_bytes=None, image_mime=None,
+             image_parts=None, model="claude-sonnet-4-5", max_tokens=4096):
+        from numis_geek.services.bank_classifier import SYSTEM1_MODEL
+        if model == SYSTEM1_MODEL:
+            self.s1_calls.append(user_text)
+            if self.s1_error:
+                raise RuntimeError(self.s1_error)
+            body = self.s1(user_text) if callable(self.s1) else self.s1
+            return LLMCall(text=json.dumps(body or {"lines": []}), input_tokens=1_000_000,
+                           output_tokens=100_000, model=model)
+        return LLMCall(text=json.dumps(self.payload), input_tokens=100, output_tokens=50, model=model)
+
+
+def import_with(client, seed, account_id, payload, s1=None, s1_error=None):
+    fake = RoutedLLM(payload, s1, s1_error)
+    set_llm_client(fake)
+    r = client.post(f"/api/accounts/{account_id}/statement-imports",
+                    files={"file": ("e.csv", (uuid.uuid4().hex + json.dumps(payload)).encode(), "text/csv")},
+                    headers=auth(seed["token"]))
+    assert r.status_code == 201 and r.json()["status"] == "EXTRACTED", r.text
+    return r.json(), fake
+
+
+def test_system1_suggests_category_by_confidence_and_persists(client, seed):
+    acc = new_account(seed)
+    lines = [line(date(2026, 9, 1), "PADARIA DO ZE", -12), line(date(2026, 9, 2), "LOJA QUALQUER", -30),
+             line(date(2026, 9, 3), "OUTRA", -5)]
+    s1 = {"lines": [
+        {"i": 0, "category_id": seed["sub"], "confidence": 0.92, "reason": "igual ao histórico"},
+        {"i": 1, "category_id": seed["sub"], "confidence": 0.4, "reason": "palpite"},
+        {"i": 2, "category_id": "nao-existe", "confidence": 0.99, "reason": "inventada"},
+    ]}
+    job, fake = import_with(client, seed, acc, statement(lines), s1)
+    assert len(fake.s1_calls) == 1                       # ran at extraction time
+    r0, r1, r2 = preview(client, seed, job["id"])["rows"]
+    assert len(fake.s1_calls) == 1                       # persisted: preview doesn't re-run
+    assert r0["category_id"] == seed["sub"] and r0["category_suggestion"]["applied"] is True
+    assert r0["category_suggestion"]["reason"] == "igual ao histórico"
+    assert r1["category_id"] is None and r1["category_suggestion"]["applied"] is False
+    assert r2["category_id"] is None and "category_suggestion" not in r2   # ids outside the list ignored
+    db = TestSession()
+    j = db.get(ExtractionJob, job["id"])
+    assert j.classification_json["version"] == "system1-v1"
+    assert j.cost_usd >= Decimal("0.15")                 # 1M in × $0.10 + 100k out × $0.50 added
+    db.close()
+    confirm(client, seed, job["id"], {"r2": {"action": "import", "category_id": None}})
+    db = TestSession()
+    t0, t1, t2 = txs_of(db, account_id=acc)
+    assert t0.category_id == seed["sub"] and t1.category_id is None and t2.category_id is None
+    db.close()
+
+
+def test_system1_explicit_no_category_beats_suggestion(client, seed):
+    acc = new_account(seed)
+    job, _ = import_with(client, seed, acc, statement([line(date(2026, 9, 4), "X", -1)]),
+                         {"lines": [{"i": 0, "category_id": seed["sub"], "confidence": 0.95, "reason": "r"}]})
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "category_id": None}})
+    db = TestSession()
+    assert txs_of(db, account_id=acc)[0].category_id is None
+    db.close()
+
+
+def test_system1_runs_lazily_on_already_extracted_job(client, seed):
+    acc = new_account(seed)
+    job, fake = import_with(client, seed, acc, statement([line(date(2026, 9, 5), "MERCADO ABC", -80)]), {"lines": []})
+    db = TestSession()
+    j = db.get(ExtractionJob, job["id"])
+    j.classification_json = None          # job extracted before System 1 existed (prod 5d6dd50f)
+    db.commit()
+    db.close()
+    fake.s1 = {"lines": [{"i": 0, "category_id": seed["sub"], "confidence": 0.8, "reason": "mercado"}]}
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["category_id"] == seed["sub"] and len(fake.s1_calls) == 2
+    preview(client, seed, job["id"])
+    assert len(fake.s1_calls) == 2
+
+
+def test_system1_input_has_categories_history_and_occurrences(client, seed):
+    acc = new_account(seed)
+    db = TestSession()
+    past = tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc, event_date=date(2026, 8, 18),
+        description="ACOUGUE BOI GORDO 18/08", amount=Decimal("-77"), category_id=seed["sub"],
+    ))[0]
+    _ = past.id
+    db.commit()
+    db.close()
+    rid, occ = _rule_day(seed, "Condominio Edificio", "900", 15)
+    job, fake = import_with(client, seed, acc, statement([line(date(2026, 9, 18), "ACOUGUE BOI GORDO 18/09", -81)]))
+    payload = json.loads(fake.s1_calls[0].split("\n\n", 1)[1])
+    assert {"id": seed["sub"], "path": "Moradia › Aluguel", "kind": "EXPENSE"} in payload["CATEGORIAS"]
+    hist = payload["LINHAS"][0]["historico"]
+    assert hist and hist[0]["description"] == "ACOUGUE BOI GORDO 18/08" and hist[0]["category"] == "Moradia › Aluguel"
+    assert any(o["description"] == "Condominio Edificio" for o in payload["CONTAS_A_PAGAR_RECEBER"])
+
+
+def test_system1_failure_never_blocks_the_import(client, seed):
+    acc = new_account(seed)
+    job, _ = import_with(client, seed, acc, statement([line(date(2026, 9, 6), "Y", -2)]), s1_error="boom")
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "new" and row["category_id"] is None
+    db = TestSession()
+    assert "boom" in db.get(ExtractionJob, job["id"]).classification_json["errors"][0]
+    db.close()
+    confirm(client, seed, job["id"])
+
+
+# ── matcher pontuado de contas a pagar/receber ──────────────────────────────
+
+def _rule_day(seed, desc, amount, day, **kw):
+    from numis_geek.models.scheduled_transaction import RecurrenceFrequency
+    db = TestSession()
+    rule, occs = sched_svc.create_rule(db, seed["ws"], sched_svc.RuleInput(
+        direction=ScheduledDirection.PAYABLE, description=desc, amount=Decimal(amount),
+        frequency=RecurrenceFrequency.MONTHLY, day_of_month=day, start_date=date(2026, 3, day),
+        currency=Currency.BRL, **kw,
+    ))
+    by_due = {o.due_date: o.id for o in occs}
+    rid = rule.id
+    db.commit()
+    db.close()
+    return rid, by_due
+
+
+def test_notion_rule_without_party_is_candidate_not_default(client, seed):
+    acc = new_account(seed)
+    rid, occ = _rule_day(seed, "Condomínio Notion", "1234.56", 5)
+    sat = occ[date(2026, 9, 5)]                                   # Saturday
+    job = import_statement(client, seed, acc, statement([line(date(2026, 9, 8), "DDA PAG TIT", -1234.56)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "new" and row["default_action"] == "import"   # generic text → user picks
+    cand = row["scheduled"]["candidates"][0]
+    assert cand["occurrence_id"] == sat and "próximo dia útil" in cand["signals"]
+    assert "tipo de lançamento" in cand["signals"]
+    # user picks it → the rule learns the bank text
+    confirm(client, seed, job["id"], {"r0": {"action": "settle"}})
+    from numis_geek.models.scheduled_transaction import RecurrenceRuleAlias
+    db = TestSession()
+    assert db.query(RecurrenceRuleAlias).filter(RecurrenceRuleAlias.recurrence_rule_id == rid).one().alias_normalized == "DDA PAG TIT"
+    db.close()
+    # next month: amount floated 8%, paid a day late → learned alias makes it confident
+    job2 = import_statement(client, seed, acc, statement([line(date(2026, 10, 6), "DDA PAG TIT", -1333.32)]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["default_action"] == "settle"
+    assert row["scheduled"]["occurrence_id"] == occ[date(2026, 10, 5)]
+    assert "já quitou esta conta antes" in row["scheduled"]["candidates"][0]["signals"]
+
+
+def test_scheduled_hard_constraints(client, seed):
+    acc = new_account(seed)
+    other_acc = new_account(seed)
+    _rule_day(seed, "Escola Piaget", "2000", 10)
+    _rule_day(seed, "Clube Pinheiros", "2000", 10, expected_account_id=other_acc)
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 9, 10), "MENSALIDADE ESCOLA PIAGET", -2500),   # +25% → still candidate
+        line(date(2026, 10, 10), "MENSALIDADE ESCOLA PIAGET", -2700),  # +35% → out
+        line(date(2026, 8, 10), "ESCOLA PIAGET", 2000),                # wrong direction
+        line(date(2026, 7, 23), "ESCOLA PIAGET", -2000),               # 13 days late → out
+    ]))
+    r0, r1, r2, r3 = preview(client, seed, job["id"])["rows"]
+    piaget = [c for c in r0["scheduled"]["candidates"] if c["description"] == "Escola Piaget"]
+    assert piaget and piaget[0]["occurrence_id"] == r0["scheduled"]["occurrence_id"]
+    assert all(c["description"] != "Escola Piaget" for c in (r1.get("scheduled") or {}).get("candidates", []))
+    assert "scheduled" not in r2 and "scheduled" not in r3 or all(
+        c["description"] != "Escola Piaget" for c in r3["scheduled"]["candidates"])
+    # expected_account elsewhere is penalised: Clube never outranks
+    assert r0["scheduled"]["candidates"][0]["description"] == "Escola Piaget"
+
+
+def test_system1_occurrence_signal_makes_match_confident(client, seed):
+    acc = new_account(seed)
+    rid, occ = _rule_day(seed, "Diarista Fixa", "480", 15)
+    target = occ[date(2026, 9, 15)]
+    job, _ = import_with(client, seed, acc, statement([line(date(2026, 9, 15), "PIX TRANSF 88812", -480)]),
+                         lambda text: {"lines": [{"i": 0, "category_id": None, "confidence": 0.3,
+                                                  "occurrence_id": target, "reason": "valor e data da diarista"}]})
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["scheduled"]["occurrence_id"] == target
+    assert "sugerida pela IA" in row["scheduled"]["candidates"][0]["signals"]
+
+
+# ── memória de fornecedor + chave de grupo ──────────────────────────────────
+
+def test_party_choice_is_remembered_without_trailing_dates(client, seed):
+    from numis_geek.services.bank_import import alias_key
+    assert alias_key("PIX MARIA N 18/09") == "PIX MARIA N"
+    assert alias_key("PIX MARIA N 18/09/2026 SP") == "PIX MARIA N"
+    acc = new_account(seed)
+    diarista = _party_with_alias(seed, "Maria (diarista)", "MARIA DIARISTA ALIAS")
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 9, 18), "PIX MARIA N 18/09", -150, line_kind="PIX"),
+        line(date(2026, 9, 25), "PIX MARIA N 25/09", -150, line_kind="PIX"),
+    ]))
+    r0, r1 = preview(client, seed, job["id"])["rows"]
+    assert r0["group_key"] == r1["group_key"] == "PIX MARIA N"
+    assert r0["party"]["mode"] == "none"                            # Pix sem recebedor
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "party_id": diarista},
+                                       "r1": {"action": "import", "party_id": diarista}})
+    job2 = import_statement(client, seed, acc, statement([line(date(2026, 10, 2), "PIX MARIA N 02/10", -150, line_kind="PIX")]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == diarista

@@ -370,6 +370,12 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         job.error_message = str(exc)
         job.completed_at = datetime.now(timezone.utc)
 
+    # Spec 71 — "System 1" (categoria sugerida por LLM rápido) logo após a
+    # extração de extrato/fatura; falha nunca derruba a extração.
+    if job.status == ExtractionStatus.EXTRACTED and job.source_hint in _CHUNKED_HINTS:
+        from numis_geek.services.bank_classifier import classify_job_safely
+        classify_job_safely(db, job)
+
     db.flush()
     return job
 
@@ -2397,6 +2403,10 @@ def preview_bank_import(db: Session, job: ExtractionJob) -> ExtractionApplyResul
     from numis_geek.services import bank_import
     if job.extracted_json is None:
         raise ExtractionError("Job sem JSON extraído.")
+    if job.classification_json is None and job.status == ExtractionStatus.EXTRACTED:
+        # Job extraído antes do System 1 existir: roda uma vez e persiste.
+        from numis_geek.services.bank_classifier import classify_job_safely
+        classify_job_safely(db, job)
     try:
         c = bank_import._classify_bank_import(db, job)
     except bank_import.BankImportError as exc:
@@ -2450,6 +2460,12 @@ def _confirm_bank_import(
             user_email=actor, action="invoice.paid", workspace_id=job.workspace_id, user_id=user_id,
             resource_type="invoice", resource_id=p["invoice_id"],
             details={**p, "extraction_job_id": job.id},
+        )
+    for al in out.aliases:
+        audit.log(
+            user_email=actor, action="party_alias.learned", workspace_id=job.workspace_id,
+            user_id=user_id, resource_type="party", resource_id=al["party_id"],
+            details={**al, "extraction_job_id": job.id},
         )
     for lr in out.learned:
         audit.log(

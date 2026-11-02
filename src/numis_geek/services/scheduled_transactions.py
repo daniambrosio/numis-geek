@@ -634,6 +634,27 @@ def settle_occurrence(
     return occ
 
 
+def remember_rule_alias(db: Session, occ: ScheduledTransaction, alias: str | None) -> None:
+    """Spec 71 (2026-11-02) — the statement import settled `occ` with a bank
+    line: remember that text (normalized, no trailing dates — or the Pix
+    counterparty) on the occurrence's rule so the next statement scores it
+    strongly. One-offs have no rule → nothing to learn."""
+    if not alias or not occ.recurrence_rule_id:
+        return
+    from numis_geek.models.scheduled_transaction import RecurrenceRuleAlias
+    row = db.query(RecurrenceRuleAlias).filter(
+        RecurrenceRuleAlias.recurrence_rule_id == occ.recurrence_rule_id,
+        RecurrenceRuleAlias.alias_normalized == alias,
+    ).first()
+    if row is None:
+        db.add(RecurrenceRuleAlias(workspace_id=occ.workspace_id, recurrence_rule_id=occ.recurrence_rule_id,
+                                   alias_normalized=alias[:255], hits=1))
+    else:
+        row.hits += 1
+        row.last_seen_at = datetime.now(timezone.utc)
+    db.flush()
+
+
 def learns_amount(db: Session, occ: ScheduledTransaction) -> bool:
     """Ocorrência de regra MONTHLY/YEARLY: o valor pago no extrato vira o
     valor previsto da regra. Parcelamento (INSTALLMENT) e avulsa, não."""
