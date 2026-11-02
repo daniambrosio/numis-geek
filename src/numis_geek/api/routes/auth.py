@@ -29,7 +29,7 @@ class MeResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, db: Session = Depends(get_db, scope="function")):
     try:
         token = AuthService(db).login(body.email, body.password, remember_me=body.remember_me)
     except AuthError as e:

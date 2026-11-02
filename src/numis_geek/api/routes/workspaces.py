@@ -21,7 +21,7 @@ class WorkspaceOut(BaseModel):
 
 @router.get("", response_model=list[WorkspaceOut])
 def list_workspaces(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     if current_user.role != UserRole.sysadmin:

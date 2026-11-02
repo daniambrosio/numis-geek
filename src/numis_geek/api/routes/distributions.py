@@ -398,7 +398,7 @@ def list_distributions(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     # 2026-07-05 audit finding — bloqueia leak em non-sysadmin sem workspace.
@@ -479,7 +479,7 @@ def get_distributions_chart(
     currency: ChartCurrency = Query(default="BRL"),
     include_synthetic: bool = Query(default=True),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 30 — monthly proventos chart data for /distributions and /dashboard.
@@ -547,7 +547,7 @@ def get_distributions_chart(
 @router.get("/{did}", response_model=DistributionOut)
 def get_distribution(
     did: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     d = _get_or_404(db, did)
@@ -565,7 +565,7 @@ def get_distribution(
 @router.post("", response_model=DistributionOut, status_code=status.HTTP_201_CREATED)
 def create_distribution(
     body: DistributionRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
@@ -619,7 +619,7 @@ def create_distribution(
 def update_distribution(
     did: str,
     body: DistributionRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     d = _get_or_404(db, did)
@@ -668,7 +668,7 @@ def update_distribution(
 @router.put("/{did}/deactivate", response_model=DistributionOut)
 def deactivate_distribution(
     did: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     d = _get_or_404(db, did)

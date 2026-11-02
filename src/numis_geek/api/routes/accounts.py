@@ -121,7 +121,7 @@ def _fi_name(db: Session, fi_id: str) -> str:
 @router.get("", response_model=list[AccountOut])
 def list_accounts(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(Account).filter(Account.is_active == True)  # noqa: E712
@@ -166,7 +166,7 @@ class CustodianGroupOut(BaseModel):
 @router.get("/by-custodian", response_model=list[CustodianGroupOut])
 def list_by_custodian(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Group investment-type accounts and active assets by custodian (FI).
@@ -242,7 +242,7 @@ def list_by_custodian(
 def create_account(
     body: AccountRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -309,7 +309,7 @@ def create_account(
 def update_account(
     account_id: str,
     body: AccountRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -371,7 +371,7 @@ def update_account(
 @router.put("/{account_id}/deactivate", response_model=AccountOut)
 def deactivate_account(
     account_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -506,7 +506,7 @@ def _detail(db: Session, acc: Account) -> AccountDetailOut:
 @router.get("/{account_id}", response_model=AccountDetailOut)
 def get_account(
     account_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     return _detail(db, _scoped_or_404(db, account_id, current_user))
@@ -515,7 +515,7 @@ def get_account(
 @router.get("/{account_id}/balance-check", response_model=list[BalanceCheckRowOut])
 def get_balance_check(
     account_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Conferência mês a mês: fechamento × saldo derivado (spec 70 fase 3)."""
@@ -537,7 +537,7 @@ def get_balance_check(
 def update_opening_balance(
     account_id: str,
     body: OpeningBalanceRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Saldo de abertura editável — recua quando entram extratos antigos.
@@ -591,7 +591,7 @@ def update_opening_balance(
 def set_linked_asset(
     account_id: str,
     body: LinkAssetRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Vincula (ou desvincula, asset_id=null) o ativo CASH espelho desta conta.
@@ -649,7 +649,7 @@ def set_linked_asset(
 def update_balance_source(
     account_id: str,
     body: BalanceSourceRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Liga/desliga "saldo vem das movimentações". Ligar exige data de abertura

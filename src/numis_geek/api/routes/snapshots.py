@@ -445,7 +445,7 @@ def _hydrate_pendency(
 @router.get("", response_model=list[SnapshotOut])
 def list_workspace_snapshots(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     # Fase 3.6: sysadmin puro passa ?workspace_id=X.
@@ -458,7 +458,7 @@ def list_workspace_snapshots(
 def create_workspace_snapshot(
     body: SnapshotCreateRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     # Fase 3.6 (2026-07-22): sysadmin puro passa ?workspace_id=X.
@@ -492,7 +492,7 @@ def create_workspace_snapshot(
 @router.get("/{snapshot_id}/items", response_model=list[SnapshotItemOut])
 def list_snapshot_items(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -539,7 +539,7 @@ def patch_snapshot_item(
     snapshot_id: str,
     asset_id: str,
     body: SnapshotItemPatchRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 49 hotfix #10 — inline edit of a snapshot item from the
@@ -571,7 +571,7 @@ def patch_snapshot_item(
 def delete_snapshot_item_route(
     snapshot_id: str,
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 49 hotfix #11 — remove an asset entry from a frozen snapshot.
@@ -658,7 +658,7 @@ class DriftEntryOut(BaseModel):
 )
 def sync_snapshot_items_route(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 49 hotfix #12 — add missing items to an IN_REVIEW snapshot.
@@ -691,7 +691,7 @@ def sync_snapshot_items_route(
 def add_snapshot_item_route(
     snapshot_id: str,
     body: AddSnapshotItemRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 49 hotfix #12 — manually add a single asset to a snapshot.
@@ -744,7 +744,7 @@ def _aff_out(a) -> AffectedSnapshotOut:
 )
 def preview_affected_snapshots(
     body: AffectedSnapshotPreviewRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 — preview do impacto que um evento (já salvo ou hipotético)
@@ -769,7 +769,7 @@ def recompute_snapshot_item_route(
     snapshot_id: str,
     asset_id: str,
     body: RecomputeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 — recomputa o item, com auto-reopen se CLOSED."""
@@ -802,7 +802,7 @@ def skip_recompute_route(
     snapshot_id: str,
     asset_id: str,
     body: SkipRecomputeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 — grava no audit que o usuário decidiu NÃO recomputar."""
@@ -831,7 +831,7 @@ def skip_recompute_route(
 )
 def list_snapshot_drift(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 Bloco 3 — lista entradas de 'drift consciente' do snapshot:
@@ -886,7 +886,7 @@ def list_snapshot_drift(
 @router.get("/{snapshot_id}/pendencies", response_model=list[SnapshotPendencyOut])
 def list_snapshot_pendencies(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -901,7 +901,7 @@ def list_snapshot_pendencies(
 @router.post("/{snapshot_id}/confirm", response_model=SnapshotOut)
 def confirm(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -923,7 +923,7 @@ def confirm(
 def reopen(
     snapshot_id: str,
     body: SnapshotReopenRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -953,7 +953,7 @@ def _pendency_or_404(db: Session, pendency_id: str, ws_id: str) -> SnapshotPende
 def resolve(
     pendency_id: str,
     body: PendencyResolveRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -972,7 +972,7 @@ def resolve(
 @router.post("/pendencies/{pendency_id}/retry-api", response_model=SnapshotPendencyOut)
 def retry_api(
     pendency_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _workspace_id(current_user)
@@ -995,7 +995,7 @@ def retry_api(
 def bulk_extract(
     snapshot_id: str,
     body: BulkExtractRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 48 — create + run an ExtractionJob scoped to the snapshot.
@@ -1037,7 +1037,7 @@ def bulk_extract(
 @router.get("/{snapshot_id}/extractions", response_model=list[BulkExtractionJobOut])
 def list_bulk_extractions(
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 49 — list bulk ExtractionJobs scoped to this snapshot.
@@ -1072,7 +1072,7 @@ def bulk_income_per_fi(
     snapshot_id: str,
     fi_id: str,
     body: BulkExtractRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 58 Stage 4 — bulk income (proventos) extraction.
@@ -1144,7 +1144,7 @@ def bulk_extract_per_fi(
     snapshot_id: str,
     fi_id: str,
     body: BulkExtractRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 58 — create + run an ExtractionJob scoped to a single FI.

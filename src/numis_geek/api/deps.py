@@ -13,6 +13,15 @@ _bearer = HTTPBearer()
 
 
 def get_db() -> Generator:
+    """Sessão por request — commit no sucesso, rollback no erro.
+
+    SEMPRE usar como `Depends(get_db, scope="function")`. Com o scope
+    default ("request") o FastAPI só roda o commit DEPOIS da resposta ir
+    embora, e o AuditMiddleware (que grava em sessão própria logo após o
+    `call_next`) batia no write lock ainda aberto da rota → `database is
+    locked` em ~todo POST de prod (2026-11-02). Trava em
+    tests/test_get_db_scope.py.
+    """
     db = SessionLocal()
     try:
         yield db
@@ -26,7 +35,7 @@ def get_db() -> Generator:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ) -> UserContext:
     """Resolve o usuário atual a partir do JWT, mas SEMPRE reconcilia
     role + workspace_id contra o DB. Sem isso, uma promoção/rebaixamento

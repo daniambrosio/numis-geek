@@ -80,7 +80,7 @@ class PortfolioOut(BaseModel):
 @router.get("", response_model=PortfolioOut)
 def get_portfolio(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     # Sysadmin híbrido (workspace_id no user): cai no dele por default;

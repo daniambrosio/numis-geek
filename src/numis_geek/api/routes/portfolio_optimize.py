@@ -124,7 +124,7 @@ def _resolve_workspace(
 @router.post("/optimize", response_model=OptimizeOut)
 def optimize(
     body: OptimizeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _resolve_workspace(db, body.workspace_id, current_user)

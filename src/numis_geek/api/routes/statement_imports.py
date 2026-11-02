@@ -266,7 +266,7 @@ def _history(db: Session, col, source_id: str) -> list[StatementImportOut]:
 def import_statement(
     account_id: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     acc = _checking_or_404(db, account_id, current_user)
@@ -280,7 +280,7 @@ def import_statement(
 @router.get("/accounts/{account_id}/statement-imports", response_model=list[StatementImportOut])
 def list_statement_imports(
     account_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     acc = _scoped(db.get(Account, account_id), current_user, "Account")
@@ -292,7 +292,7 @@ def list_statement_imports(
 def import_invoice(
     card_id: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     card = _card_or_404(db, card_id, current_user)
@@ -306,7 +306,7 @@ def import_invoice(
 @router.get("/credit-cards/{card_id}/invoice-imports", response_model=list[StatementImportOut])
 def list_invoice_imports(
     card_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     card = _scoped(db.get(CreditCardAccount, card_id), current_user, "Credit card")

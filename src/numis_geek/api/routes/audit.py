@@ -64,7 +64,7 @@ def list_audit(
     limit: int = Query(50, ge=1, le=200),
     action: str | None = Query(None),
     workspace_id: str | None = Query(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     if current_user.role not in (UserRole.admin, UserRole.sysadmin):

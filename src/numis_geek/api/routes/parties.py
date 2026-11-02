@@ -98,7 +98,7 @@ def list_parties(
     workspace_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
     include_inactive: bool = Query(default=False),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -121,7 +121,7 @@ def list_parties(
 def create_party(
     body: PartyRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -149,7 +149,7 @@ def create_party(
 def update_party(
     party_id: str,
     body: PartyRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -168,7 +168,7 @@ def update_party(
 @router.put("/{party_id}/deactivate", response_model=PartyOut)
 def deactivate_party(
     party_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -185,7 +185,7 @@ def deactivate_party(
 def merge_party(
     party_id: str,
     body: PartyMergeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Merge `source_party_id` INTO `party_id` (survivor).

@@ -99,7 +99,7 @@ def _audit(db: Session, current_user: UserContext, action: str, category: Catego
 def list_categories(
     workspace_id: str | None = Query(default=None),
     include_inactive: bool = Query(default=False),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -113,7 +113,7 @@ def list_categories(
 def create_category(
     body: CategoryCreateRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -177,7 +177,7 @@ def create_category(
 def update_category(
     category_id: str,
     body: CategoryUpdateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -211,7 +211,7 @@ def update_category(
 @router.put("/{category_id}/deactivate", response_model=CategoryOut)
 def deactivate_category(
     category_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)

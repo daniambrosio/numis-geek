@@ -93,7 +93,7 @@ def _parse_color(value: str | None) -> str | None:
 
 @router.get("", response_model=list[FinancialInstitutionOut])
 def list_financial_institutions(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     items = db.query(FinancialInstitution).filter(FinancialInstitution.is_active == True).order_by(FinancialInstitution.short_name).all()  # noqa: E712
@@ -102,7 +102,7 @@ def list_financial_institutions(
 
 @router.get("/logos", response_model=list[FinancialInstitutionLogoOut])
 def list_financial_institution_logos(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Logos + cores de marca de TODAS as instituições (inclusive inativas —
@@ -131,7 +131,7 @@ def list_financial_institution_logos(
 @router.post("", response_model=FinancialInstitutionOut, status_code=status.HTTP_201_CREATED)
 def create_financial_institution(
     body: FinancialInstitutionRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -165,7 +165,7 @@ def create_financial_institution(
 def update_financial_institution(
     fi_id: str,
     body: FinancialInstitutionRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -193,7 +193,7 @@ def update_financial_institution(
 async def upload_financial_institution_logo(
     fi_id: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Substitui o logo da instituição. Um arquivo por instituição — o
@@ -248,7 +248,7 @@ async def upload_financial_institution_logo(
 @router.delete("/{fi_id}/logo", response_model=FinancialInstitutionOut)
 def delete_financial_institution_logo(
     fi_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Remove o logo — a instituição volta a renderizar iniciais sobre a cor
@@ -278,7 +278,7 @@ def delete_financial_institution_logo(
 @router.put("/{fi_id}/deactivate", response_model=FinancialInstitutionOut)
 def deactivate_financial_institution(
     fi_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)

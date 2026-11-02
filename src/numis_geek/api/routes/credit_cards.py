@@ -234,7 +234,7 @@ def _audit(db: Session, current_user: UserContext, action: str, resource_type: s
 def list_credit_cards(
     workspace_id: str | None = Query(default=None),
     include_inactive: bool = Query(default=False),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -258,7 +258,7 @@ def list_credit_cards(
 def create_credit_card(
     body: CreditCardRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -294,7 +294,7 @@ def create_credit_card(
 def update_credit_card(
     card_id: str,
     body: CreditCardRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -318,7 +318,7 @@ def update_credit_card(
 @router.put("/{card_id}/deactivate", response_model=CreditCardOut)
 def deactivate_credit_card(
     card_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -344,7 +344,7 @@ def deactivate_credit_card(
 @router.get("/{card_id}/invoices", response_model=list[InvoiceOut])
 def list_card_invoices(
     card_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     c = _get_card_or_404(db, card_id, current_user)
@@ -359,7 +359,7 @@ def list_card_invoices(
 def create_invoice(
     card_id: str,
     body: InvoiceCreateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -400,7 +400,7 @@ def list_invoices(
     workspace_id: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     card_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -427,7 +427,7 @@ def list_invoices(
 def close_invoice(
     invoice_id: str,
     body: InvoiceCloseRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -457,7 +457,7 @@ def close_invoice(
 def pay_invoice(
     invoice_id: str,
     body: InvoicePayRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 70 — único caminho que quita fatura (contrato pay_invoice)."""

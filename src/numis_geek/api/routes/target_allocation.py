@@ -92,7 +92,7 @@ def _build_response(db: Session, workspace_id: str) -> TargetAllocationOut:
 )
 def get_target_allocation(
     workspace_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws_id = _resolve_workspace(db, workspace_id, current_user)
@@ -105,7 +105,7 @@ def get_target_allocation(
 def put_target_allocation(
     workspace_id: str,
     body: UpsertRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)

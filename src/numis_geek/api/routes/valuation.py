@@ -121,7 +121,7 @@ def _get_asset_or_404(
 @router.get("/{asset_id}/valuation", response_model=ValuationOut)
 def get_valuation(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_asset_or_404(db, asset_id, current_user)
@@ -131,7 +131,7 @@ def get_valuation(
 @router.get("/{asset_id}/fundamentals", response_model=FundamentalsOut | None)
 def get_fundamentals(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_asset_or_404(db, asset_id, current_user)
@@ -149,7 +149,7 @@ def get_fundamentals(
 @router.post("/{asset_id}/fundamentals/refresh", response_model=FundamentalsOut | None)
 def refresh_fundamentals(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     if current_user.role not in (UserRole.admin, UserRole.sysadmin):

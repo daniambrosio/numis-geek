@@ -83,7 +83,7 @@ def _require_sysadmin(current_user: UserContext) -> None:
 
 @router.get("/status", response_model=PTAXStatusOut)
 def ptax_status(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -103,7 +103,7 @@ def ptax_status(
 def list_ptax(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -126,7 +126,7 @@ def list_ptax(
 @router.post("/sync", response_model=PTAXSyncResultOut)
 def trigger_sync(
     body: PTAXSyncRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -149,7 +149,7 @@ def trigger_sync(
 
 @workspace_router.get("/status", response_model=PTAXStatusOut)
 def ptax_status_workspace(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),  # noqa: ARG001
 ):
     total: int = db.query(func.count(PTAXRate.id)).scalar() or 0
@@ -167,7 +167,7 @@ def ptax_status_workspace(
 @workspace_router.post("/sync", response_model=PTAXSyncResultOut)
 def trigger_sync_workspace(
     body: PTAXSyncRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),  # noqa: ARG001
 ):
     try:

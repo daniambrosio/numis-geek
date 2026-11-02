@@ -88,7 +88,7 @@ def _to_out(summary: RefreshSummary) -> RefreshSummaryOut:
 def refresh_prices(
     body: RefreshRequest | None = None,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_workspace(current_user, workspace_id, db)

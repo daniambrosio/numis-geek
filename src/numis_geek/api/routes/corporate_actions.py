@@ -137,7 +137,7 @@ def _check_workspace(asset: Asset, current_user: UserContext) -> None:
 def list_corporate_actions(
     asset_id: str | None = Query(None),
     workspace_id: str | None = Query(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(CorporateAction).filter(CorporateAction.is_active == True)  # noqa: E712
@@ -157,7 +157,7 @@ def list_corporate_actions(
 @router.post("", response_model=CorporateActionCreateOut, status_code=status.HTTP_201_CREATED)
 def create_corporate_action(
     body: CorporateActionRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = db.get(Asset, body.asset_id)
@@ -232,7 +232,7 @@ def create_corporate_action(
 )
 def preview_corporate_action_impact(
     body: CorporateActionPreviewRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 Bloco 2 — sonda o impacto de um CA hipotético em
@@ -260,7 +260,7 @@ def preview_corporate_action_impact(
 @router.delete("/{ca_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_corporate_action(
     ca_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     c = db.get(CorporateAction, ca_id)
@@ -279,7 +279,7 @@ def delete_corporate_action(
 @router.get("/{ca_id}/affected-snapshots", response_model=list[AffectedSnapshotLite])
 def list_affected_for_corp_action(
     ca_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 51 Bloco 2 — segunda chance pra um CA já persistido:

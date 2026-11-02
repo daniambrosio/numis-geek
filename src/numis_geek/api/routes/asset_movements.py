@@ -331,7 +331,7 @@ def list_asset_movements(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(AssetMovement)
@@ -377,7 +377,7 @@ def list_asset_movements(
 @router.get("/{mid}", response_model=AssetMovementOut)
 def get_asset_movement(
     mid: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     m = _get_or_404(db, mid)
@@ -393,7 +393,7 @@ def get_asset_movement(
 @router.post("", response_model=AssetMovementOut, status_code=status.HTTP_201_CREATED)
 def create_asset_movement(
     body: AssetMovementRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
@@ -452,7 +452,7 @@ def create_asset_movement(
 def update_asset_movement(
     mid: str,
     body: AssetMovementRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     m = _get_or_404(db, mid)
@@ -506,7 +506,7 @@ def update_asset_movement(
 @router.put("/{mid}/deactivate", response_model=AssetMovementOut)
 def deactivate_asset_movement(
     mid: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     m = _get_or_404(db, mid)

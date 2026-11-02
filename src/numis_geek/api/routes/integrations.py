@@ -180,7 +180,7 @@ def list_providers(
 
 @router.get("", response_model=list[IntegrationCredentialOut])
 def list_credentials(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -196,7 +196,7 @@ def list_credentials(
 @router.post("", response_model=IntegrationCredentialOut, status_code=status.HTTP_201_CREATED)
 def create_credential(
     body: IntegrationCredentialRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -246,7 +246,7 @@ def create_credential(
 def update_credential(
     cred_id: str,
     body: IntegrationCredentialPatch,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -269,7 +269,7 @@ def update_credential(
 @router.delete("/{cred_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_credential(
     cred_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)
@@ -282,7 +282,7 @@ def delete_credential(
 @router.post("/{cred_id}/test", response_model=TestResultOut)
 def test_credential(
     cred_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_sysadmin(current_user)

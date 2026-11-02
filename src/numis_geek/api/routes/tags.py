@@ -73,7 +73,7 @@ def _audit(db: Session, current_user: UserContext, action: str, t: Tag) -> None:
 @router.get("", response_model=list[TagOut])
 def list_tags(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -85,7 +85,7 @@ def list_tags(
 def create_tag(
     body: TagRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -113,7 +113,7 @@ def create_tag(
 def rename_tag(
     tag_id: str,
     body: TagRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -133,7 +133,7 @@ def rename_tag(
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tag(
     tag_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """409 when the tag is in use by any transaction (spec 70)."""

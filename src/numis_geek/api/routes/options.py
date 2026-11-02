@@ -198,7 +198,7 @@ def parse_ticker(
 @router.post("", response_model=OptionOut, status_code=status.HTTP_201_CREATED)
 def create_option(
     body: OptionCreateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
@@ -290,7 +290,7 @@ def create_option(
 @router.get("/{oid}", response_model=OptionOut)
 def get_option(
     oid: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     opt = _get_option_or_404(db, oid, current_user)
@@ -301,7 +301,7 @@ def get_option(
 @router.get("/by-underlying/{underlying_id}", response_model=list[OpenOptionOut])
 def list_open_for_underlying(
     underlying_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     underlying = db.get(Asset, underlying_id)
@@ -338,7 +338,7 @@ def list_open_for_underlying(
 def exercise(
     oid: str,
     body: ExerciseRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     opt = _get_option_or_404(db, oid, current_user)
@@ -354,7 +354,7 @@ def exercise(
 def expire(
     oid: str,
     body: ExpireRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     opt = _get_option_or_404(db, oid, current_user)
@@ -370,7 +370,7 @@ def expire(
 def close_manual(
     oid: str,
     body: CloseRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     opt = _get_option_or_404(db, oid, current_user)
@@ -448,7 +448,7 @@ def _to_out(r: AutoSettleResult) -> AutoSettleResultOut:
 
 @router.post("/auto-settle", response_model=AutoSettleResponse)
 def auto_settle(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Catchup manual: detecta opções vencidas e aplica EXPIRED ou EXERCISED

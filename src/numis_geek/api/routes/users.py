@@ -116,7 +116,7 @@ def _check_role_ceiling(
 @router.get("", response_model=list[UserOut])
 def list_users(
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -140,7 +140,7 @@ def list_users(
 @router.post("/invite", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def invite_user(
     body: InviteRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -170,7 +170,7 @@ def invite_user(
 def change_role(
     user_id: str,
     body: ChangeRoleRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -197,7 +197,7 @@ def change_role(
 @router.put("/{user_id}/deactivate", response_model=UserOut)
 def deactivate_user(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -231,7 +231,7 @@ def deactivate_user(
 def update_user_name(
     user_id: str,
     body: UpdateNameRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -257,7 +257,7 @@ def update_user_name(
 
 @router.get("/me", response_model=UserOut)
 def get_me(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     return UserOut.from_orm(_get_user_or_404(db, current_user.user_id))
@@ -266,7 +266,7 @@ def get_me(
 @router.put("/me", response_model=UserOut)
 def update_me(
     body: UpdateMeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     user = _get_user_or_404(db, current_user.user_id)
@@ -287,7 +287,7 @@ def update_me(
 @router.put("/me/password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     body: ChangePasswordRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     user = _get_user_or_404(db, current_user.user_id)

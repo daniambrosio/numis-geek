@@ -183,7 +183,7 @@ async def upload_attachment(
     # bloco por FI; sem ele o arquivo sumia da UI após refresh.
     institution_id: str | None = Form(None),
     purpose: str | None = Form(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     source_enum = _parse_source_type(source_type)
@@ -246,7 +246,7 @@ async def upload_attachment(
 def list_attachments(
     source_type: str,
     source_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     source_enum = _parse_source_type(source_type)
@@ -267,7 +267,7 @@ def list_attachments(
 @router.get("/{attachment_id}/download")
 def download_attachment(
     attachment_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     att = db.get(Attachment, attachment_id)
@@ -297,7 +297,7 @@ def download_attachment(
 @router.delete("/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_attachment(
     attachment_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Hard delete: remove the file from disk **and** the DB row.

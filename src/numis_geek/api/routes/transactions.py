@@ -371,7 +371,7 @@ def list_transactions(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -400,7 +400,7 @@ def summary(
     party_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Fluxo BRUTO do período (inclui transferências e pagamentos de fatura —
@@ -438,7 +438,7 @@ def summary(
 @router.get("/{tx_id}", response_model=TransactionOut)
 def get_transaction(
     tx_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     return hydrate(db, [_get_or_404(db, tx_id, current_user)])[0]
@@ -448,7 +448,7 @@ def get_transaction(
 def create_transaction(
     body: TransactionCreateRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Returns a list: 1 row, or N rows for an installment purchase."""
@@ -467,7 +467,7 @@ def create_transaction(
 def create_transfer(
     body: TransferRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -484,7 +484,7 @@ def create_transfer(
 def update_transaction(
     tx_id: str,
     body: TransactionUpdateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Partial update; returns every row touched (both legs of a transfer)."""
@@ -515,7 +515,7 @@ def update_transaction(
 def delete_transaction(
     tx_id: str,
     cascade: bool = Query(default=False),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     tx = _get_or_404(db, tx_id, current_user)

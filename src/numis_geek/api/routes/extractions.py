@@ -191,7 +191,7 @@ def _actor_email(db: Session, user_id: str | None) -> str | None:
 @router.post("", response_model=ExtractionJobOut, status_code=status.HTTP_201_CREATED)
 def create_extraction(
     body: CreateExtractionBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = current_user.workspace_id
@@ -221,7 +221,7 @@ def create_extraction(
 @router.get("/{job_id}", response_model=ExtractionJobOut)
 def get_extraction(
     job_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     j = db.get(ExtractionJob, job_id)
@@ -235,7 +235,7 @@ def get_extraction(
 def confirm_extraction(
     job_id: str,
     body: ConfirmExtractionBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     j = db.get(ExtractionJob, job_id)
@@ -287,7 +287,7 @@ def confirm_extraction(
 def preview_extraction(
     job_id: str,
     body: PreviewExtractionBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 57 follow-up — read-only classification preview for a bulk
@@ -330,7 +330,7 @@ def preview_extraction(
 def reject_extraction(
     job_id: str,
     body: RejectExtractionBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     j = db.get(ExtractionJob, job_id)

@@ -429,7 +429,7 @@ def hydrate_rules(db: Session, rows: list[RecurrenceRule]) -> list[RecurrenceRul
 def list_rules(
     include_inactive: bool = Query(default=True),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -443,7 +443,7 @@ def list_rules(
 @rules_router.get("/{rule_id}", response_model=RecurrenceRuleOut)
 def get_rule(
     rule_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     return hydrate_rules(db, [_rule_or_404(db, rule_id, current_user)])[0]
@@ -453,7 +453,7 @@ def get_rule(
 def create_rule(
     body: RuleCreateRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -472,7 +472,7 @@ def create_rule(
 def update_rule(
     rule_id: str,
     body: RuleUpdateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -494,7 +494,7 @@ def update_rule(
 @rules_router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_rule(
     rule_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -518,7 +518,7 @@ def list_occurrences(
     recurrence_rule_id: str | None = Query(default=None),
     overdue: bool | None = Query(default=None),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Ordered by due_date asc. `overdue=true` → PENDING with due_date < today."""
@@ -550,7 +550,7 @@ def list_occurrences(
 def get_forecast(
     months: int = Query(default=3, ge=1, le=24),
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     ws = _resolve_ws(current_user, workspace_id)
@@ -560,7 +560,7 @@ def get_forecast(
 @router.get("/{occ_id}", response_model=ScheduledTransactionOut)
 def get_occurrence(
     occ_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     return hydrate_occurrences(db, [_occ_or_404(db, occ_id, current_user)])[0]
@@ -569,7 +569,7 @@ def get_occurrence(
 @router.get("/{occ_id}/candidate-transactions", response_model=list[TransactionOut])
 def candidate_transactions(
     occ_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Tx that could settle this occurrence by hand (sign matches, ±45 days,
@@ -582,7 +582,7 @@ def candidate_transactions(
 def create_occurrence(
     body: OccurrenceCreateRequest,
     workspace_id: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """One-off conta a pagar/receber (no rule)."""
@@ -600,7 +600,7 @@ def create_occurrence(
 def update_occurrence(
     occ_id: str,
     body: OccurrenceUpdateRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -620,7 +620,7 @@ def update_occurrence(
 @router.delete("/{occ_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_occurrence(
     occ_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -638,7 +638,7 @@ def delete_occurrence(
 def pay(
     occ_id: str,
     body: PayRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Marcar pago: date + optional link to an existing tx (sign must match,
@@ -664,7 +664,7 @@ def pay(
 @router.post("/{occ_id}/unpay", response_model=ScheduledTransactionOut)
 def unpay(
     occ_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Desfazer pagamento: PAID → PENDING, clearing paid_at and the tx link."""
@@ -684,7 +684,7 @@ def unpay(
 def postpone(
     occ_id: str,
     body: PostponeRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -703,7 +703,7 @@ def postpone(
 @router.post("/{occ_id}/cancel", response_model=ScheduledTransactionOut)
 def cancel(
     occ_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     _require_admin(current_user)

@@ -462,7 +462,7 @@ def list_assets(
     asset_class: AssetClass | None = Query(default=None),
     include_inactive: bool = Query(default=False),
     search: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     q = db.query(Asset)
@@ -530,7 +530,7 @@ def list_assets(
 @router.get("/{asset_id}", response_model=AssetOut)
 def get_asset(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_or_404(db, asset_id)
@@ -611,7 +611,7 @@ def _resolve_linked_account(
 @router.post("", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
 def create_asset(
     body: AssetRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     workspace_id = _resolve_workspace_id(body, current_user, db)
@@ -730,7 +730,7 @@ def _apply_asset_update(
 def update_asset(
     asset_id: str,
     body: AssetRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_or_404(db, asset_id)
@@ -769,7 +769,7 @@ class AssetPatchRequest(BaseModel):
 def patch_asset(
     asset_id: str,
     body: AssetPatchRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_or_404(db, asset_id)
@@ -864,7 +864,7 @@ class PriceRefreshOut(BaseModel):
 @router.post("/{asset_id}/refresh-price", response_model=PriceRefreshOut)
 def refresh_asset_price(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     from numis_geek.models.asset import PriceSource
@@ -907,7 +907,7 @@ class ManualPriceOut(BaseModel):
 def update_asset_price_manual(
     asset_id: str,
     body: ManualPriceRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 28 — manual price edit. Always allowed (Spec 49 follow-up):
@@ -973,7 +973,7 @@ class BulkRefreshSummaryOut(BaseModel):
 def refresh_prices_bulk(
     response: Response,
     only_country: str | None = Query(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     from numis_geek.services.price_update import refresh_bulk
@@ -1004,7 +1004,7 @@ def refresh_prices_bulk(
 @router.get("/{asset_id}/position", response_model=PositionOut)
 def get_asset_position(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_or_404(db, asset_id)
@@ -1071,7 +1071,7 @@ _PERIOD_DAYS: dict[str, int | None] = {
 def asset_price_history(
     asset_id: str,
     period: Literal["6m", "12m", "24m", "all"] = "24m",
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 46 V1 — historical unit prices derived from PortfolioSnapshotItem.
@@ -1181,7 +1181,7 @@ class AssetSnapshotHistoryOut(BaseModel):
 )
 def asset_snapshot_history(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 50 — historical closings for this asset.
@@ -1340,7 +1340,7 @@ def _perf_out(perf: AssetPerformance) -> AssetPerformanceOut:
 @router.get("/{asset_id}/performance", response_model=AssetPerformanceOut)
 def asset_performance(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Spec 81 — uma linha por fechamento CLOSED com retorno total do mês
@@ -1358,7 +1358,7 @@ def list_asset_movements(
     include_inactive: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     """Retorna o mesmo shape de `/asset-movements` (full AssetMovementOut)
@@ -1388,7 +1388,7 @@ def list_asset_movements(
 @router.put("/{asset_id}/deactivate", response_model=AssetOut)
 def deactivate_asset(
     asset_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: UserContext = Depends(get_current_user),
 ):
     asset = _get_or_404(db, asset_id)
