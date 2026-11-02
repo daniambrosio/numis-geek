@@ -2199,6 +2199,12 @@ def _confirm_bank_import(
             resource_type="invoice", resource_id=p["invoice_id"],
             details={**p, "extraction_job_id": job.id},
         )
+    for lr in out.learned:
+        audit.log(
+            user_email=actor, action="recurrence_rule.amount_learned", workspace_id=job.workspace_id,
+            user_id=user_id, resource_type="recurrence_rule", resource_id=lr["rule_id"],
+            details={**lr, "extraction_job_id": job.id},
+        )
     for s in out.settled:
         audit.log(
             user_email=actor, action="scheduled_transaction.paid", workspace_id=job.workspace_id,
@@ -2238,6 +2244,7 @@ def _confirm_bank_import(
             "skipped": out.skipped,
             "paid_invoices": len(out.paid_invoices),
             "settled": len(out.settled),
+            "amounts_learned": len(out.learned),
             "new_parties": len(out.new_parties),
             "invoice_id": out.invoice_id,
         },

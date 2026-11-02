@@ -809,6 +809,8 @@ def _match_invoice(db: Session, sc: _Scope, d: date, amount: Decimal, used: set[
 def _occ_brief(db: Session, o: ScheduledTransaction) -> dict:
     party = db.get(Party, o.party_id) if o.party_id else None
     return {
+        # regra MONTHLY/YEARLY: quitar com outro valor atualiza o previsto
+        "learns_amount": sched_svc.learns_amount(db, o),
         "party_name": party.name if party and party.is_active else None,
         "occurrence_id": o.id,
         "description": o.description,
@@ -905,6 +907,7 @@ class ApplyOutcome:
     settled: list[dict] = field(default_factory=list)
     new_parties: list[str] = field(default_factory=list)
     invoice_id: str | None = None
+    learned: list[dict] = field(default_factory=list)
 
 
 def _resolve_doc_invoice(db: Session, sc: _Scope, info: dict, user_id: str | None) -> Invoice:
@@ -1133,6 +1136,9 @@ def apply_bank_import(
                 raise BankImportError(f"{r['description']}: {exc}")
             out.settled.append({"occurrence_id": occ.id, "transaction_id": tx.id,
                                 "paid_at": occ.paid_at.isoformat(), "inherited": inherited})
+            learned = sched_svc.learn_amount_from_payment(db, occ, tx, user_id=user_id)
+            if learned:
+                out.learned.append(learned)
 
     if doc_invoice is not None:
         _finalize_doc_invoice(db, doc_invoice, c.invoice, user_id)

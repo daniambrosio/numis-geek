@@ -1198,3 +1198,120 @@ def test_line_kind_fallbacks():
     assert line_kind_of("ALUGUEL MORADIA", Decimal("-1"), None) is None
     assert line_kind_of("QUALQUER", Decimal("-1"), "bank_fee") == "BANK_FEE"
     assert line_kind_of("QUALQUER", Decimal("-1"), "nonsense") is None
+
+
+# ══ contas a pagar/receber aprendem o valor do extrato (user 2026-11-02) ════
+
+def _rule(seed, desc, amount, frequency, **kw):
+    from numis_geek.models.scheduled_transaction import RecurrenceFrequency, RecurrenceRule
+    db = TestSession()
+    rule, occs = sched_svc.create_rule(db, seed["ws"], sched_svc.RuleInput(
+        direction=ScheduledDirection.PAYABLE, description=desc, amount=Decimal(amount),
+        frequency=RecurrenceFrequency[frequency], day_of_month=5, start_date=date(2026, 3, 5),
+        currency=Currency.BRL, **kw,
+    ))
+    by_due = {o.due_date: o.id for o in occs}
+    rid = rule.id
+    db.commit()
+    db.close()
+    return rid, by_due
+
+
+def test_import_settling_monthly_rule_learns_the_paid_amount(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Internet Vivo Fibra", "300", "MONTHLY")
+    apr, may, jun, jul = (occ[date(2026, m, 5)] for m in (4, 5, 6, 7))
+    mar = occ[date(2026, 3, 5)]
+    db = TestSession()
+    db.get(ScheduledTransaction, jun).amount = Decimal("280")   # edited by hand
+    db.commit()
+    db.close()
+
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "DEB AUT INTERNET VIVO FIBRA", -312.4)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["scheduled"]["occurrence_id"] == apr
+    assert row["scheduled"]["candidates"][0]["learns_amount"] is True
+    res = confirm(client, seed, job["id"])
+    assert res["bank_import"]["amounts_learned"] == 1
+
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, apr).status == ScheduledStatus.PAID
+    assert db.get(ScheduledTransaction, apr).amount == Decimal("300.00")      # settled one keeps its forecast
+    assert db.get(ScheduledTransaction, mar).amount == Decimal("300.00")      # earlier: untouched
+    assert db.get(ScheduledTransaction, may).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, jul).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, jun).amount == Decimal("280.00")      # hand edit preserved
+    from numis_geek.models.audit_log import AuditLog
+    log = db.query(AuditLog).filter(AuditLog.action == "recurrence_rule.amount_learned",
+                                    AuditLog.resource_id == rid).one()
+    details = json.loads(log.details) if isinstance(log.details, str) else log.details
+    assert details["old_amount"] == "300.00" and details["new_amount"] == "312.40"
+    assert may in details["occurrence_ids"] and jun not in details["occurrence_ids"]
+    db.close()
+
+
+def test_same_amount_learns_nothing(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Academia Smart", "120", "MONTHLY")
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "ACADEMIA SMART FIT", -120)]))
+    assert confirm(client, seed, job["id"])["bank_import"]["amounts_learned"] == 0
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("120.00")
+    db.close()
+
+
+def test_installment_rule_never_learns(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Parcela Sofa Tok", "500", "INSTALLMENT", installment_total=10)
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "PARCELA SOFA TOK STOK", -510)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["scheduled"]["candidates"][0]["learns_amount"] is False
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("500.00")
+    assert db.get(ScheduledTransaction, occ[date(2026, 5, 5)]).amount == Decimal("500.00")
+    db.close()
+
+
+def test_manual_mark_paid_does_not_learn(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Plano Celular", "90", "MONTHLY")
+    db = TestSession()
+    tx = tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc,
+        event_date=date(2026, 4, 5), description="Celular", amount=Decimal("-95"),
+    ))[0]
+    sched_svc.mark_paid(db, db.get(ScheduledTransaction, occ[date(2026, 4, 5)]), paid_at=date(2026, 4, 5),
+                        transaction_id=tx.id)
+    db.commit()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("90.00")
+    assert db.get(ScheduledTransaction, occ[date(2026, 5, 5)]).amount == Decimal("90.00")
+    db.close()
+    r = client.post(f"/api/scheduled-transactions/{occ[date(2026, 6, 5)]}/pay",
+                    json={"paid_at": "2026-06-05"}, headers=auth(seed["token"]))
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("90.00")
+    db.close()
+
+
+def test_one_off_occurrence_never_learns(client, seed):
+    acc = new_account(seed)
+    due = BASE + timedelta(days=200)
+    db = TestSession()
+    o = sched_svc.create_one_off(db, seed["ws"], sched_svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="IPVA Unico", amount=Decimal("1000"),
+        due_date=due, currency=Currency.BRL))
+    oid = o.id
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([line(due, "IPVA UNICO SP", -1020)]))
+    assert confirm(client, seed, job["id"])["bank_import"]["amounts_learned"] == 0
+    db = TestSession()
+    assert db.get(ScheduledTransaction, oid).amount == Decimal("1000.00")
+    db.close()
