@@ -63,6 +63,15 @@ class LLMCall:
         ).quantize(Decimal("0.0001"))
 
 
+# Família 5 (Haiku/Sonnet/Opus 5.x, Fable) recusa `temperature` com 400
+# ("deprecated for this model") — só os modelos antigos recebem temperature=0.
+_NO_TEMPERATURE_PREFIXES = ("claude-haiku-5", "claude-sonnet-5", "claude-opus-5", "claude-fable")
+
+
+def accepts_temperature(model: str) -> bool:
+    return not model.startswith(_NO_TEMPERATURE_PREFIXES)
+
+
 class LLMClient(Protocol):
     """Minimal protocol so tests can inject a fake without the SDK."""
 
@@ -143,16 +152,22 @@ class AnthropicClient:
                 })
         content.append({"type": "text", "text": user_text})
 
-        message = self._sdk.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            # Extração de dados: determinístico. Sem isso a API usa 1.0 e o
-            # mesmo extrato oscilava entre formatos (Bradesco Out/26: 1 ou 4
-            # linhas pro mesmo plano de previdência, rodadas idênticas).
-            temperature=0,
-            system=system,
-            messages=[{"role": "user", "content": content}],
-        )
+        # Extração de dados: determinístico. Sem isso a API usa 1.0 e o
+        # mesmo extrato oscilava entre formatos (Bradesco Out/26: 1 ou 4
+        # linhas pro mesmo plano de previdência, rodadas idênticas).
+        kwargs: dict[str, Any] = {}
+        if accepts_temperature(model):
+            kwargs["temperature"] = 0
+        request = dict(model=model, max_tokens=max_tokens, system=system,
+                       messages=[{"role": "user", "content": content}])
+        try:
+            message = self._sdk.messages.create(**request, **kwargs)
+        except Exception as exc:
+            # Rede de segurança: modelo novo que recusa temperature (400) não
+            # pode derrubar a extração — refaz uma vez sem o parâmetro.
+            if "temperature" not in kwargs or "temperature" not in str(exc):
+                raise
+            message = self._sdk.messages.create(**request)
         # `message.content` is a list of TextBlock-like objects.
         text_parts = [b.text for b in message.content if getattr(b, "type", None) == "text"]
         text = "\n".join(text_parts)

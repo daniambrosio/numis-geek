@@ -1642,3 +1642,41 @@ def test_party_choice_is_remembered_without_trailing_dates(client, seed):
     job2 = import_statement(client, seed, acc, statement([line(date(2026, 10, 2), "PIX MARIA N 02/10", -150, line_kind="PIX")]))
     row = preview(client, seed, job2["id"])["rows"][0]
     assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == diarista
+
+
+def test_temperature_only_for_models_that_accept_it():
+    from numis_geek.integrations.llm import accepts_temperature
+    assert accepts_temperature("claude-sonnet-4-5")
+    assert not accepts_temperature("claude-haiku-5-5")
+    assert not accepts_temperature("claude-sonnet-5-5")
+
+
+
+def _fake_anthropic(fail_on_temperature: bool):
+    from types import SimpleNamespace
+    seen = []
+
+    def create(**kw):
+        seen.append(kw)
+        if fail_on_temperature and "temperature" in kw:
+            raise RuntimeError("Error code: 400 - `temperature` is deprecated for this model.")
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text="{}")],
+                               usage=SimpleNamespace(input_tokens=1, output_tokens=1), model=kw["model"])
+
+    return SimpleNamespace(messages=SimpleNamespace(create=create)), seen
+
+
+def test_client_sends_temperature_zero_to_sonnet_4_5_and_retries_without_on_400():
+    from numis_geek.integrations.llm import AnthropicClient
+    c = AnthropicClient.__new__(AnthropicClient)
+    c._sdk, seen = _fake_anthropic(fail_on_temperature=False)
+    c.call(system="s", user_text="u", model="claude-sonnet-4-5")
+    assert seen[0]["temperature"] == 0
+
+    c._sdk, seen = _fake_anthropic(fail_on_temperature=True)
+    c.call(system="s", user_text="u", model="claude-sonnet-4-5")
+    assert "temperature" in seen[0] and "temperature" not in seen[1]
+
+    c._sdk, seen = _fake_anthropic(fail_on_temperature=False)
+    c.call(system="s", user_text="u", model="claude-haiku-5-5-20260101")
+    assert len(seen) == 1 and "temperature" not in seen[0]
