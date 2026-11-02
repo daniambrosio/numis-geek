@@ -134,6 +134,7 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   Validar os prompts ou bloquear o roteamento; spec está Done escondendo o gap.
 
 ## Segurança / produção
+- [user] **VPS vps1 — disco chegou a 100% em 2026-11-02** (deploy falhou no `npm ci`). Liberado só o build cache (9,5G) → 84%. Sobram ~41G de imagens Docker sem container (todos os projetos do servidor) + 8,4G em /opt/infra/backups. Decidir a limpeza (ex.: agente vps-devops: `docker image prune -a` com filtro de idade, rotação dos backups) e um alerta de disco.
 
 - [ ] `[claude]` **Encriptar `IntegrationCredential.secret_value` at rest.** TODO no
   código (`models/integration_credential.py:65`) com gate "before VPS deploy" — gate
