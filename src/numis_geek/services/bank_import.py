@@ -333,7 +333,16 @@ def _resolve_party(
         p = aliases.get(k)
         if p is not None and p.is_active:
             return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": k, "source": "alias"}
+    pk = _prefix_alias(alias, aliases)
+    if pk is not None:
+        p = aliases[pk]
+        return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": "alias"}
     if kind == "IOF":
+        # O user já escolheu um fornecedor pra IOF (ex.: "Governo" no The One)
+        # → vale pras próximas, em vez do default "Receita Federal".
+        chosen = _chosen_for_prefix("IOF ", aliases)
+        if chosen is not None:
+            return {"mode": "existing", "party_id": chosen.id, "party_name": chosen.name, "alias": alias, "source": "iof"}
         return _by_alias(normalize_description(IOF_PARTY_NAME), IOF_PARTY_NAME, aliases, "iof")
     if kind == "BANK_FEE" and fi_name:
         return _by_alias(normalize_description(fi_name), fi_name, aliases, "bank_fee")
@@ -344,6 +353,36 @@ def _resolve_party(
         return {"mode": "none", "alias": alias, "source": "pix_unknown",
                 "warning": "Pix sem recebedor identificável — escolha o fornecedor/cliente"}
     return _party_for(desc, aliases)
+
+
+PREFIX_ALIAS_MIN = 12
+
+
+def _prefix_alias(key: str, aliases: dict[str, Party]) -> str | None:
+    """Banco trunca descrição com tamanhos diferentes por canal: o The One
+    manda "IOF COMPRA INTERNACIONA", o Latam "IOF COMPRA INTERNACIONAL".
+    Sem match exato, aceita alias de fornecedor ativo que seja prefixo da
+    chave (ou vice-versa), com ≥12 caracteres; o mais longo ganha."""
+    if not key or len(key) < PREFIX_ALIAS_MIN:
+        return None
+    best = None
+    for a, p in aliases.items():
+        if not p.is_active or len(a) < PREFIX_ALIAS_MIN or a == key:
+            continue
+        if key.startswith(a) or a.startswith(key):
+            if best is None or len(a) > len(best):
+                best = a
+    return best
+
+
+def _chosen_for_prefix(prefix: str, aliases: dict[str, Party]) -> Party | None:
+    """Fornecedor ativo mais usado entre os aliases que começam com `prefix`."""
+    from collections import Counter
+    cnt = Counter(p.id for a, p in aliases.items() if a.startswith(prefix) and p.is_active)
+    if not cnt:
+        return None
+    pid = cnt.most_common(1)[0][0]
+    return next(p for p in aliases.values() if p.id == pid)
 
 
 def _party_for(desc: str, aliases: dict[str, Party]) -> dict:

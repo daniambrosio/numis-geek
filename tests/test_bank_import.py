@@ -1844,3 +1844,22 @@ def test_itau_invoice_without_close_date_and_payment_already_in_statement(client
     assert len(debits) == 1 and debits[0].paid_invoice_id == inv.id
     db.close()
     assert res["bank_import"]["paid_invoices"] >= 1 or res["bank_import"].get("paid_invoices") is not None
+
+
+def test_iof_uses_party_user_chose_before_and_truncated_alias_matches(client, seed):
+    """The One: user escolheu "Governo" pro "IOF COMPRA INTERNACIONA"; no
+    Latam a descrição vem "IOF COMPRA INTERNACIONAL" — tem que vir Governo,
+    não "nova: Receita Federal"."""
+    card = new_card(seed)
+    db = TestSession()
+    gov = Party(id=str(uuid.uuid4()), workspace_id=seed["ws"], name="Governo", is_active=True)
+    db.add(gov); db.flush()
+    db.add(PartyAlias(id=str(uuid.uuid4()), workspace_id=seed["ws"], party_id=gov.id, alias_normalized="IOF COMPRA INTERNACIONA"))
+    gid = gov.id
+    db.commit(); db.close()
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-03-05", "due_date": "2026-03-15", "total": 3.98},
+        "transactions": [line(date(2026, 3, 1), "IOF COMPRA INTERNACIONAL", -3.98, line_kind="IOF")],
+    })
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == gid
