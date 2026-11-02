@@ -2412,3 +2412,23 @@ def test_convert_jar_prefers_closest_document_rate(db):
     assert out["rate_source"] == "CROSS" and out["cross"]["implied_date"] == "2025-07-10"
     assert out["converted"] == Decimal("-100.00")                 # BRL leg, 2 days away, beats USD leg (3 months)
     assert mc.convert_jar(db, date(2025, 7, 12), Decimal("-1"), "ARS", "BRL", {}, implied)["rate_source"] == "NONE"
+
+
+def test_wise_page_break_conversion_and_footer_inside_line():
+    """PDF real: "To EUR 916.79 EUR" no fim da página e "Moved 6,000 BRL" no
+    topo da seguinte virava gasto de −6.000; o rodapé da página caía no meio
+    da linha ("Holiday Inn Home Cards Recipients Payments 94,380 CLP")."""
+    from numis_geek.services.extraction_parsers.wise_statement import parse_text
+    footer = "Home Cards Recipients Payments\n11/2/26, 12:02 PM Wise - Home\nhttps://wise.com/all-transactions?from=2023-01-01&to=2026-11-02 21/35"
+    pages = [
+        "Transactions\n12 September 2025\nTo EUR 916.79 EUR Home Cards Recipients Payments\n" + footer,
+        "Moved 6,000 BRL\nDANIEL RODRIGUES AMBROSIO + 6,000 BRL\n7 July 2024\n"
+        "Holiday Inn Home Cards Recipients Payments 94,380 CLP\n" + footer,
+    ]
+    tx = parse_text(pages)["transactions"]
+    descs = [t["description"] for t in tx]
+    assert "Moved" not in descs and all("Home Cards" not in d for d in descs)
+    conv = next(t for t in tx if t["description"] == "To EUR")
+    assert conv["line_kind"] == "CONVERSION" and conv["jar_currency"] == "BRL" and conv["jar_amount"] == -6000.0
+    hotel = next(t for t in tx if t["description"] == "Holiday Inn")
+    assert hotel["jar_amount"] == -94380.0 and hotel["jar_currency"] == "CLP"

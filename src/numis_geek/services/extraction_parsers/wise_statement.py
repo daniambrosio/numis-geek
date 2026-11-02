@@ -43,6 +43,7 @@ _INLINE = re.compile(r"^(.*?\S)\s*" + _AMOUNT + r"$")
 _STATUS = {"Moved", "Added", "Sent", "Card checked", "Cancelled", "Declined"}
 # Não movimentam dinheiro: verificação de cartão (0 GBP), cancelada, recusada.
 _NO_MONEY = {"Card checked", "Cancelled", "Declined"}
+_STATUS_INLINE = re.compile(r"^(Moved|Added|Sent) " + _AMOUNT + r"$")
 # "EUR, USD" depois do valor: pago com mais de um saldo (split não informado).
 _MULTI_JAR = re.compile(r"^[A-Z]{3}(?:, [A-Z]{3})+$")
 _FOOTER_TAIL = " Home Cards Recipients Payments"
@@ -103,8 +104,10 @@ def parse_text(pages: list[str]) -> dict:
     for ln in raw:
         if not ln:
             continue
-        if ln.endswith(_FOOTER_TAIL):
-            ln = ln[: -len(_FOOTER_TAIL)].strip()
+        # O rodapé da página às vezes cai no MEIO da linha, entre o nome e o
+        # valor ("Holiday Inn Home Cards Recipients Payments 94,380 CLP").
+        if _FOOTER_TAIL in ln:
+            ln = " ".join(ln.replace(_FOOTER_TAIL, " ").split())
         if ln and not _is_noise(ln):
             lines.append(ln)
 
@@ -139,6 +142,15 @@ def parse_text(pages: list[str]) -> dict:
         if ln in _STATUS:
             if entry is not None:
                 entry["status"] = ln
+            continue
+        sm = _STATUS_INLINE.match(ln)
+        if sm and entry is not None:
+            # Quebra de página no meio da conversão: "To EUR 916.79 EUR" no fim
+            # de uma página e "Moved 6,000 BRL" no topo da seguinte — status e
+            # valor na mesma linha. Sem isto virava um gasto de −6.000 BRL.
+            entry["status"] = sm.group(1)
+            if len(entry["amounts"]) < 2:
+                entry["amounts"].append((sm.group(2) or "", _num(sm.group(3)), sm.group(4)))
             continue
         if _MULTI_JAR.match(ln):
             if entry is not None:
