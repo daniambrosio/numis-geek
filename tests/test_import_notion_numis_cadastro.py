@@ -23,7 +23,7 @@ def _plan(*rows):
 
 def test_uses_last_paid_value_and_maps_direction_and_account():
     p = _plan(_row("Condomínio", last=1670, est=1229),
-              _row("Salário", meio="Depósito em Conta", tipo="Crédito", sub="Salário", last=33968))
+              _row("Consultoria", meio="Depósito em Conta", tipo="Crédito", sub="Honorários", last=2800))
     cond, sal = p.rules
     assert cond.amount == Decimal("1670") and cond.direction == ScheduledDirection.PAYABLE
     assert cond.account_name == "Conta Corrente Itaú"
@@ -86,3 +86,12 @@ def test_day_after_28_is_clamped_with_warning():
 def test_unmapped_rows_fail_loudly(row):
     with pytest.raises(ValueError):
         _plan(row)
+
+
+def test_salary_splits_into_day_1_and_day_15():
+    p = _plan(_row("Salário Meli", meio="Depósito em Conta", tipo="Crédito", sub="Salário", dia=1))
+    assert [(r.description, r.day_of_month, r.amount, r.frequency) for r in p.rules] == [
+        ("Salário Meli (dia 1)", 1, Decimal("23538.89"), RecurrenceFrequency.MONTHLY),
+        ("Salário Meli (dia 15)", 15, Decimal("33968"), RecurrenceFrequency.MONTHLY),
+    ]
+    assert all(r.direction == ScheduledDirection.RECEIVABLE for r in p.rules)

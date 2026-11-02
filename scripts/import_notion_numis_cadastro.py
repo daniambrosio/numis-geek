@@ -73,6 +73,12 @@ SPLIT_YEARLY: dict[str, list[tuple[int, Decimal]]] = {
     "Rematrícula Caio": [(11, Decimal("2989.35")), (12, Decimal("2690.41"))],
 }
 
+# Salário Meli chega em duas partes (user, 2026-11-02): dia 1 e dia 15.
+# Valores = últimos pagamentos reais de cada parte (set/26 e out/26).
+SPLIT_MONTHLY: dict[str, list[tuple[int, Decimal]]] = {
+    "Salário Meli": [(1, Decimal("23538.89")), (15, Decimal("33968"))],
+}
+
 CARDS: list[dict] = [
     {"notion": "Cartão Mastercard Itaú", "name": "Mastercard Itaú", "fi": "Itaú", "brand": "Mastercard"},
     {"notion": "Cartão Latam Itaú", "name": "Latam Itaú", "fi": "Itaú", "brand": None},
@@ -182,6 +188,14 @@ def build_plan(snapshot: dict) -> Plan:
                 rules.append(RulePlan(
                     description=f"{name} ({label})", direction=direction, category_name=h["subcategoria"],
                     amount=value, frequency=RecurrenceFrequency.YEARLY, day_of_month=day, month=month,
+                    account_name=account, notes=notes,
+                ))
+            continue
+        if name in SPLIT_MONTHLY:
+            for split_day, value in SPLIT_MONTHLY[name]:
+                rules.append(RulePlan(
+                    description=f"{name} (dia {split_day})", direction=direction, category_name=h["subcategoria"],
+                    amount=value, frequency=RecurrenceFrequency.MONTHLY, day_of_month=split_day, month=None,
                     account_name=account, notes=notes,
                 ))
             continue
