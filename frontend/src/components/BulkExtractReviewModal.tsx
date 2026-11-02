@@ -15,12 +15,13 @@
  * skip).
  */
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Sparkles, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Sparkles, X } from 'lucide-react'
 
 import {
   api,
   type BulkApplyDetailOut,
   type BulkExtractJobOut,
+  type ExtractionApplyResultOut,
   type FinancialInstitutionOut,
   type SnapshotPendencyOut,
 } from '../lib/api'
@@ -57,6 +58,11 @@ function tickerOf(pos: ExtractedPosition): string | null {
 export default function BulkExtractReviewModal({
   job, pendencies, onApplied, onClose,
 }: Props) {
+  // Resultado do Apply com avisos: o modal vira um resumo do que foi gravado
+  // (antes recalculava a prévia e mostrava "Casadas (0) · Aplicar 0" —
+  // parecia que nada tinha sido aplicado, bug 2026-11-02).
+  const [appliedResult, setAppliedResult] = useState<ExtractionApplyResultOut | null>(null)
+  const [ackIntegrity, setAckIntegrity] = useState(false)
   useEscapeKey(onClose)
   const [fis, setFis] = useState<FinancialInstitutionOut[]>([])
   // Spec 58 — when the job was created scoped to a FI, that's the source
@@ -138,9 +144,10 @@ export default function BulkExtractReviewModal({
         })
       }
       for (const o of serverDetail.orphan) {
+        const raw = o.unit_price ?? o.market_value ?? null
         orphan.push({
           ticker: o.ticker,
-          price: o.unit_price != null ? Number(o.unit_price) : null,
+          price: raw != null ? Number(raw) : null,
           currency: o.currency,
         })
       }
@@ -171,6 +178,7 @@ export default function BulkExtractReviewModal({
   }, [serverDetail, pendencyById, positions, manualMappings])
 
   const [autoSkippedOpen, setAutoSkippedOpen] = useState(false)
+  const integrityIssues = serverDetail?.integrity_issues ?? []
 
   async function handleApply() {
     setApplying(true); setError(null)
@@ -185,6 +193,7 @@ export default function BulkExtractReviewModal({
         institution_short_name: fiShortName || null,
         manual_mappings: Object.keys(manualMappings).length ? manualMappings : null,
         manual_prices: Object.keys(priceMap).length ? priceMap : null,
+        acknowledge_integrity: integrityIssues.length > 0 && ackIntegrity,
       })
       // Spec 49 hotfix — quando matches eram esperados mas nenhum
       // aplicou (ex.: unit_price null sem manual price), abre erro no
@@ -199,7 +208,7 @@ export default function BulkExtractReviewModal({
       // backend retornou errors, o user precisa ver. Antes só mostrava
       // errors quando applied_count == 0 — errors parciais sumiam.
       if (result.errors && result.errors.length > 0) {
-        setError(result.errors.join(' · '))
+        setAppliedResult(result)
         setApplying(false)
         // Notifica o pai — a lista refresca — MAS sinaliza hasErrors=true
         // pro pai NÃO fechar o modal (user precisa ver os erros).
@@ -236,7 +245,7 @@ export default function BulkExtractReviewModal({
             </div>
           </div>
           <button
-            onClick={handleCancel}
+            onClick={appliedResult ? onClose : handleCancel}
             className="w-7 h-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             aria-label="Fechar"
           >
@@ -244,7 +253,38 @@ export default function BulkExtractReviewModal({
           </button>
         </div>
 
+        {appliedResult ? (
+          <AppliedSummary result={appliedResult} onClose={onClose} />
+        ) : (<>
         <div className="p-5 overflow-y-auto flex-1 space-y-4">
+          {integrityIssues.length > 0 && (
+            <div
+              className="rounded-lg border border-red-500/40 bg-red-500/[0.06] p-3 space-y-2"
+              data-testid="bulk-integrity-issues"
+            >
+              <div className="flex items-center gap-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                A extração não bate com os totais do próprio extrato
+              </div>
+              <ul className="text-[11px] text-red-700/90 dark:text-red-300/90 space-y-0.5 list-disc pl-4">
+                {integrityIssues.map(i => <li key={i}>{i}</li>)}
+              </ul>
+              <div className="text-[11px] text-gray-600 dark:text-gray-400">
+                Provável linha faltando, inventada ou com a coluna errada. Confira os
+                valores abaixo contra o extrato antes de aplicar — ou cancele e suba o
+                arquivo de novo.
+              </div>
+              <label className="flex items-center gap-2 text-[12px] text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ackIntegrity}
+                  onChange={e => setAckIntegrity(e.target.checked)}
+                  data-testid="bulk-integrity-ack"
+                />
+                Conferi os valores — aplicar mesmo assim
+              </label>
+            </div>
+          )}
           <div className="flex items-center gap-3 flex-wrap">
             <label className="text-[12px] text-gray-600 dark:text-gray-300">
               {scopedFiShortName ? 'Extrato de:' : 'Esse extrato é da:'}
@@ -570,6 +610,7 @@ export default function BulkExtractReviewModal({
               return n != null && n > 0
             }).length
             const blocked = applying || applicable === 0
+              || (integrityIssues.length > 0 && !ackIntegrity)
             const missing = preview.matched.length - applicable
             return (
               <button
@@ -590,8 +631,62 @@ export default function BulkExtractReviewModal({
             )
           })()}
         </div>
+        </>)}
       </div>
     </div>
+  )
+}
+
+function AppliedSummary({
+  result, onClose,
+}: { result: ExtractionApplyResultOut; onClose: () => void }) {
+  const applied = result.bulk_detail?.applied ?? []
+  return (
+    <>
+      <div className="p-5 overflow-y-auto flex-1 space-y-4" data-testid="bulk-applied-summary">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.04] p-3">
+          <div className="flex items-center gap-1.5 text-[12px] font-semibold mb-1.5">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+            {result.applied_count} pendênci{result.applied_count === 1 ? 'a resolvida' : 'as resolvidas'}
+          </div>
+          <ul className="space-y-1">
+            {applied.map(a => (
+              <li key={a.pendency_id} className="flex items-center gap-2 text-[12px]">
+                <div className="flex-1 min-w-0 font-mono truncate">
+                  {a.ticker} <span className="text-gray-500">— {a.asset_name}</span>
+                </div>
+                <div className="tnum text-gray-700 dark:text-gray-300 shrink-0">
+                  {fmtMoney(Number(a.new_price), a.currency)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {result.errors.length > 0 && (
+          <div
+            className="rounded-lg border border-amber-500/30 bg-amber-500/[0.05] p-3"
+            data-testid="bulk-applied-warnings"
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-700 dark:text-amber-300 mb-1.5">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Avisos ({result.errors.length}) — confira esses valores
+            </div>
+            <ul className="text-[11px] text-gray-600 dark:text-gray-400 space-y-0.5 list-disc pl-4">
+              {result.errors.map(e => <li key={e}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+      </div>
+      <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex justify-end">
+        <button
+          onClick={onClose}
+          className="h-9 px-4 rounded-lg text-[13px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+          data-testid="bulk-applied-close"
+        >
+          Fechar
+        </button>
+      </div>
+    </>
   )
 }
 

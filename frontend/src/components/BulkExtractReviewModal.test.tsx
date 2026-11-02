@@ -128,8 +128,88 @@ describe('BulkExtractReviewModal', () => {
       institution_short_name: 'XP',
       manual_mappings: null,
       manual_prices: null,
+      acknowledge_integrity: false,
     }))
     expect(onApplied).toHaveBeenCalledWith(1, false)
+  })
+
+  // ── Bug Avenue Out/26 (2026-11-02) ─────────────────────────────────────────
+
+  const APPLIED_PETR = {
+    pendency_id: 'pen-1', asset_id: 'a-petr', ticker: 'PETR4',
+    asset_name: 'Petrobras', currency: 'BRL',
+    institution_short_name: 'XP',
+    new_price: '38.50', previous_price: '30.00',
+  }
+
+  it('integrity issues block Apply until the user acknowledges', async () => {
+    const job = makeJob([{ ticker_normalized: 'PETR4', ticker_raw: 'PETR4', unit_price: 38.5 }])
+    mockPreview({
+      applied: [APPLIED_PETR],
+      integrity_issues: ['Seção “Ações”: as 1 linhas somam R$ 3,850.00, o extrato mostra R$ 10,000.00'],
+    })
+    vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
+      applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
+    })
+    render(<BulkExtractReviewModal
+      job={job} pendencies={[makePendency()]} onApplied={() => {}} onClose={() => {}}
+    />)
+    await waitFor(() => expect(screen.getByTestId('bulk-integrity-issues')).toHaveTextContent('Ações'))
+    expect(screen.getByTestId('bulk-review-apply')).toBeDisabled()
+
+    await userEvent.click(screen.getByTestId('bulk-integrity-ack'))
+    expect(screen.getByTestId('bulk-review-apply')).toBeEnabled()
+    await userEvent.click(screen.getByTestId('bulk-review-apply'))
+    await waitFor(() => expect(api.confirmExtraction).toHaveBeenCalledWith(
+      'job-1', expect.objectContaining({ acknowledge_integrity: true }),
+    ))
+  })
+
+  it('after applying with warnings shows what was recorded, not a re-classified preview', async () => {
+    const job = makeJob([{ ticker_normalized: 'PETR4', ticker_raw: 'PETR4', unit_price: 38.5 }])
+    mockPreview({ applied: [APPLIED_PETR] })
+    vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
+      applied_count: 1, skipped_count: 0,
+      errors: ['PETR4: qty×price (3800.00) ≠ mv (3850.00); unit_price recomputed'],
+      bulk_detail: {
+        applied: [APPLIED_PETR], matched_no_pendency: [], orphan: [],
+        pendency_not_in_extract: [], auto_skipped: [],
+      },
+    })
+    const rejectSpy = vi.spyOn(api, 'rejectExtraction').mockResolvedValue({} as never)
+    const onApplied = vi.fn()
+    const onClose = vi.fn()
+    render(<BulkExtractReviewModal
+      job={job} pendencies={[makePendency()]} onApplied={onApplied} onClose={onClose}
+    />)
+    await waitFor(() => expect(screen.getByTestId('bulk-review-apply')).toBeEnabled())
+    await userEvent.click(screen.getByTestId('bulk-review-apply'))
+
+    const summary = await screen.findByTestId('bulk-applied-summary')
+    expect(summary).toHaveTextContent('1 pendência resolvida')
+    expect(summary).toHaveTextContent('PETR4')
+    expect(summary).toHaveTextContent('38,50')
+    expect(screen.getByTestId('bulk-applied-warnings')).toHaveTextContent('unit_price recomputed')
+    expect(screen.queryByTestId('bulk-section-matched')).not.toBeInTheDocument()
+    expect(onApplied).toHaveBeenCalledWith(1, true)
+
+    // Job já está CONFIRMED: fechar não pode disparar reject (dava 409).
+    await userEvent.click(screen.getByTestId('bulk-applied-close'))
+    expect(onClose).toHaveBeenCalled()
+    await userEvent.click(screen.getByLabelText('Fechar'))
+    expect(rejectSpy).not.toHaveBeenCalled()
+  })
+
+  it('orphan without unit price suggests the line market value when mapped', async () => {
+    const job = makeJob([{ ticker_raw: 'T 4.625 15/11/44', unit_price: null }])
+    mockPreview({
+      orphan: [{ ticker: 'T 4.625 15/11/44', unit_price: null, market_value: '2828.37', currency: 'USD' }],
+    })
+    render(<BulkExtractReviewModal
+      job={job} pendencies={[makePendency()]} onApplied={() => {}} onClose={() => {}}
+    />)
+    const orphan = await screen.findByTestId('bulk-orphan-T 4.625 15/11/44')
+    expect(orphan).toHaveTextContent('2.828,37')
   })
 
   it('Apply button disabled when no matches', () => {

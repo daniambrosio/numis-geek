@@ -1763,6 +1763,8 @@ export const api = {
       manual_mappings?: Record<string, string> | null
       manual_prices?: Record<string, number> | null
       bank_decisions?: Record<string, BankImportDecision> | null
+      // Soma das linhas ≠ totais por seção do extrato — user conferiu.
+      acknowledge_integrity?: boolean
     } = {},
   ) =>
     request<ExtractionApplyResultOut>(`/extractions/${id}/confirm`, {
@@ -1773,6 +1775,7 @@ export const api = {
         manual_mappings: opts.manual_mappings ?? null,
         manual_prices: opts.manual_prices ?? null,
         bank_decisions: opts.bank_decisions ?? null,
+        acknowledge_integrity: opts.acknowledge_integrity ?? false,
       }),
     }),
   rejectExtraction: (id: string, reason?: string) =>
@@ -2078,6 +2081,8 @@ export interface BulkApplyDetailOut {
   orphan: Array<{
     ticker: string
     unit_price: string | null
+    // Total da linha (modo valor / renda fixa sem qty×preço no extrato).
+    market_value?: string | null
     currency: string | null
   }>
   pendency_not_in_extract: Array<{
@@ -2099,6 +2104,9 @@ export interface BulkApplyDetailOut {
     price_source: string
     unit_price: string | null
   }>
+  // Bug Avenue 2026-11-02 — soma das linhas por seção ≠ total mostrado no
+  // extrato (linha faltando/inventada). Apply exige acknowledge_integrity.
+  integrity_issues?: string[]
 }
 
 export interface ExtractionApplyResultOut {
