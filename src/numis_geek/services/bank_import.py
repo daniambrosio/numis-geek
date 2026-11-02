@@ -542,11 +542,10 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
                      default_action="skip" if linked else "reconcile")
             rows.append(r)
             continue
-        if k >= 2:
-            r.update(bucket="duplicate", duplicate={"reason": "in_file", "transaction_id": None},
-                     actions=["skip", "import_anyway"], default_action="skip")
-            rows.append(r)
-            continue
+        # k-ésima linha idêntica NO MESMO arquivo sem par no banco: é outro
+        # movimento (4 indenizações LATAM de R$ 3.395,41 no mesmo dia) —
+        # segue como linha normal e grava com sufixo ":k". Duplicata é só o
+        # que já existe no ledger (2026-11-02, 1º import real).
 
         # ── checking debit paying a CLOSED invoice ─────────────────────────
         if sc.account is not None and amount < 0:
@@ -1214,7 +1213,7 @@ def _create_from_row(
             tx.parent_transaction_id = r["parent_transaction_id"]
     # k-ésima linha idêntica (ou promovida sobre uma duplicata): sufixo ":k"
     base = r["fingerprint_base"]
-    if r["bucket"] == "duplicate" or tx.fingerprint in taken_fps:
+    if r["bucket"] == "duplicate" or (r.get("occurrence_in_file") or 1) >= 2 or tx.fingerprint in taken_fps:
         tx.fingerprint = _free_suffix(db, sc.workspace_id, base, r.get("occurrence_in_file") or 2, taken_fps)
     else:
         taken_fps.add(tx.fingerprint)

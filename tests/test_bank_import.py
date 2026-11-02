@@ -349,10 +349,11 @@ def test_identical_lines_same_day_promoted_with_suffix(client, seed):
     lines = [line(d, "CAFE DA ESQUINA", -5), line(d, "CAFE DA ESQUINA", -5)]
     job = import_statement(client, seed, acc, statement(lines))
     rows = preview(client, seed, job["id"])["rows"]
-    assert rows[0]["bucket"] == "new"
-    assert rows[1]["bucket"] == "duplicate" and rows[1]["duplicate"]["reason"] == "in_file"
-    assert rows[1]["default_action"] == "skip" and "import_anyway" in rows[1]["actions"]
-    confirm(client, seed, job["id"], {"r1": {"action": "import_anyway"}})
+    # 2026-11-02: identical lines in the SAME file are distinct movements
+    assert [r["bucket"] for r in rows] == ["new", "new"]
+    assert [r["default_action"] for r in rows] == ["import", "import"]
+    assert rows[1]["fingerprint"] == rows[0]["fingerprint"] + ":2"
+    confirm(client, seed, job["id"])
 
     db = TestSession()
     txs = txs_of(db, account_id=acc)
@@ -1394,3 +1395,31 @@ def test_chunk_that_skipped_lines_is_asked_again():
 
     call, obj = _call_chunked(Flaky(), BANK_STATEMENT, [chunk, chunk.replace("Banco", "Banco 2")])
     assert len(obj["transactions"]) >= 5 and Flaky.calls >= 3
+
+
+
+# ══ 1º import real (2026-11-02) ═════════════════════════════════════════════
+
+def test_four_identical_indemnities_in_one_file_all_import(client, seed):
+    acc = new_account(seed)
+    d = date(2026, 9, 18)
+    lines = [line(d, "LATAM AIRLINES INDENIZ", 3395.41) for _ in range(4)] + [line(d, "PIX MARIA N", -50)] * 2
+    job = import_statement(client, seed, acc, statement(lines))
+    rows = preview(client, seed, job["id"])["rows"]
+    assert all(r["bucket"] == "new" and r["default_action"] == "import" for r in rows)
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    txs = txs_of(db, account_id=acc)
+    assert len(txs) == 6
+    latam = sorted(t.fingerprint for t in txs if t.description.startswith("LATAM"))
+    base = latam[0]
+    assert latam == [base, base + ":2", base + ":3", base + ":4"]
+    db.close()
+    # only what is already in the DB counts as duplicate: same file again (other bytes) → 6 dups
+    job2 = import_statement(client, seed, acc, statement(lines))
+    rows = preview(client, seed, job2["id"])["rows"]
+    assert all(r["bucket"] == "duplicate" for r in rows)
+    # a file with 5 identical lines: 4 match, the 5th is new
+    job3 = import_statement(client, seed, acc, statement([line(d, "LATAM AIRLINES INDENIZ", 3395.41) for _ in range(5)]))
+    rows = preview(client, seed, job3["id"])["rows"]
+    assert [r["bucket"] for r in rows] == ["duplicate"] * 4 + ["new"]
