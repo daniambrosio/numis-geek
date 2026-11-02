@@ -1325,8 +1325,14 @@ def _own_names(db: Session, workspace_id: str) -> list[set[str]]:
     """Tokens dos nomes dos usuários do workspace (Pix vindo do próprio user)."""
     from numis_geek.models.user import User
     out = []
-    for (name,) in db.query(User.name).filter(User.workspace_id == workspace_id).all():
+    import re as _re
+    for name, email in db.query(User.name, User.email).filter(User.workspace_id == workspace_id).all():
         toks = {t for t in normalize_description(name or "").split() if len(t) >= 3}
+        if len(toks) < 2 and email:
+            # Perfil sem nome (caso do user em prod): usa o e-mail
+            # "daniel.ambrosio@…" → {DANIEL, AMBROSIO}.
+            local = email.split("@", 1)[0]
+            toks = {t for t in normalize_description(" ".join(_re.split(r"[._\-+]", local))).split() if len(t) >= 3}
         if len(toks) >= 2:
             out.append(toks)
     return out

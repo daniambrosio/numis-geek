@@ -2432,3 +2432,20 @@ def test_wise_page_break_conversion_and_footer_inside_line():
     assert conv["line_kind"] == "CONVERSION" and conv["jar_currency"] == "BRL" and conv["jar_amount"] == -6000.0
     hotel = next(t for t in tx if t["description"] == "Holiday Inn")
     assert hotel["jar_amount"] == -94380.0 and hotel["jar_currency"] == "CLP"
+
+
+def test_own_name_falls_back_to_email_when_profile_has_no_name(seed):
+    """Prod: user sem nome no perfil — o Pix "DANIEL RODRIGUES AMBROSIO" pra
+    Wise vinha como 'nova: DANIEL…' em vez de transferência própria."""
+    from numis_geek.models.user import User
+    from numis_geek.services.bank_import import _is_own_name, _own_names
+    db = TestSession()
+    u = db.query(User).filter(User.email == "bi_admin@test.com").one()
+    old_name, old_email = u.name, u.email
+    u.name, u.email = None, "daniel.ambrosio@example.com"
+    db.flush()
+    own = _own_names(db, seed["ws"])
+    assert _is_own_name("DANIEL RODRIGUES AMBROSIO", own)
+    assert not _is_own_name("MARIA N", own)
+    db.rollback()
+    db.close()
