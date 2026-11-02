@@ -404,6 +404,13 @@ def _doc_invoice(db: Session, sc: _Scope, payload: dict, line_dates: list[date])
         base = max(line_dates) if line_dates else date.today()
         close = tx_svc.theoretical_close_date(sc.card, base)
         warnings.append("Fatura sem data de fechamento no documento — usei o fechamento teórico do cartão.")
+    if due is not None and close >= due and sc.card.close_day != sc.card.due_day:
+        # Export do Itaú (The One, out/26) só traz o vencimento — o modelo
+        # repetiu ele como fechamento. Fechamento = último close_day do
+        # cartão antes do vencimento.
+        c_ = tx_svc.add_months(due, 0, sc.card.close_day)
+        close = c_ if c_ < due else tx_svc.add_months(due, -1, sc.card.close_day)
+        warnings.append(f"Fatura sem data de fechamento — usei o dia {sc.card.close_day} do cartão ({close.strftime('%d/%m/%Y')}).")
     if due is None or due < close:
         due = tx_svc.theoretical_due_date(sc.card, close)
     total = _money(info.get("total"))
@@ -425,6 +432,27 @@ def _doc_invoice(db: Session, sc: _Scope, payload: dict, line_dates: list[date])
     }
     if out["blocked"]:
         warnings.append("Fatura já paga — lançamentos novos não entram nela (só conciliação).")
+    elif total and total > 0:
+        # Extrato importado antes da fatura: o débito do pagamento DESTA fatura
+        # já está na conta corrente (ex.: "CARTAO ITAU THE ONE" −12.801,97 em
+        # 15/10). O apply vincula (link_invoice_payment) em vez de deixar a
+        # fatura aberta e convidar um "Pagar fatura" que debitaria de novo.
+        rows = db.query(Transaction).join(Account, Account.id == Transaction.checking_account_id).filter(
+            Transaction.workspace_id == sc.workspace_id,
+            Transaction.source_type == TransactionSourceType.CHECKING,
+            Account.currency == sc.currency,
+            Transaction.paid_invoice_id.is_(None),
+            Transaction.transfer_group_id.is_(None),
+            Transaction.amount < 0,
+            Transaction.event_date >= due - timedelta(days=3),
+            Transaction.event_date <= due + timedelta(days=PAYMENT_TX_DATE_TOL_DAYS),
+        ).all()
+        cands = [t for t in rows if abs(abs(Decimal(t.amount)) - total) <= CENT]
+        if len(cands) == 1:
+            t = cands[0]
+            acc = db.get(Account, t.checking_account_id)
+            out["existing_payment"] = {"transaction_id": t.id, "event_date": t.event_date.isoformat(),
+                                       "account_name": acc.name if acc else None, "description": t.description}
     return out, warnings
 
 
@@ -1374,6 +1402,15 @@ def apply_bank_import(
 
     if doc_invoice is not None:
         _finalize_doc_invoice(db, doc_invoice, c.invoice, user_id)
+        pay = (c.invoice or {}).get("existing_payment")
+        if pay and doc_invoice.status == InvoiceStatus.CLOSED:
+            tx = db.get(Transaction, pay["transaction_id"])
+            if tx is not None and tx.paid_invoice_id is None:
+                try:
+                    tx_svc.link_invoice_payment(db, doc_invoice, tx, user_id=user_id)
+                except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+                    raise BankImportError(f"Pagamento da fatura: {exc}")
+                out.paid_invoices.append({"invoice_id": doc_invoice.id, "transaction_id": tx.id, "linked": True})
     db.flush()
     return out, c
 

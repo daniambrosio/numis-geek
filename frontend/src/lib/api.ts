@@ -2232,6 +2232,8 @@ export interface BankImportPreview {
     existing_invoice_id: string | null
     existing_status: string | null
     blocked: boolean
+    /** Débito do pagamento desta fatura já no extrato — o apply vincula. */
+    existing_payment?: { transaction_id: string; event_date: string; account_name: string | null; description: string } | null
   } | null
   overlaps: Array<{ job_id: string; start: string; end: string; duplicate_count: number }>
   warnings: string[]

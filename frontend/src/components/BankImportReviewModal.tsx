@@ -156,6 +156,12 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
                   {preview.invoice.total_amount && <> · total {fmtMoney(Number(preview.invoice.total_amount), 'BRL')}</>}
                 </span>
               )}
+              {preview?.invoice?.existing_payment && (
+                <span className="text-emerald-600 dark:text-emerald-400" data-testid="invoice-existing-payment">
+                  · pagamento já lançado em {fmtDay(preview.invoice.existing_payment.event_date)}
+                  {preview.invoice.existing_payment.account_name && <> ({preview.invoice.existing_payment.account_name})</>} — será vinculado, sem novo débito
+                </span>
+              )}
             </div>
           </div>
           <button onClick={safeClose} disabled={busy} aria-label="Fechar"

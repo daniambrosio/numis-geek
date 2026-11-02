@@ -1818,3 +1818,29 @@ def test_alias_key_strips_glued_itau_dates():
     assert alias_key("PIX TRANSF MARIA N13/12") == "PIX TRANSF MARIA N"
     assert alias_key("PIX TRANSF MARIA N 13/12") == "PIX TRANSF MARIA N"
     assert alias_key("PARCELA 3/10") == "PARCELA"
+
+
+def test_itau_invoice_without_close_date_and_payment_already_in_statement(client, seed):
+    """The One out/26: o .xlsx só traz o vencimento (o modelo repete como
+    fechamento) e o débito do pagamento já veio do extrato da conta. O import
+    usa o close_day do cartão e vincula o débito existente — fatura PAID sem
+    segundo débito."""
+    acc = new_account(seed)
+    card = new_card(seed)                       # close 5, due 15
+    st = import_statement(client, seed, acc, statement([line(date(2026, 3, 15), "CARTAO ITAU THE ONE", -4321.87)]))
+    confirm(client, seed, st["id"])
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-03-15", "due_date": "2026-03-15", "total": 4321.87},
+        "transactions": [line(date(2026, 2, 20), "RESTAURANTE", -3321.87), line(date(2026, 3, 1), "MERCADO", -1000)],
+    })
+    p = preview(client, seed, job["id"])
+    assert p["invoice"]["close_date"] == "2026-03-05"
+    assert p["invoice"]["existing_payment"]["event_date"] == "2026-03-15"
+    res = confirm(client, seed, job["id"])
+    db = TestSession()
+    inv = db.query(Invoice).filter(Invoice.credit_card_account_id == card).one()
+    assert inv.status == InvoiceStatus.PAID
+    debits = txs_of(db, account_id=acc)
+    assert len(debits) == 1 and debits[0].paid_invoice_id == inv.id
+    db.close()
+    assert res["bank_import"]["paid_invoices"] >= 1 or res["bank_import"].get("paid_invoices") is not None
