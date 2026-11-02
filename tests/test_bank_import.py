@@ -1344,3 +1344,33 @@ def test_unreadable_spreadsheet_raises_clear_error(tmp_path, monkeypatch):
     att = SimpleNamespace(kind=None, mime_type="application/vnd.ms-excel")
     with pytest.raises(ex.ExtractionError, match="planilha"):
         ex._read_attachment_payload(att)
+
+
+def test_long_statement_is_extracted_in_chunks_and_merged(client, seed):
+    from numis_geek.services.extraction import STATEMENT_CHUNK_LINES
+
+    class ChunkLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def call(self, *, system, user_text, image_bytes=None, image_mime=None,
+                 image_parts=None, model="claude-sonnet-4-5", max_tokens=4096):
+            self.calls += 1
+            rows = [l for l in user_text.splitlines() if l[:2].isdigit()]
+            txs = [line(date(2026, 3, int(r.split("/")[0])), r.split(",")[1], r.split(",")[2]) for r in rows]
+            body = {"transactions": txs, "period": {"start": "2026-03-01", "end": "2026-03-28"},
+                    "institution_name": "Itaú", "confidence": 0.9}
+            return LLMCall(text=json.dumps(body), input_tokens=10, output_tokens=5, model=model)
+
+    acc = new_account(seed)
+    n = STATEMENT_CHUNK_LINES * 2 + 5
+    csv_text = "Banco X\nConta: 123\ndata,lançamento,valor\n" + "\n".join(
+        f"{(i % 28) + 1:02d}/03/2026,LOJA {i},-{i + 1}" for i in range(n))
+    fake = ChunkLLM()
+    set_llm_client(fake)
+    r = client.post(f"/api/accounts/{acc}/statement-imports",
+                    files={"file": ("longo.csv", csv_text.encode(), "text/csv")}, headers=auth(seed["token"]))
+    assert r.status_code == 201, r.text
+    assert fake.calls == 3
+    p = preview(client, seed, r.json()["id"])
+    assert len(p["rows"]) == n

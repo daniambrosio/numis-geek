@@ -44,7 +44,8 @@ def test_tall_screenshot_is_tiled_without_cutting_table_rows():
     img, spans = _table_image()
     tiles = vt.split_image(_png(img), "image/png")
     assert len(tiles) > 1
-    scale = vt.TILE_MAX_W / img.width
+    # Margens laterais vazias são cortadas antes do resize.
+    scale = vt.TILE_MAX_W / vt._trim_side_margins(img).width
     cuts, y = [], 0
     for blob, mime in tiles:
         t = Image.open(BytesIO(blob))
@@ -89,8 +90,7 @@ def test_screenshot_pdf_is_stitched_and_tiled():
     tiles = vt.pdf_screenshot_tiles(_pdf(p1, p2))
     assert tiles is not None and len(tiles) > 1
     total = sum(Image.open(BytesIO(b)).height for b, _ in tiles)
-    expected = (p1.height + p2.height) * vt.TILE_MAX_W / 3200
-    assert abs(total - expected) <= 3
+    assert total > (p1.height + p2.height) * vt.TILE_MAX_W / 3200  # margem cortada → escala maior
     assert all(Image.open(BytesIO(b)).height <= vt.TILE_MAX_H for b, _ in tiles)
 
 

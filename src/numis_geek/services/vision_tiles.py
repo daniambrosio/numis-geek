@@ -23,18 +23,23 @@ from __future__ import annotations
 
 from io import BytesIO
 
-# Fatias de até 1400×1400 ≈ 1.96 MP: a API reduz pra ~1.15 MP (~1070 px de
-# lado), o que mantém legível texto de UI renderizado a 2-3× (retina).
-TILE_MAX_W = 1400
-TILE_MAX_H = 1400
+# A API reduz qualquer imagem com lado > 1568 px ou > ~1.15 MP. Fatias
+# largas e baixas (1568×730 ≈ 1.14 MP) chegam SEM redução: a largura útil
+# sobe de ~1070 px (fatia quadrada de 1400, reduzida pela API) pra 1568 —
+# na 1ª versão o modelo ainda lia "T 4.31" onde estava "T 4".
+TILE_MAX_W = 1568
+TILE_MAX_H = 730
 # Quanto subir a partir do corte ideal procurando uma faixa em branco.
-_CUT_SEARCH = 400
-# Linha "vazia": no máximo _ROW_MAX_OFF pixels fogem da mediana da linha
-# por > _ROW_TOL_LEVEL níveis de cinza. Contagem absoluta (não fração):
-# subtítulo cinza pequeno ocupa < 1% da linha e passava como vazia; as
-# bordas verticais de card somam só ~2-6 px.
+_CUT_SEARCH = 300
+# Pixel "fora do fundo": difere da mediana da linha por > _ROW_TOL_LEVEL
+# níveis de cinza. Linha "vazia": no máximo _ROW_MAX_OFF desses pixels,
+# DESCONTADAS as colunas estruturais (bordas verticais de card, que após o
+# resize viram 3-4 px de anti-aliasing cada). Contagem absoluta, não
+# fração: subtítulo cinza pequeno ocupa < 1% da linha.
 _ROW_TOL_LEVEL = 10
-_ROW_MAX_OFF = 6
+_ROW_MAX_OFF = 2
+# Coluna estrutural: fora do fundo em ≥ 75% das linhas da janela de busca.
+_STRUCTURAL_COL_FREQ = 0.75
 # Altura mínima (px, na largura final) da faixa vazia onde se pode cortar.
 _MIN_GAP = 14
 # Proporção a partir da qual a imagem é considerada "alta".
@@ -53,37 +58,56 @@ def _needs_tiling(w: int, h: int) -> bool:
     return max(w, h) > _HARD_LIMIT or h > TALL_RATIO * w
 
 
-def _uniform_rows(gray):
-    """Máscara bool por linha: True quando a linha é "vazia" (fundo)."""
+def _off_background(gray):
+    """Matriz bool (h×w): pixel destoa da mediana da sua linha."""
     import numpy as np
 
     med = np.median(gray, axis=1, keepdims=True)
-    off = np.abs(gray.astype(np.int16) - med) > _ROW_TOL_LEVEL
-    return off.sum(axis=1) <= _ROW_MAX_OFF
+    return np.abs(gray.astype(np.int16) - med) > _ROW_TOL_LEVEL
 
 
-def _find_cut(uniform, start: int, target: int) -> int:
+def _find_cut(off, start: int, target: int) -> int:
     """Corte no meio da faixa vazia (≥ _MIN_GAP linhas) mais perto de target.
 
     Exigir uma faixa — e não uma linha vazia qualquer — evita cortar no
-    respiro de 4-6 px entre o nome e o subtítulo de uma MESMA linha de
+    respiro de poucos px entre o nome e o subtítulo de uma MESMA linha de
     tabela (ex.: "Banco do Brasil" / "CD BANCO DO BRASIL 4.22").
     """
     lo = max(start + 1, target - _CUT_SEARCH)
-    y = target
-    while y >= lo:
-        if not uniform[y]:
-            y -= 1
+    window = off[lo:target + 1]
+    structural = window.mean(axis=0) >= _STRUCTURAL_COL_FREQ
+    uniform = window[:, ~structural].sum(axis=1) <= _ROW_MAX_OFF
+    i = len(uniform) - 1
+    while i >= 0:
+        if not uniform[i]:
+            i -= 1
             continue
-        end = y
-        while y >= lo and uniform[y]:
-            y -= 1
-        begin = y + 1
-        # Faixa pode continuar abaixo do target (ainda é espaço vazio).
-        run = end - begin + 1
-        if run >= _MIN_GAP:
-            return (begin + end + 1) // 2
+        end = i
+        while i >= 0 and uniform[i]:
+            i -= 1
+        begin = i + 1
+        if end - begin + 1 >= _MIN_GAP:
+            return lo + (begin + end + 1) // 2
     return target
+
+
+def _trim_side_margins(img):
+    """Corta colunas vazias nas laterais (margem de página) antes de reduzir
+    — cada pixel de largura economizado vira resolução no texto."""
+    import numpy as np
+
+    gray = np.asarray(img.convert("L"))
+    med = np.median(gray, axis=0, keepdims=True)
+    off = (np.abs(gray.astype(np.int16) - med) > _ROW_TOL_LEVEL).sum(axis=0)
+    content = np.nonzero(off > max(2, gray.shape[0] * 0.002))[0]
+    if content.size == 0:
+        return img
+    pad = 16
+    left = max(0, int(content[0]) - pad)
+    right = min(img.width, int(content[-1]) + 1 + pad)
+    if right - left < img.width * 0.5:  # algo estranho — não arrisca
+        return img
+    return img.crop((left, 0, right, img.height))
 
 
 def _tile(img) -> list[tuple[bytes, str]]:
@@ -93,19 +117,20 @@ def _tile(img) -> list[tuple[bytes, str]]:
 
     if img.mode != "RGB":
         img = img.convert("RGB")
+    img = _trim_side_margins(img)
     w, h = img.size
     if w > TILE_MAX_W:
         new_h = max(1, round(h * TILE_MAX_W / w))
         img = img.resize((TILE_MAX_W, new_h), Image.LANCZOS)
         w, h = img.size
-    uniform = _uniform_rows(np.asarray(img.convert("L")))
+    off = _off_background(np.asarray(img.convert("L")))
     tiles: list[tuple[bytes, str]] = []
     top = 0
     while top < h:
         if h - top <= TILE_MAX_H:
             bottom = h
         else:
-            bottom = _find_cut(uniform, top, top + TILE_MAX_H)
+            bottom = _find_cut(off, top, top + TILE_MAX_H)
         buf = BytesIO()
         img.crop((0, top, w, bottom)).save(buf, format="JPEG", quality=90)
         tiles.append((buf.getvalue(), "image/jpeg"))
@@ -154,8 +179,10 @@ def pdf_screenshot_tiles(blob: bytes) -> list[tuple[bytes, str]] | None:
         if not sizes or not any(_needs_tiling(int(w), int(h)) for w, h in sizes):
             return None
         widest = max(w for w, _ in sizes)
-        # Renderiza já na largura final (evita bitmap gigante em memória).
-        scale = min(1.0, TILE_MAX_W / widest) if widest > TILE_MAX_W else TILE_MAX_W / widest
+        # Renderiza com folga sobre a largura final (o corte de margem ainda
+        # vai estreitar), sem ultrapassar a resolução nativa da página —
+        # evita bitmap gigante em memória (3200×17816 → ~2200×12250).
+        scale = min(1.0, TILE_MAX_W * 1.4 / widest) if widest > TILE_MAX_W else 1.0
         pages = [doc[i].render(scale=scale).to_pil().convert("RGB") for i in range(len(doc))]
     finally:
         doc.close()

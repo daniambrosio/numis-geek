@@ -52,7 +52,7 @@ from numis_geek.services.snapshot import (
     find_affected_snapshots,
 )
 from numis_geek.integrations.llm import (
-    DEFAULT_MODEL, LLMClient, get_llm_client, parse_json_block,
+    DEFAULT_MODEL, LLMCall, LLMClient, get_llm_client, parse_json_block,
 )
 
 
@@ -317,15 +317,25 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
     try:
         client: LLMClient = get_llm_client(db)
         payload = _read_attachment_payload(attachment)
-        call = client.call(
-            system=template.system,
-            user_text=_user_message(template, payload, period_label=period_label),
-            image_bytes=payload.image_bytes,
-            image_mime=payload.image_mime,
-            image_parts=payload.image_parts,
-            model=DEFAULT_MODEL,
+        chunks = (
+            _statement_text_chunks(payload.text)
+            if payload.text and job.source_hint in _CHUNKED_HINTS else None
         )
-        parsed_obj = parse_json_block(call.text)
+        if chunks and len(chunks) > 1:
+            # Spec 71 — extrato longo (o .xls do Itaú de 3 meses tem ~230
+            # linhas): uma resposta só estoura o max_tokens e o JSON vem
+            # cortado. Um pedido por trecho, resultados concatenados.
+            call, parsed_obj = _call_chunked(client, template, chunks)
+        else:
+            call = client.call(
+                system=template.system,
+                user_text=_user_message(template, payload, period_label=period_label),
+                image_bytes=payload.image_bytes,
+                image_mime=payload.image_mime,
+                image_parts=payload.image_parts,
+                model=DEFAULT_MODEL,
+            )
+            parsed_obj = parse_json_block(call.text)
         validated = template.output_model.model_validate(parsed_obj)
         _disambiguate_duplicate_tickers(validated)
 
@@ -357,6 +367,69 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
 
     db.flush()
     return job
+
+
+_CHUNKED_HINTS = (ExtractionSourceHint.BANK_STATEMENT, ExtractionSourceHint.CARD_INVOICE)
+STATEMENT_CHUNK_LINES = 70
+_DATE_LINE = re.compile(r"^\s*\"?\d{1,2}/\d{1,2}(/\d{2,4})?\b|^\s*\"?\d{4}-\d{2}-\d{2}\b")
+
+
+def _statement_text_chunks(text: str, size: int = STATEMENT_CHUNK_LINES) -> list[str]:
+    """Texto tabular (CSV/XLS/OFX) → trechos de até `size` linhas, cada um
+    com o cabeçalho do documento (o que vem antes da 1ª linha datada:
+    banco, conta, colunas) repetido. Documento curto → 1 trecho."""
+    lines = text.splitlines()
+    first = next((i for i, l in enumerate(lines) if _DATE_LINE.match(l)), None)
+    if first is None or len(lines) - first <= size:
+        return [text]
+    header = lines[:min(first, 30)]
+    body = lines[first:]
+    return ["\n".join(header + body[i:i + size]) for i in range(0, len(body), size)]
+
+
+def _call_chunked(client: LLMClient, template: Template, chunks: list[str]) -> tuple[LLMCall, dict]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    n = len(chunks)
+
+    def one(k: int) -> tuple[LLMCall, dict]:
+        user = (
+            f"{template.user_prefix}\n\nNOTA: este é o TRECHO {k + 1} de {n} do documento "
+            "(o cabeçalho se repete em cada trecho). Extraia só as movimentações deste "
+            "trecho; o sistema junta os trechos.\n\n" + chunks[k]
+        )
+        c = client.call(system=template.system, user_text=user, model=DEFAULT_MODEL)
+        return c, parse_json_block(c.text)
+
+    with ThreadPoolExecutor(max_workers=min(4, n)) as pool:
+        results = list(pool.map(one, range(n)))
+
+    merged: dict = {"transactions": []}
+    starts, ends, confs = [], [], []
+    for _, obj in results:
+        merged["transactions"].extend(obj.get("transactions") or [])
+        per = obj.get("period") or {}
+        if per.get("start"):
+            starts.append(per["start"])
+        if per.get("end"):
+            ends.append(per["end"])
+        if obj.get("confidence") is not None:
+            confs.append(obj["confidence"])
+        for key, val in obj.items():
+            if key not in ("transactions", "period", "confidence") and val is not None:
+                merged.setdefault(key, val)
+    if starts or ends:
+        merged["period"] = {"start": min(starts) if starts else None, "end": max(ends) if ends else None}
+    if confs:
+        merged["confidence"] = min(confs)
+    first = results[0][0]
+    total = LLMCall(
+        text="",
+        input_tokens=sum(c.input_tokens for c, _ in results),
+        output_tokens=sum(c.output_tokens for c, _ in results),
+        model=first.model,
+    )
+    return total, merged
 
 
 @dataclass
