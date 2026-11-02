@@ -105,6 +105,16 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Import / extração
 
+- [ ] `[user]` **Re-testar o import da Avenue (Out/26 ou Nov/26) com o PDF do app.** Fix de
+  2026-11-02: PDF-imagem alto é fatiado (`vision_tiles`), prompt `avenue-v3` lê "Valor
+  atual" e o código do subtítulo, trava de integridade por seção. Validado offline com o
+  PDF de Out/26: 57 linhas, 5 seções batendo com o cabeçalho, 15/15 renda fixa casando.
+  Se ainda vier algo errado, mandar o job id.
+- [ ] `[claude]` **"Avenue Cash USD" não casa com o ativo "Saldo em Conta Avenue"** — vira
+  órfã todo mês (mapear à mão). Avaliar alias de ticker por FI em vez de casar por nome.
+- [ ] `[claude]` (LOW, audit 2026-11-02) linha casada com ativo COTADO sem preço e sem
+  qty some de todos os buckets do modal (só aparece em `errors`, que a prévia não exibe).
+
 - [user] Spec 71 — primeiro import real (extrato out/26 de uma conta corrente ou fatura de um cartão), comigo junto; fecha a spec depois do audit. Cartões e contas fixas já estão em prod desde 2026-11-02 (spec 73).
 - [claude] Reconciliação (processo separado do import de extrato — decisão do user 2026-11-01): spec futura. Rever o nome da ação "Reconciliar" do revisor de import quando ela for desenhada.
 - [user] IPVA 2027 — cadastrar como conta a pagar com o boleto (ficou fora do import do Notion: 5 parcelas jan–mai).
