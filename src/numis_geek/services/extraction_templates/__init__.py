@@ -375,6 +375,9 @@ class StatementLine(BaseModel):
     installment: str | None = None          # "5/12"
     fx: StatementFx | None = None
     is_invoice_payment: bool = False        # "Pagamento recebido" da fatura anterior
+    # Spec 71 (2026-11-02) — tipo da linha + contraparte (Pix/TED/DOC/boleto).
+    line_kind: str | None = None            # PURCHASE|IOF|BANK_FEE|PIX|TED|BOLETO|SALARY|OTHER
+    counterparty: str | None = None
     category_hint: str | None = None        # sugestão; aplicar é spec futura
     confidence: float | None = None
 
@@ -411,6 +414,16 @@ _STATEMENT_COMMON = (
     "entrada/crédito/estorno POSITIVO.\n"
     "- currency: BRL ou USD (moeda da conta/cartão).\n"
     "- category_hint: opcional, uma palavra (Mercado, Transporte, …) ou null.\n"
+    "- line_kind: tipo da linha — IOF (qualquer IOF: compra internacional, "
+    "cheque especial, câmbio), BANK_FEE (tarifa, anuidade, cesta de serviços, "
+    "juros/encargos/multa cobrados pelo PRÓPRIO banco/cartão), PIX (enviado "
+    "ou recebido), TED (TED/DOC), BOLETO, PURCHASE (compra), SALARY, OTHER.\n"
+    "- counterparty: em Pix, TED/DOC e boleto, o NOME da pessoa/empresa do "
+    "outro lado (recebedor de um envio, pagador de um recebimento, "
+    "beneficiário do boleto), sem prefixos (\"PIX TRANSF\", \"TED\"), sem "
+    "datas e sem CPF/CNPJ. Ex.: \"PIX TRANSF JOAO S 12/03\" com detalhe "
+    "\"João da Silva\" → \"João da Silva\". Só preencha se o documento "
+    "mostrar; senão null. Nas demais linhas, null.\n"
     "- confidence: 0–1.\n\n"
     "period: { start, end } em ISO — o período que o documento declara "
     "cobrir (\"Extrato de 01/10 a 31/10\"). Se não declarar, use a menor "
@@ -421,7 +434,7 @@ _STATEMENT_COMMON = (
 )
 
 BANK_STATEMENT = Template(
-    version="bank-statement-v1",
+    version="bank-statement-v2",
     system=(
         "Você extrai as MOVIMENTAÇÕES de um extrato de conta corrente "
         "(banco, fintech, conta global — Itaú, Nubank, Wise, Nomad, etc.).\n\n"
@@ -430,14 +443,14 @@ BANK_STATEMENT = Template(
         "Responda com: { \"period\": {\"start\": str, \"end\": str}, "
         "\"institution_name\": str|null, \"transactions\": [ {event_date, "
         "description, amount, currency, balance_after, category_hint, "
-        "confidence} ], \"confidence\": float }"
+        "line_kind, counterparty, confidence} ], \"confidence\": float }"
     ),
     user_prefix="Extraia TODAS as movimentações deste extrato de conta.",
     output_model=BankStatementOutput,
 )
 
 CARD_INVOICE = Template(
-    version="card-invoice-v2",
+    version="card-invoice-v3",
     system=(
         "Você extrai os LANÇAMENTOS de uma fatura de cartão de crédito "
         "(inclui cartões adicionais — todos na mesma lista).\n\n"
@@ -465,7 +478,7 @@ CARD_INVOICE = Template(
         "Responda com: { \"period\": {...}, \"institution_name\": str|null, "
         "\"invoice\": {...}, \"transactions\": [ {event_date, description, "
         "amount, currency, installment, fx, is_invoice_payment, category_hint, "
-        "confidence} ], \"confidence\": float }"
+        "line_kind, counterparty, confidence} ], \"confidence\": float }"
     ),
     user_prefix="Extraia TODOS os lançamentos desta fatura de cartão.",
     output_model=CardInvoiceOutput,

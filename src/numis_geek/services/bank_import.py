@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account, Currency
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
+from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.extraction_job import (
     ExtractionJob, ExtractionSourceHint, ExtractionStatus,
 )
@@ -236,6 +237,68 @@ def _alias_map(db: Session, workspace_id: str) -> dict[str, Party]:
     return {a.alias_normalized: p for a, p in rows}
 
 
+# ── party by line kind (decisão do user 2026-11-02: "IOF é o governo,
+# tarifas são do banco correspondente, pix tem o recebedor sempre") ────────
+
+IOF_PARTY_NAME = "Receita Federal"
+LINE_KINDS = ("PURCHASE", "IOF", "BANK_FEE", "PIX", "TED", "BOLETO", "SALARY", "OTHER")
+_FEE_WORDS = ("TARIFA", "ANUIDADE", "CESTA", "ENCARGO", "JUROS", "MULTA")
+
+
+def line_kind_of(desc: str, amount: Decimal, emitted: str | None) -> str | None:
+    """Tipo da linha: o do LLM quando válido; senão heurística na descrição."""
+    k = (emitted or "").strip().upper()
+    if k in LINE_KINDS:
+        return k
+    tokens = normalize_description(desc).replace(".", " ").replace("/", " ").split()
+    if "IOF" in tokens:
+        return "IOF"
+    if "PIX" in tokens:
+        return "PIX"
+    if amount < 0 and any(t.startswith(_FEE_WORDS) for t in tokens):
+        return "BANK_FEE"
+    if tokens and tokens[0] in ("TED", "DOC"):
+        return "TED"
+    return None
+
+
+def _by_alias(alias: str, name: str, aliases: dict[str, Party], source: str) -> dict:
+    """Fornecedor por alias estável: ativo → existing; inativo → none + aviso;
+    ausente → new (criado no apply com esse nome e alias)."""
+    p = aliases.get(alias)
+    if p is not None and p.is_active:
+        return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": source}
+    if p is not None:
+        return {"mode": "none", "alias": alias, "inactive_party_name": p.name, "source": source}
+    return {"mode": "new", "new_party_name": name.strip()[:120], "alias": alias, "source": source,
+            "kind": "SUPPLIER" if source in ("iof", "bank_fee") else None}
+
+
+def _resolve_party(
+    desc: str, amount: Decimal, kind: str | None, counterparty: str | None,
+    aliases: dict[str, Party], fi_name: str | None,
+) -> dict:
+    """1. alias da descrição → fornecedor ativo ganha sempre;
+    2. IOF → Receita Federal; 3. tarifa/juros do banco → a instituição da
+    conta/cartão; 4. contraparte extraída (Pix/TED/boleto); 5. Pix sem
+    contraparte → sem fornecedor + aviso; 6. senão, novo pela descrição."""
+    alias = normalize_description(desc)
+    p = aliases.get(alias)
+    if p is not None and p.is_active:
+        return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": "alias"}
+    if kind == "IOF":
+        return _by_alias(normalize_description(IOF_PARTY_NAME), IOF_PARTY_NAME, aliases, "iof")
+    if kind == "BANK_FEE" and fi_name:
+        return _by_alias(normalize_description(fi_name), fi_name, aliases, "bank_fee")
+    cp = (counterparty or "").strip()
+    if cp and normalize_description(cp):
+        return _by_alias(normalize_description(cp), cp, aliases, "counterparty")
+    if kind == "PIX":
+        return {"mode": "none", "alias": alias, "source": "pix_unknown",
+                "warning": "Pix sem recebedor identificável — escolha o fornecedor/cliente"}
+    return _party_for(desc, aliases)
+
+
 def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
     alias = normalize_description(desc)
     p = aliases.get(alias)
@@ -324,6 +387,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
     sc = _scope(db, job)
     warnings: list[str] = []
     aliases = _alias_map(db, sc.workspace_id)
+    fi = db.get(FinancialInstitution, (sc.account or sc.card).financial_institution_id)
+    fi_name = fi.short_name if fi else None
 
     # 1. parse lines
     parsed: list[dict] = []
@@ -361,6 +426,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
             "installment_total": inst[1] if inst else None,
             "balance_after": str(_money(line.get("balance_after"))) if line.get("balance_after") is not None else None,
             "category_hint": line.get("category_hint"),
+            "line_kind": line_kind_of(desc, amount, line.get("line_kind")),
+            "counterparty": (line.get("counterparty") or "").strip()[:120] or None,
             "is_invoice_payment": is_payment,
             "_date": eff,
             "_amount": amount,
@@ -403,10 +470,14 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
     pending_sched: list[tuple[dict, list[ScheduledTransaction]]] = []
     for r in parsed:
         d, amount = r["_date"], r["_amount"]
-        r["party"] = {"mode": "none"} if r["is_invoice_payment"] else _party_for(r["description"], aliases)
+        r["party"] = {"mode": "none"} if r["is_invoice_payment"] else _resolve_party(
+            r["description"], amount, r["line_kind"], r["counterparty"], aliases, fi_name,
+        )
         r["category_id"] = None
         r["warning"] = None
         r["parent_transaction_id"] = None
+        if r["party"].get("warning"):
+            _warn(r, r["party"].pop("warning"))
         if r["party"].get("inactive_party_name"):
             _warn(r, f"Fornecedor/cliente \"{r['party']['inactive_party_name']}\" está inativo — sem fornecedor")
 
@@ -882,6 +953,7 @@ def _alias_row(db: Session, workspace_id: str, key: str) -> PartyAlias | None:
 def _get_or_create_party(
     db: Session, workspace_id: str, name: str, alias: str, amount: Decimal,
     cache: dict[str, str | None], out: ApplyOutcome, user_id: str | None,
+    kind: PartyKind | None = None,
 ) -> str | None:
     """Fornecedor do alias (ativo) ou um novo com o alias. Alias de
     fornecedor INATIVO → None (sem fornecedor), igual ao preview."""
@@ -893,7 +965,7 @@ def _get_or_create_party(
         p = db.get(Party, existing.party_id)
         cache[key] = p.id if p is not None and p.is_active else None
         return cache[key]
-    pid = _new_party(db, workspace_id, name, key, amount, out, user_id)
+    pid = _new_party(db, workspace_id, name, key, amount, out, user_id, kind)
     cache[key] = pid
     return pid
 
@@ -918,11 +990,12 @@ def _named_party(
 
 def _new_party(
     db: Session, workspace_id: str, name: str, key: str, amount: Decimal, out: ApplyOutcome, user_id: str | None,
+    kind: PartyKind | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     p = Party(
         id=str(uuid.uuid4()), workspace_id=workspace_id, name=name.strip()[:120],
-        kind=PartyKind.SUPPLIER if amount < 0 else PartyKind.CLIENT, is_active=True,
+        kind=kind or (PartyKind.SUPPLIER if amount < 0 else PartyKind.CLIENT), is_active=True,
         created_at=now, updated_at=now, created_by=user_id, updated_by=user_id,
     )
     db.add(p)
@@ -1089,8 +1162,10 @@ def _create_from_row(
     elif r["party"]["mode"] == "existing":
         party_id = r["party"]["party_id"]
     elif r["party"]["mode"] == "new":
-        party_id = _get_or_create_party(db, sc.workspace_id, r["party"]["new_party_name"], r["party"]["alias"],
-                                        amount, party_cache, out, user_id)
+        party_id = _get_or_create_party(
+            db, sc.workspace_id, r["party"]["new_party_name"], r["party"]["alias"], amount, party_cache, out,
+            user_id, PartyKind(r["party"]["kind"]) if r["party"].get("kind") else None,
+        )
 
     data = tx_svc.TxInput(
         source_type=sc.source_type,

@@ -2180,6 +2180,8 @@ export interface BankImportRow {
     // spec 71 audit: fornecedor herdado da conta a pagar/receber no quitar
     from_occurrence?: boolean
     inactive_party_name?: string
+    // de onde veio a sugestão: alias | iof | bank_fee | counterparty | pix_unknown
+    source?: string
   }
   duplicate?: BankImportTxRef
   invoice_payment?: {
