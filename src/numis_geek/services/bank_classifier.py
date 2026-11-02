@@ -39,7 +39,7 @@ from numis_geek.services.normalize import normalize_description
 # Fast/cheap classifier (claude-api skill, 2026-11-02): $0.10 in / $0.50 out per MTok.
 SYSTEM1_MODEL = "claude-haiku-5-5"
 SYSTEM1_VERSION = "system1-v1"
-CHUNK_LINES = 60
+CHUNK_LINES = 30  # 60 linhas davam ~7,3k tokens de saída — encostava no max_tokens e cortava o JSON
 HISTORY_PER_LINE = 3
 HISTORY_POOL = 3000          # most recent categorized tx scanned for examples
 # Suggestion is pre-selected only from this confidence up; below it stays
@@ -216,7 +216,7 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
     def one(chunk: list[dict]) -> tuple[LLMCall | None, dict | None, str | None]:
         try:
             call = client.call(system=SYSTEM_PROMPT, user_text=_user_text(cats, chunk, occs, hist),
-                               model=SYSTEM1_MODEL, max_tokens=8000)
+                               model=SYSTEM1_MODEL, max_tokens=16000)
         except Exception as exc:
             return None, None, f"System 1 falhou: {exc}"
         try:
