@@ -276,6 +276,12 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
             <span>fatura {ip.card_name} · fecha {fmtDay(ip.close_date)}{ip.status === 'PAID' ? ' · já paga' : ''}</span>
           )}
           {r.warning && <span className="text-amber-600 dark:text-amber-400">{r.warning}</span>}
+          {decision.action === 'settle' && chosenOcc?.learns_amount
+            && Math.abs(Math.abs(amount) - Number(chosenOcc.amount)) >= 0.005 && (
+            <span className="text-indigo-600 dark:text-indigo-300" data-testid={`learns-${r.row_id}`}>
+              Atualiza o valor previsto de {fmtMoney(Number(chosenOcc.amount), chosenOcc.currency as 'BRL' | 'USD')} para {fmtMoney(Math.abs(amount), chosenOcc.currency as 'BRL' | 'USD')}
+            </span>
+          )}
         </div>
       </td>
       <td className={`px-2 py-2 text-right tnum money font-medium whitespace-nowrap ${amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>

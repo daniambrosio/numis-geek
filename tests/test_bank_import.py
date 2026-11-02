@@ -1085,3 +1085,233 @@ def test_card_invoice_period_is_the_cycle(client, seed):
                          line(date(2026, 2, 20), "CAFE", -10)],
     })
     assert job["statement_period_start"] == "2026-02-06" and job["statement_period_end"] == "2026-03-05"
+
+
+# ══ party por tipo de linha (decisão do user 2026-11-02) ════════════════════
+
+def _party_of(db, tx_id):
+    tx = db.get(Transaction, tx_id)
+    return db.get(Party, tx.party_id) if tx.party_id else None
+
+
+def test_iof_lines_go_to_receita_federal_reused_across_imports(client, seed):
+    card = new_card(seed)
+    job = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-09-05", "due_date": "2026-09-15", "total": 13.5},
+        "transactions": [
+            line(date(2026, 8, 20), "IOF COMPRA INTERNACIONAL", -3.5, line_kind="IOF"),
+            line(date(2026, 8, 21), "IOF S/ COMPRA EXTERIOR 0042", -10),          # fallback, no line_kind
+        ],
+    })
+    rows = preview(client, seed, job["id"])["rows"]
+    # earlier tests in this module may already have created it
+    assert all((r["party"].get("new_party_name") or r["party"].get("party_name")) == "Receita Federal" for r in rows)
+    assert all(r["party"]["source"] == "iof" for r in rows)
+    confirm(client, seed, job["id"])
+    acc = new_account(seed)
+    job2 = import_statement(client, seed, acc, statement([line(date(2026, 9, 2), "IOF ADIC CHEQUE ESPECIAL", -1.2)]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_name"] == "Receita Federal"
+    confirm(client, seed, job2["id"])
+    db = TestSession()
+    rf = db.query(Party).filter(Party.workspace_id == seed["ws"], Party.name == "Receita Federal").all()
+    assert len(rf) == 1
+    assert db.query(PartyAlias).filter(PartyAlias.alias_normalized.like("IOF%")).count() == 0
+    assert all(t.party_id == rf[0].id for t in txs_of(db, card_id=card) + txs_of(db, account_id=acc))
+    db.close()
+
+
+def test_bank_fees_go_to_the_account_institution(client, seed):
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([
+        line(BASE + timedelta(days=160), "TARIFA PACOTE SERVICOS", -45, line_kind="BANK_FEE"),
+        line(BASE + timedelta(days=161), "CESTA DE SERVICOS 11/2026", -30),     # fallback
+        line(BASE + timedelta(days=162), "JUROS CHEQUE ESPECIAL", -12.3),       # fallback
+    ]))
+    rows = preview(client, seed, job["id"])["rows"]
+    assert {r["party"]["new_party_name"] for r in rows} == {"BBI"}
+    assert all(r["party"]["source"] == "bank_fee" for r in rows)
+    confirm(client, seed, job["id"])
+    card = new_card(seed)   # same FI → same party
+    job2 = import_invoice(client, seed, card, {
+        "invoice": {"close_date": "2026-09-05", "due_date": "2026-09-15", "total": 39},
+        "transactions": [line(date(2026, 8, 20), "ANUIDADE DIFERENCIADA 03/12", -39)],
+    })
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_name"] == "BBI"
+    db = TestSession()
+    assert db.query(Party).filter(Party.workspace_id == seed["ws"], Party.name == "BBI").count() == 1
+    db.close()
+
+
+def test_pix_uses_counterparty_never_raw_text(client, seed):
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([
+        line(BASE + timedelta(days=170), "PIX TRANSF JOAO S 12/03", -150, line_kind="PIX", counterparty="João da Silva"),
+        line(BASE + timedelta(days=171), "PIX RECEBIDO MARIA 13/03", 80, counterparty="Maria Souza ME"),
+        line(BASE + timedelta(days=172), "PIX TRANSF 9981", -20),              # no counterparty
+        line(BASE + timedelta(days=173), "TED 033 0001 ACME", -900, line_kind="TED", counterparty="ACME LTDA"),
+    ]))
+    r0, r1, r2, r3 = preview(client, seed, job["id"])["rows"]
+    assert r0["party"]["new_party_name"] == "João da Silva" and r0["party"]["alias"] == "JOÃO DA SILVA"
+    assert r1["party"]["new_party_name"] == "Maria Souza ME"
+    assert r2["party"]["mode"] == "none" and "Pix sem recebedor" in r2["warning"]
+    assert r3["party"]["new_party_name"] == "ACME LTDA"
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    t0, t1, t2, t3 = txs_of(db, account_id=acc)
+    assert _party_of(db, t0.id).name == "João da Silva"
+    assert _party_of(db, t1.id).name == "Maria Souza ME"
+    assert t2.party_id is None
+    assert db.query(PartyAlias).filter(PartyAlias.alias_normalized.like("PIX%")).count() == 0
+    db.close()
+    # same counterparty in another Pix → reused
+    job2 = import_statement(client, seed, acc, statement([
+        line(BASE + timedelta(days=180), "PIX TRANSF JOAO S 01/04", -150, counterparty="JOÃO DA SILVA"),
+    ]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_name"] == "João da Silva"
+
+
+def test_description_alias_still_wins_and_review_can_override(client, seed):
+    acc = new_account(seed)
+    mine = _party_with_alias(seed, "Minha Diarista", "PIX TRANSF ANA DIARISTA")
+    job = import_statement(client, seed, acc, statement([
+        line(BASE + timedelta(days=190), "PIX TRANSF ANA DIARISTA", -200, line_kind="PIX", counterparty="Ana Paula"),
+        line(BASE + timedelta(days=191), "IOF COMPRA", -1, line_kind="IOF"),
+    ]))
+    r0, _ = preview(client, seed, job["id"])["rows"]
+    assert r0["party"]["mode"] == "existing" and r0["party"]["party_id"] == mine
+    confirm(client, seed, job["id"], {"r1": {"action": "import", "party_id": mine}})
+    db = TestSession()
+    t0, t1 = txs_of(db, account_id=acc)
+    assert t0.party_id == mine and t1.party_id == mine
+    db.close()
+
+
+def test_line_kind_fallbacks():
+    from numis_geek.services.bank_import import line_kind_of
+    assert line_kind_of("IOF S/ COMPRA EXTERIOR", Decimal("-1"), None) == "IOF"
+    assert line_kind_of("PIX ENVIADO FULANO", Decimal("-1"), None) == "PIX"
+    assert line_kind_of("TARIFA BANCARIA", Decimal("-1"), None) == "BANK_FEE"
+    assert line_kind_of("JUROS S/ CAPITAL PROPRIO", Decimal("10"), None) is None   # income, not a fee
+    assert line_kind_of("ALUGUEL MORADIA", Decimal("-1"), None) is None
+    assert line_kind_of("QUALQUER", Decimal("-1"), "bank_fee") == "BANK_FEE"
+    assert line_kind_of("QUALQUER", Decimal("-1"), "nonsense") is None
+
+
+# ══ contas a pagar/receber aprendem o valor do extrato (user 2026-11-02) ════
+
+def _rule(seed, desc, amount, frequency, **kw):
+    from numis_geek.models.scheduled_transaction import RecurrenceFrequency, RecurrenceRule
+    db = TestSession()
+    rule, occs = sched_svc.create_rule(db, seed["ws"], sched_svc.RuleInput(
+        direction=ScheduledDirection.PAYABLE, description=desc, amount=Decimal(amount),
+        frequency=RecurrenceFrequency[frequency], day_of_month=5, start_date=date(2026, 3, 5),
+        currency=Currency.BRL, **kw,
+    ))
+    by_due = {o.due_date: o.id for o in occs}
+    rid = rule.id
+    db.commit()
+    db.close()
+    return rid, by_due
+
+
+def test_import_settling_monthly_rule_learns_the_paid_amount(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Internet Vivo Fibra", "300", "MONTHLY")
+    apr, may, jun, jul = (occ[date(2026, m, 5)] for m in (4, 5, 6, 7))
+    mar = occ[date(2026, 3, 5)]
+    db = TestSession()
+    db.get(ScheduledTransaction, jun).amount = Decimal("280")   # edited by hand
+    db.commit()
+    db.close()
+
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "DEB AUT INTERNET VIVO FIBRA", -312.4)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["scheduled"]["occurrence_id"] == apr
+    assert row["scheduled"]["candidates"][0]["learns_amount"] is True
+    res = confirm(client, seed, job["id"])
+    assert res["bank_import"]["amounts_learned"] == 1
+
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, apr).status == ScheduledStatus.PAID
+    assert db.get(ScheduledTransaction, apr).amount == Decimal("300.00")      # settled one keeps its forecast
+    assert db.get(ScheduledTransaction, mar).amount == Decimal("300.00")      # earlier: untouched
+    assert db.get(ScheduledTransaction, may).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, jul).amount == Decimal("312.40")
+    assert db.get(ScheduledTransaction, jun).amount == Decimal("280.00")      # hand edit preserved
+    from numis_geek.models.audit_log import AuditLog
+    log = db.query(AuditLog).filter(AuditLog.action == "recurrence_rule.amount_learned",
+                                    AuditLog.resource_id == rid).one()
+    details = json.loads(log.details) if isinstance(log.details, str) else log.details
+    assert details["old_amount"] == "300.00" and details["new_amount"] == "312.40"
+    assert may in details["occurrence_ids"] and jun not in details["occurrence_ids"]
+    db.close()
+
+
+def test_same_amount_learns_nothing(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Academia Smart", "120", "MONTHLY")
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "ACADEMIA SMART FIT", -120)]))
+    assert confirm(client, seed, job["id"])["bank_import"]["amounts_learned"] == 0
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("120.00")
+    db.close()
+
+
+def test_installment_rule_never_learns(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Parcela Sofa Tok", "500", "INSTALLMENT", installment_total=10)
+    job = import_statement(client, seed, acc, statement([line(date(2026, 4, 5), "PARCELA SOFA TOK STOK", -510)]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["bucket"] == "scheduled" and row["scheduled"]["candidates"][0]["learns_amount"] is False
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("500.00")
+    assert db.get(ScheduledTransaction, occ[date(2026, 5, 5)]).amount == Decimal("500.00")
+    db.close()
+
+
+def test_manual_mark_paid_does_not_learn(client, seed):
+    from numis_geek.models.scheduled_transaction import RecurrenceRule
+    acc = new_account(seed)
+    rid, occ = _rule(seed, "Plano Celular", "90", "MONTHLY")
+    db = TestSession()
+    tx = tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc,
+        event_date=date(2026, 4, 5), description="Celular", amount=Decimal("-95"),
+    ))[0]
+    sched_svc.mark_paid(db, db.get(ScheduledTransaction, occ[date(2026, 4, 5)]), paid_at=date(2026, 4, 5),
+                        transaction_id=tx.id)
+    db.commit()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("90.00")
+    assert db.get(ScheduledTransaction, occ[date(2026, 5, 5)]).amount == Decimal("90.00")
+    db.close()
+    r = client.post(f"/api/scheduled-transactions/{occ[date(2026, 6, 5)]}/pay",
+                    json={"paid_at": "2026-06-05"}, headers=auth(seed["token"]))
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    assert db.get(RecurrenceRule, rid).amount == Decimal("90.00")
+    db.close()
+
+
+def test_one_off_occurrence_never_learns(client, seed):
+    acc = new_account(seed)
+    due = BASE + timedelta(days=200)
+    db = TestSession()
+    o = sched_svc.create_one_off(db, seed["ws"], sched_svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="IPVA Unico", amount=Decimal("1000"),
+        due_date=due, currency=Currency.BRL))
+    oid = o.id
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([line(due, "IPVA UNICO SP", -1020)]))
+    assert confirm(client, seed, job["id"])["bank_import"]["amounts_learned"] == 0
+    db = TestSession()
+    assert db.get(ScheduledTransaction, oid).amount == Decimal("1000.00")
+    db.close()

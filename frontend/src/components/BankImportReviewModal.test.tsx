@@ -249,6 +249,46 @@ describe('BankImportReviewModal — audit 2026-10-31', () => {
   })
 })
 
+describe('BankImportReviewModal — fornecedor por tipo de linha', () => {
+  it('IOF sugere Receita Federal e o usuário pode trocar', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'IOF COMPRA INTERNACIONAL', amount: '-3.50',
+      party: { mode: 'new', new_party_name: 'Receita Federal', alias: 'RECEITA FEDERAL', source: 'iof' },
+    })] }))
+    vi.spyOn(api, 'listParties').mockResolvedValue([{ id: 'p1', name: 'Outro', is_active: true } as never])
+    const confirm = vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
+      applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
+      bank_import: { created: 1, reconciled: 0, skipped: 0, paid_invoices: 0, settled: 0, new_parties: 0, invoice_id: null },
+    })
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('row-r0')).toBeInTheDocument())
+    const sel = within(screen.getByTestId('row-r0')).getByLabelText('Fornecedor/Cliente')
+    expect(sel).toHaveDisplayValue('nova: Receita Federal')
+    await waitFor(() => expect(within(sel).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(sel, 'p:p1')
+    await userEvent.click(screen.getByTestId('bank-import-apply'))
+    await waitFor(() => expect(confirm).toHaveBeenCalled())
+    expect(confirm.mock.calls[0][1]!.bank_decisions!.r0).toMatchObject({ party_id: 'p1' })
+  })
+})
+
+describe('BankImportReviewModal — valor previsto aprendido', () => {
+  it('quitar regra mensal com outro valor avisa a atualização; parcelamento não', async () => {
+    const base = ROWS[3]
+    const c = base.scheduled!.candidates
+    mockPreview(preview({ overlaps: [], rows: [
+      { ...base, amount: '-3120.00', scheduled: { occurrence_id: 'occ-a', candidates: [{ ...c[0], learns_amount: true }, { ...c[1], learns_amount: false }] } },
+    ] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('learns-r3')).toHaveTextContent(
+      'Atualiza o valor previsto de R$ 3.000,00 para R$ 3.120,00'))
+    await userEvent.selectOptions(within(screen.getByTestId('row-r3')).getByLabelText('Conta a pagar/receber'), 'occ-b')
+    expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByTestId('action-r3'), 'import')
+    expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
+  })
+})
+
 describe('bankImport helpers', () => {
   it('initialDecisions usa o default e a conta/ocorrência sugeridas', () => {
     const d = initialDecisions(ROWS)

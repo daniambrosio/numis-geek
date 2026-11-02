@@ -2154,6 +2154,8 @@ export interface BankImportOccurrence {
   category_id: string | null
   party_id: string | null
   party_name?: string | null
+  // regra MONTHLY/YEARLY: quitar com outro valor atualiza o previsto
+  learns_amount?: boolean
 }
 
 export interface BankImportRow {
@@ -2180,6 +2182,8 @@ export interface BankImportRow {
     // spec 71 audit: fornecedor herdado da conta a pagar/receber no quitar
     from_occurrence?: boolean
     inactive_party_name?: string
+    // de onde veio a sugestão: alias | iof | bank_fee | counterparty | pix_unknown
+    source?: string
   }
   duplicate?: BankImportTxRef
   invoice_payment?: {
@@ -2221,6 +2225,7 @@ export interface BankImportResult {
   skipped: number
   paid_invoices: number
   settled: number
+  amounts_learned?: number
   new_parties: number
   invoice_id: string | null
 }

@@ -634,6 +634,56 @@ def settle_occurrence(
     return occ
 
 
+def learns_amount(db: Session, occ: ScheduledTransaction) -> bool:
+    """Ocorrência de regra MONTHLY/YEARLY: o valor pago no extrato vira o
+    valor previsto da regra. Parcelamento (INSTALLMENT) e avulsa, não."""
+    if not occ.recurrence_rule_id:
+        return False
+    rule = db.get(RecurrenceRule, occ.recurrence_rule_id)
+    return rule is not None and rule.frequency in (RecurrenceFrequency.MONTHLY, RecurrenceFrequency.YEARLY)
+
+
+def learn_amount_from_payment(
+    db: Session, occ: ScheduledTransaction, tx: Transaction, *, user_id: str | None = None,
+) -> dict | None:
+    """Spec 71 (user, 2026-11-02: "o valor certo o sistema vai ter que
+    identificar a partir dos extratos"). Called by the statement import
+    right after `settle_occurrence` — NEVER by the manual "Marcar pago".
+
+    When the paid |tx.amount| differs from the occurrence amount, the rule
+    learns it (`rule.amount = paid`) and so do its later PENDING occurrences
+    — only those still holding the old rule amount, so a value the user
+    edited by hand on one occurrence is never overwritten. Returns the
+    change ({rule_id, old_amount, new_amount, occurrence_ids}) or None."""
+    if not learns_amount(db, occ):
+        return None
+    paid = to_cents(abs(Decimal(tx.amount)))
+    if paid <= 0 or paid == to_cents(occ.amount):
+        return None
+    rule = db.get(RecurrenceRule, occ.recurrence_rule_id)
+    old = to_cents(rule.amount)
+    rule.amount = paid
+    rule.updated_by = user_id
+    later = db.query(ScheduledTransaction).filter(
+        ScheduledTransaction.recurrence_rule_id == rule.id,
+        ScheduledTransaction.status == ScheduledStatus.PENDING,
+        ScheduledTransaction.due_date > occ.due_date,
+        ScheduledTransaction.id != occ.id,
+    ).all()
+    touched = []
+    for o in later:
+        if to_cents(o.amount) == old:
+            o.amount = paid
+            o.updated_by = user_id
+            touched.append(o.id)
+    db.flush()
+    return {
+        "rule_id": rule.id, "description": rule.description, "old_amount": str(old),
+        "new_amount": str(paid), "occurrence_ids": touched, "settled_occurrence_id": occ.id,
+        "transaction_id": tx.id,
+    }
+
+
 def mark_paid(
     db: Session, occ: ScheduledTransaction, *, paid_at: date, transaction_id: str | None = None,
     user_id: str | None = None, inherited: dict | None = None,
