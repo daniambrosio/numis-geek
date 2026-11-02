@@ -105,6 +105,10 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Import / extração
 
+- [user] Spec 71 — primeiro import real (extrato out/26 de uma conta corrente ou fatura de um cartão), comigo junto; fecha a spec depois do audit. Cartões e contas fixas já estão em prod desde 2026-11-02 (spec 73).
+- [claude] Reconciliação (processo separado do import de extrato — decisão do user 2026-11-01): spec futura. Rever o nome da ação "Reconciliar" do revisor de import quando ela for desenhada.
+- [user] IPVA 2027 — cadastrar como conta a pagar com o boleto (ficou fora do import do Notion: 5 parcelas jan–mai).
+
 - [ ] `[claude]` **Proventos sub-capturados (ITSA4/TAEE11/PETR4/BOVA11/IVV/AAPL).**
   Distribuições não vieram no bulk extract dos custodiantes — ITSA4 R$ 121k de posição
   rendeu R$ 350/ano (~95% faltando); TAEE11 idem. Plano: re-import CSV/PDF de proventos
