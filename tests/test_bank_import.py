@@ -1680,3 +1680,22 @@ def test_client_sends_temperature_zero_to_sonnet_4_5_and_retries_without_on_400(
     c._sdk, seen = _fake_anthropic(fail_on_temperature=False)
     c.call(system="s", user_text="u", model="claude-haiku-5-5-20260101")
     assert len(seen) == 1 and "temperature" not in seen[0]
+
+
+def test_first_real_import_exact_school_bills_settle_and_junk_is_not_a_candidate(client, seed):
+    """Itaú ago–out/26: duas escolas por DDA no mesmo dia com valor exato
+    marcam pago sozinhas; PIX de R$ 500 não vira candidata de uma conta de
+    R$ 628 (o ±30% linear antigo sugeria)."""
+    acc = new_account(seed)
+    _, lara = _rule_day(seed, "Escola Lara", "6210.90", 5, expected_account_id=acc)
+    _, caio = _rule_day(seed, "Escola Caio", "5646.55", 5, expected_account_id=acc)
+    _rule_day(seed, "Alimentação Escola", "628.13", 1, expected_account_id=acc)
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 10, 5), "DDA PAG TIT", -6210.90, line_kind="BOLETO"),
+        line(date(2026, 10, 5), "DDA PAG TIT", -5646.55, line_kind="BOLETO"),
+        line(date(2026, 10, 2), "PIX TRANSF MARIA N02/10", -500, line_kind="PIX", counterparty="MARIA N"),
+    ]))
+    r_lara, r_caio, r_maria = preview(client, seed, job["id"])["rows"]
+    assert r_lara["default_action"] == "settle" and r_lara["scheduled"]["occurrence_id"] == lara[date(2026, 10, 5)]
+    assert r_caio["default_action"] == "settle" and r_caio["scheduled"]["occurrence_id"] == caio[date(2026, 10, 5)]
+    assert not r_maria.get("scheduled")

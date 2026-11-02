@@ -214,15 +214,24 @@ def classify_job(db: Session, job: ExtractionJob, *, force: bool = False) -> dic
         return result
 
     def one(chunk: list[dict]) -> tuple[LLMCall | None, dict | None, str | None]:
-        try:
-            call = client.call(system=SYSTEM_PROMPT, user_text=_user_text(cats, chunk, occs, hist),
-                               model=SYSTEM1_MODEL, max_tokens=16000)
-        except Exception as exc:
-            return None, None, f"System 1 falhou: {exc}"
-        try:
-            return call, parse_json_block(call.text), None
-        except Exception as exc:
-            return call, None, f"System 1 resposta inválida: {exc}"
+        # Sem temperature (família 5 recusa) a resposta varia: JSON inválido
+        # num trecho é refeito uma vez antes de desistir dele.
+        total: LLMCall | None = None
+        err: str | None = None
+        for _ in range(2):
+            try:
+                call = client.call(system=SYSTEM_PROMPT, user_text=_user_text(cats, chunk, occs, hist),
+                                   model=SYSTEM1_MODEL, max_tokens=16000)
+            except Exception as exc:
+                return total, None, f"System 1 falhou: {exc}"
+            total = call if total is None else LLMCall(
+                text=call.text, input_tokens=total.input_tokens + call.input_tokens,
+                output_tokens=total.output_tokens + call.output_tokens, model=call.model)
+            try:
+                return total, parse_json_block(call.text), None
+            except Exception as exc:
+                err = f"System 1 resposta inválida: {exc}"
+        return total, None, err
 
     with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
         outcomes = list(pool.map(one, chunks))

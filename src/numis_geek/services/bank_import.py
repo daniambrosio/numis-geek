@@ -70,7 +70,9 @@ PAYMENT_TX_DATE_TOL_DAYS = 5                 # débito do extrato × tx de pagam
 SCHED_EARLY_DAYS = 7                         # linha até 7 dias ANTES do vencimento
 SCHED_LATE_DAYS = 10                         # … e até 10 dias depois
 SCHED_AMOUNT_BAND = Decimal("0.30")          # |valor| a ±30%
-SCHED_MIN_SCORE = 0.40                       # abaixo disso nem aparece como candidata
+SCHED_MIN_SCORE = 0.50                       # abaixo disso nem aparece como candidata
+SCHED_AMOUNT_CLOSE = 0.10                    # pontos de valor só até ±10% (1º import real: ±30% linear
+                                             # punha "PIX MARIA 500" como candidata de "Alimentação Escola 628")
 SCHED_CONFIDENT = 0.70                       # "Marcar pago" default a partir daqui…
 SCHED_MARGIN = 0.15                          # … e com essa folga sobre a 2ª candidata
 
@@ -928,7 +930,7 @@ def _score_scheduled(
     feriado/fim de semana").
 
     Restrições duras: sentido, moeda, linha entre due −7 e due +10 dias,
-    |valor| a ±30%. Pontos: proximidade de valor (0–0,25) e de data (0–0,25,
+    |valor| a ±30%. Pontos: proximidade de valor (0–0,3, zero além de ±10%) e de data (0–0,25,
     vencimento rolado pro próximo dia útil conta como exato), alias aprendido
     da regra (+0,5), fornecedor (+0,35), descrição contém a da conta (+0,35),
     System 1 apontou esta conta (+0,3), conta esperada (+0,1 / −0,15),
@@ -952,7 +954,7 @@ def _score_scheduled(
             continue
         sig: list[str] = []
         rel = float(abs(value - expected) / expected)
-        score = 0.25 * (1 - rel / float(SCHED_AMOUNT_BAND))
+        score = 0.3 * max(0.0, 1 - rel / SCHED_AMOUNT_CLOSE)
         if rel == 0:
             sig.append("valor exato")
         rolled = first_business_day(o.due_date)
@@ -979,7 +981,8 @@ def _score_scheduled(
                 sig.append("conta esperada")
             else:
                 score -= 0.15
-        if (direction == ScheduledDirection.PAYABLE and kind == "BOLETO") or (
+        debit_auto = r["description"].upper().startswith(("DA ", "DEB AUT", "DEBITO AUT"))
+        if (direction == ScheduledDirection.PAYABLE and (kind == "BOLETO" or debit_auto)) or (
             direction == ScheduledDirection.RECEIVABLE and kind == "SALARY"
         ):
             score += 0.1
