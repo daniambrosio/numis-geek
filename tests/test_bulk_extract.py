@@ -1939,3 +1939,18 @@ def test_screenshot_pdf_is_sent_as_image_tiles(db):
     assert len(parts) > 1
     assert all(m == "image/jpeg" for _, m in parts)
     assert "fatias sequenciais" in seen["user_text"]
+
+
+def test_integrity_catches_out26_invested_instead_of_current_value():
+    """Out/26 real: 4 bonds com Total investido no lugar de Valor atual —
+    diferença de 512,83 em 97.218,11 (0,53%). Tolerância de 1% deixava
+    passar; 0,1% pega."""
+    rows = [10793.45, 9456.19, 9795.49, 9800.41, 9975.17, 9583.87, 4966.14,
+            4984.78, 3071.23, 2029.20, 1042.23, 10012.79, 2102.20, 6065.40,
+            3038.70, 1013.70]
+    issues = extraction_service._integrity_issues({
+        "positions": [{"ticker_raw": f"r{i}", "market_value": v, "section": "Renda fixa"}
+                      for i, v in enumerate(rows)],
+        "section_totals": [{"section": "Renda fixa", "market_value": 97218.11, "currency": "USD"}],
+    })
+    assert len(issues) == 1 and "Renda fixa" in issues[0]

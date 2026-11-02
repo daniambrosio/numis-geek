@@ -51,6 +51,17 @@ function fmtMoney(n: number | null | undefined, currency: string | null | undefi
   return n.toLocaleString('pt-BR', { style: 'currency', currency: ccy })
 }
 
+// Preço a sugerir ao mapear uma órfã: ativo em modo valor (FUND/RF/Prev…)
+// recebe o TOTAL da posição; cotado recebe o preço unitário — nunca o total
+// (audit 2026-11-02: sugeria preço unitário pra fundo e total pra ação).
+function suggestedPriceFor(
+  o: { unitPrice: number | null; marketValue: number | null },
+  pen: SnapshotPendencyOut | undefined,
+): number | null {
+  if (pen?.asset_value_mode) return o.marketValue ?? o.unitPrice
+  return o.unitPrice
+}
+
 function tickerOf(pos: ExtractedPosition): string | null {
   return pos.ticker_normalized || pos.ticker_raw || null
 }
@@ -127,7 +138,10 @@ export default function BulkExtractReviewModal({
   // would use (extracted or manual override); NaN signals "no price yet".
   const preview = useMemo(() => {
     const matched: Array<{ ticker: string; pendency: SnapshotPendencyOut; price: number; currency: string | null; manual: boolean }> = []
-    const orphan: Array<{ ticker: string; price: number | null; currency: string | null }> = []
+    const orphan: Array<{
+      ticker: string; price: number | null; currency: string | null
+      unitPrice: number | null; marketValue: number | null
+    }> = []
     const notCovered: SnapshotPendencyOut[] = []
     const autoSkipped: Array<{ ticker: string; asset_name: string; currency: string | null; institution: string | null; price_source: string }> = []
     if (serverDetail) {
@@ -144,20 +158,25 @@ export default function BulkExtractReviewModal({
         })
       }
       for (const o of serverDetail.orphan) {
-        const raw = o.unit_price ?? o.market_value ?? null
+        const unitPrice = o.unit_price != null ? Number(o.unit_price) : null
+        const marketValue = o.market_value != null ? Number(o.market_value) : null
         orphan.push({
           ticker: o.ticker,
-          price: raw != null ? Number(raw) : null,
+          price: unitPrice ?? marketValue,
           currency: o.currency,
+          unitPrice, marketValue,
         })
       }
       for (const m of serverDetail.matched_no_pendency) {
         // Treated as orphan from the user's perspective — same dropdown to
         // map manually. Backend ignores them otherwise.
+        const unitPrice = m.unit_price != null ? Number(m.unit_price) : null
+        const marketValue = m.market_value != null ? Number(m.market_value) : null
         orphan.push({
           ticker: m.ticker ?? '',
-          price: m.unit_price != null ? Number(m.unit_price) : null,
+          price: unitPrice ?? marketValue,
           currency: m.currency,
+          unitPrice, marketValue,
         })
       }
       for (const p of serverDetail.pendency_not_in_extract) {
@@ -246,7 +265,8 @@ export default function BulkExtractReviewModal({
           </div>
           <button
             onClick={appliedResult ? onClose : handleCancel}
-            className="w-7 h-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+            disabled={applying}
+            className="disabled:opacity-40 w-7 h-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             aria-label="Fechar"
           >
             <X className="w-4 h-4" />
@@ -473,8 +493,10 @@ export default function BulkExtractReviewModal({
                           // sentinel for previdência/fundos and is not a price
                           // — never suggest it. User types real value.
                           if (v && !manualPrices[tickerKey]) {
-                            if (o.price != null && o.price > 1) {
-                              const suggested = o.price.toFixed(2).replace('.', ',')
+                            const pen = openPendencies.find(p => p.id === v)
+                            const sug = suggestedPriceFor(o, pen)
+                            if (sug != null && sug > 1) {
+                              const suggested = sug.toFixed(2).replace('.', ',')
                               setManualPrices(prev => ({ ...prev, [tickerKey]: suggested }))
                             }
                           }
@@ -503,9 +525,10 @@ export default function BulkExtractReviewModal({
                           mapeada como sugestão. */}
                       {manualMappings[tickerKey] && (() => {
                         const targetPen = openPendencies.find(p => p.id === manualMappings[tickerKey])
+                        const sugPrice = suggestedPriceFor(o, targetPen)
                         const suggested =
-                          (o.price != null && o.price > 0
-                            ? o.price.toFixed(2).replace('.', ',')
+                          (sugPrice != null && sugPrice > 0
+                            ? sugPrice.toFixed(2).replace('.', ',')
                             : null)
                           ?? (targetPen?.previous_unit_price
                               ? Number(targetPen.previous_unit_price).toFixed(2).replace('.', ',')

@@ -97,3 +97,84 @@ def test_screenshot_pdf_is_stitched_and_tiled():
 def test_invalid_pdf_falls_back_to_document():
     pytest.importorskip("pypdfium2")
     assert vt.pdf_screenshot_tiles(b"%PDF-1.4 fake") is None
+
+
+# ── audit adversarial 2026-11-02 ─────────────────────────────────────────────
+
+
+def _text_pdf(width=300, height=2000, text="Saldo em conta 1.234,56 " * 3):
+    """PDF mínimo com camada de texto real (Helvetica), página alta."""
+    content = f"BT /F1 10 Tf 20 {height - 40} Td ({text}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+        f"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".encode(),
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(out.tell())
+        out.write(f"{i} 0 obj\n".encode() + o + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode())
+    for off in offsets:
+        out.write(f"{off:010d} 00000 n \n".encode())
+    out.write(f"trailer << /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return out.getvalue()
+
+
+def test_tall_pdf_with_text_layer_stays_a_document():
+    """PDF alto COM texto (ex.: extrato gerado por sistema) vai como document
+    block — a API lê a camada de texto, melhor que OCR de bitmap."""
+    pytest.importorskip("pypdfium2")
+    assert vt.pdf_screenshot_tiles(_text_pdf()) is None
+
+
+def test_narrow_screenshot_pdf_is_upscaled_not_72dpi():
+    """Página-imagem estreita (390pt, export de celular) renderiza acima de
+    72 dpi: a fatia sai na largura cheia, não com 390 px."""
+    pytest.importorskip("pypdfium2")
+    img, _ = _table_image(width=390, rows=40, row_h=40)
+    tiles = vt.pdf_screenshot_tiles(_pdf(img))
+    assert tiles
+    # Bem acima dos 390 px nativos (margens laterais vazias são cortadas).
+    assert Image.open(BytesIO(tiles[0][0])).width >= 1400
+
+
+def test_transparent_png_is_composited_on_white():
+    img = Image.new("RGBA", (400, 1200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rectangle((50, 50, 300, 80), fill=(0, 0, 0, 255))
+    tiles = vt.split_image(_png(img), "image/png")
+    first = Image.open(BytesIO(tiles[0][0])).convert("L")
+    lo, hi = first.getextrema()
+    assert hi > 240 and lo < 30  # fundo branco + texto preto, não tudo preto
+
+
+def test_dense_content_without_gap_overlaps_tiles():
+    """Sem faixa vazia (conteúdo denso), corta no limite mas repete
+    _OVERLAP px na fatia seguinte — nenhuma linha some na emenda."""
+    img = Image.new("RGB", (vt.TILE_MAX_W, 4000), "white")
+    d = ImageDraw.Draw(img)
+    for y in range(0, 4000, 6):  # "linhas de texto" com respiro de 3 px
+        d.rectangle((40, y, vt.TILE_MAX_W - 40, y + 2), fill=(0, 0, 0))
+    tiles = vt.split_image(_png(img), "image/png")
+    total = sum(Image.open(BytesIO(b)).height for b, _ in tiles)
+    assert total == 4000 + vt._OVERLAP * (len(tiles) - 1)
+
+
+def test_pdf_too_many_tiles_fails_before_rendering(monkeypatch):
+    pytest.importorskip("pypdfium2")
+    monkeypatch.setattr(vt, "MAX_TILES", 2)
+    img, _ = _table_image(width=3200, rows=200)
+    with pytest.raises(vt.TooManyTilesError):
+        vt.pdf_screenshot_tiles(_pdf(img))
+
+
+def test_corrupt_tall_image_falls_back_to_original(monkeypatch):
+    blob = _png(Image.new("RGB", (400, 1200), "white"))
+    monkeypatch.setattr(vt, "_tile", lambda img: (_ for _ in ()).throw(OSError("truncated")))
+    assert vt.split_image(blob, "image/png") == [(blob, "image/png")]

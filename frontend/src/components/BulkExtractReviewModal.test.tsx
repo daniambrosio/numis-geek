@@ -222,4 +222,23 @@ describe('BulkExtractReviewModal', () => {
     />)
     expect(screen.getByTestId('bulk-review-apply')).toBeDisabled()
   })
+
+  it('mapping an orphan suggests the TOTAL for value-mode assets and the unit price for quoted', async () => {
+    const job = makeJob([{ ticker_raw: 'FUNDO X', quantity: 4052, unit_price: 12.34 }])
+    mockPreview({
+      orphan: [{ ticker: 'FUNDO X', unit_price: '12.34', market_value: '50000', currency: 'BRL' }],
+    })
+    const fund = makePendency({ id: 'pen-fund', asset_id: 'a-fund', asset_ticker: 'FUNDO', asset_value_mode: true })
+    const stock = makePendency({ id: 'pen-stock', asset_id: 'a-stock', asset_ticker: 'VALE3', asset_value_mode: false })
+    render(<BulkExtractReviewModal
+      job={job} pendencies={[fund, stock]} onApplied={() => {}} onClose={() => {}}
+    />)
+    const select = await screen.findByTestId('bulk-orphan-map-FUNDO X')
+    await userEvent.selectOptions(select, 'pen-fund')
+    expect(await screen.findByTestId('bulk-orphan-price-FUNDO X')).toHaveValue('50000,00')
+
+    await userEvent.selectOptions(select, '')
+    await userEvent.selectOptions(select, 'pen-stock')
+    expect(await screen.findByTestId('bulk-orphan-price-FUNDO X')).toHaveValue('12,34')
+  })
 })

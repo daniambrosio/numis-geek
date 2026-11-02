@@ -2077,6 +2077,7 @@ export interface BulkApplyDetailOut {
     currency: string | null
     institution_short_name: string | null
     unit_price: string | null
+    market_value?: string | null
   }>
   orphan: Array<{
     ticker: string
@@ -2405,6 +2406,8 @@ export interface SnapshotPendencyOut {
   asset_name: string
   asset_currency: string | null
   asset_institution_short_name: string | null
+  // Modo valor: preço informado é o TOTAL da posição (FUND/RF/Prev/CASH/FGTS).
+  asset_value_mode?: boolean
   reason: PendencyReason
   action_type: PendencyAction
   detail: string | null

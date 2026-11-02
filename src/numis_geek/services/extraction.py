@@ -298,7 +298,12 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
         job.source_hint, institution_short_name=fi_short_name,
     )
     job.prompt_version = template.version
-    db.flush()
+    # Commit ANTES da chamada ao LLM (até ~3 min): com só flush, a transação
+    # segurava o write lock do SQLite o tempo todo e qualquer outra escrita
+    # (outra aba, audit, scheduler) estourava `database is locked`
+    # (audit 2026-11-02). O job fica RUNNING visível; o resultado é gravado
+    # na mesma sessão depois.
+    db.commit()
 
     # Para BROKER_INCOME scoped a snapshot, passa o período pra o prompt
     # (o filtro autoritativo é server-side em _classify_bulk_income).
@@ -639,8 +644,10 @@ def _user_message(
         parts.append(
             f"\n\nNOTA: o documento é uma captura longa, dividida em "
             f"{len(payload.image_parts)} fatias sequenciais (de cima pra "
-            f"baixo). Os cortes caem em espaços entre linhas, sem "
-            f"sobreposição: cada linha aparece em UMA fatia só. Leia todas "
+            f"baixo). Os cortes caem em espaços entre linhas; só onde não há "
+            f"espaço as fatias repetem alguns pixels — uma linha que aparece "
+            f"no fim de uma fatia e no começo da seguinte é UMA linha, nunca "
+            f"duplique. Leia todas "
             f"como um único documento contínuo antes de extrair — títulos de "
             f"seção e cabeçalhos de coluna de uma fatia valem pras linhas "
             f"das fatias seguintes.",
@@ -1421,6 +1428,7 @@ def _classify_bulk_extract(
                 "currency": asset_currency,
                 "institution_short_name": asset_fi,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
+                "market_value": str(llm_mv) if llm_mv is not None else None,
             })
             continue
         is_value_mode_asset = (

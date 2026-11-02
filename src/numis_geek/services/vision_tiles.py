@@ -78,6 +78,10 @@ def _find_cut(off, start: int, target: int) -> int:
     lo = max(start + 1, target - _CUT_SEARCH)
     window = off[lo:target + 1]
     structural = window.mean(axis=0) >= _STRUCTURAL_COL_FREQ
+    if structural.mean() > 0.10:
+        # Muita coluna "estrutural" não é borda, é conteúdo (imagem/textura):
+        # não desconta nada.
+        structural[:] = False
     uniform = window[:, ~structural].sum(axis=1) <= _ROW_MAX_OFF
     i = len(uniform) - 1
     while i >= 0:
