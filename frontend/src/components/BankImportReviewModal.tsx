@@ -314,10 +314,14 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
         {fmtMoney(amount, r.currency as 'BRL' | 'USD', { sign: true })}
       </td>
       <td className="px-2 py-2">
-        <div className="flex flex-wrap items-center gap-1.5 justify-end">
-          {creates && (
-            <>
-              <div className="w-40">
+        {/* Colunas fixas (categoria · fornecedor · ação) numa linha só; o que
+            é extra (nome do novo fornecedor, aplicar às iguais, conta a
+            quitar, conta de origem) vai embaixo — antes o flex-wrap jogava
+            a ação pra uma segunda linha e desalinhava a tabela. */}
+        <div className="grid grid-cols-[12rem_11rem_9rem] gap-1.5 items-start justify-end">
+          <div className="min-w-0">
+            {creates && (
+              <>
                 <CategorySelect categories={categories} value={decision.category_id ?? ''}
                   onChange={v => onChange({ category_id: v || null })} />
                 {sug && decision.category_id === sug.category_id && (
@@ -326,12 +330,17 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
                 )}
                 {sug && !sug.applied && !decision.category_id && (
                   <button type="button" onClick={() => onChange({ category_id: sug.category_id })} title={sug.reason}
-                    className="text-[10px] text-gray-500 underline decoration-dotted" data-testid={`hint-${r.row_id}`}>
+                    className="block text-left text-[10px] leading-tight text-gray-500 underline decoration-dotted truncate max-w-full"
+                    data-testid={`hint-${r.row_id}`}>
                     sugestão: {sug.path}
                   </button>
                 )}
-              </div>
-              <select value={partyValue} aria-label="Fornecedor/Cliente" className={`${SELECT_CLS} max-w-[170px]`}
+              </>
+            )}
+          </div>
+          <div className="min-w-0">
+            {creates && (
+              <select value={partyValue} aria-label="Fornecedor/Cliente" className={`${SELECT_CLS} w-full`}
                 onChange={e => {
                   const v = e.target.value
                   if (v === 'suggested') onChange({ party_id: null, no_party: false, new_party_name: null })
@@ -344,21 +353,27 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
                 {r.party.mode !== 'none' && <option value="none">Sem fornecedor/cliente</option>}
                 {parties.filter(p => p.id !== r.party.party_id).map(p => <option key={p.id} value={`p:${p.id}`}>{p.name}</option>)}
               </select>
-              {decision.new_party_name != null && (
-                <input type="text" value={decision.new_party_name} aria-label="Nome do novo fornecedor/cliente"
-                  onChange={e => onChange({ new_party_name: e.target.value })}
-                  className={`${SELECT_CLS} w-40`} autoFocus />
-              )}
-              {mates.length > 0 && (
-                <button type="button" onClick={onApplyToMates} data-testid={`apply-mates-${r.row_id}`}
-                  className="text-[10px] text-indigo-600 dark:text-indigo-300 underline">
-                  aplicar às outras {mates.length} {mates.length === 1 ? 'linha igual' : 'linhas iguais'} neste arquivo
-                </button>
-              )}
-            </>
+            )}
+          </div>
+          <select value={decision.action} aria-label="Ação" className={`${SELECT_CLS} w-full`} data-testid={`action-${r.row_id}`}
+            onChange={e => onChange({ action: e.target.value as BankImportAction })}>
+            {r.actions.map(a => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
+          </select>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 justify-end">
+          {creates && decision.new_party_name != null && (
+            <input type="text" value={decision.new_party_name} aria-label="Nome do novo fornecedor/cliente"
+              onChange={e => onChange({ new_party_name: e.target.value })}
+              className={`${SELECT_CLS} w-[11rem]`} autoFocus />
+          )}
+          {creates && mates.length > 0 && (
+            <button type="button" onClick={onApplyToMates} data-testid={`apply-mates-${r.row_id}`}
+              className="text-[10px] text-indigo-600 dark:text-indigo-300 underline">
+              aplicar às outras {mates.length} {mates.length === 1 ? 'linha igual' : 'linhas iguais'} neste arquivo
+            </button>
           )}
           {decision.action === 'settle' && r.scheduled && (
-            <select value={decision.occurrence_id ?? ''} aria-label="Conta a pagar/receber" className={`${SELECT_CLS} max-w-[200px]`}
+            <select value={decision.occurrence_id ?? ''} aria-label="Conta a pagar/receber" className={`${SELECT_CLS} max-w-[20rem]`}
               onChange={e => onChange({ occurrence_id: e.target.value })}>
               {r.scheduled.candidates.map(c => (
                 <option key={c.occurrence_id} value={c.occurrence_id}>
@@ -374,10 +389,6 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
               {checking.filter(a => a.currency === r.currency).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           )}
-          <select value={decision.action} aria-label="Ação" className={SELECT_CLS} data-testid={`action-${r.row_id}`}
-            onChange={e => onChange({ action: e.target.value as BankImportAction })}>
-            {r.actions.map(a => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
-          </select>
         </div>
       </td>
     </tr>
