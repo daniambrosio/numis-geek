@@ -10,6 +10,7 @@ monthly spend.
 from __future__ import annotations
 
 import base64
+import re
 import json
 from dataclasses import dataclass
 from decimal import Decimal
@@ -34,6 +35,16 @@ PRICING: dict[str, tuple[Decimal, Decimal]] = {
 }
 
 
+def _pricing_for(model: str | None) -> tuple[Decimal, Decimal]:
+    """A API devolve o id com snapshot de data (`claude-sonnet-4-5-20250929`)
+    — lookup exato dava miss e todo job gravava cost_usd=0 (achado
+    2026-11-02). Tira o sufixo `-YYYYMMDD` antes de procurar."""
+    if not model:
+        return Decimal("0"), Decimal("0")
+    base = re.sub(r"-\d{8}$", "", model)
+    return PRICING.get(model) or PRICING.get(base) or (Decimal("0"), Decimal("0"))
+
+
 @dataclass
 class LLMCall:
     """Result of one Claude call."""
@@ -43,7 +54,7 @@ class LLMCall:
     model: str
 
     def cost_usd(self) -> Decimal:
-        in_price, out_price = PRICING.get(self.model, (Decimal("0"), Decimal("0")))
+        in_price, out_price = _pricing_for(self.model)
         return (
             (Decimal(self.input_tokens) / Decimal(1_000_000)) * in_price
             + (Decimal(self.output_tokens) / Decimal(1_000_000)) * out_price

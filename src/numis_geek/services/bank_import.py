@@ -37,6 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -74,6 +75,15 @@ class BankImportError(Exception):
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _local_day(ts: datetime | None) -> date:
+    """Dia em America/Sao_Paulo de um timestamp UTC (naive = UTC)."""
+    if ts is None:
+        return datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(ZoneInfo("America/Sao_Paulo")).date()
+
 
 def _parse_date(raw) -> date | None:
     if not raw:
@@ -392,6 +402,8 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
 
     # 1. parse lines
     parsed: list[dict] = []
+    # Determinístico (apply re-classifica): o dia do upload, não "hoje".
+    upload_day = _local_day(job.created_at)
     for i, line in enumerate(payload.get("transactions") or []):
         rid = f"r{i}"
         d = _parse_date(line.get("event_date"))
@@ -399,6 +411,10 @@ def _classify_bank_import(db: Session, job: ExtractionJob, payload: dict | None 
         desc = (line.get("description") or "").strip()
         if d is None or amount is None or amount == 0 or not desc:
             warnings.append(f"Linha {i + 1} ignorada (data/valor/descrição inválidos): {desc or '—'}")
+            continue
+        if d > upload_day:
+            # Agendado ("lançamentos futuros" do Itaú): ainda não aconteceu.
+            warnings.append(f"Linha {i + 1} ignorada (lançamento futuro, {d.strftime('%d/%m/%Y')}): {desc}")
             continue
         line_ccy = (line.get("currency") or sc.currency.value).upper()
         inst = _parse_installment(line.get("installment")) if sc.card else None

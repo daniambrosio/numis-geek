@@ -34,11 +34,16 @@ dev = [
 # Spec 38 + 48 — Anthropic Claude for snapshot extraction. Optional because
 # the extraction service falls back to a stub when the SDK is missing.
 # Pillow tiles large images before sending to the API (Anthropic's 8000px cap).
-# openpyxl converts XLSX uploads to CSV-like text before sending.
+# openpyxl converts XLSX uploads to CSV-like text before sending (xlrd: legacy .xls).
+# pypdfium2 rasterizes screenshot-like PDFs (vision_tiles).
 llm = [
     "anthropic>=0.40",
     "Pillow>=10.0",
     "openpyxl>=3.1",
+    "xlrd>=2.0",
+    # PDF exportado de app (página-screenshot gigante) é rasterizado e fatiado
+    # antes de ir pro LLM — ver services/vision_tiles.py.
+    "pypdfium2>=4.30",
 ]
 
 [tool.setuptools.packages.find]

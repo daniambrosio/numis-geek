@@ -1778,3 +1778,164 @@ def test_bulk_apply_nan_string_from_llm_flagged(db):
     assert any("não-finito" in e or "NaN" in e for e in result.errors), (
         f"expected NaN warning, got: {result.errors}"
     )
+
+
+# ── Bug Avenue Out/26 (2026-11-02) ───────────────────────────────────────────
+
+
+def _payload_with_sections(petr_mv: float, section_total: float) -> dict:
+    return {
+        "positions": [
+            {"ticker_raw": "PETR4", "ticker_normalized": "PETR4",
+             "quantity": 100, "unit_price": petr_mv / 100, "market_value": petr_mv,
+             "currency": "BRL", "confidence": 0.9, "section": "Ações"},
+        ],
+        "section_totals": [
+            {"section": "Ações", "market_value": section_total, "currency": "BRL"},
+            # Seção mostrada no extrato mas sem nenhuma linha extraída.
+        ],
+    }
+
+
+def test_integrity_issues_flag_section_sum_mismatch(db):
+    """LLM leu o total da seção mas inventou/perdeu linhas: soma ≠ total."""
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"],
+                            _payload_with_sections(3850.0, 10000.0))
+    preview = extraction_service.preview_bulk_extract(db, job_id=job_id)
+    issues = preview.bulk_detail.integrity_issues
+    assert len(issues) == 1 and "Ações" in issues[0] and "10,000.00" in issues[0]
+
+    with pytest.raises(extraction_service.ExtractionError, match="totais do extrato"):
+        extraction_service.confirm_extraction(
+            db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+        )
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+        acknowledge_integrity=True,
+    )
+    assert result.applied_count == 1
+
+
+def test_integrity_flags_section_with_no_rows():
+    issues = extraction_service._integrity_issues({
+        "positions": [{"ticker_raw": "X", "market_value": 10, "section": "ETFs"}],
+        "section_totals": [
+            {"section": "ETFs", "market_value": 10, "currency": "USD"},
+            {"section": "Renda fixa", "market_value": 97218.11, "currency": "USD"},
+        ],
+    })
+    assert len(issues) == 1
+    assert "Renda fixa" in issues[0] and "nenhuma linha" in issues[0]
+
+
+def test_integrity_ok_within_tolerance_and_section_name_normalized(db):
+    w = _world(db)
+    payload = _payload_with_sections(3850.0, 3851.0)
+    payload["positions"][0]["section"] = "  ações "
+    payload["section_totals"][0]["section"] = "Ações"
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], payload)
+    preview = extraction_service.preview_bulk_extract(db, job_id=job_id)
+    assert preview.bulk_detail.integrity_issues == []
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1
+
+
+def test_integrity_skipped_without_section_totals():
+    assert extraction_service._integrity_issues({"positions": [{"ticker_raw": "X"}]}) == []
+
+
+def test_value_mode_fixed_income_applies_market_value_without_qty_or_price(db):
+    """Avenue não mostra qty/preço de renda fixa — prompt avenue-v3 manda
+    null. Asset em modo valor precisa aplicar só com o Valor atual."""
+    from numis_geek.services.positions import _COTADO_CLASSES
+    assert AssetClass.FIXED_INCOME not in _COTADO_CLASSES
+
+    w = _world(db)
+    now = datetime.now(timezone.utc)
+    aapl = db.get(Asset, w["aapl_id"])
+    tsy = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], account_id=aapl.account_id,
+        asset_class=AssetClass.FIXED_INCOME, country="US",
+        name="US Treasury 4.625% 11/15/2044", ticker=f"T 4.625 15/11/44 {uuid.uuid4().hex[:4]}",
+        currency=Currency.USD, current_price=Decimal("3000"),
+        price_source=PriceSource.MANUAL, is_active=True,
+        created_at=now, updated_at=now,
+    )
+    db.add(tsy)
+    db.flush()
+    pen = SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=w["snap_id"], asset_id=tsy.id,
+        reason=PendencyReason.MANUAL_SOURCE, action_type=PendencyAction.EDIT_PRICE,
+        created_at=now,
+    )
+    db.add(pen)
+    db.flush()
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": tsy.ticker, "quantity": None, "unit_price": None,
+             "market_value": 2828.37, "currency": "USD", "confidence": 0.9},
+        ]
+    })
+    result = extraction_service.confirm_extraction(
+        db, job_id=job_id, user_id=w["user_id"], user_email="bulk@test.com",
+    )
+    assert result.applied_count == 1, result.errors
+    applied = result.bulk_detail.applied[0]
+    assert Decimal(applied["new_price"]) == Decimal("2828.37")
+
+
+def test_orphan_carries_market_value_for_manual_mapping(db):
+    w = _world(db)
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {
+        "positions": [
+            {"ticker_raw": "CD ZZZ 9.99 01/01/30", "quantity": None, "unit_price": None,
+             "market_value": 1234.5, "currency": "USD", "confidence": 0.9},
+        ]
+    })
+    preview = extraction_service.preview_bulk_extract(db, job_id=job_id)
+    (o,) = preview.bulk_detail.orphan
+    assert o["unit_price"] is None and o["market_value"] == "1234.5"
+
+
+def test_screenshot_pdf_is_sent_as_image_tiles(db):
+    """PDF-screenshot alto (export do app Avenue) vai pro LLM em fatias
+    legíveis, não como document block único que a API reduz demais."""
+    pytest.importorskip("pypdfium2")
+    from io import BytesIO
+    from PIL import Image
+
+    w = _world(db)
+    buf = BytesIO()
+    Image.new("RGB", (3200, 14400), "white").save(buf, format="PDF")
+    saved = attachment_storage.save_bytes(w["ws_id"], buf.getvalue(), "application/pdf")
+    att = Attachment(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"],
+        source_type=AttachmentSourceType.ASSET, source_id=w["ws_id"],
+        kind=AttachmentKind.PDF, filename="Avenue-App.pdf", mime_type="application/pdf",
+        size_bytes=saved.size_bytes, storage_key=saved.storage_key,
+        uploaded_at=datetime.now(timezone.utc), is_active=True,
+    )
+    db.add(att)
+    db.flush()
+
+    seen: dict = {}
+
+    class Capture(FakeLLM):
+        def call(self, **kw):
+            seen.update(kw)
+            return super().call(**kw)
+
+    set_llm_client(Capture({"positions": []}))
+    job = extraction_service.create_and_run(
+        db, workspace_id=w["ws_id"], attachment_id=att.id,
+        source_hint=ExtractionSourceHint.BROKER_POSITION,
+        snapshot_id=w["snap_id"], user_id=w["user_id"], user_email="x@test.com",
+    )
+    assert job.status == ExtractionStatus.EXTRACTED, job.error_message
+    parts = seen["image_parts"]
+    assert len(parts) > 1
+    assert all(m == "image/jpeg" for _, m in parts)
+    assert "fatias sequenciais" in seen["user_text"]

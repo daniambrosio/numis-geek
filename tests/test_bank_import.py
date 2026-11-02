@@ -1315,3 +1315,32 @@ def test_one_off_occurrence_never_learns(client, seed):
     db = TestSession()
     assert db.get(ScheduledTransaction, oid).amount == Decimal("1000.00")
     db.close()
+
+
+# ── Itaú .xls + lançamentos futuros (2026-11-02, primeiro import real) ──────
+
+def test_future_dated_lines_are_dropped_with_warning(client, seed):
+    acc = new_account(seed)
+    past, future = date.today() - timedelta(days=3), date.today() + timedelta(days=20)
+    job = import_statement(client, seed, acc, statement(
+        [line(past, "MERCADO X", -100), line(future, "DDA PAG TIT", -3384.75)]))
+    p = preview(client, seed, job["id"])
+    assert [r["description"] for r in p["rows"]] == ["MERCADO X"]
+    assert any("lançamento futuro" in w for w in p["warnings"])
+
+
+def test_xls_reader_and_mojibake_fix():
+    from numis_geek.services.extraction import _fix_mojibake
+    assert _fix_mojibake("SALDO TOTAL DISPONÃ\x8dVEL DIA") == "SALDO TOTAL DISPONÍVEL DIA"
+    assert _fix_mojibake("Lançamentos") == "Lançamentos"
+
+
+def test_unreadable_spreadsheet_raises_clear_error(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from numis_geek.services import extraction as ex
+    f = tmp_path / "x.xls"
+    f.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1garbage")
+    monkeypatch.setattr(ex.attachment_storage, "absolute_path_for", lambda a: str(f))
+    att = SimpleNamespace(kind=None, mime_type="application/vnd.ms-excel")
+    with pytest.raises(ex.ExtractionError, match="planilha"):
+        ex._read_attachment_payload(att)

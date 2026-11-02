@@ -57,6 +57,9 @@ class ConfirmExtractionBody(BaseModel):
     # { row_id: { action, category_id?, party_id?, new_party_name?,
     #             no_party?, occurrence_id?, payment_account_id? } }
     bank_decisions: dict[str, dict[str, Any]] | None = None
+    # Bug Avenue 2026-11-02 — user conferiu e aceita aplicar mesmo com a
+    # soma das linhas divergindo dos totais por seção do extrato.
+    acknowledge_integrity: bool = False
 
 
 class RejectExtractionBody(BaseModel):
@@ -138,6 +141,7 @@ class BulkApplyDetailOut(BaseModel):
     # Spec 57 follow-up — assets matched but auto-priced (BRAPI/FINNHUB/…).
     # UI shows them in a collapsed informational bucket; apply ignores them.
     auto_skipped: list[dict] = []
+    integrity_issues: list[str] = []
 
 
 class PreviewExtractionBody(BaseModel):
@@ -255,6 +259,7 @@ def confirm_extraction(
             manual_prices=body.manual_prices,
             manual_modes=body.manual_modes,
             bank_decisions=body.bank_decisions,
+            acknowledge_integrity=body.acknowledge_integrity,
         )
     except extraction_service.ExtractionError as exc:
         # Spec 71 — apply atômico: nada do que já foi escrito sobrevive.
@@ -273,6 +278,7 @@ def confirm_extraction(
             orphan=result.bulk_detail.orphan,
             pendency_not_in_extract=result.bulk_detail.pendency_not_in_extract,
             auto_skipped=result.bulk_detail.auto_skipped,
+            integrity_issues=result.bulk_detail.integrity_issues,
         )
     return ApplyResultOut(
         applied_count=result.applied_count,
@@ -316,6 +322,7 @@ def preview_extraction(
             orphan=result.bulk_detail.orphan,
             pendency_not_in_extract=result.bulk_detail.pendency_not_in_extract,
             auto_skipped=result.bulk_detail.auto_skipped,
+            integrity_issues=result.bulk_detail.integrity_issues,
         )
     return ApplyResultOut(
         applied_count=result.applied_count,

@@ -76,10 +76,16 @@ class BulkApplyDetail:
     # (BRAPI/FINNHUB/...); extract is ignored. UI shows this so the user
     # knows the line was recognized but no action is needed.
     auto_skipped: list[dict] = None  # populated only by preview/apply paths that classify
+    # Bug Avenue 2026-11-02 — soma das linhas por seção ≠ total que o extrato
+    # mostra no cabeçalho da seção (linha inventada ou faltando). UI exige
+    # confirmação explícita; confirm recusa sem `acknowledge_integrity`.
+    integrity_issues: list[str] = None
 
     def __post_init__(self):
         if self.auto_skipped is None:
             self.auto_skipped = []
+        if self.integrity_issues is None:
+            self.integrity_issues = []
 
 
 @dataclass
@@ -361,49 +367,12 @@ class _Payload:
     image_parts: list[tuple[bytes, str | None]] | None = None
 
 
-_ANTHROPIC_IMAGE_MAX_DIM = 8000  # Anthropic's hard limit on either side.
-
-
 def _split_image_for_anthropic(
     blob: bytes, mime_type: str | None,
 ) -> list[tuple[bytes, str | None]]:
-    """Return a list of (bytes, mime) tiles that all fit Anthropic's bounds.
-
-    For images within the 8000×8000 limit, returns `[(blob, mime)]` unchanged.
-    For taller / wider stitched screenshots we slice into tiles (vertical
-    strips first, then horizontal if needed). Resolution is preserved — no
-    downscale — so small text remains legible to Claude. Tiles are emitted
-    as JPEG quality 92 to keep payload under Anthropic's 5MB/image cap.
-
-    Falls back to `[(blob, mime)]` when Pillow isn't installed; the API
-    will reject oversize blobs in that case, surfaced as a clear error.
-    """
-    try:
-        from io import BytesIO
-        from PIL import Image
-    except ImportError:
-        return [(blob, mime_type)]
-    try:
-        img = Image.open(BytesIO(blob))
-        w, h = img.size
-        if w <= _ANTHROPIC_IMAGE_MAX_DIM and h <= _ANTHROPIC_IMAGE_MAX_DIM:
-            return [(blob, mime_type)]
-        img = img.convert("RGB") if img.mode in ("RGBA", "P", "LA") else img
-        cols = (w + _ANTHROPIC_IMAGE_MAX_DIM - 1) // _ANTHROPIC_IMAGE_MAX_DIM
-        rows = (h + _ANTHROPIC_IMAGE_MAX_DIM - 1) // _ANTHROPIC_IMAGE_MAX_DIM
-        tiles: list[tuple[bytes, str | None]] = []
-        for row in range(rows):
-            for col in range(cols):
-                left = col * _ANTHROPIC_IMAGE_MAX_DIM
-                upper = row * _ANTHROPIC_IMAGE_MAX_DIM
-                right = min(left + _ANTHROPIC_IMAGE_MAX_DIM, w)
-                lower = min(upper + _ANTHROPIC_IMAGE_MAX_DIM, h)
-                buf = BytesIO()
-                img.crop((left, upper, right, lower)).save(buf, format="JPEG", quality=92)
-                tiles.append((buf.getvalue(), "image/jpeg"))
-        return tiles
-    except Exception:
-        return [(blob, mime_type)]
+    """Compat: delega pro `vision_tiles.split_image` (bug Avenue 2026-11-02)."""
+    from numis_geek.services.vision_tiles import split_image
+    return split_image(blob, mime_type)
 
 
 _XLSX_MIMES = (
@@ -443,6 +412,57 @@ def _xlsx_to_csv_text(blob: bytes) -> str | None:
     return "\n\n".join(parts)
 
 
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # .xls legado (BIFF/CDF)
+
+
+def _fix_mojibake(v: str) -> str:
+    """O export do Itaú grava UTF-8 dentro de célula latin-1 ("DISPONÃ\x8dVEL")."""
+    if "Ã" not in v and "Â" not in v:
+        return v
+    try:
+        return v.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return v
+
+
+def _xls_to_csv_text(blob: bytes) -> str | None:
+    """Excel 97-2003 (.xls — o export do Itaú) → texto CSV-like. openpyxl só
+    lê .xlsx; sem isto o arquivo ia cru pro LLM como "imagem" e a API
+    recusava (400 media_type)."""
+    try:
+        import csv as _csv
+        from io import StringIO
+        import xlrd
+    except ImportError:
+        return None
+    try:
+        book = xlrd.open_workbook(file_contents=blob)
+    except Exception:
+        return None
+    parts: list[str] = []
+    for sh in book.sheets():
+        parts.append(f"# Sheet: {sh.name}")
+        out = StringIO()
+        writer = _csv.writer(out)
+        for r in range(sh.nrows):
+            row = []
+            for c, v in enumerate(sh.row_values(r)):
+                if sh.cell_type(r, c) == xlrd.XL_CELL_DATE:
+                    try:
+                        v = xlrd.xldate.xldate_as_datetime(v, book.datemode).date().isoformat()
+                    except Exception:
+                        pass
+                elif isinstance(v, float) and v.is_integer():
+                    v = int(v)
+                elif isinstance(v, str):
+                    v = _fix_mojibake(v)
+                row.append("" if v in ("", None) else str(v))
+            if any(row):
+                writer.writerow(row)
+        parts.append(out.getvalue().rstrip())
+    return "\n\n".join(parts)
+
+
 def _read_attachment_payload(attachment: Attachment) -> _Payload:
     """Convert the on-disk attachment into LLM input (image tiles OR text)."""
     path = attachment_storage.absolute_path_for(attachment)
@@ -456,11 +476,18 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
             image_parts=parts,
         )
     if attachment.mime_type in _XLSX_MIMES:
-        text = _xlsx_to_csv_text(blob)
-        if text is not None:
-            return _Payload(text=text, image_bytes=None, image_mime=None)
-        # Fallback: bytes (Anthropic will likely fail, but at least we tried).
-        return _Payload(text=None, image_bytes=blob, image_mime=attachment.mime_type)
+        # A extensão/MIME mente com frequência (.xls que é .xlsx e vice-versa):
+        # decide pelo conteúdo e tenta os dois leitores.
+        readers = (_xls_to_csv_text, _xlsx_to_csv_text) if blob.startswith(_OLE2_MAGIC) else (
+            _xlsx_to_csv_text, _xls_to_csv_text)
+        for read in readers:
+            text = read(blob)
+            if text is not None:
+                return _Payload(text=text, image_bytes=None, image_mime=None)
+        # Planilha nunca vai como imagem — a API recusa com um 400 ilegível.
+        raise ExtractionError(
+            "Não consegui ler a planilha. Exporte de novo em .xlsx ou CSV e tente outra vez."
+        )
     if attachment.kind == AttachmentKind.CSV:
         return _Payload(text=blob.decode("utf-8", errors="replace"), image_bytes=None, image_mime=None)
     if attachment.mime_type in attachment_storage.OFX_MIMES:
@@ -470,6 +497,19 @@ def _read_attachment_payload(attachment: Attachment) -> _Payload:
         except UnicodeDecodeError:
             text = blob.decode("latin-1")
         return _Payload(text=text, image_bytes=None, image_mime=None)
+    if attachment.mime_type == "application/pdf":
+        # PDF exportado de app (página-screenshot de 14400 px): a API reduz a
+        # página até ficar ilegível e o modelo inventa linhas. Rasteriza e
+        # fatia; PDF normal (A4) segue como document block.
+        from numis_geek.services.vision_tiles import pdf_screenshot_tiles
+        tiles = pdf_screenshot_tiles(blob)
+        if tiles:
+            return _Payload(
+                text=None,
+                image_bytes=tiles[0][0],
+                image_mime=tiles[0][1],
+                image_parts=list(tiles),
+            )
     # PDF and others — try utf-8 first, else send as base64 image-fallback.
     # V1 simplification: pass the raw bytes as the prompt for non-image
     # attachments. Real PDF-to-image conversion (pypdfium / pdf2image) is a
@@ -494,10 +534,13 @@ def _user_message(
         )
     if payload.image_parts and len(payload.image_parts) > 1:
         parts.append(
-            f"\n\nNOTA: a imagem original excedia o limite de 8000px, então "
-            f"está dividida em {len(payload.image_parts)} fatias sequenciais "
-            f"(top-to-bottom, left-to-right). Leia todas como uma única "
-            f"captura contínua antes de extrair os dados.",
+            f"\n\nNOTA: o documento é uma captura longa, dividida em "
+            f"{len(payload.image_parts)} fatias sequenciais (de cima pra "
+            f"baixo). Os cortes caem em espaços entre linhas, sem "
+            f"sobreposição: cada linha aparece em UMA fatia só. Leia todas "
+            f"como um único documento contínuo antes de extrair — títulos de "
+            f"seção e cabeçalhos de coluna de uma fatia valem pras linhas "
+            f"das fatias seguintes.",
         )
     if payload.text:
         parts.append("\n\n----\n")
@@ -538,6 +581,7 @@ def confirm_extraction(
     manual_prices: dict[str, float] | None = None,
     manual_modes: dict[str, str] | None = None,
     bank_decisions: dict | None = None,
+    acknowledge_integrity: bool = False,
 ) -> ExtractionApplyResult:
     """Apply the (possibly edited) extracted JSON to the domain model.
 
@@ -566,6 +610,19 @@ def confirm_extraction(
         if edited_payload is not None:
             raise ExtractionError("Import de extrato/fatura não aceita edited_payload — use as decisões por linha.")
         return _confirm_bank_import(db, job, bank_decisions, user_id=user_id, user_email=user_email)
+
+    if (
+        job.source_hint == ExtractionSourceHint.BROKER_POSITION
+        and job.snapshot_id
+        and not job.pendency_id
+        and not acknowledge_integrity
+    ):
+        issues = _integrity_issues(payload)
+        if issues:
+            raise ExtractionError(
+                "Extração inconsistente com os totais do extrato — confira e "
+                "confirme explicitamente: " + " · ".join(issues)
+            )
 
     result = _apply_payload(
         db, job, payload,
@@ -959,6 +1016,56 @@ def _institution_short_name_for_asset(db: Session, asset: Asset) -> str | None:
     return fi.short_name if fi else None
 
 
+def _norm_section(s: str | None) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _integrity_issues(payload: dict) -> list[str]:
+    """Compara a soma de market_value por seção com o total que o extrato
+    mostra no cabeçalho da seção (`section_totals`, copiado pelo LLM).
+
+    Bug 2026-11-02: com a página ilegível o LLM leu os totais (fonte
+    grande) mas inventou as linhas — AAPL/MSFT/VOO que nem estavam no
+    extrato. Linha inventada ou faltando quebra a soma da seção. Sem
+    `section_totals` no payload (templates antigos) → sem checagem.
+    """
+    totals = payload.get("section_totals") or []
+    positions = payload.get("positions") or []
+    issues: list[str] = []
+    for st in totals:
+        try:
+            expected = float(st.get("market_value"))
+        except (TypeError, ValueError):
+            continue
+        name = st.get("section") or "?"
+        key = _norm_section(name)
+        ccy = (st.get("currency") or "").upper() or None
+        rows = [p for p in positions if _norm_section(p.get("section")) == key]
+        got = 0.0
+        missing_mv = 0
+        for p in rows:
+            try:
+                got += float(p.get("market_value"))
+            except (TypeError, ValueError):
+                missing_mv += 1
+        sym = "US$" if ccy == "USD" else ("R$" if ccy == "BRL" else "")
+        if not rows:
+            issues.append(
+                f"Seção \u201c{name}\u201d: o extrato mostra {sym} {expected:,.2f} "
+                f"mas nenhuma linha dela foi extraída."
+            )
+            continue
+        tol = max(abs(expected) * 0.01, 1.0)
+        if abs(got - expected) > tol or missing_mv:
+            extra = f" ({missing_mv} linha(s) sem valor)" if missing_mv else ""
+            issues.append(
+                f"Seção \u201c{name}\u201d: as {len(rows)} linhas somam {sym} {got:,.2f}, "
+                f"o extrato mostra {sym} {expected:,.2f}{extra} — "
+                f"linha faltando, inventada ou com coluna errada."
+            )
+    return issues
+
+
 def _classify_bulk_extract(
     db: Session, job: ExtractionJob, payload: dict,
     *,
@@ -1167,6 +1274,7 @@ def _classify_bulk_extract(
             orphan.append({
                 "ticker": ticker,
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
+                "market_value": str(llm_mv) if llm_mv is not None else None,
                 "currency": pos.get("currency") or None,
             })
             continue
@@ -1209,7 +1317,13 @@ def _classify_bulk_extract(
                 "unit_price": str(unit_price_raw) if unit_price_raw is not None else None,
             })
             continue
-        if unit_price_raw is None:
+        is_value_mode_asset = (
+            asset.asset_class is not None
+            and asset.asset_class not in _COTADO_CLASSES
+        )
+        # Modo valor só precisa do total (mv); a Avenue nem mostra qty/preço
+        # de renda fixa (prompt avenue-v3 manda null).
+        if unit_price_raw is None and not (is_value_mode_asset and llm_mv is not None):
             errors.append(
                 f"{ticker!r}: sem preço unitário no extrato "
                 "(use o input ao lado do dropdown pra informar manualmente)."
@@ -1229,10 +1343,6 @@ def _classify_bulk_extract(
         # R$ 2.370 em vez de R$ 123.656. Fix: se asset é value-mode e LLM
         # devolveu mv, usa mv como new_price. Cotado (STOCK/ETF/CRYPTO/
         # REIT/OPTION) mantém unit_price.
-        is_value_mode_asset = (
-            asset.asset_class is not None
-            and asset.asset_class not in _COTADO_CLASSES
-        )
         if (
             manual_price is None
             and is_value_mode_asset
@@ -1295,6 +1405,7 @@ def _classify_bulk_extract(
         orphan=orphan,
         pendency_not_in_extract=not_in_extract,
         auto_skipped=auto_skipped,
+        integrity_issues=_integrity_issues(payload),
     ), errors
 
 

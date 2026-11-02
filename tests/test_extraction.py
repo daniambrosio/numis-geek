@@ -484,14 +484,25 @@ def test_split_image_tiles_when_taller_than_8000px():
     from io import BytesIO
     from PIL import Image
     from numis_geek.services.extraction import _split_image_for_anthropic
-    # 1290×10000 mimics a stitched broker screenshot.
+    # 1290×10000 mimics a stitched broker screenshot. Fatias precisam caber
+    # em ~1400 px pra API não reduzir o texto até ficar ilegível (bug
+    # Avenue 2026-11-02) — a regra antiga (só cortar em 8000) não basta.
     buf = BytesIO()
     Image.new("RGB", (1290, 10000), color="white").save(buf, format="PNG")
     parts = _split_image_for_anthropic(buf.getvalue(), "image/png")
-    # Needs 2 vertical tiles (8000 + 2000).
-    assert len(parts) == 2
-    # Each tile decodes back within the 8000 hard limit.
+    # Imagem toda branca: o corte cai no meio da faixa vazia → ≥ 8 fatias.
+    assert len(parts) >= 8
     for blob, mime in parts:
         assert mime == "image/jpeg"
         img = Image.open(BytesIO(blob))
-        assert max(img.size) <= 8000
+        assert img.size[0] == 1290 and img.size[1] <= 1400
+
+
+def test_llm_cost_resolves_dated_model_id():
+    """A API devolve `claude-sonnet-4-5-20250929`; antes o lookup exato
+    falhava e todo job ficava com cost_usd=0."""
+    from decimal import Decimal
+    from numis_geek.integrations.llm import LLMCall
+    call = LLMCall(text="", input_tokens=1_000_000, output_tokens=0,
+                   model="claude-sonnet-4-5-20250929")
+    assert call.cost_usd() == Decimal("3.0000")
