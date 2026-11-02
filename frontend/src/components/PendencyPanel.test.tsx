@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
-import PendencyPanel from './PendencyPanel'
+import PendencyPanel, { groupPendenciesByFI } from './PendencyPanel'
 import type { AssetOut, SnapshotPendencyOut } from '../lib/api'
 
 function makePendency(overrides: Partial<SnapshotPendencyOut> = {}): SnapshotPendencyOut {
@@ -177,5 +177,18 @@ describe('PendencyPanel', () => {
     })
     expect(screen.queryByRole('button', { name: /Repetir/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Editar/ })).toBeInTheDocument()
+  })
+
+  it('institution with assets but no pendency still gets a group (Coinbase, upload area)', () => {
+    const groups = groupPendenciesByFI(
+      [makePendency({ asset_institution_short_name: 'XP' })],
+      ['XP', 'Coinbase'],
+    )
+    const coinbase = groups.find(g => g.name === 'Coinbase')
+    expect(coinbase).toBeDefined()
+    expect(coinbase!.openItems).toHaveLength(0)
+    // Grupos com pendência aberta continuam primeiro.
+    expect(groups[0].name).toBe('XP')
+    expect(groups.filter(g => g.name === 'XP')).toHaveLength(1)
   })
 })

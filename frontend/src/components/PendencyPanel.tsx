@@ -56,12 +56,21 @@ interface FIGroup {
   resolvedCount: number
 }
 
-function groupPendenciesByFI(pendencies: SnapshotPendencyOut[]): FIGroup[] {
+export function groupPendenciesByFI(
+  pendencies: SnapshotPendencyOut[],
+  snapshotFiNames: string[] = [],
+): FIGroup[] {
   const map = new Map<string, SnapshotPendencyOut[]>()
   for (const p of pendencies) {
     const k = p.asset_institution_short_name ?? UNGROUPED_FI_LABEL
     if (!map.has(k)) map.set(k, [])
     map.get(k)!.push(p)
+  }
+  // Instituição com ativos no fechamento mas SEM pendência (ex.: Coinbase,
+  // preço 100% via API) também precisa de grupo — é nele que fica o upload
+  // de proventos/extrato. Antes ela sumia do painel (bug 2026-11-02).
+  for (const name of snapshotFiNames) {
+    if (!map.has(name)) map.set(name, [])
   }
   // Sort: groups with open pendencies first; UNGROUPED last; alpha within.
   const groups = Array.from(map.entries())
@@ -104,6 +113,9 @@ interface Props {
   /** Caller abre o SnapshotItemEditModal pra essa pendência (mesmo modal
    *  do clique na Posições Congeladas). Default: prompt nativo (legacy). */
   onEditPendency?: (pendency: SnapshotPendencyOut) => void
+  /** short_name das instituições com ativos no fechamento — garante um
+   *  grupo (e área de upload) mesmo sem nenhuma pendência. */
+  snapshotFiNames?: string[]
 }
 
 export default function PendencyPanel({
@@ -112,10 +124,11 @@ export default function PendencyPanel({
   pendingTotal, totalAssetsCount, resolvedAssets,
   periodEndDate,
   onResolved, onConfirm, confirming, onEditPendency,
+  snapshotFiNames,
 }: Props) {
   const groups = useMemo(
-    () => groupPendenciesByFI(pendencies),
-    [pendencies],
+    () => groupPendenciesByFI(pendencies, snapshotFiNames),
+    [pendencies, snapshotFiNames],
   )
   const pct = totalAssetsCount > 0
     ? Math.round((resolvedAssets / totalAssetsCount) * 100)
@@ -240,7 +253,9 @@ export default function PendencyPanel({
                 <div className="text-[10px] text-gray-500 tnum">
                   {hasOpen
                     ? `${g.openItems.length} aberta${g.openItems.length === 1 ? '' : 's'}`
-                    : `${g.resolvedCount} resolvida${g.resolvedCount === 1 ? '' : 's'}`}
+                    : g.resolvedCount > 0
+                      ? `${g.resolvedCount} resolvida${g.resolvedCount === 1 ? '' : 's'}`
+                      : 'sem pendências'}
                 </div>
               </button>
               {expanded && (

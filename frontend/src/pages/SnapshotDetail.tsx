@@ -213,6 +213,17 @@ export default function SnapshotDetail() {
     for (const fi of institutions) m.set(fi.id, fi)
     return m
   }, [institutions])
+  // Instituições com ativo no fechamento — o painel de pendências mostra um
+  // grupo (com upload) pra cada uma, mesmo sem pendência (Coinbase, 2026-11-02).
+  const snapshotFiNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const it of items) {
+      const a = assetById.get(it.asset_id)
+      const fi = a ? fiById.get(a.financial_institution_id) : undefined
+      if (fi) names.add(fi.short_name)
+    }
+    return Array.from(names)
+  }, [items, assetById, fiById])
 
   async function refreshPendencies() {
     if (!snap) return
@@ -774,6 +785,7 @@ export default function SnapshotDetail() {
                   const it = items.find(i => i.asset_id === p.asset_id)
                   if (it) setEditingItem(it)
                 }}
+                snapshotFiNames={snapshotFiNames}
               />
             )}
 
