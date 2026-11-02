@@ -12,7 +12,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import Transactions, { groupByMonth, subIdsForRoots } from './Transactions'
 import {
   api, type AccountOut, type CategoryOut, type CreditCardOut, type TransactionOut,
-  type TransactionSummaryOut, type UserOut,
+  type StatementImportOut, type TransactionSummaryOut, type UserOut,
 } from '../lib/api'
 
 const me: UserOut = {
@@ -420,3 +420,78 @@ describe('Transactions — rastreabilidade do import (spec 71)', () => {
     await waitFor(() => expect(m.queryByTestId('import-filter')).not.toBeInTheDocument())
   })
 })
+
+describe('Transactions — Importar arquivo (spec 71)', () => {
+  const job: StatementImportOut = {
+    id: 'job-v', status: 'EXTRACTED', source_hint: 'CARD_INVOICE', attachment_id: 'att-v',
+    filename: 'fatura.pdf', checking_account_id: null, credit_card_account_id: 'visa',
+    statement_period_start: null, statement_period_end: null, line_count: 0, transaction_count: 0,
+    error_message: null, cost_usd: null, created_at: '2026-11-02T00:00:00', confirmed_at: null, resumed: false,
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(api, 'listStatementImports').mockResolvedValue([])
+    vi.spyOn(api, 'listInvoiceImports').mockResolvedValue([])
+  })
+
+  it('escolhe o cartão, sobe o arquivo e abre a revisão', async () => {
+    mockBase()
+    const imp = vi.spyOn(api, 'importInvoice').mockResolvedValue(job)
+    const stmt = vi.spyOn(api, 'importStatement')
+    vi.spyOn(api, 'previewExtraction').mockResolvedValue({
+      applied_count: 0, skipped_count: 0, errors: [], bulk_detail: null,
+      bank_import: { rows: [], invoice: null, overlaps: [], warnings: [], period: { start: null, end: null }, counts: {} },
+    })
+    renderPage()
+    const m = await mainReady()
+    const btn = await m.findByRole('button', { name: /Importar arquivo/ })
+    await waitFor(() => expect(btn).toBeEnabled())
+    fireEvent.click(btn)
+    const d = within(screen.getByRole('dialog', { name: 'Importar arquivo' }))
+    expect(d.getByText('Para qual conta ou cartão?')).toBeInTheDocument()
+    expect(d.getByLabelText(/Conta Corrente Itaú/)).toBeChecked()
+    expect(d.queryByLabelText(/Conta Investimento/)).not.toBeInTheDocument()   // only checking
+    fireEvent.click(d.getByLabelText(/Itaú Visa/))
+    const file = new File(['%PDF'], 'fatura.pdf', { type: 'application/pdf' })
+    await userEvent.upload(d.getByTestId('import-file-input'), file)
+    await waitFor(() => expect(imp).toHaveBeenCalledWith('visa', file))
+    expect(stmt).not.toHaveBeenCalled()
+    expect(await screen.findByRole('dialog', { name: 'Revisar fatura importada' })).toBeInTheDocument()
+  })
+
+  it('ESC fecha o seletor; erro do upload vira toast', async () => {
+    mockBase()
+    vi.spyOn(api, 'importStatement').mockRejectedValue(new Error('Arquivo já importado: "x.ofx"'))
+    renderPage()
+    const m = await mainReady()
+    const btn = await m.findByRole('button', { name: /Importar arquivo/ })
+    await waitFor(() => expect(btn).toBeEnabled())
+    fireEvent.click(btn)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Importar arquivo' })).not.toBeInTheDocument()
+    fireEvent.click(btn)
+    const d = within(screen.getByRole('dialog', { name: 'Importar arquivo' }))
+    await userEvent.upload(d.getByTestId('import-file-input'), new File(['x'], 'x.ofx'))
+    expect(await screen.findByText(/Arquivo já importado/)).toBeInTheDocument()
+  })
+
+  it('botão fica desabilitado com spinner durante a extração', async () => {
+    mockBase()
+    let resolve: (v: StatementImportOut) => void = () => {}
+    vi.spyOn(api, 'importStatement').mockImplementation(() => new Promise(r => { resolve = r as never }))
+    renderPage()
+    const m = await mainReady()
+    const btn = await m.findByRole('button', { name: /Importar arquivo/ })
+    await waitFor(() => expect(btn).toBeEnabled())
+    fireEvent.click(btn)
+    const d = within(screen.getByRole('dialog', { name: 'Importar arquivo' }))
+    await userEvent.upload(d.getByTestId('import-file-input'), new File(['x'], 'x.ofx'))
+    expect(await d.findByRole('button', { name: /Lendo arquivo/ })).toBeDisabled()
+    fireEvent.keyDown(document, { key: 'Escape' })   // no close mid-upload
+    expect(screen.getByRole('dialog', { name: 'Importar arquivo' })).toBeInTheDocument()
+    resolve({ ...job, status: 'FAILED', error_message: 'x', source_hint: 'BANK_STATEMENT' })
+    expect(await screen.findByText(/Extração falhou/)).toBeInTheDocument()
+  })
+})
+

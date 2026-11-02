@@ -30,6 +30,8 @@ import {
 import { todayISO } from '../lib/format'
 import { useTransactionAttachments } from '../lib/useTransactionAttachments'
 import SourceFileClip from '../components/SourceFileClip'
+import ImportFileModal from '../components/ImportFileModal'
+import { summarizeResult } from '../lib/bankImport'
 
 const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
 
@@ -98,6 +100,9 @@ export default function Transactions() {
   const { startEditing } = attachments
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<TransactionOut | null>(null)
+  // Spec 71 — "Importar arquivo": escolhe conta/cartão e segue o fluxo de import.
+  const [importOpen, setImportOpen] = useState(false)
+  const [notice, setNotice] = useState('')
   const [deleting, setDeleting] = useState(false)
 
   useEscapeKey(() => {
@@ -262,9 +267,9 @@ export default function Transactions() {
           count={total}
           countLabel={`transações · ${sourceCount} ${sourceCount === 1 ? 'fonte' : 'fontes'}`}
           action={
-            <button disabled title="Chega com o import de extrato (spec 71)"
-              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed">
-              <FileText className="w-3.5 h-3.5" /> Reconciliar
+            <button type="button" onClick={() => setImportOpen(true)} disabled={!refsLoaded}
+              className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12px] bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50">
+              <FileText className="w-3.5 h-3.5" /> Importar arquivo
             </button>
           }
         />
@@ -414,6 +419,26 @@ export default function Transactions() {
         <div className="fixed bottom-4 right-4 z-[70] max-w-sm bg-red-600 text-white text-[12px] rounded-lg shadow-lg px-4 py-3">
           {toast}
           <button onClick={() => setToast('')} className="ml-3 underline">fechar</button>
+        </div>
+      )}
+
+      {importOpen && (
+        <ImportFileModal
+          accounts={accounts} cards={cards} categories={categories}
+          onApplied={result => {
+            setImportOpen(false)
+            setNotice(summarizeResult(result))
+            void afterWrite()
+          }}
+          onError={setToast}
+          onClose={() => setImportOpen(false)}
+        />
+      )}
+
+      {notice && (
+        <div className="fixed bottom-4 left-4 z-[70] max-w-sm bg-emerald-600 text-white text-[12px] rounded-lg shadow-lg px-4 py-3" role="status">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-3 underline">fechar</button>
         </div>
       )}
     </AppLayout>

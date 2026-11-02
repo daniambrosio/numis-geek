@@ -272,6 +272,23 @@ describe('BankImportReviewModal — fornecedor por tipo de linha', () => {
   })
 })
 
+describe('BankImportReviewModal — valor previsto aprendido', () => {
+  it('quitar regra mensal com outro valor avisa a atualização; parcelamento não', async () => {
+    const base = ROWS[3]
+    const c = base.scheduled!.candidates
+    mockPreview(preview({ overlaps: [], rows: [
+      { ...base, amount: '-3120.00', scheduled: { occurrence_id: 'occ-a', candidates: [{ ...c[0], learns_amount: true }, { ...c[1], learns_amount: false }] } },
+    ] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('learns-r3')).toHaveTextContent(
+      'Atualiza o valor previsto de R$ 3.000,00 para R$ 3.120,00'))
+    await userEvent.selectOptions(within(screen.getByTestId('row-r3')).getByLabelText('Conta a pagar/receber'), 'occ-b')
+    expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByTestId('action-r3'), 'import')
+    expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
+  })
+})
+
 describe('bankImport helpers', () => {
   it('initialDecisions usa o default e a conta/ocorrência sugeridas', () => {
     const d = initialDecisions(ROWS)

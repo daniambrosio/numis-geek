@@ -2154,6 +2154,8 @@ export interface BankImportOccurrence {
   category_id: string | null
   party_id: string | null
   party_name?: string | null
+  // regra MONTHLY/YEARLY: quitar com outro valor atualiza o previsto
+  learns_amount?: boolean
 }
 
 export interface BankImportRow {
@@ -2223,6 +2225,7 @@ export interface BankImportResult {
   skipped: number
   paid_invoices: number
   settled: number
+  amounts_learned?: number
   new_parties: number
   invoice_id: string | null
 }

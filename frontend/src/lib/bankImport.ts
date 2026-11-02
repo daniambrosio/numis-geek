@@ -48,6 +48,7 @@ export function summarizeResult(r: BankImportResult | null | undefined): string 
   const parts = [`${r.created} importada${r.created === 1 ? '' : 's'}`, `${r.reconciled} reconciliada${r.reconciled === 1 ? '' : 's'}`]
   if (r.paid_invoices) parts.push(`${r.paid_invoices} fatura${r.paid_invoices === 1 ? '' : 's'} paga${r.paid_invoices === 1 ? '' : 's'}`)
   if (r.settled) parts.push(`${r.settled} conta${r.settled === 1 ? '' : 's'} quitada${r.settled === 1 ? '' : 's'}`)
+  if (r.amounts_learned) parts.push(`${r.amounts_learned} valor${r.amounts_learned === 1 ? '' : 'es'} previsto${r.amounts_learned === 1 ? '' : 's'} atualizado${r.amounts_learned === 1 ? '' : 's'}`)
   if (r.new_parties) parts.push(`${r.new_parties} fornecedor${r.new_parties === 1 ? '' : 'es'} novo${r.new_parties === 1 ? '' : 's'}`)
   return parts.join(' · ')
 }
