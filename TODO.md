@@ -114,16 +114,14 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   Categoria/fornecedor do backfill decididos: **Assinaturas / Coinbase**. Combinado
   com a sessão da 71: ela pode acrescentar `original_amount`/`original_currency` em
   `transaction` (fingerprint estável da conversão PTAX) antes — rebasear a 83 em cima.
-- [ ] `[claude, sessão da 71/72]` **Parcelas faltantes no import + faturas futuras na
-  previsão** (pedido 2026-11-02, repassado à sessão dona da 71/72). Import de "3/12" cria
-  só as parcelas FUTURAS que faltam (4..12, fatura certa, mesmo fornecedor/categoria);
-  anteriores nunca (cairiam em fatura passada fechada/paga) — só ligam se existirem.
-  Faturas podem ser importadas fora de ordem: SEMPRE checar se a parcela já existe
-  antes de criar, e a parcela real importada depois concilia com a gerada. Forecast de
-  contas a pagar passa a incluir cada fatura futura no vencimento (sem duplicar no
-  pagamento).
-- [ ] `[user]` **Wise: CSV (6 meses) + PDF inteiro (desde 2023)** — importar os dois
-  depois do deploy do 8a6f8eb (PTAX em linha USD + "possível duplicata" entre fontes).
+- [x] ~~**Parcelas faltantes no import + faturas futuras na previsão**~~ FEITO em 6c9febe
+  (2026-11-02, em prod): import gera as parcelas futuras como "prevista" (confere antes se
+  já existem; a fatura real concilia); forecast inclui faturas não pagas no vencimento.
+  Também: `transaction.original_amount/original_currency` (migration spec71d) — a 83
+  rebaseia em cima.
+- [ ] `[user]` **Wise: NÃO importar o PDF ainda** — o user tem jars (USD permanente +
+  moedas de viagem); a conversão PTAX do 8a6f8eb misturaria o jar USD na Wise BRL.
+  Aguardando aprovação do roteamento da **spec 84** (Contas multimoeda — Wise e Nomad).
 
 - [ ] `[user]` **Re-testar o import da Avenue (Out/26 ou Nov/26) com o PDF do app.** Fix de
   2026-11-02: PDF-imagem alto é fatiado (`vision_tiles`), prompt `avenue-v3` lê "Valor
