@@ -872,6 +872,7 @@ def forecast(
     ).all()
     acc_ids = {r.expected_account_id for r in rows if r.expected_account_id}
     accounts = {a.id: a for a in db.query(Account).filter(Account.id.in_(acc_ids)).all()} if acc_ids else {}
+    invoices = card_invoices_due(db, workspace_id, start, end, rows)
 
     zero = Decimal("0")
     buckets: dict[str, dict] = {}
@@ -905,6 +906,21 @@ def forecast(
             })
             a[side] += Decimal(r.amount)
 
+    # Spec 72 (2026-11-02) — fatura de cartão ainda não paga entra como
+    # "a pagar" no vencimento (o pagamento real, quando vier, é tx — fatura
+    # PAID sai daqui).
+    for inv in invoices:
+        brl, usd = to_pair(inv["_amount"], inv["_currency"], fx)
+        due = inv["_due"]
+        if due < t:
+            overdue["count"] += 1
+            overdue["payable"][0] += brl
+            overdue["payable"][1] += usd
+        b = buckets[due.strftime("%Y-%m")]
+        b["count"] += 1
+        b["payable"][0] += brl
+        b["payable"][1] += usd
+
     def pair(v):
         return {"brl": float(round(v[0], 2)), "usd": float(round(v[1], 2))}
 
@@ -935,4 +951,55 @@ def forecast(
             "receivable": pair(overdue["receivable"]),
         },
         "fx_rate": float(fx) if fx is not None else None,
+        "card_invoices": [{k: v for k, v in inv.items() if not k.startswith("_")} for inv in invoices],
     }
+
+
+def _represents_invoice(occ: ScheduledTransaction, card_name: str, due: date) -> bool:
+    """Conta a pagar que já É a fatura deste cartão (ex.: regra "Fatura Cartão
+    X" do Notion — não importadas de propósito, mas se existir não conta
+    em dobro): descrição com "FATURA" e um nome do cartão, vencendo perto."""
+    from numis_geek.services.normalize import normalize_description
+    if abs((occ.due_date - due).days) > 7:
+        return False
+    desc = normalize_description(occ.description)
+    words = [w for w in normalize_description(card_name).split() if len(w) >= 4]
+    return "FATURA" in desc and any(w in desc for w in words)
+
+
+def card_invoices_due(
+    db: Session, workspace_id: str, start: date, end: date, occurrences: list[ScheduledTransaction],
+) -> list[dict]:
+    """Faturas não pagas vencendo em [start, end): valor = total_amount se
+    FECHADA, senão a soma das tx conhecidas (inclui parcelas previstas)."""
+    from numis_geek.models.credit_card import CreditCardAccount
+    from numis_geek.services.transactions import invoice_open_total
+    invs = db.query(Invoice).filter(
+        Invoice.workspace_id == workspace_id,
+        Invoice.status != InvoiceStatus.PAID,
+        Invoice.due_date >= start,
+        Invoice.due_date < end,
+    ).order_by(Invoice.due_date).all()
+    cards = {c.id: c for c in db.query(CreditCardAccount).filter(
+        CreditCardAccount.id.in_({i.credit_card_account_id for i in invs})).all()} if invs else {}
+    out = []
+    for inv in invs:
+        card = cards.get(inv.credit_card_account_id)
+        if card is None:
+            continue
+        if inv.status == InvoiceStatus.CLOSED and inv.total_amount is not None:
+            amount = Decimal(inv.total_amount)
+        else:
+            amount = invoice_open_total(db, inv)
+        if amount <= 0:
+            continue
+        if any(_represents_invoice(o, card.name, inv.due_date) for o in occurrences):
+            continue
+        out.append({
+            "invoice_id": inv.id, "card_id": card.id, "card_name": card.name,
+            "due_date": inv.due_date.isoformat(), "close_date": inv.close_date.isoformat(),
+            "status": inv.status.value, "amount": float(amount), "currency": inv.currency.value,
+            "label": f"Fatura {card.name} · vence {inv.due_date.strftime('%d/%m')}",
+            "_amount": amount, "_currency": inv.currency, "_due": inv.due_date,
+        })
+    return out

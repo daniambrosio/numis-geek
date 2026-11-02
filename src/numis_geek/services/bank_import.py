@@ -259,7 +259,9 @@ def _alias_map(db: Session, workspace_id: str) -> dict[str, Party]:
 # ── party by line kind (decisão do user 2026-11-02: "IOF é o governo,
 # tarifas são do banco correspondente, pix tem o recebedor sempre") ────────
 
-IOF_PARTY_NAME = "Receita Federal"
+# Fornecedor de linha de tarifa da instituição escolhido pelo usuário:
+# alias sintético (normalize_description nunca gera "#").
+FEE_ALIAS_PREFIX = "#TARIFA "
 LINE_KINDS = ("PURCHASE", "IOF", "BANK_FEE", "PIX", "TED", "BOLETO", "SALARY", "OTHER")
 _FEE_WORDS = ("TARIFA", "ANUIDADE", "CESTA", "ENCARGO", "JUROS", "MULTA")
 
@@ -338,13 +340,19 @@ def _resolve_party(
         p = aliases[pk]
         return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": "alias"}
     if kind == "IOF":
-        # O user já escolheu um fornecedor pra IOF (ex.: "Governo" no The One)
-        # → vale pras próximas, em vez do default "Receita Federal".
+        # Só o que o usuário já escolheu pra IOF (prod: "Governo"); nada
+        # aprendido → sem fornecedor, ele escolhe uma vez e fica (2026-11-02:
+        # "pode apagar essa regra fixa").
         chosen = _chosen_for_prefix("IOF ", aliases)
         if chosen is not None:
             return {"mode": "existing", "party_id": chosen.id, "party_name": chosen.name, "alias": alias, "source": "iof"}
-        return _by_alias(normalize_description(IOF_PARTY_NAME), IOF_PARTY_NAME, aliases, "iof")
+        return {"mode": "none", "alias": alias, "source": "iof"}
     if kind == "BANK_FEE" and fi_name:
+        # Escolha anterior pras tarifas desta instituição ganha; senão a
+        # instituição é só a SUGESTÃO ("nova: Itaú", confirmada no review).
+        p = aliases.get(FEE_ALIAS_PREFIX + normalize_description(fi_name))
+        if p is not None and p.is_active:
+            return {"mode": "existing", "party_id": p.id, "party_name": p.name, "alias": alias, "source": "bank_fee"}
         return _by_alias(normalize_description(fi_name), fi_name, aliases, "bank_fee")
     cp = (counterparty or "").strip()
     if cp and alias_key(cp):
@@ -385,6 +393,40 @@ def _chosen_for_prefix(prefix: str, aliases: dict[str, Party]) -> Party | None:
     return next(p for p in aliases.values() if p.id == pid)
 
 
+# Verbos/jargão bancário que não identificam ninguém (Itaú, Nubank, …).
+# Linha só com isso + códigos/datas → sem fornecedor (2026-11-02: nada de
+# "nova: DDA PAG TIT").
+_BANK_WORDS = frozenset("""
+    DDA PAG PAGTO PGTO PAGAMENTO PAGAMENTOS TIT TITULO TITULOS INT REND RENDIMENTO RENDIMENTOS PAGO
+    APLIC APLICACAO AUT AUTOMATICA AUTOMATICO MAIS TED DOC PIX TRANSF TRANSFERENCIA ENVIADO ENVIADA
+    RECEBIDO RECEBIDA SALDO DO DA DE DIA ANTERIOR BANCO BOLETO RESGATE SAQUE DEP DEPOSITO DEB CRED
+    CREDITO DEBITO CONTA CORRENTE ESTORNO DEVOLUCAO SISPAG ELETRONICO TEF REMUNERACAO BASICA CDB
+    POUPANCA INVEST INVESTIMENTO OPERACAO LIQUIDACAO TRANSFERENCIAS MESMA TITULARIDADE AG CC
+    RECEB ENVIO VALOR OUTROS OUTRAS
+""".split())
+
+
+def _merchant_of(desc: str) -> str | None:
+    """Nome que sobra depois de tirar jargão bancário, códigos e datas do
+    começo da descrição; None quando não sobra nada que identifique alguém.
+    "PAG BOLETO AXSECURITY ALARMES" → "AXSECURITY ALARMES";
+    "INT PAG TIT BANCO 237" → None."""
+    tokens = alias_key(desc).replace("-", " ").replace(".", " ").split()
+
+    def noise(t: str) -> bool:
+        return t in _BANK_WORDS or any(ch.isdigit() for ch in t) or len(t) <= 2
+    rest = [t for t in tokens if not noise(t)]
+    if not rest:
+        return None
+    if tokens and noise(tokens[0]):
+        # jargão na frente: o nome é o que vem depois dele
+        i = 0
+        while i < len(tokens) and noise(tokens[i]):
+            i += 1
+        return " ".join(tokens[i:])
+    return desc.strip()
+
+
 def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
     alias = alias_key(desc)
     p = aliases.get(alias) or aliases.get(normalize_description(desc))
@@ -397,7 +439,11 @@ def _party_for(desc: str, aliases: dict[str, Party]) -> dict:
         return {"mode": "none", "alias": alias, "inactive_party_name": p.name}
     if not alias:
         return {"mode": "none", "alias": alias}
-    return {"mode": "new", "new_party_name": desc.strip()[:120], "alias": alias}
+    name = _merchant_of(desc)
+    if name is None:
+        # descrição genérica sem nada melhor conhecido → Sem fornecedor/cliente
+        return {"mode": "none", "alias": alias, "source": "generic"}
+    return {"mode": "new", "new_party_name": name[:120], "alias": alias}
 
 
 def _default_payment_account(db: Session, card: CreditCardAccount) -> str | None:
@@ -760,6 +806,11 @@ def _classify_bank_import(
             if r.get("installment_number") and r["installment_number"] > 1:
                 parent = _match_installment_parent(existing, r)
                 r["parent_transaction_id"] = parent.id if parent else None
+            # parcelas FUTURAS que o apply gera (4..12 de um "3/12")
+            x, y = r.get("installment_number"), r.get("installment_total")
+            if x and y and x < y and r["bucket"] in ("new", "scheduled", "duplicate"):
+                have = sum(1 for k in range(x + 1, y + 1) if _find_installment(existing, r, k) is not None)
+                r["future_installments"] = {"from": x + 1, "to": y, "existing": have}
 
     period = (job.statement_period_start, job.statement_period_end)
     if period[0] is None or period[1] is None:
@@ -999,6 +1050,78 @@ def _match_installment(existing: list[Transaction], r: dict, used: set[str]) -> 
     ]
     cands.sort(key=lambda t: (abs((t.event_date - d).days), abs(Decimal(t.amount) - amount)))
     return cands[0] if cands else None
+
+
+def _find_installment(existing: list[Transaction], r: dict, k: int) -> Transaction | None:
+    """A k/Y da MESMA compra da linha `r` já existe? Mesmos critérios de
+    `_match_installment`: cartão (pool), descrição normalizada, Y, valor
+    ±R$ 0,05 e data original ±3 dias."""
+    norm = normalize_description(r["description"])
+    amount = Decimal(r["amount"])
+    original = date.fromisoformat(r["original_date"])
+    for t in existing:
+        if (t.installment_number != k or t.installment_total != r["installment_total"]
+                or normalize_description(t.description) != norm
+                or abs(Decimal(t.amount) - amount) > INSTALLMENT_AMOUNT_TOL):
+            continue
+        if abs((tx_svc.add_months(t.event_date, -(k - 1)) - original).days) <= INSTALLMENT_DATE_TOL_DAYS:
+            return t
+    return None
+
+
+PROJECTED_NOTE = "parcela prevista (gerada pelo import da fatura {})"
+
+
+def is_projected(tx: Transaction) -> bool:
+    """Parcela gerada pelo import (ainda não confirmada por uma fatura):
+    não reconciliada, sem job, com a nota de prevista."""
+    return bool(tx.installment_total) and not tx.is_reconciled and tx.extraction_job_id is None \
+        and (tx.notes or "").startswith("parcela prevista")
+
+
+def _generate_future_installments(
+    db: Session, sc: "_Scope", r: dict, base_tx: Transaction, doc_invoice: Invoice | None,
+    user_id: str | None, out: "ApplyOutcome",
+) -> None:
+    """Spec 71 (2026-11-02): import de "3/12" gera as parcelas que faltam
+    PRA FRENTE (4..12), cada uma na fatura futura certa (mesmo roteamento do
+    composer da spec 70), com fornecedor/categoria da linha. As anteriores
+    nunca (cairiam em fatura passada fechada/paga) — só se ligam se existem.
+    Faturas podem chegar fora de ordem: SEMPRE confere se a k/Y já existe."""
+    x, y = r.get("installment_number"), r.get("installment_total")
+    if sc.card is None or doc_invoice is None or not x or not y or x >= y:
+        return
+    card = sc.card
+    pool = db.query(Transaction).filter(
+        Transaction.credit_card_account_id == card.id,
+        Transaction.installment_total == y,
+    ).all()
+    original = date.fromisoformat(r["original_date"])
+    anchor = tx_svc.cycle_of(card, doc_invoice.close_date)
+    parent_id = base_tx.parent_transaction_id or base_tx.id
+    label = doc_invoice.close_date.strftime("%m/%Y")
+    for k in range(x + 1, y + 1):
+        if _find_installment(pool, r, k) is not None:
+            continue
+        inv = tx_svc.invoice_for_close(db, card, tx_svc.add_months(anchor, k - x, card.close_day), user_id=user_id)
+        if inv.status == InvoiceStatus.PAID:
+            continue   # fatura futura já paga? não mexe
+        try:
+            t = tx_svc.create_transaction(db, sc.workspace_id, tx_svc.TxInput(
+                source_type=TransactionSourceType.CREDIT_CARD, credit_card_account_id=card.id,
+                invoice_id=inv.id, event_date=tx_svc.add_months(original, k - 1),
+                description=base_tx.description, amount=Decimal(base_tx.amount),
+                category_id=base_tx.category_id, party_id=base_tx.party_id,
+                notes=PROJECTED_NOTE.format(label), is_reconciled=False,
+            ), user_id=user_id)[0]
+        except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+            raise BankImportError(f"Parcela {k}/{y} de {base_tx.description}: {exc}")
+        t.installment_number, t.installment_total = k, y
+        t.parent_transaction_id = parent_id
+        pool.append(t)
+        out.generated.append(t.id)
+        out.created.append(t.id)   # entra no audit (created_ids) do import
+    db.flush()
 
 
 def _match_installment_parent(existing: list[Transaction], r: dict) -> Transaction | None:
@@ -1295,6 +1418,7 @@ class ApplyOutcome:
     invoice_id: str | None = None
     learned: list[dict] = field(default_factory=list)
     aliases: list[dict] = field(default_factory=list)
+    generated: list[str] = field(default_factory=list)   # parcelas previstas criadas
 
 
 def _resolve_doc_invoice(db: Session, sc: _Scope, info: dict, user_id: str | None) -> Invoice:
@@ -1381,6 +1505,16 @@ def _named_party(
     return pid
 
 
+def _remember_fee_party(db: Session, sc: "_Scope", r: dict, party_id: str | None, out: "ApplyOutcome") -> None:
+    """Escolha explícita numa linha de tarifa: vale pras próximas tarifas
+    desta instituição (qualquer texto: "TARIFA PACOTE", "CESTA …")."""
+    if not party_id or r.get("line_kind") != "BANK_FEE":
+        return
+    fi = db.get(FinancialInstitution, (sc.account or sc.card).financial_institution_id)
+    if fi is not None:
+        _remember_party_alias(db, sc.workspace_id, FEE_ALIAS_PREFIX + normalize_description(fi.short_name), party_id, out)
+
+
 def _remember_party_alias(db: Session, workspace_id: str, key: str, party_id: str, out: "ApplyOutcome") -> None:
     """Memória de fornecedor (2026-11-02): o usuário escolheu/criou o
     fornecedor desta linha → alias(texto sem datas) aponta pra ele, e a
@@ -1432,6 +1566,8 @@ def _free_suffix(db: Session, workspace_id: str, base: str, start: int, taken: s
 
 
 def _mark_reconciled(tx: Transaction, job: ExtractionJob, user_id: str | None) -> None:
+    if is_projected(tx):
+        tx.notes = None   # parcela prevista confirmada pela fatura real
     tx.is_reconciled = True
     if tx.extraction_job_id is None:  # re-conciliação não sobrescreve
         tx.extraction_job_id = job.id
@@ -1479,6 +1615,8 @@ def apply_bank_import(
                 tx = db.get(Transaction, r["duplicate"]["transaction_id"])
             _mark_reconciled(tx, job, user_id)
             out.reconciled.append(tx.id)
+            if r.get("future_installments"):
+                _generate_future_installments(db, sc, r, tx, doc_invoice, user_id, out)
             continue
 
         if action == "pay":
@@ -1528,6 +1666,8 @@ def apply_bank_import(
         # import / import_anyway / settle → create the tx
         tx = _create_from_row(db, sc, job, r, dec, doc_invoice, party_cache, out, taken_fps, user_id)
         out.created.append(tx.id)
+        if r.get("future_installments"):
+            _generate_future_installments(db, sc, r, tx, doc_invoice, user_id, out)
 
         if action == "settle":
             occ_id = dec.get("occurrence_id") or r["scheduled"]["occurrence_id"]
@@ -1576,10 +1716,12 @@ def _create_from_row(
     elif dec.get("party_id"):
         party_id = dec["party_id"]
         _remember_party_alias(db, sc.workspace_id, r["group_key"], party_id, out)
+        _remember_fee_party(db, sc, r, party_id, out)
     elif dec.get("new_party_name") and dec["new_party_name"].strip():
         name = dec["new_party_name"].strip()
         party_id = _named_party(db, sc.workspace_id, name, r["group_key"] or r["party"].get("alias") or "",
                                 amount, party_cache, out, user_id)
+        _remember_fee_party(db, sc, r, party_id, out)
     elif (dec.get("action") or r["default_action"]) == "settle" and r["party"]["mode"] in ("new", "none"):
         # quitar herda o fornecedor da ocorrência escolhida (settle_occurrence)
         party_id = None
@@ -1605,6 +1747,8 @@ def _create_from_row(
         invoice_id=doc_invoice.id if doc_invoice is not None else None,
         fx_rate=Decimal(r["fx_rate"]) if r.get("fx_rate") else None,
         notes=_fx_note(r["original"]) if r.get("original") else None,
+        original_amount=Decimal(r["original"]["amount"]) if r.get("original") else None,
+        original_currency=Currency(r["original"]["currency"]) if r.get("original") else None,
         # decisão explícita (inclusive "Sem categoria" = null) ganha da sugestão
         category_id=dec["category_id"] if "category_id" in dec else r.get("category_id"),
         party_id=party_id,
@@ -1622,10 +1766,6 @@ def _create_from_row(
             tx.parent_transaction_id = r["parent_transaction_id"]
     # k-ésima linha idêntica (ou promovida sobre uma duplicata): sufixo ":k"
     base = r["fingerprint_base"]
-    if r.get("original"):
-        # o serviço calculou sobre o valor convertido; a chave de dedup é a
-        # do valor/moeda originais (ver classify)
-        tx.fingerprint = base
     if r["bucket"] == "duplicate" or (r.get("occurrence_in_file") or 1) >= 2 or tx.fingerprint in taken_fps:
         tx.fingerprint = _free_suffix(db, sc.workspace_id, base, r.get("occurrence_in_file") or 2, taken_fps)
     else:

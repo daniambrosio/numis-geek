@@ -26,6 +26,7 @@ from numis_geek.models.transaction import Transaction, TransactionSourceType, tr
 from numis_geek.models.user import User, UserRole
 from numis_geek.services import account_balance
 from numis_geek.services import transactions as svc
+from numis_geek.services.bank_import import is_projected
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 
@@ -76,6 +77,11 @@ class TransactionOut(BaseModel):
     extraction_job_id: str | None = None
     source_attachment_id: str | None = None
     source_attachment_filename: str | None = None
+    # Spec 71 — valor/moeda originais de linha convertida pela PTAX
+    original_amount: float | None = None
+    original_currency: str | None = None
+    # Spec 71 — parcela futura gerada pelo import de fatura, ainda não confirmada
+    is_projected: bool = False
     notes: str | None
     created_at: str
     updated_at: str
@@ -298,6 +304,9 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
             extraction_job_id=r.extraction_job_id,
             source_attachment_id=sources[r.extraction_job_id][0] if r.extraction_job_id in sources else None,
             source_attachment_filename=sources[r.extraction_job_id][1] if r.extraction_job_id in sources else None,
+            original_amount=float(r.original_amount) if r.original_amount is not None else None,
+            original_currency=r.original_currency.value if r.original_currency else None,
+            is_projected=is_projected(r),
             notes=r.notes,
             created_at=r.created_at.isoformat(),
             updated_at=r.updated_at.isoformat(),

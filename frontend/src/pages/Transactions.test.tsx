@@ -495,3 +495,19 @@ describe('Transactions — Importar arquivo (spec 71)', () => {
   })
 })
 
+describe('Transactions — parcela prevista e valor original (spec 71)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('marca a parcela prevista e mostra o valor original da linha convertida', async () => {
+    mockBase([
+      tx({ id: 'p1', source_type: 'CREDIT_CARD', credit_card_account_id: 'visa', card_name: 'Itaú Visa',
+        installment_number: 4, installment_total: 12, is_projected: true, notes: 'parcela prevista (gerada pelo import da fatura 03/2026)' }),
+      tx({ id: 'w1', amount: -136.08, original_amount: -25, original_currency: 'USD' }),
+    ])
+    renderPage()
+    const m = await mainReady()
+    expect(await m.findByText('prevista')).toHaveAttribute('title', 'parcela prevista (gerada pelo import da fatura 03/2026)')
+    expect(m.getByTestId('tx-original-w1').textContent?.replace(/\u00a0/g, ' ')).toBe('− US$ 25,00')
+  })
+})
+

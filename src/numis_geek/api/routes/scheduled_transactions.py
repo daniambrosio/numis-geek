@@ -209,10 +209,24 @@ class ForecastOverdueOut(BaseModel):
     receivable: MoneyPair
 
 
+class ForecastInvoiceOut(BaseModel):
+    """Fatura de cartão não paga dentro da janela (somente leitura)."""
+    invoice_id: str
+    card_id: str
+    card_name: str
+    due_date: str
+    close_date: str
+    status: str
+    amount: float
+    currency: str
+    label: str
+
+
 class ForecastOut(BaseModel):
     months: list[ForecastMonthOut]
     overdue: ForecastOverdueOut
     fx_rate: float | None
+    card_invoices: list[ForecastInvoiceOut] = []
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

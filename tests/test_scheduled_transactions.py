@@ -652,6 +652,60 @@ def test_forecast_endpoint(client, seed):
     assert client.get("/api/scheduled-transactions/forecast?months=0", headers=auth(seed["member_token"])).status_code == 422
 
 
+def test_forecast_includes_unpaid_card_invoices_without_double_counting(seed):
+    from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
+    from numis_geek.models.transaction import TransactionSourceType
+    from numis_geek.services import transactions as tx_svc
+    db = TestSession()
+    ws = WorkspaceService(db).create("Forecast cards WS")
+    db.flush()
+    acc = _account(db, ws.id, seed["fi_id"], "CC")
+    card = CreditCardAccount(id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=seed["fi_id"],
+                             name="Latam Itaú", currency=Currency.BRL, close_day=5, due_day=15, is_active=True)
+    other = CreditCardAccount(id=str(uuid.uuid4()), workspace_id=ws.id, financial_institution_id=seed["fi_id"],
+                              name="Mastercard Black", currency=Currency.BRL, close_day=5, due_day=15, is_active=True)
+    db.add_all([card, other])
+    db.flush()
+    today = date(2026, 10, 15)
+
+    def inv(c, close, due, status, total=None):
+        i = Invoice(id=str(uuid.uuid4()), workspace_id=ws.id, credit_card_account_id=c.id, close_date=close,
+                    due_date=due, currency=Currency.BRL, status=status,
+                    total_amount=Decimal(total) if total else None)
+        db.add(i)
+        db.flush()
+        return i
+
+    closed = inv(card, date(2026, 10, 5), date(2026, 10, 25), InvoiceStatus.CLOSED, "1234.56")
+    open_ = inv(card, date(2026, 11, 5), date(2026, 11, 15), InvoiceStatus.OPEN)
+    for amt in ("-100", "-50.5"):   # OPEN: sum of known tx (incl. projected installments)
+        tx_svc.create_transaction(db, ws.id, tx_svc.TxInput(
+            source_type=TransactionSourceType.CREDIT_CARD, credit_card_account_id=card.id, invoice_id=open_.id,
+            event_date=date(2026, 10, 20), description="X", amount=Decimal(amt)))
+    paid = inv(card, date(2026, 9, 5), date(2026, 10, 16), InvoiceStatus.CLOSED, "999")
+    tx_svc.pay_invoice(db, paid, checking_account_id=acc.id, paid_on=date(2026, 10, 14))
+    # an occurrence that IS the Mastercard invoice → the invoice is not counted again
+    inv(other, date(2026, 11, 5), date(2026, 11, 15), InvoiceStatus.CLOSED, "700")
+    svc.create_one_off(db, ws.id, svc.OccurrenceInput(
+        direction=ScheduledDirection.PAYABLE, description="Fatura Cartão Mastercard Black", amount=Decimal("700"),
+        due_date=date(2026, 11, 15)))
+    inv(card, date(2027, 1, 5), date(2027, 1, 15), InvoiceStatus.CLOSED, "5")   # outside window
+
+    f = svc.forecast(db, ws.id, months=3, today=today)
+    labels = [(c["label"], c["amount"]) for c in f["card_invoices"]]
+    assert labels == [("Fatura Latam Itaú · vence 25/10", 1234.56), ("Fatura Latam Itaú · vence 15/11", 150.5)]
+    oct_, nov, _ = f["months"]
+    assert oct_["payable"]["brl"] == 1234.56                 # paid invoice dropped out
+    assert nov["payable"]["brl"] == 150.5 + 700               # occurrence counted, invoice not twice
+    assert f["card_invoices"][0]["invoice_id"] == closed.id
+    db.rollback(); db.close()
+
+
+def test_forecast_endpoint_exposes_card_invoices(client, seed):
+    r = client.get("/api/scheduled-transactions/forecast?months=3", headers=auth(seed["admin_token"]))
+    assert r.status_code == 200 and "card_invoices" in r.json()
+
+
 # ── workspace isolation & permissions ─────────────────────────────────────────
 
 def test_workspace_isolation(client, seed):

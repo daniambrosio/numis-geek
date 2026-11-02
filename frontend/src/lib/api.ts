@@ -292,6 +292,10 @@ export interface TransactionOut {
   extraction_job_id?: string | null
   source_attachment_id?: string | null
   source_attachment_filename?: string | null
+  // Spec 71 — valor/moeda originais (linha convertida pela PTAX) e parcela prevista
+  original_amount?: number | null
+  original_currency?: 'BRL' | 'USD' | null
+  is_projected?: boolean
   notes: string | null
   created_at: string
   updated_at: string
@@ -537,10 +541,24 @@ export interface ForecastMonthOut {
   by_account: ForecastAccountOut[]
 }
 
+export interface ForecastInvoiceOut {
+  invoice_id: string
+  card_id: string
+  card_name: string
+  due_date: string
+  close_date: string
+  status: string
+  amount: number
+  currency: 'BRL' | 'USD'
+  label: string
+}
+
 export interface ForecastOut {
   months: ForecastMonthOut[]
   overdue: { count: number; payable: MoneyPair; receivable: MoneyPair }
   fx_rate: number | null
+  // faturas de cartão não pagas na janela (spec 72, 2026-11-02) — já somadas em "a pagar"
+  card_invoices?: ForecastInvoiceOut[]
 }
 
 function scheduledQuery(f: ScheduledFilters): string {
@@ -2183,6 +2201,8 @@ export interface BankImportRow {
   is_invoice_payment: boolean
   counterparty?: string | null
   line_kind?: string | null
+  // parcelas futuras que o apply gera (import de "3/12" → 4..12)
+  future_installments?: { from: number; to: number; existing: number } | null
   // linha em outra moeda convertida (PTAX do dia ou cotação do documento)
   original?: { amount: string; currency: string; rate: string; rate_date: string; rate_source: string } | null
   bucket: BankImportBucket

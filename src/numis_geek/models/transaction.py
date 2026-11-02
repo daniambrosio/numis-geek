@@ -93,6 +93,12 @@ class Transaction(Base):
     extraction_job_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("extraction_job.id"), nullable=True,
     )
+    # Spec 71 (2026-11-02) — linha do extrato em outra moeda convertida pela
+    # PTAX (Wise: US$ numa conta BRL): valor e moeda ORIGINAIS. A chave de
+    # dedup (fingerprint) usa estes quando presentes, então editar a tx não
+    # quebra o casamento com o re-import.
+    original_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    original_currency: Mapped[Currency | None] = mapped_column(Enum(Currency), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(

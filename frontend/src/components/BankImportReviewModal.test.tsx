@@ -408,6 +408,22 @@ describe('BankImportReviewModal — moeda e possível duplicata (Wise)', () => {
   })
 })
 
+describe('BankImportReviewModal — parcelas futuras', () => {
+  it('avisa quais parcelas o import gera e quantas já existem', async () => {
+    mockPreview(preview({ overlaps: [], rows: [
+      row({ row_id: 'r0', description: 'NOTEBOOK', amount: '-250.00', installment_number: 3, installment_total: 12,
+        future_installments: { from: 4, to: 12, existing: 8 } }),
+      row({ row_id: 'r1', index: 1, description: 'SOFA', amount: '-400.00', installment_number: 5, installment_total: 6,
+        future_installments: { from: 6, to: 6, existing: 1 } }),
+    ] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    expect(await screen.findByTestId('future-r0')).toHaveTextContent('gera as parcelas 4–12 (8 já existem)')
+    expect(screen.getByTestId('future-r1')).toHaveTextContent('parcelas 6–6 já existem')
+    await userEvent.selectOptions(screen.getByTestId('action-r0'), 'skip')
+    expect(screen.queryByTestId('future-r0')).not.toBeInTheDocument()
+  })
+})
+
 describe('bankImport helpers', () => {
   it('initialDecisions usa o default e a conta/ocorrência sugeridas', () => {
     const d = initialDecisions(ROWS)

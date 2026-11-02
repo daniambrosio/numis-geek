@@ -309,6 +309,7 @@ export default function CreditCardDetail() {
                         <td className="px-2 text-gray-900 dark:text-white">
                           {t.description}
                           {t.installment_total && <span className="ml-1.5 text-[10px] text-gray-500">parc. {t.installment_number}/{t.installment_total}</span>}
+                          {t.is_projected && <span className="ml-1.5 text-[9px] uppercase tracking-wider px-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-300" title={t.notes ?? undefined} data-testid={`projected-${t.id}`}>prevista</span>}
                           <span className="ml-1 align-middle"><SourceFileClip attachmentId={t.source_attachment_id} filename={t.source_attachment_filename} onError={setActionError} /></span>
                         </td>
                         <td className="px-2 text-[11px] text-gray-500">{t.category_name ?? <span className="italic">Sem categoria</span>}</td>

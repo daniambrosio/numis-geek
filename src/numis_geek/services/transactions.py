@@ -70,9 +70,18 @@ def compute_fingerprint(
     amount: Decimal,
     currency: Currency,
     description: str,
+    *,
+    original_amount: Decimal | None = None,
+    original_currency: Currency | None = None,
 ) -> str:
     """sha1(source_type + source FK + event_date + amount + currency +
-    normalize_description). Shared with the spec 71 dedup — never fork."""
+    normalize_description). Shared with the spec 71 dedup — never fork.
+
+    A line converted from another currency (spec 71) hashes its ORIGINAL
+    amount/currency, so a later PTAX correction or an edit of the converted
+    value keeps the key stable."""
+    if original_amount is not None and original_currency is not None:
+        amount, currency = original_amount, original_currency
     raw = "|".join([
         source_type.value,
         source_id,
@@ -297,6 +306,9 @@ class TxInput:
     tag_ids: list[str] | None = None
     notes: str | None = None
     is_reconciled: bool = False
+    # spec 71 — linha convertida de outra moeda (valor/moeda do documento)
+    original_amount: Decimal | None = None
+    original_currency: Currency | None = None
 
 
 def _fill(
@@ -316,6 +328,7 @@ def _fill(
         suffix = ":" + tx.fingerprint.split(":", 1)[1]
     tx.fingerprint = compute_fingerprint(
         tx.source_type, source_id, tx.event_date, tx.amount, currency, tx.description,
+        original_amount=tx.original_amount, original_currency=tx.original_currency,
     ) + suffix
 
 
@@ -368,6 +381,7 @@ def create_transaction(
             event_date=data.event_date, description=data.description.strip(),
             amount=Decimal(data.amount), category_id=data.category_id,
             party_id=data.party_id, notes=data.notes,
+            original_amount=data.original_amount, original_currency=data.original_currency,
         )
         tx.is_reconciled = data.is_reconciled
         _fill(db, tx, currency=acc.currency, statement_rate=data.fx_rate)
@@ -422,6 +436,7 @@ def create_transaction(
             invoice_id=inv.id, event_date=ev, description=data.description.strip(),
             amount=part, category_id=data.category_id, party_id=data.party_id,
             notes=data.notes,
+            original_amount=data.original_amount, original_currency=data.original_currency,
             installment_number=(k + 1) if installments > 1 else None,
             installment_total=installments if installments > 1 else None,
             parent_transaction_id=created[0].id if created else None,

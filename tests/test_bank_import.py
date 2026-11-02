@@ -463,8 +463,11 @@ def test_card_invoice_import_payment_line_never_becomes_card_tx(client, seed):
 
     confirm(client, seed, job["id"], {"r0": {"action": "pay", "payment_account_id": acc}})
     db = TestSession()
-    card_txs = txs_of(db, card_id=card)
+    all_card = txs_of(db, card_id=card)
+    projected = [t for t in all_card if (t.notes or "").startswith("parcela prevista")]
+    card_txs = [t for t in all_card if t not in projected]
     assert len(card_txs) == 4
+    assert sorted(t.installment_number for t in projected) == list(range(4, 11))   # NOTEBOOK 3/10 → 4..10
     assert all(t.amount < 0 for t in card_txs)  # the +800 never became a card tx
     doc_inv = db.query(Invoice).filter(Invoice.credit_card_account_id == card,
                                        Invoice.close_date == date(2026, 3, 5)).one()
@@ -593,14 +596,17 @@ def test_imported_installment_links_parent_by_purchase(client, seed):
         "transactions": [line(original, "TV SAMSUNG", -150, installment="2/3")],
     })
     row = preview(client, seed, job2["id"])["rows"][0]
-    assert row["bucket"] == "new"
+    # 2026-11-02: 1/3 generated 2/3 and 3/3 as projected → 2/3 now confirms it
+    assert row["bucket"] == "duplicate" and row["default_action"] == "reconcile"
     confirm(client, seed, job2["id"])
     db = TestSession()
     txs = txs_of(db, card_id=card)
+    assert len(txs) == 3
     first = next(t for t in txs if t.installment_number == 1)
     second = next(t for t in txs if t.installment_number == 2)
     assert second.parent_transaction_id == first.id
     assert second.event_date == date(2026, 2, 20)
+    assert second.is_reconciled and second.extraction_job_id == job2["id"] and second.notes is None
     db.close()
 
 
@@ -1215,31 +1221,28 @@ def _party_of(db, tx_id):
     return db.get(Party, tx.party_id) if tx.party_id else None
 
 
-def test_iof_lines_go_to_receita_federal_reused_across_imports(client, seed):
+def test_iof_has_no_hardcoded_party_and_learns_the_users_choice(client, seed):
+    # 2026-11-02: "pode apagar essa regra fixa" — nada de "Receita Federal".
     card = new_card(seed)
     job = import_invoice(client, seed, card, {
         "invoice": {"close_date": "2026-09-05", "due_date": "2026-09-15", "total": 13.5},
         "transactions": [
-            line(date(2026, 8, 20), "IOF COMPRA INTERNACIONAL", -3.5, line_kind="IOF"),
+            line(date(2026, 8, 20), "IOF COMPRA EXTERIOR TESTE D", -3.5, line_kind="IOF"),
             line(date(2026, 8, 21), "IOF S/ COMPRA EXTERIOR 0042", -10),          # fallback, no line_kind
         ],
     })
     rows = preview(client, seed, job["id"])["rows"]
-    # earlier tests in this module may already have created it
-    assert all((r["party"].get("new_party_name") or r["party"].get("party_name")) == "Receita Federal" for r in rows)
-    assert all(r["party"]["source"] == "iof" for r in rows)
-    confirm(client, seed, job["id"])
+    assert all(r["party"]["mode"] == "none" and r["party"]["source"] == "iof" for r in rows)
+    assert all(not r["warning"] for r in rows)                                  # no nagging
+    gov = _party_with_alias(seed, "Governo", "GOVERNO ALIAS IOF TESTE")
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "party_id": gov}, "r1": {"action": "import"}})
+    db = TestSession()
+    assert db.query(Party).filter(Party.workspace_id == seed["ws"], Party.name == "Receita Federal").count() == 0
+    db.close()
     acc = new_account(seed)
     job2 = import_statement(client, seed, acc, statement([line(date(2026, 9, 2), "IOF ADIC CHEQUE ESPECIAL", -1.2)]))
     row = preview(client, seed, job2["id"])["rows"][0]
-    assert row["party"]["mode"] == "existing" and row["party"]["party_name"] == "Receita Federal"
-    confirm(client, seed, job2["id"])
-    db = TestSession()
-    rf = db.query(Party).filter(Party.workspace_id == seed["ws"], Party.name == "Receita Federal").all()
-    assert len(rf) == 1
-    assert db.query(PartyAlias).filter(PartyAlias.alias_normalized.like("IOF%")).count() == 0
-    assert all(t.party_id == rf[0].id for t in txs_of(db, card_id=card) + txs_of(db, account_id=acc))
-    db.close()
+    assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == gov
 
 
 def test_bank_fees_go_to_the_account_institution(client, seed):
@@ -1979,3 +1982,148 @@ def test_iof_uses_party_user_chose_before_and_truncated_alias_matches(client, se
     })
     row = preview(client, seed, job["id"])["rows"][0]
     assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == gid
+
+
+def test_bank_fee_choice_is_learned_per_institution(client, seed):
+    acc = new_account(seed)
+    mine = _party_with_alias(seed, "Itaú Unibanco (tarifas)", "ITAU TARIFAS ALIAS TESTE")
+    job = import_statement(client, seed, acc, statement([line(BASE + timedelta(days=240), "TARIFA AVULSA XYZ", -9, line_kind="BANK_FEE")]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["party"]["source"] == "bank_fee" and row["party"]["mode"] in ("new", "existing")   # institution = suggestion
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "party_id": mine}})
+    job2 = import_statement(client, seed, acc, statement([line(BASE + timedelta(days=241), "CESTA SERVICOS QWERTY", -30)]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["party"]["mode"] == "existing" and row["party"]["party_id"] == mine
+
+
+# ── A: parcelas futuras geradas pelo import da fatura ───────────────────────
+
+def _inv_payload(close, lines_):
+    due = (date.fromisoformat(close) + timedelta(days=10)).isoformat()
+    return {"invoice": {"close_date": close, "due_date": due, "total": 1}, "transactions": lines_}
+
+
+def _card_txs(card):
+    db = TestSession()
+    rows = [(t.installment_number, t.is_reconciled, t.extraction_job_id, t.notes, t.invoice_id, t.event_date,
+             t.party_id, t.category_id, t.parent_transaction_id, t.id)
+            for t in txs_of(db, card_id=card)]
+    db.close()
+    return rows
+
+
+def test_import_generates_future_installments_and_real_invoice_confirms(client, seed):
+    card = new_card(seed)
+    original = date(2026, 1, 10)
+    job = import_invoice(client, seed, card, _inv_payload("2026-03-05", [
+        line(original, "SOFA ETNA", -400, installment="3/6")]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["future_installments"] == {"from": 4, "to": 6, "existing": 0}
+    confirm(client, seed, job["id"], {"r0": {"action": "import", "category_id": seed["sub"]}})
+    rows = _card_txs(card)
+    assert sorted(r[0] for r in rows) == [3, 4, 5, 6]                  # 1 and 2 never created
+    by_k = {r[0]: r for r in rows}
+    for k in (4, 5, 6):
+        n, rec, jid, notes, inv_id, ev, party, cat, parent, _ = by_k[k]
+        assert not rec and jid is None and notes.startswith("parcela prevista (gerada pelo import da fatura 03/2026)")
+        assert ev == tx_svc.add_months(original, k - 1) and cat == seed["sub"] and party == by_k[3][6]
+        assert parent == by_k[3][9]
+    assert len({by_k[k][4] for k in (3, 4, 5, 6)}) == 4                # each in its own invoice
+    db = TestSession()
+    inv4 = db.get(Invoice, by_k[4][4])
+    assert inv4.close_date == date(2026, 4, 5)
+    db.close()
+    # Movimentações shows "prevista"
+    r = client.get(f"/api/transactions?card_id={card}", headers=auth(seed["token"])).json()["items"]
+    assert {t["installment_number"]: t["is_projected"] for t in r} == {3: False, 4: True, 5: True, 6: True}
+
+    # the invoice where 4/6 actually appears reconciles the projected one
+    job2 = import_invoice(client, seed, card, _inv_payload("2026-04-05", [
+        line(original, "SOFA ETNA", -400, installment="4/6")]))
+    row = preview(client, seed, job2["id"])["rows"][0]
+    assert row["bucket"] == "duplicate" and row["duplicate"]["transaction_id"] == by_k[4][9]
+    assert row["default_action"] == "reconcile"
+    assert row["future_installments"] == {"from": 5, "to": 6, "existing": 2}
+    confirm(client, seed, job2["id"])
+    rows = _card_txs(card)
+    assert sorted(r[0] for r in rows) == [3, 4, 5, 6]                  # nothing duplicated
+    four = next(r for r in rows if r[0] == 4)
+    assert four[1] and four[2] == job2["id"] and four[3] is None        # confirmed, marker gone
+
+
+def test_out_of_order_invoices_never_duplicate_installments(client, seed):
+    card = new_card(seed)
+    original = date(2026, 1, 15)
+    j5 = import_invoice(client, seed, card, _inv_payload("2026-06-05", [
+        line(original, "NOTEBOOK ACER", -250, installment="5/12")]))
+    confirm(client, seed, j5["id"])
+    assert sorted(r[0] for r in _card_txs(card)) == list(range(5, 13))  # 5 + 6..12 projected
+    j3 = import_invoice(client, seed, card, _inv_payload("2026-04-05", [
+        line(original, "NOTEBOOK ACER", -250, installment="3/12")]))
+    row = preview(client, seed, j3["id"])["rows"][0]
+    assert row["bucket"] == "new"
+    assert row["future_installments"] == {"from": 4, "to": 12, "existing": 8}
+    confirm(client, seed, j3["id"])
+    ks = sorted(r[0] for r in _card_txs(card))
+    assert ks == list(range(3, 13))                                     # 3 new, 4 generated, 5..12 untouched
+    four = next(r for r in _card_txs(card) if r[0] == 4)
+    db = TestSession()
+    assert db.get(Invoice, four[4]).close_date == date(2026, 5, 5)
+    db.close()
+
+
+# ── C: valor/moeda originais da linha convertida ────────────────────────────
+
+def test_edited_converted_tx_still_dedups_on_reimport(client, seed):
+    acc = new_account(seed)
+    d = BASE + timedelta(days=113)
+    lines_ = [{**line(d, "CARD-77 GITHUB", -10), "currency": "USD"}]
+    confirm(client, seed, import_statement(client, seed, acc, statement(lines_))["id"])
+    db = TestSession()
+    tx = txs_of(db, account_id=acc)[0]
+    assert tx.original_amount == Decimal("-10.00") and tx.original_currency == Currency.USD
+    tx_id = tx.id
+    db.close()
+    r = client.patch(f"/api/transactions/{tx_id}", json={"amount": -51.37, "notes": "ajustei o valor"},
+                     headers=auth(seed["token"]))
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["original_amount"] == -10.0 and r.json()[0]["original_currency"] == "USD"
+    row = preview(client, seed, import_statement(client, seed, acc, statement(lines_))["id"])["rows"][0]
+    assert row["bucket"] == "duplicate" and row["duplicate"]["reason"] == "fingerprint"
+    assert row["duplicate"]["transaction_id"] == tx_id
+
+
+def test_compute_fingerprint_prefers_original_kwargs():
+    a = tx_svc.compute_fingerprint(TransactionSourceType.CHECKING, "acc", BASE, Decimal("-50"), Currency.BRL, "X",
+                                   original_amount=Decimal("-10"), original_currency=Currency.USD)
+    b = tx_svc.compute_fingerprint(TransactionSourceType.CHECKING, "acc", BASE, Decimal("-10"), Currency.USD, "X")
+    c = tx_svc.compute_fingerprint(TransactionSourceType.CHECKING, "acc", BASE, Decimal("-50"), Currency.BRL, "X")
+    assert a == b != c
+
+
+# ── E: descrição genérica nunca cria fornecedor ─────────────────────────────
+
+def test_generic_bank_descriptions_suggest_no_party(client, seed):
+    from numis_geek.services.bank_import import _merchant_of
+    for generic in ("DDA PAG TIT", "REND PAGO APLIC AUT MAIS", "INT PAG TIT BANCO 237", "TED D INT 341 0001",
+                    "SALDO DO DIA", "PIX TRANSF 18/09", "RESGATE CDB 12345"):
+        assert _merchant_of(generic) is None, generic
+    assert _merchant_of("PAG BOLETO AXSECURITY ALARMES") == "AXSECURITY ALARMES"
+    assert _merchant_of("UBER *TRIP 1234") == "UBER *TRIP 1234"
+    acc = new_account(seed)
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 10, 20), "DDA PAG TIT", -321.12),
+        line(date(2026, 10, 20), "REND PAGO APLIC AUT MAIS", 1.23),
+        line(date(2026, 10, 21), "PAG BOLETO AXSECURITY ALARMES", -89.9),
+    ]))
+    r0, r1, r2 = preview(client, seed, job["id"])["rows"]
+    assert r0["party"]["mode"] == "none" and r0["party"]["source"] == "generic"
+    assert r1["party"]["mode"] == "none"
+    assert r2["party"]["mode"] == "new" and r2["party"]["new_party_name"] == "AXSECURITY ALARMES"
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    t0, t1, t2 = txs_of(db, account_id=acc)
+    assert t0.party_id is None and t1.party_id is None and db.get(Party, t2.party_id).name == "AXSECURITY ALARMES"
+    assert db.query(PartyAlias).filter(PartyAlias.alias_normalized == "DDA PAG TIT").count() == 0
+    db.close()
+

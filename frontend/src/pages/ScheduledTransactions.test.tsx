@@ -646,3 +646,23 @@ describe('audit 2026-10-31 — página e composer', () => {
     expect(d.getByRole('option', { name: /Conta Corrente Itaú/ })).toBeInTheDocument()
   })
 })
+
+describe('ScheduledTransactions — faturas de cartão na previsão (spec 72)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('mostra a fatura não paga no mês do vencimento, só leitura, com link pro cartão', async () => {
+    mockBase()
+    vi.spyOn(api, 'scheduledForecast').mockResolvedValue({
+      ...forecast,
+      card_invoices: [{ invoice_id: 'inv-1', card_id: 'card-1', card_name: 'Latam Itaú', due_date: '2026-11-15',
+        close_date: '2026-11-05', status: 'OPEN', amount: 1290.4, currency: 'BRL', label: 'Fatura Latam Itaú · vence 15/11' }],
+    })
+    renderPage()
+    const row = await screen.findByTestId('forecast-invoice-inv-1')
+    expect(row).toHaveTextContent('Fatura Latam Itaú · vence 15/11')
+    expect(row).toHaveTextContent('R$ 1.290,40')
+    expect(within(row).getByRole('link')).toHaveAttribute('href', '/credit-cards/card-1')
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+  })
+})
+

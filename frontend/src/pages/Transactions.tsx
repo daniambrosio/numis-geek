@@ -485,6 +485,7 @@ function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete, onError }: {
           {t.transfer_group_id && <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">transf.</span>}
           {t.paid_invoice_id && <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">fatura</span>}
           <SourceFileClip attachmentId={t.source_attachment_id} filename={t.source_attachment_filename} onError={onError} />
+          {t.is_projected && <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-300" title={t.notes ?? undefined}>prevista</span>}
         </div>
         {t.notes && <div className="text-[10px] text-gray-500 tnum money">{t.notes}</div>}
       </td>
@@ -501,6 +502,11 @@ function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete, onError }: {
       </td>
       <td className={`px-2 text-right tnum money font-medium ${isIncome ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
         {fmtMoney(t.amount, t.currency, { sign: true })}
+        {t.original_amount != null && t.original_currency && (
+          <div className="text-[10px] font-normal text-gray-500" data-testid={`tx-original-${t.id}`}>
+            {fmtMoney(t.original_amount, t.original_currency, { sign: true })}
+          </div>
+        )}
       </td>
       <td className="px-2 text-center">
         {t.is_reconciled

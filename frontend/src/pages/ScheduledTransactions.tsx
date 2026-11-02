@@ -15,7 +15,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Loader2, MoreHorizontal, Plus, Repeat } from 'lucide-react'
 import {
   api, type AccountOut, type CategoryOut, type ForecastOut, type PartyOut,
@@ -476,6 +476,18 @@ function ForecastCard({ forecast }: { forecast: ForecastOut }) {
                 <td className="px-2 text-right tnum money text-emerald-500 dark:text-emerald-400">{fmtBRL(m.receivable.brl)}</td>
                 <td className={`px-2 text-right tnum money font-medium ${m.net.brl >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>{fmtBRL(m.net.brl, { sign: true })}</td>
               </tr>
+              {(forecast.card_invoices ?? []).filter(i => i.due_date.slice(0, 7) === m.month).map(i => (
+                <tr key={i.invoice_id} className="text-[11px] text-gray-500" data-testid={`forecast-invoice-${i.invoice_id}`}>
+                  <td className="pl-6 pr-2 py-1">
+                    <Link to={`/credit-cards/${i.card_id}`} className="hover:text-indigo-500" title={i.status === 'OPEN' ? 'fatura aberta: soma dos lançamentos conhecidos' : 'fatura fechada'}>
+                      {i.label}
+                    </Link>
+                  </td>
+                  <td className="px-2 text-right tnum money">{fmtMoney(i.amount, i.currency)}</td>
+                  <td className="px-2 text-right">—</td>
+                  <td className="px-2 text-right">—</td>
+                </tr>
+              ))}
               {m.by_account.map(a => (
                 <tr key={a.account_id} className="text-[11px] text-gray-500">
                   <td className="pl-6 pr-2 py-1">{a.account_name}</td>

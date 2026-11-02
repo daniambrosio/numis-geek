@@ -296,6 +296,13 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
         <div className="text-gray-900 dark:text-white">{r.description}</div>
         <div className="text-[10px] text-gray-500 space-x-1">
           {r.installment_total && <span>parc. {r.installment_number}/{r.installment_total} · compra {fmtDay(r.original_date)}</span>}
+          {r.future_installments && (decision.action === 'import' || decision.action === 'import_anyway' || decision.action === 'settle' || decision.action === 'reconcile') && (
+            <span className="text-indigo-600 dark:text-indigo-300" data-testid={`future-${r.row_id}`}>
+              {r.future_installments.existing >= r.future_installments.to - r.future_installments.from + 1
+                ? `parcelas ${r.future_installments.from}–${r.future_installments.to} já existem`
+                : `gera as parcelas ${r.future_installments.from === r.future_installments.to ? r.future_installments.from : `${r.future_installments.from}–${r.future_installments.to}`}${r.future_installments.existing ? ` (${r.future_installments.existing} já existem)` : ''}`}
+            </span>
+          )}
           {r.duplicate && (
             <span>
               {DUP_REASON[r.duplicate.reason ?? ''] ?? 'duplicada'}
