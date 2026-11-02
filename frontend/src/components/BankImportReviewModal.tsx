@@ -24,7 +24,7 @@ import {
   type BankImportPreview, type BankImportResult, type BankImportRow, type CategoryOut, type PartyOut,
   type StatementImportOut,
 } from '../lib/api'
-import { ACTION_LABEL, applyLabel, countDecisions, groupMates, initialDecisions, originalLabel } from '../lib/bankImport'
+import { ACTION_LABEL, applyLabel, countDecisions, groupMates, initialDecisions, originalLabel, rateSourceLabel } from '../lib/bankImport'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CategorySelect, fmtMoney } from './TransactionComposers'
 
@@ -42,6 +42,7 @@ const BUCKETS: { key: BankImportBucket; label: string; hint: string }[] = [
   { key: 'invoice_payment', label: 'Pagamento de fatura', hint: 'quita a fatura pelo fluxo Pagar fatura' },
   { key: 'scheduled', label: 'Quita conta a pagar/receber', hint: 'marca a conta como paga' },
   { key: 'blocked', label: 'Não importáveis', hint: 'moeda sem cotação pra converter — lance à mão' },
+  { key: 'internal', label: 'Conversão interna', hint: 'troca entre saldos da Wise — não altera o saldo em reais' },
 ]
 
 const DUP_REASON: Record<string, string> = {
@@ -336,9 +337,12 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
       </td>
       <td className={`px-2 py-2 text-right tnum money font-medium whitespace-nowrap ${amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
         {fmtMoney(amount, r.currency as 'BRL' | 'USD', { sign: true })}
+        {!r.original && r.note && (
+          <div className="text-[10px] font-normal text-gray-500" data-testid={`note-${r.row_id}`}>{r.note}</div>
+        )}
         {r.original && (
           <div className="text-[10px] font-normal text-gray-500" data-testid={`original-${r.row_id}`}
-            title={`${r.original.rate_source === 'STATEMENT' ? 'cotação do documento' : 'PTAX'} de ${fmtDay(r.original.rate_date)}`}>
+            title={`${rateSourceLabel(r.original.rate_source)} de ${fmtDay(r.original.rate_date)}`}>
             {originalLabel(r.original)}
           </div>
         )}

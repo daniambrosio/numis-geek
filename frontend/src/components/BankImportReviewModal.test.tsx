@@ -424,6 +424,32 @@ describe('BankImportReviewModal — parcelas futuras', () => {
   })
 })
 
+describe('BankImportReviewModal — Wise (spec 84)', () => {
+  it('conversão entre jars fica em "Conversão interna", só Pular; gasto mostra jar e comerciante', async () => {
+    mockPreview(preview({ overlaps: [], rows: [
+      row({ row_id: 'r0', description: 'To EUR', amount: '-200.00', bucket: 'internal', actions: ['skip'],
+        default_action: 'skip', party: { mode: 'none' }, wise_kind: 'CONVERSION' }),
+      row({ row_id: 'r1', index: 1, description: 'Bar Alfa', amount: '-515.10',
+        original: { amount: '-103.02', currency: 'USD', rate: '5.00000000', rate_date: '2026-10-19', rate_source: 'PTAX',
+          merchant: { amount: '-91.25', currency: 'EUR' } } }),
+      row({ row_id: 'r2', index: 2, description: 'Parrilla Delta', amount: '-62.41',
+        original: { amount: '-12000', currency: 'CLP', rate: '0.00520000', rate_date: '2025-10-19', rate_source: 'CROSS' } }),
+      row({ row_id: 'r3', index: 3, description: 'Fulano', amount: '-3994.19', note: '660.000 CLP (destino)' }),
+    ] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    const bucket = await screen.findByTestId('bucket-internal')
+    expect(bucket).toHaveTextContent('Conversão interna')
+    expect(bucket).toHaveTextContent('não altera o saldo em reais')
+    expect(within(screen.getByTestId('action-r0')).getAllByRole('option').map(o => o.textContent)).toEqual(['Pular'])
+    const clean = (el: HTMLElement) => el.textContent?.replace(/\u00a0/g, ' ')
+    expect(clean(screen.getByTestId('original-r1'))).toBe('€ 91,25 · US$ 103,02 × 5,0000')
+    expect(clean(screen.getByTestId('original-r2'))).toContain('12.000')
+    expect(screen.getByTestId('original-r2')).toHaveAttribute('title', 'cruzada pela taxa do próprio extrato de 19/10/25')
+    expect(screen.getByTestId('note-r3')).toHaveTextContent('660.000 CLP (destino)')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent(/3/)
+  })
+})
+
 describe('bankImport helpers', () => {
   it('initialDecisions usa o default e a conta/ocorrência sugeridas', () => {
     const d = initialDecisions(ROWS)

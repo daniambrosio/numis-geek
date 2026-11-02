@@ -120,9 +120,28 @@ export function useBankImport(kind: 'account' | 'card', sourceId: string | undef
 /** "US$ 25,00 × 5,4321" — valor original de uma linha em outra moeda,
  * convertida pela PTAX do dia (USD→BRL multiplica, BRL→USD divide). */
 export function originalLabel(o: NonNullable<BankImportRow['original']>): string {
-  const ccy = o.currency === 'USD' ? 'USD' : 'BRL'
-  const op = o.currency === 'USD' ? '×' : '÷'
-  const money = Math.abs(Number(o.amount)).toLocaleString('pt-BR', { style: 'currency', currency: ccy })
-  const rate = Number(o.rate).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
-  return `${money} ${op} ${rate}`
+  const money = (v: string, ccy: string) => {
+    try {
+      return Math.abs(Number(v)).toLocaleString('pt-BR', { style: 'currency', currency: ccy })
+    } catch {
+      return `${Math.abs(Number(v)).toLocaleString('pt-BR')} ${ccy}`
+    }
+  }
+  const prefix = o.merchant ? `${money(o.merchant.amount, o.merchant.currency)} · ` : ''
+  if (o.rate_source === 'NONE') return `${prefix}${money(o.amount, o.currency)} sem cotação`
+  // BRL na conta USD: a taxa guardada é USD por real — mostra a PTAX (÷)
+  const divide = o.currency === 'BRL'
+  const r = Number(o.rate)
+  const shown = divide && r < 1 ? 1 / r : r
+  const rate = shown.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: shown < 0.01 ? 6 : 4 })
+  return `${prefix}${money(o.amount, o.currency)} ${divide ? '÷' : '×'} ${rate}`
+}
+
+const RATE_SOURCE_LABEL: Record<string, string> = {
+  PTAX: 'PTAX', PTAX_STALE: 'PTAX (mais antiga)', STATEMENT: 'cotação do documento', BCB: 'cotação BCB',
+  CROSS: 'cruzada pela taxa do próprio extrato', NONE: 'sem cotação — corrija o valor',
+}
+
+export function rateSourceLabel(source: string): string {
+  return RATE_SOURCE_LABEL[source] ?? source
 }

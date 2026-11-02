@@ -72,7 +72,7 @@ def compute_fingerprint(
     description: str,
     *,
     original_amount: Decimal | None = None,
-    original_currency: Currency | None = None,
+    original_currency: Currency | str | None = None,
 ) -> str:
     """sha1(source_type + source FK + event_date + amount + currency +
     normalize_description). Shared with the spec 71 dedup — never fork.
@@ -87,7 +87,7 @@ def compute_fingerprint(
         source_id,
         event_date.isoformat(),
         str(Decimal(amount).quantize(CENT)),
-        currency.value,
+        getattr(currency, "value", currency),   # original_currency é String(3) (spec 84)
         normalize_description(description),
     ])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()

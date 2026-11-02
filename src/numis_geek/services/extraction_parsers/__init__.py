@@ -17,6 +17,10 @@ from numis_geek.models.extraction_job import ExtractionSourceHint
 from numis_geek.services.extraction_parsers.avenue_proventos import (
     parse_avenue_proventos_csv,
 )
+from numis_geek.services.extraction_parsers.wise_statement import (
+    NotApplicable,
+    parse_wise_statement_pdf,
+)
 
 
 # (fi_short_name_lower, source_hint, mime_type) → parser fn(bytes) → dict
@@ -25,7 +29,13 @@ ParserFn = Callable[[bytes], dict]
 _BY_KEY: dict[tuple[str, ExtractionSourceHint, str], ParserFn] = {
     ("avenue", ExtractionSourceHint.BROKER_INCOME, "text/csv"):
         parse_avenue_proventos_csv,
+    # Spec 84 — "all transactions" da Wise (PDF com camada de texto).
+    # PDF sem texto → NotApplicable → o serviço cai pro LLM.
+    ("wise", ExtractionSourceHint.BANK_STATEMENT, "application/pdf"):
+        parse_wise_statement_pdf,
 }
+
+__all__ = ["NotApplicable", "parser_for"]
 
 
 def parser_for(

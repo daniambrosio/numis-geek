@@ -429,6 +429,13 @@ class StatementLine(BaseModel):
     counterparty: str | None = None
     category_hint: str | None = None        # sugestão; aplicar é spec futura
     confidence: float | None = None
+    # Spec 84 (Wise, conta multimoeda) — aditivo; null nos demais bancos.
+    date_text: str | None = None            # data como impressa ("19 October", "19 October 2025")
+    jar_amount: float | None = None         # valor que SAIU/ENTROU no saldo (jar) — com sinal
+    jar_currency: str | None = None
+    merchant_amount: float | None = None    # valor na moeda do comerciante, quando diferente
+    merchant_currency: str | None = None
+    multi_jar: str | None = None            # "EUR, USD": pago com mais de um saldo
 
 
 class BankStatementOutput(BaseModel):
@@ -436,6 +443,7 @@ class BankStatementOutput(BaseModel):
     institution_name: str | None = None
     transactions: list[StatementLine]
     confidence: float | None = None
+    parse_warnings: list[str] = []          # spec 84: avisos do parser/extração
 
 
 class InvoiceSummary(BaseModel):
@@ -499,6 +507,49 @@ BANK_STATEMENT = Template(
         "line_kind, counterparty, confidence} ], \"confidence\": float }"
     ),
     user_prefix="Extraia TODAS as movimentações deste extrato de conta.",
+    output_model=BankStatementOutput,
+)
+
+BANK_STATEMENT_WISE = Template(
+    version="bank-statement-wise-v1",
+    system=(
+        "Você extrai TODAS as linhas do extrato \"all transactions\" da Wise "
+        "(conta multimoeda: saldos/jars em BRL, USD, EUR, GBP, CLP, UYU…, tudo "
+        "numa lista só, da mais nova pra mais antiga).\n\n"
+        "RESPOSTA: APENAS o objeto JSON, sem markdown nem texto fora dele.\n\n"
+        "ESTRUTURA DO TEXTO: um cabeçalho de data (\"19 October\" no ano corrente, "
+        "\"19 October 2025\" nos anteriores) seguido das linhas daquele dia. Cada "
+        "linha tem um nome e 1 ou 2 valores. Ignore cabeçalho/rodapé da página "
+        "(\"Transactions\", \"Search Filters\", \"Wise - Home\", URL, "
+        "\"11/2/26, 12:02 PM\", \"Earn R$…\").\n\n"
+        "POR LINHA (transactions[]):\n"
+        "- date_text: o cabeçalho de data EXATAMENTE como impresso (com ou sem ano). "
+        "Se o trecho começa sem cabeçalho, use o \"cabeçalho em vigor\" informado.\n"
+        "- event_date: ISO; sem ano no cabeçalho → o ano corrente informado.\n"
+        "- description: o nome da linha exatamente como aparece.\n"
+        "- line_kind: CONVERSION (\"To EUR\" / \"To USD Jar\" + Moved/Added: troca "
+        "entre jars), SPEND (compra/pagamento no cartão), DEPOSIT (entrada, ex.: nome "
+        "da pessoa + valor positivo), FEE (\"Assets fee\" e tarifas), REFUND "
+        "(\"Refund …\"), CASHBACK, SENT (\"Sent\": envio a terceiro).\n"
+        "- jar_amount / jar_currency: o valor que SAIU do saldo (negativo) ou ENTROU "
+        "(positivo, com \"+\"). Linha com 2 valores: o jar é o SEGUNDO valor "
+        "(\"91.25 EUR / 103.02 USD\" → jar −103.02 USD). Linha com 1 valor: é ele.\n"
+        "- merchant_amount / merchant_currency: em linha com 2 valores, o PRIMEIRO "
+        "(moeda do comerciante, mesmo sinal). Senão null.\n"
+        "- CONVERSION: jar = o que saiu (\"To EUR · 178.69 EUR · 200 USD\" → jar "
+        "−200 USD, merchant +178.69 EUR; \"To USD · Added · +1,000 USD · 5,279.79 BRL\" "
+        "→ jar −5279.79 BRL, merchant +1000 USD).\n"
+        "- amount = jar_amount; currency = jar_currency.\n"
+        "- counterparty: em DEPOSIT/SENT o nome da pessoa; senão null.\n"
+        "- Números: \"1,000\" = mil, \"236,100 ARS\" = 236100, \"5,279.79\" = 5279.79.\n"
+        "- confidence: 0–1.\n\n"
+        "NÃO pule linhas: cada linha do texto com nome + valor(es) vira uma entrada.\n\n"
+        "Responda com: { \"period\": {\"start\": str, \"end\": str}, "
+        "\"institution_name\": \"Wise\", \"transactions\": [ {date_text, event_date, "
+        "description, line_kind, amount, currency, jar_amount, jar_currency, "
+        "merchant_amount, merchant_currency, counterparty, confidence} ] }"
+    ),
+    user_prefix="Extraia TODAS as linhas deste extrato da Wise.",
     output_model=BankStatementOutput,
 )
 
@@ -657,6 +708,9 @@ def template_for(
     `institution_short_name` matches a known FI, use the FI-specific
     template. Otherwise fall back to the generic one.
     """
+    if hint == ExtractionSourceHint.BANK_STATEMENT and institution_short_name \
+            and institution_short_name.strip().lower() == "wise":
+        return BANK_STATEMENT_WISE   # spec 84 — conta multimoeda
     if hint in (ExtractionSourceHint.BROKER_POSITION, ExtractionSourceHint.GENERIC):
         if institution_short_name:
             specific = _BROKER_POSITION_BY_FI.get(institution_short_name.strip().lower())

@@ -30,7 +30,7 @@ from numis_geek.integrations.llm import LLMCall, set_llm_client
 from numis_geek.models.account import Account, AccountType, Currency
 from numis_geek.models.category import Category, CategoryKind
 from numis_geek.models.credit_card import CreditCardAccount, Invoice, InvoiceStatus
-from numis_geek.models.extraction_job import ExtractionJob, ExtractionStatus
+from numis_geek.models.extraction_job import ExtractionJob, ExtractionSourceHint, ExtractionStatus
 from numis_geek.models.financial_institution import FinancialInstitution
 from numis_geek.models.party import Party, PartyAlias
 from numis_geek.models.ptax_rate import PTAXRate
@@ -958,7 +958,7 @@ def test_line_in_other_currency_is_converted_with_ptax(client, seed):
     assert r0["bucket"] == "new" and r0["default_action"] == "import"
     assert r0["amount"] == "-125.00" and r0["currency"] == "BRL"
     assert r0["original"] == {"amount": "-25.00", "currency": "USD", "rate": "5.00000000",
-                              "rate_date": d.isoformat(), "rate_source": "PTAX"}
+                              "rate_date": d.isoformat(), "rate_source": "PTAX", "merchant": None, "cross": None}
     assert r1["bucket"] == "new" and "original" not in r1 or r1["original"] is None
     assert r2["bucket"] == "blocked" and r2["actions"] == ["skip"] and "EUR" in r2["warning"]
     confirm(client, seed, job["id"])
@@ -2127,3 +2127,288 @@ def test_generic_bank_descriptions_suggest_no_party(client, seed):
     assert db.query(PartyAlias).filter(PartyAlias.alias_normalized == "DDA PAG TIT").count() == 0
     db.close()
 
+
+
+# ══ spec 84 — Wise (conta multimoeda, uma conta só em reais) ═══════════════
+
+WISE_PAGES = [
+    "Transactions\r\n"
+    "19 October\r\n"
+    "Refund Globalblue.com + 6.12 BRL\r\n"
+    "Hotel Aqua\r\n2 EUR\r\n2.25 USD\r\n"
+    "Search Filters (2) Export\r\nHome Cards Recipients Payments\r\nEarn R$250 when you invite\r\n"
+    "11/2/26, 12:02 PM Wise - Home\r\n"
+    "https://wise.com/all-transactions?from=2023-01-01&to=2026-11-02 1/2\r\n",
+    "Bar Alfa\r\n91.25 EUR\r\n103.02 USD\r\n"          # page break: still 19 October
+    "14 October\r\n"
+    "To EUR\r\nMoved\r\n178.69 EUR\r\n200 USD\r\n"
+    "Torrons Beta 25 EUR\r\n"
+    "Ristorante Gama\r\n98.06 EUR\r\nEUR, USD\r\n"
+    "TFL - Transport\r\nCard checked\r\n0 GBP\r\n"
+    "2 October\r\n"
+    "Assets fee 0.37 USD\r\n"
+    "Cashback + 2.50 BRL\r\n"
+    "PESSOA TESTE SOBRENOME+ 3,000 BRL\r\n"
+    "To USD Jar 1,000 USD Home Cards Recipients Payments\r\n"
+    "19 October 2025\r\n"
+    "To USD\r\nMoved\r\n4.54 USD\r\n4,365 CLP\r\n"
+    "Parrilla Delta 12,000 CLP\r\n"
+    "Casa Epsilon\r\n236,100 ARS\r\n160.70 USD\r\n"
+    "1 July 2024\r\n"
+    "Fulano Recebedor\r\nSent\r\n660,000 CLP\r\n3,994.19 BRL\r\n"
+    "Mercado Zeta 152.84 UYU\r\n"
+    "11/2/26, 12:02 PM Wise - Home\r\n",
+]
+
+
+def test_wise_parser_kinds_jars_and_years():
+    from numis_geek.services.extraction_parsers.wise_statement import parse_text
+    out = parse_text(WISE_PAGES)
+    tx = out["transactions"]
+    by = {t["description"]: t for t in tx}
+    assert len(tx) == 15 and "TFL - Transport" not in by           # card check (0) dropped
+    assert any("sem movimento" in w for w in out["parse_warnings"])
+    assert by["Refund Globalblue.com"]["line_kind"] == "REFUND" and by["Refund Globalblue.com"]["jar_amount"] == 6.12
+    assert by["Hotel Aqua"]["event_date"] == "2026-10-19"
+    bar = by["Bar Alfa"]                                              # header from previous page
+    assert (bar["event_date"], bar["jar_amount"], bar["jar_currency"], bar["merchant_amount"], bar["merchant_currency"]) \
+        == ("2026-10-19", -103.02, "USD", -91.25, "EUR")
+    conv = [t for t in tx if t["line_kind"] == "CONVERSION"]
+    assert len(conv) == 3
+    assert (conv[0]["jar_amount"], conv[0]["jar_currency"], conv[0]["merchant_amount"]) == (-200.0, "USD", 178.69)
+    assert by["Torrons Beta"]["jar_amount"] == -25.0 and by["Torrons Beta"]["merchant_currency"] is None
+    assert by["Ristorante Gama"]["multi_jar"] == "EUR, USD"
+    assert by["Assets fee"]["line_kind"] == "FEE" and by["Cashback"]["line_kind"] == "CASHBACK"
+    dep = by["PESSOA TESTE SOBRENOME"]
+    assert dep["line_kind"] == "DEPOSIT" and dep["jar_amount"] == 3000.0 and dep["counterparty"] == "PESSOA TESTE SOBRENOME"
+    assert by["Parrilla Delta"]["event_date"] == "2025-10-19" and by["Parrilla Delta"]["jar_amount"] == -12000.0
+    assert by["Casa Epsilon"]["merchant_amount"] == -236100.0
+    sent = by["Fulano Recebedor"]
+    assert (sent["line_kind"], sent["event_date"], sent["jar_amount"], sent["jar_currency"]) == ("SENT", "2024-07-01", -3994.19, "BRL")
+    assert out["period"] == {"start": "2024-07-01", "end": "2026-10-19"}
+    dates = [t["event_date"] for t in tx]
+    assert dates == sorted(dates, reverse=True)                       # newest → oldest, years in order
+
+
+def _wise_account(seed) -> str:
+    db = TestSession()
+    now = datetime.now(timezone.utc)
+    fi = db.query(FinancialInstitution).filter(FinancialInstitution.short_name == "Wise").first()
+    if fi is None:
+        fi = FinancialInstitution(id=str(uuid.uuid4()), long_name="Wise Payments", short_name="Wise",
+                                  logo_slug="wise", is_active=True, created_at=now, updated_at=now)
+        db.add(fi)
+        db.flush()
+    a = Account(id=str(uuid.uuid4()), workspace_id=seed["ws"], financial_institution_id=fi.id,
+                name=f"Conta Corrente Wise {uuid.uuid4().hex[:4]}", account_type=AccountType.checking,
+                currency=Currency.BRL, is_active=True)
+    db.add(a)
+    aid = a.id
+    db.commit()
+    db.close()
+    return aid
+
+
+@pytest.fixture
+def bcb_rates(monkeypatch):
+    """EUR/GBP no BCB a 6,00/7,00; demais moedas sem cotação."""
+    from numis_geek.integrations import bcb
+    calls = []
+
+    def fake(cur, start, end):
+        calls.append(cur)
+        rate = {"EUR": Decimal("6.00"), "GBP": Decimal("7.00")}.get(cur)
+        if rate is None:
+            return []
+        out, d = [], start
+        while d <= end:
+            out.append(bcb.PTAXRow(date=d, rate=rate))
+            d += timedelta(days=1)
+        return out
+    monkeypatch.setattr(bcb, "fetch_currency_ptax_range", fake)
+    return calls
+
+
+def _wise_import(client, seed, acc, pages=None):
+    from numis_geek.services.extraction_parsers.wise_statement import parse_text
+    payload = parse_text(pages or WISE_PAGES)
+    return import_statement(client, seed, acc, payload)
+
+
+def test_wise_classify_buckets_rates_and_notes(client, seed, bcb_rates):
+    db = TestSession()   # PTAX table starts in 2025 here; one old rate → nearest-earlier fallback for 2024 lines
+    if not db.query(PTAXRate).filter(PTAXRate.date == date(2024, 6, 28)).first():
+        db.add(PTAXRate(id=str(uuid.uuid4()), date=date(2024, 6, 28), rate=PTAX, fetched_at=datetime.now(timezone.utc)))
+        db.commit()
+    db.close()
+    acc = _wise_account(seed)
+    job = _wise_import(client, seed, acc)
+    p = preview(client, seed, job["id"])
+    by = {r["description"]: r for r in p["rows"]}
+    # conversions between jars never become transactions
+    internal = [r for r in p["rows"] if r["bucket"] == "internal"]
+    assert len(internal) == 3 and all(r["actions"] == ["skip"] for r in internal)
+    # USD jar → PTAX (5.0); EUR merchant in the note
+    bar = by["Bar Alfa"]
+    assert bar["amount"] == "-515.10" and bar["original"]["currency"] == "USD"
+    assert bar["original"]["merchant"] == {"amount": "-91.25", "currency": "EUR"}
+    # EUR jar → BCB EUR (6,00)
+    tor = by["Torrons Beta"]
+    assert tor["amount"] == "-150.00" and tor["original"]["rate_source"] == "BCB"
+    # CLP jar: no BCB → crossed via the document's CLP/USD (4.54/4365) × PTAX 5
+    par = by["Parrilla Delta"]
+    assert par["original"]["rate_source"] == "CROSS"
+    assert par["amount"] == str((Decimal("-12000") * (Decimal("4.54") / Decimal("4365")) * 5).quantize(Decimal("0.01")))
+    # UYU with no rate anywhere → stays importable, unconverted, warned
+    uyu = by["Mercado Zeta"]
+    assert uyu["bucket"] == "new" and uyu["original"]["rate_source"] == "NONE" and "Sem cotação" in uyu["warning"]
+    # multi-jar warning, BRL "Sent" with CLP note, refund party, cashback no party, fee
+    assert "mais de um saldo" in by["Ristorante Gama"]["warning"]
+    sent = by["Fulano Recebedor"]
+    assert sent["amount"] == "-3994.19" and sent["original"] is None and sent["note"] == "660.000 CLP (destino)"
+    assert sent["party"]["new_party_name"] == "Fulano Recebedor"
+    assert by["Refund Globalblue.com"]["party"]["new_party_name"] == "Globalblue.com"
+    assert by["Cashback"]["party"]["mode"] == "none"
+    assert by["Assets fee"]["line_kind"] == "BANK_FEE"
+    # BCB fetched once per currency, cached on the job
+    db = TestSession()
+    cache = db.get(ExtractionJob, job["id"]).extracted_json["_fx_rates"]
+    db.close()
+    assert set(cache) >= {"EUR", "CLP", "UYU"} and cache["EUR"]["rates"]
+
+    n_calls = len(bcb_rates)
+    preview(client, seed, job["id"])
+    assert len(bcb_rates) == n_calls                                   # cached
+    confirm(client, seed, job["id"])
+    assert len(bcb_rates) == n_calls                                   # apply never fetches
+    db = TestSession()
+    txs = {t.description: t for t in txs_of(db, account_id=acc)}
+    assert "To EUR" not in txs and "To USD" not in txs and len(txs) == 12
+    t = txs["Torrons Beta"]
+    assert t.amount == Decimal("-150.00") and t.original_amount == Decimal("-25.00") and t.original_currency == "EUR"
+    assert t.notes == "25 EUR × BCB 6,0000 (14/10)"
+    assert txs["Bar Alfa"].notes == "91,25 EUR (comerciante) · US$ 103,02 × PTAX 5,0000 (19/10)"
+    assert txs["Fulano Recebedor"].notes == "660.000 CLP (destino)" and txs["Fulano Recebedor"].original_amount is None
+    expected = tx_svc.compute_fingerprint(TransactionSourceType.CHECKING, acc, date(2026, 10, 14), Decimal("-150"),
+                                          Currency.BRL, "Torrons Beta", original_amount=Decimal("-25"),
+                                          original_currency="EUR")
+    assert t.fingerprint == expected
+    db.close()
+    # re-import of the same lines: everything is a duplicate (or internal)
+    p2 = preview(client, seed, _wise_import(client, seed, acc)["id"])
+    assert {r["bucket"] for r in p2["rows"]} == {"duplicate", "internal"}
+
+
+def test_wise_own_pix_is_transfer(client, seed, bcb_rates):
+    from numis_geek.models.user import User
+    db = TestSession()
+    u = db.query(User).filter(User.email == "bi_admin@test.com").one()
+    u.name = "Pessoa Teste Sobrenome"
+    root = db.query(Category).filter(Category.workspace_id == seed["ws"], Category.parent_id.is_(None)).first()
+    tr = Category(id=str(uuid.uuid4()), workspace_id=seed["ws"], name="Entre contas", parent_id=root.id,
+                  kind=CategoryKind.TRANSFER)
+    db.add(tr)
+    tr_id = tr.id
+    db.commit()
+    db.close()
+    acc = _wise_account(seed)
+    row = next(r for r in preview(client, seed, _wise_import(client, seed, acc)["id"])["rows"]
+               if r["description"] == "PESSOA TESTE SOBRENOME")
+    assert row["party"]["mode"] == "none" and row["party"]["source"] == "own_transfer"
+    assert row["category_id"] == tr_id
+
+
+def test_wise_pdf_goes_through_deterministic_parser(client, seed, monkeypatch, bcb_rates):
+    from numis_geek.services.extraction_parsers import wise_statement
+    monkeypatch.setattr(wise_statement, "pdf_pages_text", lambda blob: WISE_PAGES)
+    acc = _wise_account(seed)
+    fake = FakeLLM({"lines": []})
+    set_llm_client(fake)
+    r = client.post(f"/api/accounts/{acc}/statement-imports",
+                    files={"file": ("wise.pdf", b"%PDF-1.4 " + uuid.uuid4().hex.encode(), "application/pdf")},
+                    headers=auth(seed["token"]))
+    assert r.status_code == 201 and r.json()["status"] == "EXTRACTED", r.text
+    db = TestSession()
+    j = db.get(ExtractionJob, r.json()["id"])
+    assert j.prompt_version == "deterministic:parse_wise_statement_pdf"
+    assert len(j.extracted_json["transactions"]) == 15
+    assert (j.statement_period_start, j.statement_period_end) == (date(2024, 7, 1), date(2026, 10, 19))
+    db.close()
+    # non-text PDF falls back to the LLM
+    def no_text(blob):
+        raise wise_statement.NotApplicable("sem texto")
+    monkeypatch.setattr(wise_statement, "parse_wise_statement_pdf", no_text)
+    from numis_geek.services import extraction_parsers
+    monkeypatch.setitem(extraction_parsers._BY_KEY,
+                        ("wise", ExtractionSourceHint.BANK_STATEMENT, "application/pdf"), no_text)
+    set_llm_client(FakeLLM(statement([line(date(2026, 10, 1), "LOJA", -1)])))
+    r = client.post(f"/api/accounts/{acc}/statement-imports",
+                    files={"file": ("w2.pdf", b"%PDF-1.4 " + uuid.uuid4().hex.encode(), "application/pdf")},
+                    headers=auth(seed["token"]))
+    assert r.status_code == 201 and r.json()["status"] == "EXTRACTED"
+    db = TestSession()
+    assert db.get(ExtractionJob, r.json()["id"]).prompt_version == "bank-statement-wise-v1"
+    db.close()
+
+
+def test_non_wise_usd_line_keeps_ptax_path(client, seed):
+    acc = new_account(seed)
+    d = BASE + timedelta(days=114)
+    row = preview(client, seed, import_statement(client, seed, acc, statement([
+        {**line(d, "AWS", -10), "currency": "USD"}]))["id"])["rows"][0]
+    assert row["original"]["rate_source"] == "PTAX" and row["amount"] == "-50.00"
+
+
+def test_olinda_client_parses_and_unknown_currency(monkeypatch):
+    from numis_geek.integrations import bcb
+
+    class Resp:
+        def __init__(self, status, body):
+            self.status_code, self._b = status, body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._b
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, timeout=None):
+            if params["@moeda"] == "'CLP'":
+                return Resp(400, {})
+            return Resp(200, {"value": [
+                {"cotacaoVenda": 6.1234, "dataHoraCotacao": "2026-10-14 13:05:00.000", "tipoBoletim": "Abertura"},
+                {"cotacaoVenda": 6.2, "dataHoraCotacao": "2026-10-14 13:10:00.000", "tipoBoletim": "Fechamento"},
+            ]})
+    monkeypatch.setattr(bcb.httpx, "Client", Client)
+    rows = bcb.fetch_currency_ptax_range("eur", date(2026, 10, 1), date(2026, 10, 15))
+    assert rows == [bcb.PTAXRow(date=date(2026, 10, 14), rate=Decimal("6.2"))]
+    assert bcb.fetch_currency_ptax_range("CLP", date(2026, 10, 1), date(2026, 10, 15)) == []
+
+
+def test_convert_jar_prefers_closest_document_rate(db):
+    from numis_geek.services import multicurrency as mc
+    db.add(PTAXRate(id=str(uuid.uuid4()), date=date(2025, 7, 10), rate=Decimal("5.5"),
+                    fetched_at=datetime.now(timezone.utc)))
+    db.flush()
+    payload = {"transactions": [
+        {"event_date": "2025-07-10", "jar_amount": -1000, "jar_currency": "BRL", "merchant_amount": 7085.86,
+         "merchant_currency": "UYU", "line_kind": "CONVERSION"},
+        {"event_date": "2025-10-19", "jar_amount": -152.84, "jar_currency": "UYU", "merchant_amount": 3.80,
+         "merchant_currency": "USD", "line_kind": "CONVERSION"},
+    ]}
+    implied = mc.implied_usd_rates(payload)
+    implied.update({("BRL", c): v for c, v in mc.implied_brl_rates(payload).items()})
+    out = mc.convert_jar(db, date(2025, 7, 12), Decimal("-708.59"), "UYU", "BRL", {}, implied)
+    assert out["rate_source"] == "CROSS" and out["cross"]["implied_date"] == "2025-07-10"
+    assert out["converted"] == Decimal("-100.00")                 # BRL leg, 2 days away, beats USD leg (3 months)
+    assert mc.convert_jar(db, date(2025, 7, 12), Decimal("-1"), "ARS", "BRL", {}, implied)["rate_source"] == "NONE"

@@ -119,7 +119,7 @@ class Transaction(Base):
     # dedup (fingerprint) usa estes quando presentes, então editar a tx não
     # quebra o casamento com o re-import.
     original_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
-    original_currency: Mapped[Currency | None] = mapped_column(Enum(Currency), nullable=True)
+    original_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)  # spec 84: EUR, GBP, CLP…
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(

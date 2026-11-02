@@ -258,6 +258,14 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
     if job.institution_id:
         fi = db.get(FinancialInstitution, job.institution_id)
         fi_short_name = fi.short_name if fi else None
+    elif job.checking_account_id or job.credit_card_account_id:
+        # Spec 84 — import de extrato/fatura: a instituição vem da conta/cartão
+        # (template e parser determinístico por banco, ex.: Wise).
+        from numis_geek.models.credit_card import CreditCardAccount
+        src = (db.get(Account, job.checking_account_id) if job.checking_account_id
+               else db.get(CreditCardAccount, job.credit_card_account_id))
+        fi = db.get(FinancialInstitution, src.financial_institution_id) if src else None
+        fi_short_name = fi.short_name if fi else None
 
     # Spec 58 Stage 4 — if a deterministic Python parser exists for this
     # (fi, hint, mime) combination, skip the LLM entirely. 100% accurate,
@@ -273,10 +281,20 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
     job.started_at = datetime.now(timezone.utc)
     db.flush()
 
+    from numis_geek.services.extraction_parsers import NotApplicable as _NotApplicable
     if det_parser is not None:
         try:
             blob = Path(attachment_storage.absolute_path_for(attachment)).read_bytes()
             payload_dict = det_parser(blob)
+        except _NotApplicable:
+            det_parser = None      # ex.: PDF da Wise sem camada de texto → LLM
+            payload_dict = None
+        except Exception as exc:
+            payload_dict = exc
+    if det_parser is not None:
+        try:
+            if isinstance(payload_dict, Exception):
+                raise payload_dict
             job.extracted_json = payload_dict
             job.prompt_version = f"deterministic:{det_parser.__name__}"
             job.model = None
@@ -287,10 +305,18 @@ def run_extraction(db: Session, *, job_id: str) -> ExtractionJob:
             job.status = ExtractionStatus.EXTRACTED
             job.completed_at = datetime.now(timezone.utc)
             job.error_message = None
+            if job.source_hint in _CHUNKED_HINTS:
+                from numis_geek.services.bank_import import statement_period
+                job.statement_period_start, job.statement_period_end = statement_period(
+                    job.extracted_json, card_invoice=job.source_hint == ExtractionSourceHint.CARD_INVOICE,
+                )
         except Exception as exc:
             job.status = ExtractionStatus.FAILED
             job.error_message = f"Deterministic parser failed: {exc}"
             job.completed_at = datetime.now(timezone.utc)
+        if job.status == ExtractionStatus.EXTRACTED and job.source_hint in _CHUNKED_HINTS:
+            from numis_geek.services.bank_classifier import classify_job_safely
+            classify_job_safely(db, job)
         db.flush()
         return job
 

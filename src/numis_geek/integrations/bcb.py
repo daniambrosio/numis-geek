@@ -92,3 +92,58 @@ def fetch_ptax_range(start: date, end: date) -> list[PTAXRow]:
                 out[d] = v
 
     return [PTAXRow(date=d, rate=out[d]) for d in sorted(out.keys())]
+
+
+# ── Spec 84 — PTAX por moeda (Olinda) ────────────────────────────────────────
+# EUR, GBP, CHF, … (as moedas que o BCB publica). USD continua pela série SGS
+# acima. Moeda sem cotação no BCB (CLP, UYU, ARS…) devolve lista vazia — o
+# import cruza via USD com a taxa implícita do documento.
+
+OLINDA_PERIOD = (
+    "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/"
+    "CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
+)
+
+
+def _olinda_fmt(d: date) -> str:
+    return d.strftime("%m-%d-%Y")
+
+
+def fetch_currency_ptax_range(currency: str, start: date, end: date) -> list[PTAXRow]:
+    """PTAX venda (boletim de Fechamento) de `currency` em BRL, [start, end].
+
+    Moeda que o BCB não publica → []. Erro de rede/formato → BCBError."""
+    if end < start:
+        raise ValueError(f"end ({end}) precedes start ({start})")
+    cur = currency.strip().upper()
+    params = {
+        "@moeda": f"'{cur}'",
+        "@dataInicial": f"'{_olinda_fmt(start)}'",
+        "@dataFinalCotacao": f"'{_olinda_fmt(end)}'",
+        "$format": "json",
+        "$select": "cotacaoVenda,dataHoraCotacao,tipoBoletim",
+    }
+    try:
+        with httpx.Client() as client:
+            r = client.get(OLINDA_PERIOD, params=params, timeout=DEFAULT_TIMEOUT)
+            if r.status_code in (400, 404):
+                return []   # moeda desconhecida pro BCB
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPError as e:
+        raise BCBError(f"BCB Olinda {cur} failed: {e}") from e
+    except ValueError as e:
+        raise BCBError(f"BCB Olinda {cur} returned non-JSON: {e}") from e
+    rows = data.get("value") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise BCBError(f"BCB Olinda {cur} unexpected payload: {data!r}"[:300])
+    out: dict[date, Decimal] = {}
+    for row in rows:
+        try:
+            if row.get("tipoBoletim") not in (None, "Fechamento"):
+                continue
+            d = date.fromisoformat(str(row["dataHoraCotacao"])[:10])
+            out[d] = Decimal(str(row["cotacaoVenda"]))
+        except (KeyError, ValueError, TypeError) as e:
+            raise BCBError(f"BCB Olinda {cur} malformed row {row!r}: {e}") from e
+    return [PTAXRow(date=d, rate=out[d]) for d in sorted(out)]

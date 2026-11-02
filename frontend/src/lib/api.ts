@@ -2192,7 +2192,7 @@ export interface StatementImportOut {
   resumed: boolean
 }
 
-export type BankImportBucket = 'new' | 'duplicate' | 'invoice_payment' | 'scheduled' | 'blocked'
+export type BankImportBucket = 'new' | 'duplicate' | 'invoice_payment' | 'scheduled' | 'blocked' | 'internal'
 export type BankImportAction = 'import' | 'skip' | 'reconcile' | 'import_anyway' | 'pay' | 'settle' | 'link'
 
 export interface BankImportTxRef {
@@ -2238,7 +2238,16 @@ export interface BankImportRow {
   // parcelas futuras que o apply gera (import de "3/12" → 4..12)
   future_installments?: { from: number; to: number; existing: number } | null
   // linha em outra moeda convertida (PTAX do dia ou cotação do documento)
-  original?: { amount: string; currency: string; rate: string; rate_date: string; rate_source: string } | null
+  original?: {
+    amount: string; currency: string; rate: string; rate_date: string
+    // PTAX | PTAX_STALE | STATEMENT | BCB | CROSS | NONE (spec 84)
+    rate_source: string
+    merchant?: { amount: string; currency: string } | null
+    cross?: Record<string, string> | null
+  } | null
+  // spec 84 — nota de linha não convertida ("660.000 CLP (destino)") e tipo da Wise
+  note?: string | null
+  wise_kind?: string | null
   bucket: BankImportBucket
   // chave de memória/grupo: contraparte ou descrição sem datas
   group_key?: string

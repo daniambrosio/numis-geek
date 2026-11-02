@@ -554,12 +554,24 @@ def _classify_bank_import(
         from numis_geek.services.bank_classifier import SYSTEM1_VERSION, classify_job_safely
         if (job.classification_json or {}).get("version") != SYSTEM1_VERSION:
             classify_job_safely(db, job)
+        # Spec 84 — cotação BCB das moedas de jar (EUR/GBP…), gravada no job.
+        from numis_geek.services import multicurrency
+        multicurrency.ensure_fx_rates(db, job)
     payload = payload if payload is not None else (job.extracted_json or {})
     sc = _scope(db, job)
     warnings: list[str] = []
     aliases = _alias_map(db, sc.workspace_id)
     fi = db.get(FinancialInstitution, (sc.account or sc.card).financial_institution_id)
     fi_name = fi.short_name if fi else None
+
+    # Spec 84 — conta multimoeda (Wise): linhas com jar_currency.
+    from numis_geek.services import multicurrency as mc
+    fx_cache = payload.get(mc.FX_CACHE_KEY) or {}
+    implied: dict = mc.implied_usd_rates(payload)
+    implied.update({("BRL", cur): v for cur, v in mc.implied_brl_rates(payload).items()})
+    own_names = _own_names(db, sc.workspace_id)
+    for w in payload.get("parse_warnings") or []:
+        warnings.append(w)
 
     # 1. parse lines
     parsed: list[dict] = []
@@ -583,8 +595,30 @@ def _classify_bank_import(
         # de importar (user, 2026-11-02). O valor ORIGINAL fica guardado
         # (notas + chave de dedup).
         original = None
+        note = None
+        wise_kind = None
+        jar_ccy = (line.get("jar_currency") or "").strip().upper() or None
         fx_doc = line.get("fx") if isinstance(line.get("fx"), dict) else {}
-        if line_ccy != sc.currency.value and line_ccy in ("BRL", "USD"):
+        if jar_ccy:
+            # Wise: o valor que conta é o do jar; moeda do comerciante vai na nota.
+            wise_kind = (line.get("line_kind") or "").upper() or None
+            jar_amount = _money(line.get("jar_amount")) or amount
+            merchant = None
+            if line.get("merchant_currency") and (line.get("merchant_currency") or "").upper() != jar_ccy \
+                    and line.get("merchant_amount") is not None:
+                merchant = {"amount": str(_money(line.get("merchant_amount"))),
+                            "currency": line["merchant_currency"].upper()}
+            amount = jar_amount
+            line_ccy = sc.currency.value
+            if wise_kind != "CONVERSION" and jar_ccy != sc.currency.value:
+                original = mc.convert_jar(db, d, jar_amount, jar_ccy, sc.currency.value, fx_cache, implied)
+                original["merchant"] = merchant
+                amount = original["converted"]
+            elif merchant:
+                note = _merchant_note(merchant, wise_kind)
+            if line.get("multi_jar"):
+                note = (note + " · " if note else "") + f"pago com mais de um saldo ({line['multi_jar']})"
+        elif line_ccy != sc.currency.value and line_ccy in ("BRL", "USD"):
             original = _convert_line(db, d, amount, line_ccy, sc.currency.value,
                                      _rate(fx_doc.get("rate")) if fx_doc.get("rate") else None)
             if original is not None:
@@ -598,7 +632,10 @@ def _classify_bank_import(
             # a cotação da conversão vira a do lançamento: PTAX dentro da
             # janela de walkback → o serviço de transações resolve a mesma
             # (fx_source=PTAX); taxa do documento / PTAX antiga → explícita
-            fx_rate = original["rate"] if original["rate_source"] != "PTAX" else None
+            if "tx_fx_rate" in original:   # caminho multimoeda (spec 84)
+                fx_rate = original["tx_fx_rate"]
+            else:
+                fx_rate = original["rate"] if original["rate_source"] != "PTAX" else None
             usd_amount = None
         elif sc.currency == Currency.BRL and usd_amount is not None and usd_amount != 0:
             # amount_usd tem que bater com o documento: a taxa sai de BRL/USD
@@ -620,13 +657,18 @@ def _classify_bank_import(
                 "amount": str(original["amount"]), "currency": original["currency"],
                 "rate": str(original["rate"]), "rate_date": original["rate_date"].isoformat(),
                 "rate_source": original["rate_source"],
+                "merchant": original.get("merchant"), "cross": original.get("cross"),
             },
+            "note": note,
+            "wise_kind": wise_kind,
+            "multi_jar": line.get("multi_jar"),
             "installment_number": inst[0] if inst else None,
             "installment_total": inst[1] if inst else None,
             "balance_after": str(_money(line.get("balance_after"))) if line.get("balance_after") is not None else None,
             "category_hint": line.get("category_hint"),
-            "line_kind": line_kind_of(desc, amount, line.get("line_kind")),
-            "counterparty": (line.get("counterparty") or "").strip()[:120] or None,
+            "line_kind": line_kind_of(desc, amount, _WISE_KIND.get(wise_kind, line.get("line_kind")) if wise_kind else line.get("line_kind")),
+            "counterparty": ((line.get("counterparty") or "").strip()[:120] or None) if wise_kind != "REFUND"
+            else (desc[len("Refund"):].strip(" :-")[:120] or None),
             "is_invoice_payment": is_payment,
             "_date": eff,
             "_amount": amount,
@@ -690,7 +732,29 @@ def _classify_bank_import(
         if r["party"].get("inactive_party_name"):
             _warn(r, f"Fornecedor/cliente \"{r['party']['inactive_party_name']}\" está inativo — sem fornecedor")
 
-        if r.pop("_fx_warning", None):
+        # ── Spec 84: conversão entre jars da Wise — nunca vira lançamento ──
+        if r.get("wise_kind") == "CONVERSION":
+            r["fingerprint"] = None
+            r["party"] = {"mode": "none"}
+            r["category_id"] = None
+            r.pop("category_suggestion", None)
+            r.update(bucket="internal", actions=["skip"], default_action="skip")
+            rows.append(r)
+            continue
+        if r.get("wise_kind") == "DEPOSIT" and _is_own_name(r.get("counterparty"), own_names):
+            # Pix do próprio user (Itaú → Wise): transferência, sem fornecedor
+            r["party"] = {"mode": "none", "source": "own_transfer"}
+            tcat = _transfer_category(db, sc.workspace_id)
+            if tcat:
+                r["category_id"] = tcat
+                r["category_source"] = "rule"
+        if r.get("wise_kind") == "CASHBACK":
+            r["party"] = {"mode": "none", "source": "generic"}
+        if r.get("multi_jar"):
+            _warn(r, f"Pago com mais de um saldo ({r['multi_jar']}) — convertido todo pela moeda do 1º")
+        if r.get("original") and r["original"]["rate_source"] == "NONE":
+            _warn(r, f"Sem cotação de {r['original']['currency']} — valor sem conversão; corrija depois")
+        if r.pop("_fx_warning", None) and r.get("original", {}).get("rate_source") != "NONE":
             _warn(r, f"Sem PTAX até 10 dias antes de {date.fromisoformat(r['original_date']).strftime('%d/%m/%Y')} — "
                      f"usei a de {date.fromisoformat(r['original']['rate_date']).strftime('%d/%m/%Y')}")
 
@@ -713,11 +777,11 @@ def _classify_bank_import(
 
         # Linha convertida: a chave usa o valor/moeda ORIGINAIS — re-import
         # casa mesmo se a PTAX for corrigida depois.
-        fp_amount, fp_ccy = (
-            (Decimal(r["original"]["amount"]), Currency(r["original"]["currency"])) if r.get("original")
-            else (amount, sc.currency)
+        base = tx_svc.compute_fingerprint(
+            sc.source_type, sc.source_id, d, amount, sc.currency, r["description"],
+            original_amount=Decimal(r["original"]["amount"]) if r.get("original") else None,
+            original_currency=r["original"]["currency"] if r.get("original") else None,
         )
-        base = tx_svc.compute_fingerprint(sc.source_type, sc.source_id, d, fp_amount, fp_ccy, r["description"])
         seen_in_file[base] += 1
         k = seen_in_file[base]
         r["fingerprint"] = base if k == 1 else f"{base}:{k}"
@@ -1159,16 +1223,21 @@ def _match_possible_duplicate(
     Converted rows compare the ORIGINAL amount (amount_usd / amount_brl)."""
     d = date.fromisoformat(r["event_date"])
     orig = r.get("original")
-    if orig:
-        target = Decimal(orig["amount"])
-        field_ = "amount_usd" if orig["currency"] == "USD" else "amount_brl"
-    else:
-        target, field_ = Decimal(r["amount"]), "amount"
+    def same_value(t: Transaction) -> bool:
+        if orig:
+            target = Decimal(orig["amount"]).quantize(CENT)
+            if t.original_amount is not None and t.original_currency:
+                return t.original_currency == orig["currency"] and Decimal(t.original_amount).quantize(CENT) == target
+            if orig["currency"] in ("USD", "BRL"):
+                field_ = "amount_usd" if orig["currency"] == "USD" else "amount_brl"
+                return Decimal(getattr(t, field_)).quantize(CENT) == target
+            return False
+        return Decimal(t.amount).quantize(CENT) == Decimal(r["amount"]).quantize(CENT)
+
     cands = [
         t for t in existing
         if t.id not in used and t.extraction_job_id and t.extraction_job_id != job_id
-        and t.currency == sc.currency
-        and Decimal(getattr(t, field_)).quantize(CENT) == target.quantize(CENT)
+        and t.currency == sc.currency and same_value(t)
         and abs((t.event_date - d).days) <= POSSIBLE_DUP_DAYS
     ]
     cands.sort(key=lambda t: abs((t.event_date - d).days))
@@ -1206,15 +1275,83 @@ def _convert_line(
     }
 
 
+def _fmt_amount(value, currency: str) -> str:
+    sym = {"USD": "US$", "BRL": "R$"}.get(currency)
+    v = abs(Decimal(value))
+    txt = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if v == v.to_integral_value() and currency not in ("USD", "BRL"):
+        txt = txt[:-3]
+    return f"{sym} {txt}" if sym else f"{txt} {currency}"
+
+
+_RATE_LABEL = {
+    "PTAX": "PTAX", "PTAX_STALE": "PTAX", "STATEMENT": "cotação do documento", "BCB": "BCB",
+    "CROSS": "cruzada via USD", "NONE": "sem cotação",
+}
+
+
 def _fx_note(orig: dict) -> str:
-    """'US$ 25,00 × PTAX 5,4321 (03/09)' — o original fica legível na tx."""
-    sym = "US$" if orig["currency"] == "USD" else "R$"
-    amt = f"{abs(Decimal(orig['amount'])):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    rate = f"{Decimal(orig['rate']):.4f}".replace(".", ",")
-    label = "cotação do documento" if orig["rate_source"] == "STATEMENT" else "PTAX"
+    """'US$ 25,00 × PTAX 5,4321 (03/09)' — o original fica legível na tx.
+    Spec 84: '91,25 EUR (comerciante) · US$ 103,02 × PTAX 5,4321 (14/10)',
+    '4.365 CLP × cruzada via USD 0,0057 (19/10)'."""
+    cur = orig["currency"]
     day = date.fromisoformat(orig["rate_date"]).strftime("%d/%m")
-    op = "×" if orig["currency"] == "USD" else "÷"
-    return f"{sym} {amt} {op} {label} {rate} ({day})"
+    label = _RATE_LABEL.get(orig.get("rate_source"), "PTAX")
+    rate = Decimal(orig["rate"])
+    rate_txt = (f"{rate:.4f}" if rate >= 1 else f"{rate:.6f}").replace(".", ",")
+    op = "÷" if cur == "BRL" and orig.get("rate_source") in ("PTAX", "PTAX_STALE") and rate < 1 else "×"
+    if cur == "BRL" and orig.get("rate_source") in ("PTAX", "PTAX_STALE", "STATEMENT"):
+        op = "÷"
+        rate_txt = f"{(Decimal(1) / rate) if rate < 1 else rate:.4f}".replace(".", ",")
+    base = f"{_fmt_amount(orig['amount'], cur)} {op} {label} {rate_txt} ({day})"
+    if orig.get("rate_source") == "NONE":
+        base = f"{_fmt_amount(orig['amount'], cur)} — sem cotação, valor não convertido"
+    m = orig.get("merchant")
+    if m:
+        base = f"{_fmt_amount(m['amount'], m['currency'])} (comerciante) · " + base
+    return base
+
+
+def _merchant_note(merchant: dict, kind: str | None) -> str:
+    who = "destino" if kind == "SENT" else "comerciante"
+    return f"{_fmt_amount(merchant['amount'], merchant['currency'])} ({who})"
+
+
+_WISE_KIND = {"FEE": "BANK_FEE", "SENT": "TED", "DEPOSIT": "PIX", "SPEND": "PURCHASE",
+              "REFUND": "OTHER", "CASHBACK": "OTHER", "CONVERSION": "OTHER"}
+
+
+def _own_names(db: Session, workspace_id: str) -> list[set[str]]:
+    """Tokens dos nomes dos usuários do workspace (Pix vindo do próprio user)."""
+    from numis_geek.models.user import User
+    out = []
+    for (name,) in db.query(User.name).filter(User.workspace_id == workspace_id).all():
+        toks = {t for t in normalize_description(name or "").split() if len(t) >= 3}
+        if len(toks) >= 2:
+            out.append(toks)
+    return out
+
+
+def _is_own_name(counterparty: str | None, own: list[set[str]]) -> bool:
+    if not counterparty:
+        return False
+    toks = set(normalize_description(counterparty).split())
+    # primeiro + último nome do user aparecem na contraparte
+    return any(len(o & toks) >= 2 for o in own)
+
+
+def _transfer_category(db: Session, workspace_id: str) -> str | None:
+    """Subcategoria de transferência entre contas próprias (kind TRANSFER;
+    prefere "entre contas")."""
+    from numis_geek.models.category import Category, CategoryKind
+    subs = db.query(Category).filter(
+        Category.workspace_id == workspace_id, Category.parent_id.isnot(None),
+        Category.kind == CategoryKind.TRANSFER, Category.is_active == True,  # noqa: E712
+    ).order_by(Category.name).all()
+    if not subs:
+        return None
+    pref = [c for c in subs if "entre contas" in c.name.lower() or "transfer" in c.name.lower()]
+    return (pref or subs)[0].id
 
 
 def _match_payment_tx(existing: list[Transaction], r: dict, used: set[str]) -> Transaction | None:
@@ -1746,14 +1883,23 @@ def _create_from_row(
         credit_card_account_id=sc.source_id if sc.card is not None else None,
         invoice_id=doc_invoice.id if doc_invoice is not None else None,
         fx_rate=Decimal(r["fx_rate"]) if r.get("fx_rate") else None,
-        notes=_fx_note(r["original"]) if r.get("original") else None,
+        notes=_fx_note(r["original"]) if r.get("original") else r.get("note"),
         original_amount=Decimal(r["original"]["amount"]) if r.get("original") else None,
-        original_currency=Currency(r["original"]["currency"]) if r.get("original") else None,
+        # String(3) desde spec84_original_currency_str (EUR, GBP, CLP…)
+        original_currency=r["original"]["currency"] if r.get("original") else None,
         # decisão explícita (inclusive "Sem categoria" = null) ganha da sugestão
         category_id=dec["category_id"] if "category_id" in dec else r.get("category_id"),
         party_id=party_id,
         is_reconciled=True,
     )
+    if data.fx_rate is None:
+        # Extrato antigo (Wise desde 2023): sem PTAX na janela de walkback o
+        # serviço recusaria a linha e o import inteiro — usa a PTAX mais
+        # próxima anterior, explícita (spec 84).
+        from numis_geek.services import multicurrency as mc
+        row = mc.ptax_row(db, data.event_date)
+        if row is not None and (min(data.event_date, date.today()) - row.date).days > mc.WALKBACK_DAYS:
+            data.fx_rate = Decimal(row.rate)
     try:
         tx = tx_svc.create_transaction(db, sc.workspace_id, data, user_id=user_id)[0]
     except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:

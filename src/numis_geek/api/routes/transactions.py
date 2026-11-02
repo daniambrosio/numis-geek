@@ -347,7 +347,7 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
             source_attachment_id=sources[r.extraction_job_id][0] if r.extraction_job_id in sources else None,
             source_attachment_filename=sources[r.extraction_job_id][1] if r.extraction_job_id in sources else None,
             original_amount=float(r.original_amount) if r.original_amount is not None else None,
-            original_currency=r.original_currency.value if r.original_currency else None,
+            original_currency=getattr(r.original_currency, "value", r.original_currency),
             is_projected=is_projected(r),
             notes=r.notes,
             created_at=r.created_at.isoformat(),
