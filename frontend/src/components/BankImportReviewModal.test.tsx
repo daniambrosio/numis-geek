@@ -378,6 +378,36 @@ describe('BankImportReviewModal — 1º import real (2026-11-02)', () => {
   })
 })
 
+describe('BankImportReviewModal — moeda e possível duplicata (Wise)', () => {
+  it('linha convertida mostra o valor original e a cotação', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'CARD-1182 AWS', amount: '-136.08',
+      original: { amount: '-25.00', currency: 'USD', rate: '5.43210000', rate_date: '2026-09-03', rate_source: 'PTAX' },
+    })] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    const orig = await screen.findByTestId('original-r0')
+    expect(screen.getByTestId('row-r0')).toHaveTextContent('R$ 136,08')
+    expect(orig.textContent?.replace(/\u00a0/g, ' ')).toBe('US$ 25,00 × 5,4321')
+    expect(orig).toHaveAttribute('title', 'PTAX de 03/09/26')
+  })
+
+  it('possível duplicata mostra a movimentação existente e permite importar mesmo assim', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'Transfer to Joao Silva', amount: '-1500.00', bucket: 'duplicate',
+      actions: ['skip', 'import_anyway'], default_action: 'skip',
+      duplicate: { transaction_id: 'tx-csv', event_date: '2026-03-09', description: 'TRANSFER-2243921860',
+        is_reconciled: true, extraction_job_id: 'job-csv', reason: 'possible_duplicate' },
+    })] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Duplicadas/ }))
+    const r = await screen.findByTestId('row-r0')
+    expect(r).toHaveTextContent('possível duplicata')
+    expect(r).toHaveTextContent('já existe: 09/03/26 "TRANSFER-2243921860"')
+    expect(within(screen.getByTestId('action-r0')).getAllByRole('option').map(o => o.textContent))
+      .toEqual(['Pular', 'Importar mesmo assim'])
+  })
+})
+
 describe('bankImport helpers', () => {
   it('initialDecisions usa o default e a conta/ocorrência sugeridas', () => {
     const d = initialDecisions(ROWS)

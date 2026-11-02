@@ -938,20 +938,136 @@ def test_pay_card_from_other_currency_account_refused(client, seed):
 
 
 # D (#19) — line in another currency never stored with the same number
-def test_line_in_other_currency_is_blocked(client, seed):
+def test_line_in_other_currency_is_converted_with_ptax(client, seed):
+    # 2026-11-02 (CSV da Wise): linha USD numa conta BRL importa convertida
+    # pela PTAX do dia; só moeda sem cotação fica não importável.
     acc = new_account(seed)
+    d = BASE + timedelta(days=110)
     job = import_statement(client, seed, acc, statement([
-        {**line(BASE + timedelta(days=110), "AMAZON US", -100), "currency": "USD"},
-        line(BASE + timedelta(days=110), "PADARIA", -8),
+        {**line(d, "AMAZON US", -25), "currency": "USD"},
+        line(d, "PADARIA", -8),
+        {**line(d, "LOJA EUROPA", -10), "currency": "EUR"},
     ]))
-    r0, r1 = preview(client, seed, job["id"])["rows"]
-    assert r0["bucket"] == "blocked" and r0["actions"] == ["skip"] and "USD" in r0["warning"]
-    assert r1["bucket"] == "new"
-    confirm(client, seed, job["id"], {"r0": {"action": "import"}}, expect=400)
+    r0, r1, r2 = preview(client, seed, job["id"])["rows"]
+    assert r0["bucket"] == "new" and r0["default_action"] == "import"
+    assert r0["amount"] == "-125.00" and r0["currency"] == "BRL"
+    assert r0["original"] == {"amount": "-25.00", "currency": "USD", "rate": "5.00000000",
+                              "rate_date": d.isoformat(), "rate_source": "PTAX"}
+    assert r1["bucket"] == "new" and "original" not in r1 or r1["original"] is None
+    assert r2["bucket"] == "blocked" and r2["actions"] == ["skip"] and "EUR" in r2["warning"]
     confirm(client, seed, job["id"])
     db = TestSession()
-    assert [t.description for t in txs_of(db, account_id=acc)] == ["PADARIA"]
+    amazon = next(t for t in txs_of(db, account_id=acc) if t.description == "AMAZON US")
+    assert amazon.amount == Decimal("-125.00") and amazon.amount_usd == Decimal("-25.00")
+    assert amazon.fx_source.value == "PTAX" and amazon.fx_rate == PTAX
+    assert amazon.notes == f"US$ 25,00 × PTAX 5,0000 ({d.strftime('%d/%m')})"
+    expected_fp = tx_svc.compute_fingerprint(TransactionSourceType.CHECKING, acc, d, Decimal("-25"),
+                                             Currency.USD, "AMAZON US")
+    assert amazon.fingerprint == expected_fp            # dedup key = ORIGINAL amount/currency
     db.close()
+
+
+def test_converted_line_dedups_even_after_ptax_correction(client, seed):
+    acc = new_account(seed)
+    d = BASE + timedelta(days=111)
+    lines = [{**line(d, "STRIPE PAYOUT", 40), "currency": "USD"}]
+    confirm(client, seed, import_statement(client, seed, acc, statement(lines))["id"])
+    db = TestSession()
+    rate = db.query(PTAXRate).filter(PTAXRate.date == d).one()
+    rate.rate = Decimal("5.12345678")                    # BCB corrected the PTAX
+    db.commit()
+    db.close()
+    try:
+        row = preview(client, seed, import_statement(client, seed, acc, statement(lines))["id"])["rows"][0]
+        assert row["bucket"] == "duplicate" and row["duplicate"]["reason"] == "fingerprint"
+    finally:
+        db = TestSession()
+        db.query(PTAXRate).filter(PTAXRate.date == d).one().rate = PTAX
+        db.commit()
+        db.close()
+
+
+def test_brl_line_on_usd_account_divides(client, seed):
+    nomad = new_account(seed, "Nomad", currency=Currency.USD)
+    d = BASE + timedelta(days=112)
+    job = import_statement(client, seed, nomad, statement([{**line(d, "PIX RECEBIDO", 500), "currency": "BRL"}]))
+    row = preview(client, seed, job["id"])["rows"][0]
+    assert row["amount"] == "100.00" and row["currency"] == "USD" and row["original"]["currency"] == "BRL"
+    confirm(client, seed, job["id"])
+    db = TestSession()
+    tx = txs_of(db, account_id=nomad)[0]
+    assert tx.amount == Decimal("100.00") and tx.amount_brl == Decimal("500.00")
+    assert tx.notes.startswith("R$ 500,00 ÷ PTAX 5,0000")
+    db.close()
+
+
+def test_convert_line_stale_ptax_and_no_ptax(db):
+    from numis_geek.services.bank_import import _convert_line
+    db.add(PTAXRate(id=str(uuid.uuid4()), date=date(2025, 1, 2), rate=Decimal("6.1"),
+                    fetched_at=datetime.now(timezone.utc)))
+    db.flush()
+    fresh = _convert_line(db, date(2025, 1, 5), Decimal("-10"), "USD", "BRL", None)
+    assert fresh["converted"] == Decimal("-61.00") and fresh["rate_source"] == "PTAX" and not fresh["warning"]
+    stale = _convert_line(db, date(2025, 2, 10), Decimal("-10"), "USD", "BRL", None)
+    assert stale["rate_source"] == "PTAX_STALE" and stale["warning"] and stale["rate_date"] == date(2025, 1, 2)
+    assert _convert_line(db, date(2024, 12, 1), Decimal("-10"), "USD", "BRL", None) is None
+    doc = _convert_line(db, date(2025, 2, 10), Decimal("-10"), "USD", "BRL", Decimal("5.5"))
+    assert doc["converted"] == Decimal("-55.00") and doc["rate_source"] == "STATEMENT"
+
+
+# ── possível duplicata entre arquivos (CSV × PDF da Wise) ───────────────────
+
+def test_possible_duplicate_across_imports_with_different_texts(client, seed):
+    acc = new_account(seed)
+    csv = import_statement(client, seed, acc, statement([
+        line(date(2026, 3, 9), "TRANSFER-2243921860", -1517.33),
+        line(date(2026, 3, 10), "CARD-1182 STARBUCKS", -23.9),
+    ]))
+    confirm(client, seed, csv["id"])
+    pdf = import_statement(client, seed, acc, statement([
+        line(date(2026, 3, 10), "Transfer to Joao Silva", -1517.33),   # +1 day, other text
+        line(date(2026, 3, 13), "Card transaction Starbucks", -23.9),   # +3 days → not flagged
+        line(date(2026, 3, 10), "Transfer to Joao Silva", -1517.32),    # off by a cent → not flagged
+        line(date(2026, 3, 10), "Received money from Ana", 1517.33),    # other sign
+    ]))
+    r0, r1, r2, r3 = preview(client, seed, pdf["id"])["rows"]
+    assert r0["bucket"] == "duplicate" and r0["duplicate"]["reason"] == "possible_duplicate"
+    assert r0["default_action"] == "skip" and "import_anyway" in r0["actions"]
+    assert r0["duplicate"]["description"] == "TRANSFER-2243921860"
+    assert r0["duplicate"]["event_date"] == "2026-03-09"
+    assert [r["bucket"] for r in (r1, r2, r3)] == ["new", "new", "new"]
+    confirm(client, seed, pdf["id"], {"r0": {"action": "import_anyway"}})
+    db = TestSession()
+    assert len(txs_of(db, account_id=acc)) == 6
+    db.close()
+
+
+def test_possible_duplicate_never_against_manual_or_same_file(client, seed):
+    acc = new_account(seed)
+    db = TestSession()
+    tx_svc.create_transaction(db, seed["ws"], tx_svc.TxInput(
+        source_type=TransactionSourceType.CHECKING, checking_account_id=acc, event_date=date(2026, 4, 1),
+        description="Aluguel garagem", amount=Decimal("-300"),
+    ))
+    db.commit()
+    db.close()
+    job = import_statement(client, seed, acc, statement([
+        line(date(2026, 4, 2), "DDA GARAGEM", -300),                  # manual nearby → not "possível"
+        line(date(2026, 4, 5), "PIX ANA", -80),
+        line(date(2026, 4, 5), "PIX BETO", -80),                       # same amount, same file → both import
+    ]))
+    rows = preview(client, seed, job["id"])["rows"]
+    assert [r["bucket"] for r in rows] == ["new", "new", "new"]
+
+
+def test_possible_duplicate_compares_original_amount_on_fx_rows(client, seed):
+    acc = new_account(seed)
+    d = date(2026, 4, 20)
+    confirm(client, seed, import_statement(client, seed, acc, statement([
+        {**line(d, "CARD-99 AWS", -12.34), "currency": "USD"}]))["id"])
+    row = preview(client, seed, import_statement(client, seed, acc, statement([
+        {**line(d + timedelta(days=1), "Card transaction AWS EMEA", -12.34), "currency": "USD"}]))["id"])["rows"][0]
+    assert row["bucket"] == "duplicate" and row["duplicate"]["reason"] == "possible_duplicate"
 
 
 # E (#5) — a second confirm (stale session / second tab) never applies again

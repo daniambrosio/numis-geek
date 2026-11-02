@@ -2150,7 +2150,7 @@ export interface BankImportTxRef {
   amount?: string
   is_reconciled?: boolean
   extraction_job_id?: string | null
-  reason?: 'fingerprint' | 'installment' | 'invoice_payment_tx' | 'in_file'
+  reason?: 'fingerprint' | 'installment' | 'invoice_payment_tx' | 'in_file' | 'possible_duplicate'
 }
 
 export interface BankImportOccurrence {
@@ -2183,6 +2183,8 @@ export interface BankImportRow {
   is_invoice_payment: boolean
   counterparty?: string | null
   line_kind?: string | null
+  // linha em outra moeda convertida (PTAX do dia ou cotação do documento)
+  original?: { amount: string; currency: string; rate: string; rate_date: string; rate_source: string } | null
   bucket: BankImportBucket
   // chave de memória/grupo: contraparte ou descrição sem datas
   group_key?: string

@@ -532,12 +532,29 @@ def _classify_bank_import(
             warnings.append(f"Linha {i + 1} ignorada (lançamento futuro, {d.strftime('%d/%m/%Y')}): {desc}")
             continue
         line_ccy = (line.get("currency") or sc.currency.value).upper()
+        # Linha em outra moeda (CSV da Wise com linhas USD numa conta BRL;
+        # linha BRL na Nomad USD): converte pela PTAX do dia — nunca deixa
+        # de importar (user, 2026-11-02). O valor ORIGINAL fica guardado
+        # (notas + chave de dedup).
+        original = None
+        fx_doc = line.get("fx") if isinstance(line.get("fx"), dict) else {}
+        if line_ccy != sc.currency.value and line_ccy in ("BRL", "USD"):
+            original = _convert_line(db, d, amount, line_ccy, sc.currency.value,
+                                     _rate(fx_doc.get("rate")) if fx_doc.get("rate") else None)
+            if original is not None:
+                amount = original["converted"]
         inst = _parse_installment(line.get("installment")) if sc.card else None
         eff = tx_svc.add_months(d, inst[0] - 1) if inst else d
         fx = line.get("fx") if isinstance(line.get("fx"), dict) else {}
         usd_amount = _money(fx.get("usd_amount")) if fx.get("usd_amount") is not None else None
         fx_rate = _rate(fx.get("rate")) if fx.get("rate") else None
-        if sc.currency == Currency.BRL and usd_amount is not None and usd_amount != 0:
+        if original is not None:
+            # a cotação da conversão vira a do lançamento: PTAX dentro da
+            # janela de walkback → o serviço de transações resolve a mesma
+            # (fx_source=PTAX); taxa do documento / PTAX antiga → explícita
+            fx_rate = original["rate"] if original["rate_source"] != "PTAX" else None
+            usd_amount = None
+        elif sc.currency == Currency.BRL and usd_amount is not None and usd_amount != 0:
             # amount_usd tem que bater com o documento: a taxa sai de BRL/USD
             # com 8 casas, não da cotação arredondada.
             fx_rate = _rate(abs(amount) / abs(usd_amount)) or fx_rate
@@ -552,7 +569,12 @@ def _classify_bank_import(
             "currency": sc.currency.value,
             "fx_rate": str(fx_rate) if fx_rate is not None else None,
             "usd_amount": str(usd_amount) if usd_amount is not None else None,
-            "line_currency": line_ccy,
+            "line_currency": line_ccy if original is None else sc.currency.value,
+            "original": None if original is None else {
+                "amount": str(original["amount"]), "currency": original["currency"],
+                "rate": str(original["rate"]), "rate_date": original["rate_date"].isoformat(),
+                "rate_source": original["rate_source"],
+            },
             "installment_number": inst[0] if inst else None,
             "installment_total": inst[1] if inst else None,
             "balance_after": str(_money(line.get("balance_after"))) if line.get("balance_after") is not None else None,
@@ -563,6 +585,8 @@ def _classify_bank_import(
             "_date": eff,
             "_amount": amount,
         })
+        if original is not None and original.get("warning"):
+            parsed[-1]["_fx_warning"] = original["warning"]
 
     line_dates = [r["_date"] for r in parsed if not r["installment_number"]] or [r["_date"] for r in parsed]
     invoice_info, inv_warnings = _doc_invoice(db, sc, payload, line_dates)
@@ -620,12 +644,16 @@ def _classify_bank_import(
         if r["party"].get("inactive_party_name"):
             _warn(r, f"Fornecedor/cliente \"{r['party']['inactive_party_name']}\" está inativo — sem fornecedor")
 
-        # ── linha em outra moeda: nunca grava o número na moeda da conta ───
+        if r.pop("_fx_warning", None):
+            _warn(r, f"Sem PTAX até 10 dias antes de {date.fromisoformat(r['original_date']).strftime('%d/%m/%Y')} — "
+                     f"usei a de {date.fromisoformat(r['original']['rate_date']).strftime('%d/%m/%Y')}")
+
+        # ── moeda sem conversão possível (EUR, ou sem PTAX nenhuma antes) ──
         if r["line_currency"] != sc.currency.value:
             r["fingerprint"] = None
             r["party"] = {"mode": "none"}
             r.update(bucket="blocked", actions=["skip"], default_action="skip")
-            _warn(r, f"Linha em {r['line_currency']} numa conta em {sc.currency.value} — não importável; lance à mão com o valor convertido")
+            _warn(r, f"Linha em {r['line_currency']} numa conta em {sc.currency.value} — sem cotação pra converter; lance à mão")
             rows.append(r)
             continue
 
@@ -637,7 +665,13 @@ def _classify_bank_import(
             rows.append(r)
             continue
 
-        base = tx_svc.compute_fingerprint(sc.source_type, sc.source_id, d, amount, sc.currency, r["description"])
+        # Linha convertida: a chave usa o valor/moeda ORIGINAIS — re-import
+        # casa mesmo se a PTAX for corrigida depois.
+        fp_amount, fp_ccy = (
+            (Decimal(r["original"]["amount"]), Currency(r["original"]["currency"])) if r.get("original")
+            else (amount, sc.currency)
+        )
+        base = tx_svc.compute_fingerprint(sc.source_type, sc.source_id, d, fp_amount, fp_ccy, r["description"])
         seen_in_file[base] += 1
         k = seen_in_file[base]
         r["fingerprint"] = base if k == 1 else f"{base}:{k}"
@@ -656,6 +690,13 @@ def _classify_bank_import(
         if dup is None and sc.account is not None and amount < 0:
             dup = _match_payment_tx(existing, r, used_tx)
             reason = "invoice_payment_tx" if dup else None
+        if dup is None:
+            # CSV × PDF do mesmo período descrevem o movimento diferente
+            # ("TRANSFER-2243921860" × "Transfer to …"): mesmo valor ao
+            # centavo e sinal, ±2 dias, vindo de OUTRO import → possível
+            # duplicata (default Pular; "Importar mesmo assim" fica).
+            dup = _match_possible_duplicate(existing, r, used_tx, job.id, sc)
+            reason = "possible_duplicate" if dup else None
 
         if dup is not None:
             used_tx.add(dup.id)
@@ -982,6 +1023,75 @@ def _match_installment_parent(existing: list[Transaction], r: dict) -> Transacti
             if parent is not None:
                 return parent
     return None
+
+
+POSSIBLE_DUP_DAYS = 2
+
+
+def _match_possible_duplicate(
+    existing: list[Transaction], r: dict, used: set[str], job_id: str, sc: "_Scope",
+) -> Transaction | None:
+    """Cross-file fuzzy duplicate: only against tx that came from ANOTHER
+    import (manual tx keep the reconcile path; same file never matches).
+    Converted rows compare the ORIGINAL amount (amount_usd / amount_brl)."""
+    d = date.fromisoformat(r["event_date"])
+    orig = r.get("original")
+    if orig:
+        target = Decimal(orig["amount"])
+        field_ = "amount_usd" if orig["currency"] == "USD" else "amount_brl"
+    else:
+        target, field_ = Decimal(r["amount"]), "amount"
+    cands = [
+        t for t in existing
+        if t.id not in used and t.extraction_job_id and t.extraction_job_id != job_id
+        and t.currency == sc.currency
+        and Decimal(getattr(t, field_)).quantize(CENT) == target.quantize(CENT)
+        and abs((t.event_date - d).days) <= POSSIBLE_DUP_DAYS
+    ]
+    cands.sort(key=lambda t: abs((t.event_date - d).days))
+    return cands[0] if cands else None
+
+
+def _ptax_on_or_before(db: Session, d: date):
+    from numis_geek.models.ptax_rate import PTAXRate
+    return db.query(PTAXRate).filter(PTAXRate.date <= min(d, date.today())).order_by(PTAXRate.date.desc()).first()
+
+
+PTAX_WALKBACK_DAYS = 10   # mesma janela do fx_rate_on (fim de semana/feriado)
+
+
+def _convert_line(
+    db: Session, d: date, amount: Decimal, from_ccy: str, to_ccy: str, doc_rate: Decimal | None,
+) -> dict | None:
+    """Valor de uma linha em `from_ccy` na moeda da conta. USD→BRL multiplica,
+    BRL→USD divide. Taxa: a do documento (fatura) quando existe; senão PTAX
+    do dia com walkback; sem PTAX na janela → a mais próxima anterior +
+    aviso; sem PTAX nenhuma → None (linha fica não importável)."""
+    if doc_rate is not None:
+        rate, rate_day, source, warning = doc_rate, d, "STATEMENT", None
+    else:
+        row = _ptax_on_or_before(db, d)
+        if row is None:
+            return None
+        rate, rate_day = Decimal(row.rate), row.date
+        stale = (min(d, date.today()) - row.date).days > PTAX_WALKBACK_DAYS
+        source, warning = ("PTAX_STALE", True) if stale else ("PTAX", None)
+    converted = (amount * rate) if from_ccy == "USD" else (amount / rate)
+    return {
+        "amount": amount, "currency": from_ccy, "rate": rate, "rate_date": rate_day,
+        "rate_source": source, "converted": converted.quantize(CENT), "warning": warning,
+    }
+
+
+def _fx_note(orig: dict) -> str:
+    """'US$ 25,00 × PTAX 5,4321 (03/09)' — o original fica legível na tx."""
+    sym = "US$" if orig["currency"] == "USD" else "R$"
+    amt = f"{abs(Decimal(orig['amount'])):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    rate = f"{Decimal(orig['rate']):.4f}".replace(".", ",")
+    label = "cotação do documento" if orig["rate_source"] == "STATEMENT" else "PTAX"
+    day = date.fromisoformat(orig["rate_date"]).strftime("%d/%m")
+    op = "×" if orig["currency"] == "USD" else "÷"
+    return f"{sym} {amt} {op} {label} {rate} ({day})"
 
 
 def _match_payment_tx(existing: list[Transaction], r: dict, used: set[str]) -> Transaction | None:
@@ -1494,6 +1604,7 @@ def _create_from_row(
         credit_card_account_id=sc.source_id if sc.card is not None else None,
         invoice_id=doc_invoice.id if doc_invoice is not None else None,
         fx_rate=Decimal(r["fx_rate"]) if r.get("fx_rate") else None,
+        notes=_fx_note(r["original"]) if r.get("original") else None,
         # decisão explícita (inclusive "Sem categoria" = null) ganha da sugestão
         category_id=dec["category_id"] if "category_id" in dec else r.get("category_id"),
         party_id=party_id,
@@ -1511,6 +1622,10 @@ def _create_from_row(
             tx.parent_transaction_id = r["parent_transaction_id"]
     # k-ésima linha idêntica (ou promovida sobre uma duplicata): sufixo ":k"
     base = r["fingerprint_base"]
+    if r.get("original"):
+        # o serviço calculou sobre o valor convertido; a chave de dedup é a
+        # do valor/moeda originais (ver classify)
+        tx.fingerprint = base
     if r["bucket"] == "duplicate" or (r.get("occurrence_in_file") or 1) >= 2 or tx.fingerprint in taken_fps:
         tx.fingerprint = _free_suffix(db, sc.workspace_id, base, r.get("occurrence_in_file") or 2, taken_fps)
     else:

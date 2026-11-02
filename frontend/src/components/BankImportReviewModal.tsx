@@ -24,7 +24,7 @@ import {
   type BankImportPreview, type BankImportResult, type BankImportRow, type CategoryOut, type PartyOut,
   type StatementImportOut,
 } from '../lib/api'
-import { ACTION_LABEL, applyLabel, countDecisions, groupMates, initialDecisions } from '../lib/bankImport'
+import { ACTION_LABEL, applyLabel, countDecisions, groupMates, initialDecisions, originalLabel } from '../lib/bankImport'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CategorySelect, fmtMoney } from './TransactionComposers'
 
@@ -41,7 +41,7 @@ const BUCKETS: { key: BankImportBucket; label: string; hint: string }[] = [
   { key: 'duplicate', label: 'Duplicadas', hint: 'já estão no sistema' },
   { key: 'invoice_payment', label: 'Pagamento de fatura', hint: 'quita a fatura pelo fluxo Pagar fatura' },
   { key: 'scheduled', label: 'Quita conta a pagar/receber', hint: 'marca a conta como paga' },
-  { key: 'blocked', label: 'Não importáveis', hint: 'moeda diferente da conta — lance à mão' },
+  { key: 'blocked', label: 'Não importáveis', hint: 'moeda sem cotação pra converter — lance à mão' },
 ]
 
 const DUP_REASON: Record<string, string> = {
@@ -49,6 +49,7 @@ const DUP_REASON: Record<string, string> = {
   installment: 'mesma parcela de compra parcelada',
   invoice_payment_tx: 'pagamento de fatura já lançado',
   in_file: 'linha idêntica no mesmo arquivo',
+  possible_duplicate: 'possível duplicata (mesmo valor ±2 dias, de outro arquivo)',
 }
 
 function fmtDay(iso: string | null | undefined): string {
@@ -299,6 +300,9 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
             <span>
               {DUP_REASON[r.duplicate.reason ?? ''] ?? 'duplicada'}
               {r.duplicate.transaction_id && <> · {r.duplicate.is_reconciled ? 'já reconciliada' : 'manual, não reconciliada'}</>}
+              {r.duplicate.reason === 'possible_duplicate' && r.duplicate.description && (
+                <> · já existe: {fmtDay(r.duplicate.event_date)} "{r.duplicate.description}"</>
+              )}
             </span>
           )}
           {ip?.existing_debit && (
@@ -325,6 +329,12 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
       </td>
       <td className={`px-2 py-2 text-right tnum money font-medium whitespace-nowrap ${amount > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
         {fmtMoney(amount, r.currency as 'BRL' | 'USD', { sign: true })}
+        {r.original && (
+          <div className="text-[10px] font-normal text-gray-500" data-testid={`original-${r.row_id}`}
+            title={`${r.original.rate_source === 'STATEMENT' ? 'cotação do documento' : 'PTAX'} de ${fmtDay(r.original.rate_date)}`}>
+            {originalLabel(r.original)}
+          </div>
+        )}
       </td>
       <td className="px-2 py-2">
         {/* Colunas fixas (categoria · fornecedor · ação) numa linha só; o que

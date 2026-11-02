@@ -116,3 +116,13 @@ export function useBankImport(kind: 'account' | 'card', sourceId: string | undef
 
   return { importing, reviewing, setReviewing, history, reloadHistory, inputRef, onPick }
 }
+
+/** "US$ 25,00 × 5,4321" — valor original de uma linha em outra moeda,
+ * convertida pela PTAX do dia (USD→BRL multiplica, BRL→USD divide). */
+export function originalLabel(o: NonNullable<BankImportRow['original']>): string {
+  const ccy = o.currency === 'USD' ? 'USD' : 'BRL'
+  const op = o.currency === 'USD' ? '×' : '÷'
+  const money = Math.abs(Number(o.amount)).toLocaleString('pt-BR', { style: 'currency', currency: ccy })
+  const rate = Number(o.rate).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+  return `${money} ${op} ${rate}`
+}
