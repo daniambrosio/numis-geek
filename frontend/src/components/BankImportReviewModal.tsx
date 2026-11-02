@@ -24,7 +24,7 @@ import {
   type BankImportPreview, type BankImportResult, type BankImportRow, type CategoryOut, type PartyOut,
   type StatementImportOut,
 } from '../lib/api'
-import { ACTION_LABEL, countDecisions, groupMates, initialDecisions } from '../lib/bankImport'
+import { ACTION_LABEL, applyLabel, countDecisions, groupMates, initialDecisions } from '../lib/bankImport'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CategorySelect, fmtMoney } from './TransactionComposers'
 
@@ -95,7 +95,8 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
 
   // Pagamento de fatura só sai de conta na moeda da fatura (audit 2026-10-31).
   const checking = useMemo(() => accounts.filter(a => a.account_type === 'checking' && a.is_active), [accounts])
-  const { toImport, toReconcile } = countDecisions(decisions)
+  const counts = countDecisions(decisions)
+  const { toImport, toReconcile } = counts
   const isCard = job.source_hint === 'CARD_INVOICE'
 
   function setDecision(rowId: string, patch: Partial<BankImportDecision>) {
@@ -237,7 +238,7 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
               data-testid="bank-import-apply"
               className="h-9 px-4 inline-flex items-center gap-1.5 rounded-lg text-[13px] font-medium bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white">
               {applying && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Importar {toImport} · Reconciliar {toReconcile}
+              {applyLabel(counts)}
             </button>
           </div>
         </div>
@@ -252,6 +253,12 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
   )
 }
 
+const KIND_LABEL: Record<string, string> = { EXPENSE: 'Despesa', INCOME: 'Receita', TRANSFER: 'Transferência' }
+const KIND_CLS: Record<string, string> = {
+  EXPENSE: 'text-rose-600 dark:text-rose-400',
+  INCOME: 'text-emerald-600 dark:text-emerald-400',
+  TRANSFER: 'text-sky-600 dark:text-sky-400',
+}
 const SELECT_CLS = 'h-7 px-2 rounded-md bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[11px] text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500'
 
 function RowView({ r, decision, onChange, mates, onApplyToMates, categories, parties, checking }: {
@@ -324,10 +331,29 @@ function RowView({ r, decision, onChange, mates, onApplyToMates, categories, par
               <>
                 <CategorySelect categories={categories} value={decision.category_id ?? ''}
                   onChange={v => onChange({ category_id: v || null })} />
-                {sug && decision.category_id === sug.category_id && (
-                  <span className="text-[10px] text-indigo-600 dark:text-indigo-300 cursor-help" title={sug.reason}
-                    data-testid={`suggested-${r.row_id}`}>sugerida</span>
-                )}
+                {(() => {
+                  // Tipo da categoria escolhida à vista: o select corta o nome
+                  // ("Débito Transfer Entre Co…") e o user não via que a linha
+                  // vai como transferência, fora de despesas/receitas.
+                  const cat = decision.category_id ? categories.find(c => c.id === decision.category_id) : undefined
+                  const parent = cat?.parent_id ? categories.find(c => c.id === cat.parent_id) : undefined
+                  const kind = cat?.kind ?? parent?.kind
+                  const label = kind ? KIND_LABEL[kind] : null
+                  const isSug = sug && decision.category_id === sug.category_id
+                  if (!label && !isSug) return null
+                  return (
+                    <div className="text-[10px] leading-tight space-x-1" data-testid={`catinfo-${r.row_id}`}>
+                      {label && (
+                        <span className={KIND_CLS[kind!]} title={parent ? `${parent.name} › ${cat!.name}` : cat?.name}
+                          data-testid={`kind-${r.row_id}`}>{label}</span>
+                      )}
+                      {isSug && (
+                        <span className="text-indigo-600 dark:text-indigo-300 cursor-help" title={sug!.reason}
+                          data-testid={`suggested-${r.row_id}`}>· sugerida</span>
+                      )}
+                    </div>
+                  )
+                })()}
                 {sug && !sug.applied && !decision.category_id && (
                   <button type="button" onClick={() => onChange({ category_id: sug.category_id })} title={sug.reason}
                     className="block text-left text-[10px] leading-tight text-gray-500 underline decoration-dotted truncate max-w-full"

@@ -78,7 +78,7 @@ beforeEach(() => {
 })
 
 describe('BankImportReviewModal', () => {
-  it('mostra buckets, banner de overlap e o contador Importar · Reconciliar', async () => {
+  it('mostra buckets, banner de overlap e o contador (sem itens zerados)', async () => {
     mockPreview(preview())
     render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
     await waitFor(() => expect(screen.getByTestId('bucket-new')).toBeInTheDocument())
@@ -87,7 +87,7 @@ describe('BankImportReviewModal', () => {
     expect(screen.getByTestId('bucket-duplicate')).toHaveTextContent('Duplicadas')
     expect(screen.getByTestId('bucket-scheduled')).toHaveTextContent('Quita conta a pagar/receber')
     // novas (1) + quita (1) criam; a manual não reconciliada é Reconciliar por default
-    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent('Importar 2 · Reconciliar 1')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent(/^Importar 2 · quita 1 conta a pagar\/receber · Reconciliar 1/)
     expect(screen.getByTestId('row-r1')).toHaveTextContent('manual, não reconciliada')
   })
 
@@ -106,7 +106,7 @@ describe('BankImportReviewModal', () => {
     await userEvent.selectOptions(r0.getByLabelText('Fornecedor/Cliente'), 'none')
     await userEvent.selectOptions(screen.getByTestId('action-r1'), 'skip')
     await userEvent.selectOptions(within(screen.getByTestId('row-r3')).getByLabelText('Conta a pagar/receber'), 'occ-b')
-    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent('Importar 2 · Reconciliar 0')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent(/^Importar 2\b/)
 
     await userEvent.click(screen.getByTestId('bank-import-apply'))
     await waitFor(() => expect(onApplied).toHaveBeenCalled())
@@ -147,7 +147,7 @@ describe('BankImportReviewModal', () => {
     expect(screen.getByTestId('bank-import-apply')).toBeDisabled()
     await userEvent.selectOptions(screen.getByLabelText('Conta do pagamento'), 'acc-9')
     expect(screen.getByTestId('bank-import-apply')).toBeEnabled()
-    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent('Importar 1 · Reconciliar 0')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent(/^Importar 1\b/)
   })
 
   it('ESC fecha sem descartar; Descartar rejeita o job', async () => {
@@ -228,7 +228,7 @@ describe('BankImportReviewModal — audit 2026-10-31', () => {
     render(<BankImportReviewModal job={{ ...JOB, source_hint: 'CARD_INVOICE' }} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
     await waitFor(() => expect(screen.getByTestId('row-r0')).toHaveTextContent('débito já lançado em 14/06/26'))
     expect(screen.getByTestId('action-r0')).toHaveValue('link')
-    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent('Importar 0 · Reconciliar 1')
+    expect(screen.getByTestId('bank-import-apply')).toHaveTextContent(/^Importar 0 · Reconciliar 1/)
   })
 
   it('quitar conta a pagar mostra o fornecedor da conta escolhida, não "nova"', async () => {
@@ -383,6 +383,16 @@ describe('bankImport helpers', () => {
     const d = initialDecisions(ROWS)
     expect(d.r1.action).toBe('reconcile')
     expect(d.r3.occurrence_id).toBe('occ-a')
-    expect(countDecisions(d)).toEqual({ toImport: 2, toReconcile: 1 })
+    expect(countDecisions(d)).toMatchObject({ toImport: 2, toReconcile: 1 })
+  })
+})
+
+describe('applyLabel', () => {
+  it('mostra só o que acontece, sem "Reconciliar 0"', async () => {
+    const { applyLabel } = await import('../lib/bankImport')
+    expect(applyLabel({ toImport: 201, toReconcile: 0, toSettle: 3, toPay: 0, toSkip: 0 }))
+      .toBe('Importar 201 · quita 3 contas a pagar/receber')
+    expect(applyLabel({ toImport: 1, toReconcile: 2, toSettle: 0, toPay: 1, toSkip: 4 }))
+      .toBe('Importar 1 · paga 1 fatura · Reconciliar 2 · pula 4')
   })
 })

@@ -42,11 +42,28 @@ export function groupMates(rows: BankImportRow[], row: BankImportRow): BankImpor
 export function countDecisions(decisions: Record<string, BankImportDecision>) {
   let toImport = 0
   let toReconcile = 0
+  let toSettle = 0
+  let toPay = 0
+  let toSkip = 0
   for (const d of Object.values(decisions)) {
     if (CREATES.includes(d.action)) toImport += 1
     else if (d.action === 'reconcile' || d.action === 'link') toReconcile += 1
+    else if (d.action === 'skip') toSkip += 1
+    if (d.action === 'settle') toSettle += 1
+    if (d.action === 'pay') toPay += 1
   }
-  return { toImport, toReconcile }
+  return { toImport, toReconcile, toSettle, toPay, toSkip }
+}
+
+/** Texto do botão de aplicar: só o que acontece de fato ("Importar 198 ·
+ * quita 3 contas"), sem "Reconciliar 0" quando não há nada a reconciliar. */
+export function applyLabel(c: ReturnType<typeof countDecisions>): string {
+  const parts = [`Importar ${c.toImport}`]
+  if (c.toSettle) parts.push(`quita ${c.toSettle} conta${c.toSettle === 1 ? '' : 's'} a pagar/receber`)
+  if (c.toPay) parts.push(`paga ${c.toPay} fatura${c.toPay === 1 ? '' : 's'}`)
+  if (c.toReconcile) parts.push(`Reconciliar ${c.toReconcile}`)
+  if (c.toSkip) parts.push(`pula ${c.toSkip}`)
+  return parts.join(' · ')
 }
 
 export function summarizeResult(r: BankImportResult | null | undefined): string {
