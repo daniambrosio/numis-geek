@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import MovementComposer from './MovementComposer'
-import { type AssetOut } from '../lib/api'
+import { api, type AssetMovementOut, type AssetOut } from '../lib/api'
 
 function makeAsset(overrides: Partial<AssetOut> = {}): AssetOut {
   return {
@@ -191,5 +191,59 @@ describe('MovementComposer — 6 tiles + opção via dropdown (2026-06-24 v2)', 
     // venha primeiro no ticker-sort.
     const picker = screen.getByTestId('movement-asset-picker') as HTMLSelectElement
     expect(picker.value).toBe('abt')
+  })
+})
+
+describe('MovementComposer — spec 83 "Foi uma despesa / receita"', () => {
+  const usdc = makeAsset({ id: 'usdc', asset_class: 'CRYPTO', ticker: 'USDC', name: 'Stablecoin', current_price: 5.05 })
+
+  it('Venda + "Foi uma despesa" manda linked_transaction com categoria e fornecedor', async () => {
+    vi.spyOn(api, 'listCategories').mockResolvedValue([
+      { id: 'ass', workspace_id: 'ws-1', name: 'Assinaturas', parent_id: null, kind: null, color: null, is_active: true, created_at: '2026-01-01' },
+      { id: 'dig', workspace_id: 'ws-1', name: 'Serviços digitais', parent_id: 'ass', kind: 'EXPENSE', color: null, is_active: true, created_at: '2026-01-01' },
+    ])
+    vi.spyOn(api, 'listParties').mockResolvedValue([
+      { id: 'cb', workspace_id: 'ws-1', name: 'Coinbase', is_active: true } as never,
+    ])
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<MovementComposer assets={[usdc]} onSave={onSave} onClose={() => {}} />)
+    fireEvent.click(within(screen.getByTestId('movement-type-grid')).getByText('Venda'))
+    fireEvent.change(screen.getByPlaceholderText('ex: 100'), { target: { value: '47.537572' } })
+    fireEvent.change(screen.getByPlaceholderText('ex: 38,90'), { target: { value: '5.0482' } })
+    fireEvent.click(screen.getByText(/Foi uma despesa/).querySelector('button') ?? screen.getByText(/Foi uma despesa/))
+    const fields = await screen.findByTestId('movement-link-fields')
+    // sem descrição o salvar fica bloqueado
+    expect(screen.getByRole('button', { name: /Salvar/ })).toBeDisabled()
+    fireEvent.change(within(fields).getByLabelText('Descrição da despesa'), { target: { value: 'Coinbase One' } })
+    await within(fields).findByRole('option', { name: 'Serviços digitais' })
+    fireEvent.change(within(fields).getByLabelText('Categoria'), { target: { value: 'dig' } })
+    await within(fields).findByRole('option', { name: 'Coinbase' })
+    fireEvent.change(within(fields).getByLabelText('Fornecedor/Cliente'), { target: { value: 'cb' } })
+    fireEvent.submit(document.getElementById('movement-form')!)
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'SELL', asset_id: 'usdc',
+      linked_transaction: { description: 'Coinbase One', category_id: 'dig', party_id: 'cb' },
+    })))
+  })
+
+  it('Bonificação não oferece o vínculo; lançamento já vinculado mostra a despesa em vez do toggle', () => {
+    const { unmount } = render(<MovementComposer assets={[usdc]} onSave={async () => {}} onClose={() => {}} />)
+    fireEvent.click(within(screen.getByTestId('movement-type-grid')).getByText('Bonificação'))
+    expect(screen.queryByText(/Foi uma/)).toBeNull()
+    unmount()
+
+    const linked = {
+      id: 'm1', workspace_id: 'ws-1', asset_id: 'usdc', asset_name: 'Stablecoin', asset_ticker: 'USDC',
+      type: 'SELL', type_label: 'Venda', event_date: '2026-05-19', settlement_date: null,
+      quantity: 47.537572, unit_price: 5.04821744, gross_amount: 239.98, fee: null, tax: null,
+      net_amount: 239.98, currency: 'BRL', fx_rate: 5.0372, notes: null, external_id: null,
+      external_source: null, nota_negociacao_number: null, is_active: true,
+      created_at: '2026-11-02T00:00:00Z', updated_at: '2026-11-02T00:00:00Z',
+      linked_transaction_id: 't1', linked_transaction_description: 'Coinbase One',
+      linked_transaction_category_name: 'Serviços digitais', linked_transaction_amount: -239.98,
+    } satisfies AssetMovementOut
+    render(<MovementComposer initial={linked} assets={[usdc]} onSave={async () => {}} onClose={() => {}} />)
+    expect(screen.getByTestId('movement-linked-tx')).toHaveTextContent('Pagou a despesa: Coinbase One · Serviços digitais')
+    expect(screen.queryByText(/Foi uma despesa/)).toBeNull()
   })
 })

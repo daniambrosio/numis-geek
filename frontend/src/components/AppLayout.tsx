@@ -101,6 +101,8 @@ const NOVO_ITEMS: NovoItem[] = [
   { key: 'transaction',  label: 'Movimentação',         desc: 'Cash flow em conta corrente',           icon: Wallet,       group: 'Caixa & Cartões',  shortcut: 'M', enabled: true, composeRoute: '/transactions' },
   { key: 'card-tx',      label: 'Lançamento de cartão', desc: 'Compra na fatura aberta',               icon: CreditCard,   group: 'Caixa & Cartões',  shortcut: 'F', enabled: true, composeRoute: '/transactions' },
   // Spec 70 — delta: transferência entre contas próprias não existe no proto.
+  // Spec 83 — despesa paga / receita recebida com ativo (USDC, BTC…).
+  { key: 'asset-tx',     label: 'Pagar com ativo',      desc: 'Despesa paga ou receita recebida em ativo', icon: Coins, group: 'Caixa & Cartões', shortcut: 'G', enabled: true, composeRoute: '/transactions' },
   { key: 'transfer',     label: 'Transferência',        desc: 'Entre contas correntes próprias',       icon: ArrowLeftRight, group: 'Caixa & Cartões', shortcut: 'T', enabled: true, composeRoute: '/transactions' },
   // Spec 72 — contas a pagar/receber (avulsa, mensal, anual, parcelada).
   { key: 'scheduled',    label: 'Conta a pagar/receber', desc: 'Vencimento futuro · avulso ou recorrente', icon: CalendarClock, group: 'Caixa & Cartões', shortcut: 'R', enabled: true, composeRoute: '/scheduled-transactions' },

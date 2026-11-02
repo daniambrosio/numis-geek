@@ -258,7 +258,7 @@ export interface CreditCardPayload {
 export interface TransactionOut {
   id: string
   workspace_id: string
-  source_type: 'CHECKING' | 'CREDIT_CARD'
+  source_type: 'CHECKING' | 'CREDIT_CARD' | 'ASSET'
   checking_account_id: string | null
   account_name: string | null
   credit_card_account_id: string | null
@@ -287,6 +287,12 @@ export interface TransactionOut {
   parent_transaction_id: string | null
   paid_invoice_id: string | null
   transfer_group_id: string | null
+  // Spec 83 — pago/recebido com ativo (source_type ASSET)
+  asset_movement_id?: string | null
+  asset_id?: string | null
+  asset_name?: string | null
+  asset_ticker?: string | null
+  asset_quantity?: number | null
   is_reconciled: boolean
   // Spec 71 — import (job) que criou/conciliou + arquivo de origem.
   extraction_job_id?: string | null
@@ -323,6 +329,8 @@ export interface TransactionFilters {
   to?: string
   account_id?: string[]
   card_id?: string[]
+  /** Spec 83 — inclui as tx pagas/recebidas com ativo (chip "Ativos"). */
+  asset_source?: boolean
   category_id?: string[]
   party_id?: string
   invoice_id?: string
@@ -356,6 +364,22 @@ export interface TransactionUpdatePayload {
   party_id?: string | null
   notes?: string | null
   is_reconciled?: boolean
+  /** Spec 83 — só em tx ASSET. */
+  asset_quantity?: number | null
+}
+
+/** Spec 83 — despesa paga com ativo (EXPENSE → venda) ou receita recebida
+ * em ativo (INCOME → compra). `amount` positivo, na moeda do ativo. */
+export interface AssetPaymentPayload {
+  direction: 'EXPENSE' | 'INCOME'
+  asset_id: string
+  event_date: string
+  quantity?: number | null
+  amount: number
+  description: string
+  category_id?: string | null
+  party_id?: string | null
+  notes?: string | null
 }
 
 export interface TransferPayload {
@@ -383,6 +407,7 @@ function txQuery(f: TransactionFilters): string {
   if (f.to) qs.set('to', f.to)
   f.account_id?.forEach(id => qs.append('account_id', id))
   f.card_id?.forEach(id => qs.append('card_id', id))
+  if (f.asset_source) qs.set('asset_source', 'true')
   f.category_id?.forEach(id => qs.append('category_id', id))
   if (f.party_id) qs.set('party_id', f.party_id)
   if (f.invoice_id) qs.set('invoice_id', f.invoice_id)
@@ -784,6 +809,11 @@ export interface AssetMovementOut {
   is_active: boolean
   created_at: string
   updated_at: string
+  // Spec 83 — despesa/receita paga/recebida com este lançamento
+  linked_transaction_id?: string | null
+  linked_transaction_description?: string | null
+  linked_transaction_category_name?: string | null
+  linked_transaction_amount?: number | null
 }
 
 export interface AssetMovementListPage {
@@ -811,6 +841,8 @@ export interface AssetMovementRequest {
   external_source?: ExternalSource | null
   nota_negociacao_number?: string | null
   workspace_id?: string | null
+  /** Spec 83 — "Foi uma despesa / receita" (SELL/BUY). */
+  linked_transaction?: { description: string; category_id?: string | null; party_id?: string | null } | null
 }
 
 export type DistributionType = 'DIVIDEND' | 'INTEREST' | 'JCP' | 'SECURITIES_LENDING'
@@ -1362,6 +1394,8 @@ export const api = {
     request<void>(`/transactions/${id}${cascade ? '?cascade=true' : ''}`, { method: 'DELETE' }),
   createTransfer: (data: TransferPayload) =>
     request<TransactionOut[]>('/transactions/transfer', { method: 'POST', body: JSON.stringify(data) }),
+  createAssetPayment: (data: AssetPaymentPayload) =>
+    request<TransactionOut>('/transactions/asset-payment', { method: 'POST', body: JSON.stringify(data) }),
 
   // ── Spec 72 — contas a pagar/receber ───────────────────────────────────────
   listScheduled: (f: ScheduledFilters = {}) =>

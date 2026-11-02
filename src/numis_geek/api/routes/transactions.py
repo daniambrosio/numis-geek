@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from numis_geek.api.deps import get_current_user, get_db
 from numis_geek.api.fields import BoundedDate, Money, Rate
 from numis_geek.models.account import Account
+from numis_geek.models.asset import Asset
+from numis_geek.models.asset_movement import AssetMovement
 from numis_geek.models.attachment import Attachment
 from numis_geek.models.extraction_job import ExtractionJob
 from numis_geek.models.category import Category
@@ -25,6 +27,7 @@ from numis_geek.models.tag import Tag
 from numis_geek.models.transaction import Transaction, TransactionSourceType, transaction_tag
 from numis_geek.models.user import User, UserRole
 from numis_geek.services import account_balance
+from numis_geek.services import asset_payments
 from numis_geek.services import transactions as svc
 from numis_geek.services.bank_import import is_projected
 from numis_geek.services.audit import AuditService
@@ -72,6 +75,12 @@ class TransactionOut(BaseModel):
     parent_transaction_id: str | None
     paid_invoice_id: str | None
     transfer_group_id: str | None
+    # Spec 83 — pago/recebido com ativo.
+    asset_movement_id: str | None = None
+    asset_id: str | None = None
+    asset_name: str | None = None
+    asset_ticker: str | None = None
+    asset_quantity: float | None = None
     is_reconciled: bool
     # Spec 71 — rastreabilidade arquivo → transação.
     extraction_job_id: str | None = None
@@ -133,6 +142,23 @@ class TransactionUpdateRequest(BaseModel):
     tag_ids: list[str] | None = None
     notes: str | None = None
     is_reconciled: bool | None = None
+    # Spec 83 — só em tx ASSET.
+    asset_quantity: Decimal | None = None
+
+
+class AssetPaymentRequest(BaseModel):
+    """Spec 83 — despesa paga com ativo (EXPENSE → SELL) ou receita recebida
+    em ativo (INCOME → BUY). `amount` positivo, na moeda do ativo."""
+    direction: str
+    asset_id: str
+    event_date: BoundedDate
+    quantity: Decimal | None = None
+    amount: Money
+    description: str
+    category_id: str | None = None
+    party_id: str | None = None
+    tag_ids: list[str] | None = None
+    notes: str | None = None
 
 
 class TransferRequest(BaseModel):
@@ -232,9 +258,16 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
     """Batch-load display names for a page of tx."""
     if not rows:
         return []
+    mov_ids = {r.asset_movement_id for r in rows if r.asset_movement_id}
+    movs = {m.id: m for m in db.query(AssetMovement).filter(AssetMovement.id.in_(mov_ids)).all()} if mov_ids else {}
+    asset_ids = {m.asset_id for m in movs.values()}
+    assets = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()} if asset_ids else {}
     acc_ids = {r.checking_account_id for r in rows if r.checking_account_id}
+    asset_acc_ids = {a.account_id for a in assets.values()}
     card_ids = {r.credit_card_account_id for r in rows if r.credit_card_account_id}
-    accounts = {a.id: a for a in db.query(Account).filter(Account.id.in_(acc_ids)).all()} if acc_ids else {}
+    accounts = {
+        a.id: a for a in db.query(Account).filter(Account.id.in_(acc_ids | asset_acc_ids)).all()
+    } if (acc_ids or asset_acc_ids) else {}
     cards = {c.id: c for c in db.query(CreditCardAccount).filter(CreditCardAccount.id.in_(card_ids)).all()} if card_ids else {}
     fi_ids = {a.financial_institution_id for a in accounts.values()} | {c.financial_institution_id for c in cards.values()}
     fis = {f.id: f for f in db.query(FinancialInstitution).filter(FinancialInstitution.id.in_(fi_ids)).all()} if fi_ids else {}
@@ -264,7 +297,11 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
     for r in rows:
         acc = accounts.get(r.checking_account_id) if r.checking_account_id else None
         card = cards.get(r.credit_card_account_id) if r.credit_card_account_id else None
-        fi = fis.get((acc or card).financial_institution_id) if (acc or card) else None
+        mov = movs.get(r.asset_movement_id) if r.asset_movement_id else None
+        asset = assets.get(mov.asset_id) if mov else None
+        asset_acc = accounts.get(asset.account_id) if asset else None
+        holder = acc or card or asset_acc
+        fi = fis.get(holder.financial_institution_id) if holder else None
         cat = cats.get(r.category_id) if r.category_id else None
         parent = parents.get(cat.parent_id) if cat and cat.parent_id else None
         party = parties.get(r.party_id) if r.party_id else None
@@ -300,6 +337,11 @@ def hydrate(db: Session, rows: list[Transaction]) -> list[TransactionOut]:
             parent_transaction_id=r.parent_transaction_id,
             paid_invoice_id=r.paid_invoice_id,
             transfer_group_id=r.transfer_group_id,
+            asset_movement_id=r.asset_movement_id,
+            asset_id=asset.id if asset else None,
+            asset_name=asset.name if asset else None,
+            asset_ticker=asset.ticker if asset else None,
+            asset_quantity=float(mov.quantity) if mov and mov.quantity is not None else None,
             is_reconciled=r.is_reconciled,
             extraction_job_id=r.extraction_job_id,
             source_attachment_id=sources[r.extraction_job_id][0] if r.extraction_job_id in sources else None,
@@ -329,18 +371,21 @@ def _filtered(
     reconciled: bool | None,
     invoice_id: str | None = None,
     extraction_job_id: str | None = None,
+    include_assets: bool = False,
 ):
     q = db.query(Transaction).filter(Transaction.workspace_id == ws)
     if date_from:
         q = q.filter(Transaction.event_date >= date_from)
     if date_to:
         q = q.filter(Transaction.event_date <= date_to)
-    if account_ids or card_ids:
+    if account_ids or card_ids or include_assets:
         conds = []
         if account_ids:
             conds.append(Transaction.checking_account_id.in_(account_ids))
         if card_ids:
             conds.append(Transaction.credit_card_account_id.in_(card_ids))
+        if include_assets:
+            conds.append(Transaction.source_type == TransactionSourceType.ASSET)
         q = q.filter(or_(*conds))
     if category_ids:
         q = q.filter(Transaction.category_id.in_(category_ids))
@@ -370,6 +415,7 @@ def list_transactions(
     date_to: date | None = Query(default=None, alias="to"),
     account_id: list[str] | None = Query(default=None),
     card_id: list[str] | None = Query(default=None),
+    asset_source: bool = Query(default=False),
     category_id: list[str] | None = Query(default=None),
     party_id: str | None = Query(default=None),
     tag_id: str | None = Query(default=None),
@@ -388,6 +434,7 @@ def list_transactions(
         db, ws, date_from=date_from, date_to=date_to, account_ids=account_id, card_ids=card_id,
         category_ids=category_id, party_id=party_id, tag_id=tag_id, search=search,
         reconciled=reconciled, invoice_id=invoice_id, extraction_job_id=extraction_job_id,
+        include_assets=asset_source,
     )
     total = q.count()
     rows = (
@@ -405,6 +452,7 @@ def summary(
     date_to: date | None = Query(default=None, alias="to"),
     account_id: list[str] | None = Query(default=None),
     card_id: list[str] | None = Query(default=None),
+    asset_source: bool = Query(default=False),
     category_id: list[str] | None = Query(default=None),
     party_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
@@ -421,6 +469,7 @@ def summary(
         db, ws, date_from=date_from, date_to=min(date_to, today) if date_to else today,
         account_ids=account_id, card_ids=card_id, category_ids=category_id,
         party_id=party_id, tag_id=None, search=search, reconciled=None,
+        include_assets=asset_source,
     )
     sub = q.with_entities(
         Transaction.amount_brl, Transaction.amount_usd, Transaction.is_reconciled,
@@ -489,6 +538,52 @@ def create_transfer(
     return hydrate(db, legs)
 
 
+def _audit_movement(db: Session, current_user: UserContext, action: str, m: AssetMovement, tx_id: str | None) -> None:
+    """Spec 83 — audit do lado investimento do par (mesmo shape do
+    routes/asset_movements._audit, + o id da tx vinculada)."""
+    actor = db.get(User, current_user.user_id)
+    asset = db.get(Asset, m.asset_id)
+    AuditService(db).log(
+        user_email=actor.email if actor else current_user.user_id,
+        action=action,
+        workspace_id=m.workspace_id,
+        user_id=current_user.user_id,
+        resource_type="asset_movement",
+        resource_id=m.id,
+        details={
+            "asset_id": m.asset_id,
+            "asset_name": asset.name if asset else None,
+            "asset_ticker": asset.ticker if asset else None,
+            "type": m.type.value,
+            "event_date": m.event_date.isoformat(),
+            "quantity": str(m.quantity) if m.quantity is not None else None,
+            "gross_amount": str(m.gross_amount) if m.gross_amount is not None else None,
+            "linked_transaction_id": tx_id,
+        },
+    )
+
+
+@router.post("/asset-payment", response_model=TransactionOut, status_code=status.HTTP_201_CREATED)
+def create_asset_payment(
+    body: AssetPaymentRequest,
+    workspace_id: str | None = Query(default=None),
+    db: Session = Depends(get_db, scope="function"),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Spec 83 — cria o par lançamento do ativo (SELL/BUY) + movimentação
+    (source_type=ASSET) numa transação só."""
+    ws = _resolve_ws(current_user, workspace_id)
+    try:
+        m, tx = asset_payments.create_asset_payment(
+            db, ws, user_id=current_user.user_id, **body.model_dump(),
+        )
+    except (svc.TransactionError, svc.TransactionConflict) as exc:
+        raise _translate(exc)
+    _audit(db, current_user, "transaction.created", [tx], {"asset_movement_id": m.id})
+    _audit_movement(db, current_user, "asset_movement.created", m, tx.id)
+    return hydrate(db, [tx])[0]
+
+
 @router.patch("/{tx_id}", response_model=list[TransactionOut])
 def update_transaction(
     tx_id: str,
@@ -511,6 +606,10 @@ def update_transaction(
     _audit(db, current_user, "transaction.updated", rows, {
         "before": before, "after": {k: str(v) for k, v in changes.items()},
     })
+    if tx.asset_movement_id and tx.source_type == TransactionSourceType.ASSET:
+        mov = db.get(AssetMovement, tx.asset_movement_id)
+        if mov is not None:
+            _audit_movement(db, current_user, "asset_movement.updated", mov, tx.id)
     _audit_payment_reverted(db, current_user, reverted, tx.workspace_id, "transaction sign changed", tx.id)
     if tx.paid_invoice_id and tx.event_date != old_date:
         _audit_invoice(db, current_user, "invoice.payment_date_updated", tx.paid_invoice_id, tx.workspace_id, {
@@ -530,11 +629,17 @@ def delete_transaction(
     tx = _get_or_404(db, tx_id, current_user)
     ws = tx.workspace_id
     reverted: list = []
+    deactivated: list = []
     try:
-        rows = svc.delete_transaction(db, tx, cascade=cascade, reverted_occurrences=reverted)
+        rows = svc.delete_transaction(
+            db, tx, cascade=cascade, reverted_occurrences=reverted,
+            deactivated_movements=deactivated, user_id=current_user.user_id,
+        )
     except (svc.TransactionError, svc.TransactionConflict) as exc:
         raise _translate(exc)
     _audit(db, current_user, "transaction.deleted", rows)
+    for m in deactivated:
+        _audit_movement(db, current_user, "asset_movement.deactivated", m, tx_id)
     _audit_payment_reverted(db, current_user, reverted, ws, "transaction deleted", tx_id)
     for r in rows:
         if r.paid_invoice_id:

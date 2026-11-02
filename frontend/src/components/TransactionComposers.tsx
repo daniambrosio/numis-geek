@@ -12,7 +12,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, Sparkles, X } from 'lucide-react'
 import {
-  type AccountOut, type CategoryOut, type CreditCardOut, type InvoiceOut,
+  type AccountOut, type AssetOut, type AssetPaymentPayload, type CategoryOut, type CreditCardOut,
+  type InvoiceOut, type PartyOut,
   type TransactionCreatePayload, type TransactionOut, type TransactionUpdatePayload,
   type TransferPayload,
 } from '../lib/api'
@@ -24,6 +25,7 @@ import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
 import { todayISO } from '../lib/format'
+import { COTADO_CLASSES, payableAssets } from '../lib/assetPayments'
 import { AttachmentUploadError } from '../lib/useTransactionAttachments'
 
 const num = (s: string): number => parseDecimal(s) ?? 0
@@ -554,6 +556,163 @@ export function CardTxComposer({
       />
       {error && <p className="text-[12px] text-red-600 dark:text-red-400">{error}</p>}
       {warning && <p className="text-[12px] text-amber-600 dark:text-amber-400">{warning}</p>}
+    </ComposerShell>
+  )
+}
+
+/* ── Spec 83 — pagar e receber com ativo ─────────────────────────────── */
+
+export function AssetPaymentComposer({
+  assets, categories, parties, initial, onCreate, onUpdate, onClose,
+}: {
+  assets: AssetOut[]
+  categories: CategoryOut[]
+  parties: PartyOut[]
+  initial?: TransactionOut
+  onCreate: (data: AssetPaymentPayload) => Promise<TransactionOut>
+  onUpdate: (id: string, data: TransactionUpdatePayload) => Promise<TransactionOut[]>
+  onClose: () => void
+}) {
+  const options = useMemo(() => payableAssets(assets), [assets])
+  const [assetIdState, setAssetId] = useState(initial?.asset_id ?? '')
+  const assetId = assetIdState || options[0]?.id || ''
+  const asset = assets.find(a => a.id === assetId)
+  const [direction, setDirection] = useState<'out' | 'in'>(initial && initial.amount > 0 ? 'in' : 'out')
+  const [date, setDate] = useState(initial?.event_date ?? today())
+  const [desc, setDesc] = useState(initial?.description ?? '')
+  const [qty, setQty] = useState(initial?.asset_quantity != null ? String(initial.asset_quantity).replace('.', ',') : '')
+  const [amount, setAmount] = useState(initial ? String(Math.abs(initial.amount)).replace('.', ',') : '')
+  // Valor digitado à mão não é mais sobrescrito pela sugestão preço × qtd.
+  const [amountTouched, setAmountTouched] = useState(!!initial)
+  const [catId, setCatId] = useState(initial?.category_id ?? '')
+  const [partyId, setPartyId] = useState(initial?.party_id ?? '')
+  const [notes, setNotes] = useState(initial?.notes ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const ccy = asset?.currency ?? 'BRL'
+  const valueMode = !!asset && !COTADO_CLASSES.has(asset.asset_class)
+  const qtyN = num(qty)
+  const suggestion = !valueMode && asset?.current_price && qtyN > 0
+    ? Math.round(asset.current_price * qtyN * 100) / 100
+    : null
+  const amtN = amountTouched || suggestion == null ? num(amount) : suggestion
+  const signed = direction === 'in' ? amtN : -amtN
+  const valid = !!asset && amtN > 0 && desc.trim().length > 0 && (valueMode || qtyN > 0)
+  const activeParties = parties.filter(p => p.is_active || p.id === partyId)
+
+  async function submit() {
+    setError('')
+    setSaving(true)
+    try {
+      if (initial) {
+        const changes: TransactionUpdatePayload = {
+          description: desc.trim(), amount: signed, category_id: catId || null,
+          party_id: partyId || null, notes: notes.trim() || null,
+        }
+        if (date !== initial.event_date) changes.event_date = date
+        if (!valueMode) changes.asset_quantity = qtyN
+        await onUpdate(initial.id, changes)
+      } else {
+        await onCreate({
+          direction: direction === 'out' ? 'EXPENSE' : 'INCOME', asset_id: assetId,
+          event_date: date, quantity: valueMode ? null : qtyN, amount: amtN,
+          description: desc.trim(), category_id: catId || null, party_id: partyId || null,
+          notes: notes.trim() || null,
+        })
+      }
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao salvar.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const ticker = asset ? (asset.ticker || asset.name) : ''
+  return (
+    <ComposerShell
+      formId="asset-payment-form"
+      title={initial ? 'Editar pagamento com ativo' : 'Pagar ou receber com ativo'}
+      subtitle={initial
+        ? 'Muda a movimentação e o lançamento do ativo juntos'
+        : 'Sem conta corrente nem cartão · cria a movimentação e o lançamento do ativo'}
+      onClose={onClose} onSubmit={submit} valid={valid} saving={saving}
+      saveLabel={initial ? 'Salvar alterações' : 'Salvar'}
+    >
+      <Field label="Direção">
+        <div className="inline-flex items-center rounded-lg p-0.5 bg-gray-100 dark:bg-gray-800">
+          {(['out', 'in'] as const).map(d => (
+            <button key={d} type="button" disabled={!!initial} onClick={() => setDirection(d)}
+              className={`px-3 h-8 text-[12px] font-medium rounded-md transition-colors disabled:cursor-not-allowed ${
+                direction === d
+                  ? d === 'out' ? 'bg-red-500/15 text-red-600 dark:text-red-400' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                  : 'text-gray-500'}`}>
+              {d === 'out' ? 'Despesa · pago com ativo' : 'Receita · recebido em ativo'}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Field label={direction === 'out' ? 'Pago com' : 'Recebido em'}>
+          <select value={assetId} onChange={e => setAssetId(e.target.value)} disabled={!!initial} className={inputCls} aria-label="Ativo">
+            {options.length === 0 && <option value="">Nenhum ativo disponível</option>}
+            {options.map(a => (
+              <option key={a.id} value={a.id}>{a.ticker ? `${a.ticker} · ` : ''}{a.name} · {a.account_name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Data">
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} required className={inputCls} aria-label="Data" />
+        </Field>
+        <Field label="Descrição" span2>
+          <input value={desc} onChange={e => setDesc(e.target.value)} aria-label="Descrição"
+            placeholder="ex: Coinbase One · ou · Cashback em BTC" className={inputCls} />
+        </Field>
+        {!valueMode && (
+          <Field label={`Quantidade · ${ticker}`}>
+            <input value={qty} onChange={e => setQty(e.target.value)} aria-label="Quantidade"
+              placeholder="ex: 47,537572" className={`${inputCls} tnum`} />
+          </Field>
+        )}
+        <Field label={`Valor total · ${ccy}`} hint={suggestion != null && !amountTouched ? 'sugerido · preço atual × quantidade' : undefined}>
+          <input value={amountTouched || suggestion == null ? amount : String(suggestion).replace('.', ',')}
+            onChange={e => { setAmountTouched(true); setAmount(e.target.value) }} aria-label="Valor total"
+            placeholder="ex: 239,98" className={`${inputCls} tnum`} />
+        </Field>
+        <Field label="Categoria">
+          <CategorySelect categories={categories} value={catId} onChange={setCatId} currentName={initial?.category_name} />
+        </Field>
+        <Field label="Fornecedor/Cliente">
+          <select value={partyId} onChange={e => setPartyId(e.target.value)} className={inputCls} aria-label="Fornecedor/Cliente">
+            <option value="">Sem fornecedor/cliente</option>
+            {activeParties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      {amtN > 0 && asset && (
+        <Preview>
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-gray-500 dark:text-gray-400">{direction === 'out' ? 'Despesa' : 'Receita'}</span>
+            <span className={`tnum text-base font-semibold ${signed < 0 ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400'}`}>
+              {fmtMoney(signed, ccy, { sign: true })}
+            </span>
+          </div>
+          <PreviewLine label="Lançamento do ativo">
+            {direction === 'out' ? 'Venda' : 'Compra'} · {valueMode ? fmtMoney(amtN, ccy) : `${qty || '0'} ${ticker}`}
+          </PreviewLine>
+          {catId && <PreviewLine label="Categoria"><CategoryDot categories={categories} id={catId} /></PreviewLine>}
+          <PreviewLine label="Saldo de conta">não muda · sem conta corrente nem fatura</PreviewLine>
+        </Preview>
+      )}
+
+      <Field label="Notas" hint="opcional">
+        <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} aria-label="Notas"
+          placeholder="ex: assinatura anual paga com USDC" className={`${inputCls} h-auto py-2`} />
+      </Field>
+      {error && <p className="text-[12px] text-red-600 dark:text-red-400">{error}</p>}
     </ComposerShell>
   )
 }

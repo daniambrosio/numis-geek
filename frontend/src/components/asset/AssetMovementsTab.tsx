@@ -5,6 +5,7 @@ import type { AssetMovementOut } from '../../lib/api'
 import { fmtDate, fmtNum } from '../../lib/format'
 import { fmtMoney } from '../../lib/money'
 import { Card, SectionTitle } from '../ui'
+import LinkedTxBadge from '../LinkedTxBadge'
 
 const TYPE_MOVEMENT_PALETTE: Record<string, string> = {
   BUY: 'bg-emerald-500/15 text-emerald-500 dark:text-emerald-400',
@@ -71,6 +72,7 @@ export default function AssetMovementsTab({ movements, onRowClick, onNew }: Prop
                         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${typeCls}`}>
                           {m.type_label}
                         </span>
+                        {' '}<LinkedTxBadge m={m} />
                       </td>
                       <td className="px-2 text-right tnum">
                         {m.quantity != null

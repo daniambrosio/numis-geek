@@ -13,9 +13,9 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Check, CreditCard as CreditCardIcon, FileText, MoreHorizontal } from 'lucide-react'
+import { Check, Coins, CreditCard as CreditCardIcon, FileText, MoreHorizontal } from 'lucide-react'
 import {
-  api, type AccountOut, type CategoryOut, type CreditCardOut, type InvoiceOut, type PartyOut,
+  api, type AccountOut, type AssetOut, type AssetPaymentPayload, type CategoryOut, type CreditCardOut, type InvoiceOut, type PartyOut,
   type TransactionCreatePayload, type TransactionOut, type TransactionSummaryOut,
   type TransactionUpdatePayload, type TransferPayload, type UserOut,
 } from '../lib/api'
@@ -25,7 +25,7 @@ import { fmtBRL } from '../lib/money'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CARDS_CHANGED_EVENT } from '../lib/useCardCounts'
 import {
-  CardTxComposer, TransactionComposer, TransferComposer, fmtMoney,
+  AssetPaymentComposer, CardTxComposer, TransactionComposer, TransferComposer, fmtMoney,
 } from '../components/TransactionComposers'
 import { todayISO } from '../lib/format'
 import { useTransactionAttachments } from '../lib/useTransactionAttachments'
@@ -65,7 +65,11 @@ type ComposerState =
   | { kind: 'transaction'; editing?: TransactionOut }
   | { kind: 'card-tx'; editing?: TransactionOut }
   | { kind: 'transfer' }
+  | { kind: 'asset-tx'; editing?: TransactionOut }
   | null
+
+/** Spec 83 — chip de Origem "Ativos" (tx pagas/recebidas com ativo). */
+export const ASSET_SOURCE = '__ASSET__'
 
 export default function Transactions() {
   const navigate = useNavigate()
@@ -76,6 +80,7 @@ export default function Transactions() {
   const [invoices, setInvoices] = useState<InvoiceOut[]>([])
   const [categories, setCategories] = useState<CategoryOut[]>([])
   const [parties, setParties] = useState<PartyOut[]>([])
+  const [assets, setAssets] = useState<AssetOut[]>([])
   // Composers leem os defaults (1ª conta/cartão) no mount — só abrem depois dos cadastros.
   const [refsLoaded, setRefsLoaded] = useState(false)
   const [rows, setRows] = useState<TransactionOut[]>([])
@@ -119,10 +124,10 @@ export default function Transactions() {
     if (!me) return
     Promise.all([
       api.listAccounts(), api.listCreditCards(), api.listInvoices(),
-      api.listCategories(), api.listParties(),
+      api.listCategories(), api.listParties(), api.listAssets(),
     ])
-      .then(([accs, cs, invs, cats, ps]) => {
-        setAccounts(accs); setCards(cs); setInvoices(invs); setCategories(cats); setParties(ps)
+      .then(([accs, cs, invs, cats, ps, as]) => {
+        setAccounts(accs); setCards(cs); setInvoices(invs); setCategories(cats); setParties(ps); setAssets(as)
         setRefsLoaded(true)
       })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar cadastros.'))
@@ -141,7 +146,8 @@ export default function Transactions() {
     from: importJobId ? undefined : (from || undefined),
     to: to || undefined,
     account_id: sources.filter(s => checkingIds.has(s)),
-    card_id: sources.filter(s => !checkingIds.has(s)),
+    card_id: sources.filter(s => !checkingIds.has(s) && s !== ASSET_SOURCE),
+    asset_source: sources.includes(ASSET_SOURCE) || undefined,
     category_id: rootCats.length ? subIdsForRoots(categories, rootCats) : undefined,
     party_id: partyId || undefined,
     search: debounced || undefined,
@@ -190,7 +196,7 @@ export default function Transactions() {
   useEffect(() => {
     const c = searchParams.get('compose')
     if (!me || !refsLoaded || !c) return
-    if (c === 'transaction' || c === 'card-tx' || c === 'transfer') {
+    if (c === 'transaction' || c === 'card-tx' || c === 'transfer' || c === 'asset-tx') {
       startEditing(null)
       setComposer({ kind: c })
       const next = new URLSearchParams(searchParams)
@@ -202,6 +208,7 @@ export default function Transactions() {
   const sourceOpts = useMemo(() => [
     ...accounts.filter(a => a.account_type === 'checking' && a.is_active).map(a => ({ id: a.id, label: a.name })),
     ...cards.filter(c => c.is_active).map(c => ({ id: c.id, label: c.name })),
+    { id: ASSET_SOURCE, label: 'Ativos' },
   ], [accounts, cards])
   const rootOpts = useMemo(() =>
     categories.filter(c => c.parent_id === null && c.is_active)
@@ -209,7 +216,7 @@ export default function Transactions() {
       .map(c => ({ id: c.id, label: c.name, color: c.color })),
   [categories])
   const grouped = useMemo(() => groupByMonth(rows), [rows])
-  const sourceCount = useMemo(() => new Set(rows.map(r => r.checking_account_id ?? r.credit_card_account_id)).size, [rows])
+  const sourceCount = useMemo(() => new Set(rows.map(r => r.checking_account_id ?? r.credit_card_account_id ?? r.asset_id)).size, [rows])
 
   /** Depois de um write que DEU CERTO: falha no recarregamento vai pro toast
    * da página — nunca pro composer (que acharia que o write falhou e
@@ -230,6 +237,11 @@ export default function Transactions() {
     await afterWrite()
     return updated
   }
+  async function handleAssetPayment(data: AssetPaymentPayload) {
+    const created = await api.createAssetPayment(data)
+    await afterWrite()
+    return created
+  }
   async function handleTransfer(data: TransferPayload) {
     const legs = await api.createTransfer(data)
     await afterWrite()
@@ -239,7 +251,10 @@ export default function Transactions() {
   function openEdit(t: TransactionOut) {
     setMenuFor(null)
     attachments.startEditing(t.id)
-    setComposer({ kind: t.source_type === 'CREDIT_CARD' ? 'card-tx' : 'transaction', editing: t })
+    setComposer({
+      kind: t.source_type === 'CREDIT_CARD' ? 'card-tx' : t.source_type === 'ASSET' ? 'asset-tx' : 'transaction',
+      editing: t,
+    })
   }
 
   async function doDelete(t: TransactionOut) {
@@ -406,6 +421,12 @@ export default function Transactions() {
           onUploadDrafts={attachments.uploadDrafts} onRemovePersistedAttachment={attachments.removePersisted}
         />
       )}
+      {composer?.kind === 'asset-tx' && (
+        <AssetPaymentComposer
+          assets={assets} categories={categories} parties={parties} initial={editing}
+          onCreate={handleAssetPayment} onUpdate={handleUpdate} onClose={() => setComposer(null)}
+        />
+      )}
       {composer?.kind === 'transfer' && (
         <TransferComposer accounts={accounts} categories={categories} onCreate={handleTransfer} onClose={() => setComposer(null)} />
       )}
@@ -463,6 +484,7 @@ function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete, onError }: {
   onError: (message: string) => void
 }) {
   const isCard = t.source_type === 'CREDIT_CARD'
+  const isAsset = t.source_type === 'ASSET'
   const isIncome = t.amount > 0
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors cursor-pointer" onClick={onEdit}>
@@ -473,8 +495,16 @@ function TxRow({ t, menuOpen, onOpenMenu, onEdit, onDelete, onError }: {
           <div className="min-w-0">
             <div className="text-[11px] font-medium truncate max-w-[140px] flex items-center gap-1 text-gray-900 dark:text-white">
               {isCard && <CreditCardIcon className="w-3 h-3 text-amber-500 dark:text-amber-400" />}
-              {t.account_name ?? t.card_name}
+              {isAsset && <Coins className="w-3 h-3 text-violet-500 dark:text-violet-400" />}
+              {isAsset
+                ? `${t.asset_ticker || t.asset_name || 'Ativo'} · ${t.financial_institution_name ?? ''}`.replace(/ · $/, '')
+                : (t.account_name ?? t.card_name)}
             </div>
+            {isAsset && t.asset_quantity != null && (
+              <div className="text-[10px] text-gray-500 tnum" data-testid={`tx-asset-qty-${t.id}`}>
+                {t.amount < 0 ? 'pago com' : 'recebido em'} {t.asset_quantity.toLocaleString('pt-BR', { maximumFractionDigits: 8 })} {t.asset_ticker ?? ''}
+              </div>
+            )}
             {t.installment_total && <div className="text-[10px] text-gray-500">parc. {t.installment_number}/{t.installment_total}</div>}
           </div>
         </div>
@@ -535,7 +565,9 @@ function DeleteConfirm({ t, deleting, onCancel, onConfirm }: {
   onConfirm: () => void
 }) {
   const isParent = !!t.installment_total && t.parent_transaction_id === null
-  const detail = t.transfer_group_id
+  const detail = t.source_type === 'ASSET'
+    ? `Foi ${t.amount < 0 ? 'paga' : 'recebida'} com ${t.asset_ticker || t.asset_name || 'um ativo'} — o lançamento de ${t.amount < 0 ? 'venda' : 'compra'} do ativo também será excluído.`
+    : t.transfer_group_id
     ? 'É uma transferência — as duas pernas (saída e entrada) serão excluídas.'
     : t.paid_invoice_id
       ? 'É o pagamento de uma fatura — ela volta a ficar fechada, sem pagamento.'

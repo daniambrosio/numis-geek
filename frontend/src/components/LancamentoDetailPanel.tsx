@@ -9,6 +9,7 @@ import {
 import { KLASS, collapsedOf, lanTypeColor } from '../lib/tokens'
 import { CcyPill, ClassBadge, FILogo, TypeBadge } from './ui'
 import NotesAttachmentsCard from './NotesAttachmentsCard'
+import LinkedTxBadge from './LinkedTxBadge'
 
 interface Props {
   lancamento: AssetMovementOut
@@ -117,6 +118,7 @@ export default function LancamentoDetailPanel({
               <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
                 <TypeBadge code={l.type} label={l.type_label} />
                 <CcyPill ccy={l.currency} />
+                <LinkedTxBadge m={l} />
               </div>
               <div className="text-sm font-semibold truncate text-gray-900 dark:text-white">
                 {asset?.ticker ? <span className="font-mono">{asset.ticker} </span> : null}

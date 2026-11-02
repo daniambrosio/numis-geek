@@ -52,6 +52,7 @@ import AssetPerformanceTab from '../components/asset/AssetPerformanceTab'
 import AssetTabs, { type AssetTabDef } from '../components/asset/AssetTabs'
 import CountryFlag from '../components/asset/CountryFlag'
 import { KLASS, collapsedOf } from '../lib/tokens'
+import { linkedDeactivateWarning } from '../lib/assetPayments'
 
 // ── Formatters: lib/money.ts + lib/format.ts (spec 81) ──────────────────────
 
@@ -989,6 +990,11 @@ export default function AssetDetail() {
               <strong>{confirmDeactivate.type_label}</strong> de{' '}
               <strong>{confirmDeactivate.asset_name}</strong> será apagado.
             </p>
+            {linkedDeactivateWarning(confirmDeactivate) && (
+              <p className="text-[12px] text-amber-600 dark:text-amber-400 mb-2" data-testid="deactivate-linked-warning">
+                {linkedDeactivateWarning(confirmDeactivate)}
+              </p>
+            )}
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
               Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
             </p>

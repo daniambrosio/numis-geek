@@ -7,13 +7,17 @@ import {
   type AssetMovementOut,
   type AssetMovementRequest,
   type AssetMovementType,
+  type CategoryOut,
   type OptionType,
+  type PartyOut,
 } from '../lib/api'
 import { parseDecimal } from '../lib/parseDecimal'
 import NotesAttachmentsField, {
   type AttachmentDraft, type PersistedAttachment,
 } from './NotesAttachmentsField'
 import { todayISO } from '../lib/format'
+import { CategorySelect } from './TransactionComposers'
+import { ToggleSwitch } from './ui'
 
 // Unified composer (Spec 36 follow-up v2 2026-06-24):
 // A grid mantém só os 6 tiles semânticos. Opção deixou de ser tile;
@@ -145,6 +149,22 @@ export default function MovementComposer({
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDraft[]>([])
   const [attachmentWarning, setAttachmentWarning] = useState<string | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // ── Spec 83 — "Foi uma despesa / receita" (SELL/BUY) ─────────────────────
+  const alreadyLinked = !!initial?.linked_transaction_id
+  const [linkOn, setLinkOn] = useState(false)
+  const [linkDesc, setLinkDesc] = useState('')
+  const [linkCat, setLinkCat] = useState('')
+  const [linkParty, setLinkParty] = useState('')
+  const [linkCategories, setLinkCategories] = useState<CategoryOut[]>([])
+  const [linkParties, setLinkParties] = useState<PartyOut[]>([])
+  const [linkRefsError, setLinkRefsError] = useState('')
+  useEffect(() => {
+    if (!linkOn || linkCategories.length) return
+    Promise.all([api.listCategories(), api.listParties()])
+      .then(([cs, ps]) => { setLinkCategories(cs); setLinkParties(ps) })
+      .catch(err => setLinkRefsError(err instanceof Error ? err.message : 'Erro ao carregar categorias.'))
+  }, [linkOn, linkCategories.length])
 
   // ── Estado específico de OPENs (SELL_OPEN / BUY_TO_OPEN) ─────────────────
   // Esses cria Asset+Movement em uma chamada (POST /api/options). Os campos
@@ -337,6 +357,9 @@ export default function MovementComposer({
   if (type === 'COME_COTAS' && !(tN > 0)) missingFields.push('Imposto retido')
   if (useValueOnly && !(gN > 0)) missingFields.push('Valor total')
   if (assetInactive && !confirmInactive) missingFields.push('Confirmar ativo inativo')
+  const linkable = mode === 'normal' && (type === 'SELL' || type === 'BUY')
+  const linkActive = linkable && linkOn && !alreadyLinked
+  if (linkActive && !linkDesc.trim()) missingFields.push('Descrição da despesa/receita')
   const isValid = missingFields.length === 0
 
   async function handleSubmit(e: React.FormEvent) {
@@ -402,6 +425,11 @@ export default function MovementComposer({
         if (showFee && fee) payload.fee = num(fee)
         if (showTax && tax) payload.tax = num(tax)
         if (showNotaNegociacao && notaNegociacao.trim()) payload.nota_negociacao_number = notaNegociacao.trim()
+        if (linkActive) {
+          payload.linked_transaction = {
+            description: linkDesc.trim(), category_id: linkCat || null, party_id: linkParty || null,
+          }
+        }
         if (useValueOnly) {
           // Modo valor: qty é informacional, aporte-por-valor. Normalizamos
           // pra qty=1 + unit_price=gross_amount pra manter o invariante
@@ -786,6 +814,46 @@ export default function MovementComposer({
                       </>
                     ) : '—'}
                   </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Spec 83 — venda que pagou uma despesa / compra que foi receita */}
+          {linkable && alreadyLinked && (
+            <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-[12px] text-gray-700 dark:text-gray-300" data-testid="movement-linked-tx">
+              {type === 'SELL' ? 'Pagou a despesa' : 'Recebido como receita'}: <strong>{initial?.linked_transaction_description}</strong>
+              {initial?.linked_transaction_category_name ? ` · ${initial.linked_transaction_category_name}` : ''}
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                Mudar data ou valor aqui muda a movimentação também. Desativar o lançamento exclui a movimentação.
+              </div>
+            </div>
+          )}
+          {linkable && !alreadyLinked && (
+            <div className="space-y-3">
+              <ToggleSwitch on={linkOn} onChange={setLinkOn}
+                label={type === 'SELL' ? 'Foi uma despesa · pagou algo com este ativo' : 'Foi uma receita · recebido como pagamento'} />
+              {linkOn && (
+                <div className="grid grid-cols-2 gap-4" data-testid="movement-link-fields">
+                  <div className="col-span-2">
+                    <Field label="Descrição">
+                      <input value={linkDesc} onChange={e => setLinkDesc(e.target.value)} aria-label="Descrição da despesa"
+                        placeholder="ex: Coinbase One" className={inputCls} />
+                    </Field>
+                  </div>
+                  <Field label="Categoria">
+                    <CategorySelect categories={linkCategories} value={linkCat} onChange={setLinkCat} />
+                  </Field>
+                  <Field label="Fornecedor/Cliente">
+                    <select value={linkParty} onChange={e => setLinkParty(e.target.value)} className={inputCls} aria-label="Fornecedor/Cliente">
+                      <option value="">Sem fornecedor/cliente</option>
+                      {linkParties.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </Field>
+                  {linkRefsError && <p className="col-span-2 text-[12px] text-red-600 dark:text-red-400">{linkRefsError}</p>}
+                  <p className="col-span-2 text-[11px] text-gray-500">
+                    Cria a movimentação em Movimentações com o valor total deste lançamento · não mexe em conta corrente nem fatura.
+                  </p>
                 </div>
               )}
             </div>

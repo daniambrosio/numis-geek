@@ -2,8 +2,9 @@
 
 Single ledger table for the Numis side, discriminated by `source_type`:
 CHECKING tx live in a checking `account`, CREDIT_CARD tx live in a
-`credit_card_account` + its `invoice`. Exactly one of the two source FKs
-is set (CHECK constraint + service validation).
+`credit_card_account` + its `invoice`, ASSET tx (spec 83) are paid/received
+with an asset and point to the `asset_movement` that moved it. Exactly one
+of the three source FKs is set (CHECK constraint + service validation).
 
 `amount` is SIGNED (expense negative, income positive — prototype
 convention). `fx_rate` is the canonical USD/BRL of the event date (PTAX
@@ -30,7 +31,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, Date, DateTime, Enum, ForeignKey, Index,
-    Integer, Numeric, String, Table, Text,
+    Integer, Numeric, String, Table, Text, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +42,9 @@ from numis_geek.models.account import Currency
 class TransactionSourceType(str, enum.Enum):
     CHECKING = "CHECKING"
     CREDIT_CARD = "CREDIT_CARD"
+    # Spec 83 — paga/recebida com o próprio ativo (USDC, BTC…): a fonte é o
+    # `asset_movement` (SELL = despesa, BUY = receita) em `asset_movement_id`.
+    ASSET = "ASSET"
 
 
 class FxSource(str, enum.Enum):
@@ -54,6 +58,14 @@ transaction_tag = Table(
     Column("transaction_id", String(36), ForeignKey("transaction.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", String(36), ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
     Index("ix_transaction_tag_tag", "tag_id"),
+)
+
+
+# CASE em vez de somar booleanos: portável SQLite ↔ PostgreSQL.
+ONE_SOURCE_SQL = (
+    "(CASE WHEN checking_account_id IS NOT NULL THEN 1 ELSE 0 END"
+    " + CASE WHEN credit_card_account_id IS NOT NULL THEN 1 ELSE 0 END"
+    " + CASE WHEN asset_movement_id IS NOT NULL THEN 1 ELSE 0 END) = 1"
 )
 
 
@@ -85,6 +97,12 @@ class Transaction(Base):
     )
     paid_invoice_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("invoice.id"), nullable=True)
     transfer_group_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Spec 83/82 — movimento de ativo ligado a esta tx (lado autoritativo do
+    # vínculo; um movimento tem no máximo UMA tx). Na 83 é a fonte da tx
+    # (source_type=ASSET); a 82 reaproveita pra tx de caixa de resgate/aplicação.
+    asset_movement_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_movement.id", ondelete="RESTRICT"), nullable=True,
+    )
     # sha1 hex (40) + sufixo ":k" da k-ésima linha idêntica no mesmo arquivo (spec 71).
     fingerprint: Mapped[str] = mapped_column(String(48), nullable=False)
     is_reconciled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -110,9 +128,11 @@ class Transaction(Base):
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     __table_args__ = (
+        # Exatamente uma fonte: conta corrente, cartão ou (spec 83) ativo.
+        # Na 82 a tx de caixa terá checking + asset_movement — o CHECK vai
+        # precisar olhar source_type quando ela chegar.
         CheckConstraint(
-            "(checking_account_id IS NOT NULL AND credit_card_account_id IS NULL)"
-            " OR (checking_account_id IS NULL AND credit_card_account_id IS NOT NULL)",
+            ONE_SOURCE_SQL,
             name="ck_transaction_one_source",
         ),
         Index("ix_transaction_ws_date", "workspace_id", "event_date"),
@@ -123,4 +143,9 @@ class Transaction(Base):
         Index("ix_transaction_checking", "checking_account_id", "event_date"),
         Index("ix_transaction_transfer_group", "transfer_group_id"),
         Index("ix_transaction_extraction_job", "extraction_job_id"),
+        Index(
+            "uq_transaction_asset_movement", "asset_movement_id", unique=True,
+            sqlite_where=text("asset_movement_id IS NOT NULL"),
+            postgresql_where=text("asset_movement_id IS NOT NULL"),
+        ),
     )

@@ -23,6 +23,8 @@ import {
   QuickAddBar, TypeBadge, FILogo,
 } from '../components/ui'
 import { KLASS, collapsedOf, lanTypeColor, fiTokenFor } from '../lib/tokens'
+import LinkedTxBadge from '../components/LinkedTxBadge'
+import { linkedDeactivateWarning } from '../lib/assetPayments'
 
 const TYPE_ORDER: AssetMovementType[] = [
   'BUY', 'SELL', 'SELL_OPEN', 'BONUS', 'SUBSCRIPTION', 'COME_COTAS',
@@ -558,6 +560,11 @@ export default function AssetMovements() {
               <strong>{confirmDeactivate.type_label}</strong> de{' '}
               <strong>{confirmDeactivate.asset_name}</strong> será apagado.
             </p>
+            {linkedDeactivateWarning(confirmDeactivate) && (
+              <p className="text-[12px] text-amber-600 dark:text-amber-400 mb-2" data-testid="deactivate-linked-warning">
+                {linkedDeactivateWarning(confirmDeactivate)}
+              </p>
+            )}
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-6">
               Fica oculto da lista mas pode ser restaurado depois ativando "Incluir inativos".
             </p>
@@ -612,7 +619,12 @@ function Row({
       }`}
     >
       <td className="px-2 py-2 tnum text-gray-400">{fmtDate(l.event_date)}</td>
-      <td className="px-2"><TypeBadge code={l.type} label={l.type_label} /></td>
+      <td className="px-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <TypeBadge code={l.type} label={l.type_label} />
+          <LinkedTxBadge m={l} />
+        </div>
+      </td>
       <td className="px-2">
         <div className="flex items-center gap-2">
           <span className="w-1 h-5 rounded-full" style={{ background: klassColor }} />

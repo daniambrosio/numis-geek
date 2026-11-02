@@ -14,9 +14,13 @@ from numis_geek.models.asset_movement import (
     AssetMovement,
     AssetMovementType,
 )
+from numis_geek.models.category import Category
 from numis_geek.models.external import ExternalSource
+from numis_geek.models.transaction import Transaction
 from numis_geek.models.user import User, UserRole
 from numis_geek.models.workspace import Workspace
+from numis_geek.services import asset_payments
+from numis_geek.services import transactions as tx_svc
 from numis_geek.services.audit import AuditService
 from numis_geek.services.auth import UserContext
 from numis_geek.services.fx import resolve_fx_rate
@@ -56,6 +60,14 @@ FEE_TAX_FORBIDDEN = {AssetMovementType.BONUS}
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+class LinkedTransactionIn(BaseModel):
+    """Spec 83 — "Foi uma despesa / receita": a venda pagou algo (SELL) ou
+    a compra foi um pagamento recebido (BUY). Cria a movimentação vinculada."""
+    description: str = Field(min_length=1, max_length=255)
+    category_id: str | None = None
+    party_id: str | None = None
+
+
 class AssetMovementRequest(BaseModel):
     asset_id: str
     type: AssetMovementType
@@ -74,6 +86,8 @@ class AssetMovementRequest(BaseModel):
     external_source: ExternalSource | None = None
     nota_negociacao_number: str | None = Field(default=None, max_length=50)
     workspace_id: str | None = None  # only honored when caller is sysadmin
+    # Spec 83 — só no create, ou no update de um lançamento ainda sem vínculo.
+    linked_transaction: LinkedTransactionIn | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "AssetMovementRequest":
@@ -152,6 +166,11 @@ class AssetMovementOut(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+    # Spec 83 — movimentação (despesa/receita) paga/recebida com este lançamento.
+    linked_transaction_id: str | None = None
+    linked_transaction_description: str | None = None
+    linked_transaction_category_name: str | None = None
+    linked_transaction_amount: float | None = None
 
     @classmethod
     def from_orm(cls, m: AssetMovement, asset_name: str, asset_ticker: str | None) -> "AssetMovementOut":
@@ -319,6 +338,60 @@ def _hydrate_assets(db: Session, ms: list[AssetMovement]) -> dict[str, Asset]:
     return {a.id: a for a in rows}
 
 
+def _with_links(db: Session, outs: list[AssetMovementOut]) -> list[AssetMovementOut]:
+    """Spec 83 — preenche o vínculo com a movimentação (despesa/receita)."""
+    links = asset_payments.linked_txs(db, [o.id for o in outs])
+    cat_ids = {t.category_id for t in links.values() if t.category_id}
+    cats = {c.id: c.name for c in db.query(Category).filter(Category.id.in_(cat_ids)).all()} if cat_ids else {}
+    for o in outs:
+        t = links.get(o.id)
+        if t is None:
+            continue
+        o.linked_transaction_id = t.id
+        o.linked_transaction_description = t.description
+        o.linked_transaction_category_name = cats.get(t.category_id) if t.category_id else None
+        o.linked_transaction_amount = float(t.amount)
+    return outs
+
+
+def _attach_link(db: Session, m: AssetMovement, body: AssetMovementRequest, current_user: UserContext) -> None:
+    if body.linked_transaction is None:
+        return
+    lt = body.linked_transaction
+    try:
+        tx = asset_payments.attach_transaction(
+            db, m, description=lt.description, category_id=lt.category_id,
+            party_id=lt.party_id, notes=body.notes, user_id=current_user.user_id,
+        )
+    except tx_svc.TransactionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except tx_svc.TransactionError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+    _audit_tx(db, current_user, "transaction.created", tx, {"asset_movement_id": m.id})
+
+
+def _audit_tx(db: Session, current_user: UserContext, action: str, tx: Transaction, extra: dict | None = None) -> None:
+    actor = db.get(User, current_user.user_id)
+    details = {
+        "description": tx.description,
+        "event_date": tx.event_date.isoformat(),
+        "amount": str(tx.amount),
+        "currency": tx.currency.value,
+        "source_type": tx.source_type.value,
+        "count": 1,
+        "ids": [tx.id],
+        **(extra or {}),
+    }
+    AuditService(db).log(
+        user_email=actor.email if actor else current_user.user_id,
+        action=action,
+        resource_type="transaction",
+        resource_id=tx.id,
+        details=details,
+        workspace_id=tx.workspace_id,
+    )
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=AssetMovementListPage)
@@ -371,7 +444,7 @@ def list_asset_movements(
         )
         for m in rows
     ]
-    return AssetMovementListPage(items=items, total=total, page=page, page_size=page_size)
+    return AssetMovementListPage(items=_with_links(db, items), total=total, page=page, page_size=page_size)
 
 
 @router.get("/{mid}", response_model=AssetMovementOut)
@@ -383,11 +456,11 @@ def get_asset_movement(
     m = _get_or_404(db, mid)
     _check_workspace_access(m, current_user)
     asset = db.get(Asset, m.asset_id)
-    return AssetMovementOut.from_orm(
+    return _with_links(db, [AssetMovementOut.from_orm(
         m,
         asset_name=asset.name if asset else m.asset_id,
         asset_ticker=asset.ticker if asset else None,
-    )
+    )])[0]
 
 
 @router.post("", response_model=AssetMovementOut, status_code=status.HTTP_201_CREATED)
@@ -444,8 +517,9 @@ def create_asset_movement(
     db.add(m)
     db.flush()
     _audit(db, current_user, "asset_movement.created", m)
+    _attach_link(db, m, body, current_user)
 
-    return AssetMovementOut.from_orm(m, asset_name=asset.name, asset_ticker=asset.ticker)
+    return _with_links(db, [AssetMovementOut.from_orm(m, asset_name=asset.name, asset_ticker=asset.ticker)])[0]
 
 
 @router.put("/{mid}", response_model=AssetMovementOut)
@@ -460,6 +534,16 @@ def update_asset_movement(
 
     workspace_id = m.workspace_id
     asset = _resolve_asset(db, body.asset_id, workspace_id, current_user)
+    # Spec 83 — lançamento que pagou/recebeu uma movimentação: o par não
+    # troca de ativo nem de tipo (a tx ficaria com moeda/sinal errados).
+    link = asset_payments.linked_tx(db, m.id)
+    if link is not None and (body.asset_id != m.asset_id or body.type != m.type):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lançamento vinculado a uma movimentação: não troca de ativo nem de tipo — exclua e recrie.",
+        )
+    if link is not None and body.linked_transaction is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Esse lançamento já tem uma movimentação vinculada.")
 
     currency = body.currency or asset.currency
     fx_rate = resolve_fx_rate(db, body.event_date, client_value=body.fx_rate)
@@ -499,8 +583,19 @@ def update_asset_movement(
     db.flush()
     after = audit_snapshot(m, _TRACKED_FIELDS)
     _audit(db, current_user, "asset_movement.updated", m, diff=audit_diff(before, after))
+    if link is not None:
+        try:
+            tx = asset_payments.sync_tx_from_movement(db, m, user_id=current_user.user_id)
+        except tx_svc.TransactionConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        except tx_svc.TransactionError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        if tx is not None:
+            _audit_tx(db, current_user, "transaction.updated", tx, {"asset_movement_id": m.id, "reason": "linked movement updated"})
+    else:
+        _attach_link(db, m, body, current_user)
 
-    return AssetMovementOut.from_orm(m, asset_name=asset.name, asset_ticker=asset.ticker)
+    return _with_links(db, [AssetMovementOut.from_orm(m, asset_name=asset.name, asset_ticker=asset.ticker)])[0]
 
 
 @router.put("/{mid}/deactivate", response_model=AssetMovementOut)
@@ -511,6 +606,14 @@ def deactivate_asset_movement(
 ):
     m = _get_or_404(db, mid)
     _check_workspace_access(m, current_user)
+    # Spec 83 — desativar o lançamento apaga a movimentação vinculada.
+    link = asset_payments.linked_tx(db, m.id)
+    if link is not None:
+        _audit_tx(db, current_user, "transaction.deleted", link, {"asset_movement_id": m.id, "reason": "linked movement deactivated"})
+        try:
+            tx_svc.delete_transaction(db, link, user_id=current_user.user_id)
+        except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     m.is_active = False
     m.updated_at = datetime.now(timezone.utc)
     m.updated_by = current_user.user_id

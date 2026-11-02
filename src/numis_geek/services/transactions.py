@@ -320,7 +320,12 @@ def _fill(
     tx.fx_rate = rate
     tx.fx_source = source
     tx.amount_brl, tx.amount_usd = convert_amounts(tx.amount, currency, rate)
-    source_id = tx.checking_account_id if tx.source_type == TransactionSourceType.CHECKING else tx.credit_card_account_id
+    source_id = {
+        TransactionSourceType.CHECKING: tx.checking_account_id,
+        TransactionSourceType.CREDIT_CARD: tx.credit_card_account_id,
+        # Spec 83 — a fonte é o movimento do ativo (1 tx por movimento).
+        TransactionSourceType.ASSET: tx.asset_movement_id,
+    }[tx.source_type]
     # Spec 71: a k-ésima linha idêntica de um extrato ("2 cafés de R$ 5")
     # guarda o sufixo ":k" — preservado em toda reescrita.
     suffix = ""
@@ -364,6 +369,9 @@ def create_transaction(
 ) -> list[Transaction]:
     """Create one tx — or `installments` card tx (one per month/invoice,
     children pointing to the 1st). Returns all created rows."""
+    if data.source_type == TransactionSourceType.ASSET:
+        # O par movimento + tx nasce junto em services/asset_payments.
+        raise TransactionError("Pagamento com ativo: use /transactions/asset-payment.")
     _validate_common(db, workspace_id, data)
     tag_ids = resolve_tags(db, workspace_id, data.tag_ids)
 
@@ -453,6 +461,8 @@ def create_transaction(
 EDITABLE_FIELDS = (
     "event_date", "description", "amount", "fx_rate", "category_id", "party_id",
     "notes", "tag_ids", "is_reconciled",
+    # Spec 83 — só em tx ASSET: quantidade do ativo que saiu/entrou.
+    "asset_quantity",
 )
 
 
@@ -472,6 +482,19 @@ def update_transaction(
             raise TransactionError(f"{f} não pode ser nulo.")
     if "amount" in changes:
         changes = {**changes, "amount": to_cents(changes["amount"])}
+    is_asset = tx.source_type == TransactionSourceType.ASSET
+    changes = dict(changes)  # não muta o dict do caller (audit usa o original)
+    asset_quantity = changes.pop("asset_quantity", None)
+    if asset_quantity is not None and not is_asset:
+        raise TransactionError("Quantidade do ativo só existe em pagamento com ativo.")
+    if is_asset:
+        if "fx_rate" in changes and changes["fx_rate"] is not None:
+            raise TransactionError("Pagamento com ativo usa a PTAX do dia — sem cotação manual.")
+        changes.pop("fx_rate", None)
+        if "amount" in changes and changes["amount"] != 0 and (changes["amount"] > 0) != (tx.amount > 0):
+            raise TransactionConflict(
+                "Pagamento com ativo não troca de direção (despesa ↔ receita) — exclua e recrie."
+            )
     old_date = tx.event_date
     date_changed = "event_date" in changes and changes["event_date"] != old_date
     if tx.invoice_id:
@@ -530,6 +553,9 @@ def update_transaction(
     tx.updated_by = user_id
     if tag_ids is not None:
         set_tags(db, tx.id, tag_ids)
+    if is_asset:
+        from numis_geek.services.asset_payments import sync_movement_from_tx
+        sync_movement_from_tx(db, tx, quantity=asset_quantity, user_id=user_id)
 
     touched = [tx]
     if tx.transfer_group_id and ({"event_date", "description"} & set(changes)):
@@ -561,6 +587,7 @@ def installment_children(db: Session, parent_id: str) -> list[Transaction]:
 
 def delete_transaction(
     db: Session, tx: Transaction, *, cascade: bool = False, reverted_occurrences: list | None = None,
+    deactivated_movements: list | None = None, user_id: str | None = None,
 ) -> list[Transaction]:
     """Delete `tx` (and its transfer pair / installment children when
     `cascade`). Undoes an invoice payment, and puts every conta a
@@ -596,6 +623,13 @@ def delete_transaction(
         reverted = unlink_transaction(db, r.id)
         if reverted_occurrences is not None:
             reverted_occurrences.extend(reverted)
+    # Spec 83 — apagar o pagamento com ativo desativa o lançamento do ativo.
+    from numis_geek.services.asset_payments import deactivate_movement_of
+    for r in rows:
+        if r.source_type == TransactionSourceType.ASSET:
+            m = deactivate_movement_of(db, r, user_id=user_id)
+            if m is not None and deactivated_movements is not None:
+                deactivated_movements.append(m)
     db.flush()
     # children before the parent (self-FK)
     for r in sorted(rows, key=lambda x: x.parent_transaction_id is None):

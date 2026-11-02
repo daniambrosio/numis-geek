@@ -11,7 +11,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import Transactions, { groupByMonth, subIdsForRoots } from './Transactions'
 import {
-  api, type AccountOut, type CategoryOut, type CreditCardOut, type TransactionOut,
+  api, type AccountOut, type AssetOut, type CategoryOut, type CreditCardOut, type TransactionOut,
   type StatementImportOut, type TransactionSummaryOut, type UserOut,
 } from '../lib/api'
 
@@ -65,6 +65,22 @@ function tx(partial: Partial<TransactionOut> & { id: string }): TransactionOut {
   }
 }
 
+function assetOut(partial: Partial<AssetOut> & { id: string; name: string }): AssetOut {
+  return {
+    workspace_id: 'ws1', workspace_name: 'Família', account_id: 'inv', account_name: 'Coinbase',
+    financial_institution_id: 'fi1', financial_institution_name: 'COINBASE', asset_class: 'CRYPTO',
+    country: 'US', ticker: null, cnpj: null, currency: 'BRL', current_price: null,
+    price_updated_at: null, price_source: null, price_tier: 'FRESH', notes: null,
+    external_id: null, external_source: null, is_active: true,
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', details: null,
+    linked_account_id: null,
+    ...partial,
+  }
+}
+// Spec 83 — USDC paga despesa; o espelho de conta corrente não aparece no composer.
+const usdc = assetOut({ id: 'usdc', name: 'Cripto Stablecoin de Dólar', ticker: 'USDC', current_price: 5.05 })
+const mirrorCash = assetOut({ id: 'cash', name: 'Saldo Itaú', asset_class: 'CASH', linked_account_id: 'itau' })
+
 const summary: TransactionSummaryOut = {
   inflows: { brl: 12000, usd: 2400 }, outflows: { brl: -4500, usd: -900 },
   net: { brl: 7500, usd: 1500 }, unreconciled_count: 3, count: 10,
@@ -78,6 +94,7 @@ function mockBase(rows: TransactionOut[] = []) {
   vi.spyOn(api, 'listInvoices').mockResolvedValue([])
   vi.spyOn(api, 'listCategories').mockResolvedValue(categories)
   vi.spyOn(api, 'listParties').mockResolvedValue([])
+  vi.spyOn(api, 'listAssets').mockResolvedValue([usdc, mirrorCash])
   vi.spyOn(api, 'listAttachments').mockResolvedValue([])
   vi.spyOn(api, 'transactionSummary').mockResolvedValue(summary)
   return vi.spyOn(api, 'listTransactions').mockResolvedValue({ items: rows, total: rows.length, page: 1, page_size: 500 })
@@ -511,3 +528,83 @@ describe('Transactions — parcela prevista e valor original (spec 71)', () => {
   })
 })
 
+
+describe('Pagar e receber com ativos (spec 83)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('linha ASSET mostra "USDC · COINBASE" e a quantidade; chip Ativos vira asset_source', async () => {
+    const row = tx({
+      id: 'a1', source_type: 'ASSET', checking_account_id: null, account_name: null,
+      financial_institution_name: 'COINBASE', description: 'Coinbase One', amount: -239.98,
+      asset_movement_id: 'm1', asset_id: 'usdc', asset_name: 'Cripto Stablecoin de Dólar',
+      asset_ticker: 'USDC', asset_quantity: 47.537572,
+    })
+    const list = mockBase([row])
+    renderPage()
+    const m = await mainReady()
+    expect(await m.findByText('USDC · COINBASE')).toBeInTheDocument()
+    expect(m.getByTestId('tx-asset-qty-a1')).toHaveTextContent('pago com 47,537572 USDC')
+
+    fireEvent.click(m.getByRole('button', { name: 'Ativos' }))
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ asset_source: true, card_id: [] })))
+  })
+
+  it('?compose=asset-tx: sugere preço × qtd, cria despesa paga com USDC e não lista o espelho de conta', async () => {
+    mockBase()
+    const create = vi.spyOn(api, 'createAssetPayment').mockResolvedValue(tx({ id: 'new', source_type: 'ASSET' }))
+    renderPage('/transactions?compose=asset-tx')
+
+    const dialog = await screen.findByRole('dialog', { name: 'Pagar ou receber com ativo' })
+    const d = within(dialog)
+    const picker = d.getByLabelText('Ativo') as HTMLSelectElement
+    expect([...picker.options].map(o => o.value)).toEqual(['usdc'])
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Coinbase One' } })
+    fireEvent.change(d.getByLabelText('Quantidade'), { target: { value: '10' } })
+    expect((d.getByLabelText('Valor total') as HTMLInputElement).value).toBe('50,5')
+    fireEvent.change(d.getByLabelText('Valor total'), { target: { value: '239,98' } })
+    fireEvent.change(d.getByLabelText('Categoria'), { target: { value: 'merc' } })
+    expect(d.getByText('− R$ 239,98')).toBeInTheDocument()
+    fireEvent.click(d.getByRole('button', { name: /Salvar/ }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      direction: 'EXPENSE', asset_id: 'usdc', quantity: 10, amount: 239.98,
+      description: 'Coinbase One', category_id: 'merc',
+    })))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Pagar ou receber com ativo' })).not.toBeInTheDocument())
+  })
+
+  it('editar linha ASSET abre o composer de ativo e manda asset_quantity; erro fica no modal', async () => {
+    const row = tx({
+      id: 'a1', source_type: 'ASSET', checking_account_id: null, account_name: null,
+      description: 'Coinbase One', amount: -239.98, asset_movement_id: 'm1', asset_id: 'usdc',
+      asset_ticker: 'USDC', asset_quantity: 47.537572,
+    })
+    mockBase([row])
+    const update = vi.spyOn(api, 'updateTransaction').mockRejectedValueOnce(new Error('Pagamento com ativo não troca de direção'))
+    renderPage()
+    fireEvent.click(await (await mainReady()).findByText('Coinbase One'))
+    const dialog = await screen.findByRole('dialog', { name: 'Editar pagamento com ativo' })
+    const d = within(dialog)
+    fireEvent.change(d.getByLabelText('Quantidade'), { target: { value: '50' } })
+    fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('a1', expect.objectContaining({ asset_quantity: 50, amount: -239.98 })))
+    expect(await d.findByText(/não troca de direção/)).toBeInTheDocument()
+  })
+
+  it('excluir linha ASSET avisa que o lançamento do ativo também sai', async () => {
+    const row = tx({
+      id: 'a1', source_type: 'ASSET', checking_account_id: null, account_name: null,
+      description: 'Coinbase One', amount: -239.98, asset_ticker: 'USDC',
+    })
+    mockBase([row])
+    renderPage()
+    const m = await mainReady()
+    await m.findByText('Coinbase One')
+    fireEvent.click(m.getByRole('button', { name: 'Ações' }))
+    fireEvent.click(m.getByRole('button', { name: 'Excluir' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Excluir movimentação' })
+    expect(within(dialog).getByText(/lançamento de venda do ativo também será excluído/)).toBeInTheDocument()
+  })
+})
