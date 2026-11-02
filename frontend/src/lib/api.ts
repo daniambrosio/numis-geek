@@ -2165,6 +2165,9 @@ export interface BankImportOccurrence {
   party_name?: string | null
   // regra MONTHLY/YEARLY: quitar com outro valor atualiza o previsto
   learns_amount?: boolean
+  // matcher pontuado (2026-11-02)
+  score?: number
+  signals?: string[]
 }
 
 export interface BankImportRow {
@@ -2178,7 +2181,15 @@ export interface BankImportRow {
   installment_number: number | null
   installment_total: number | null
   is_invoice_payment: boolean
+  counterparty?: string | null
+  line_kind?: string | null
   bucket: BankImportBucket
+  // chave de memória/grupo: contraparte ou descrição sem datas
+  group_key?: string
+  // categoria pré-selecionada (System 1 confiante ou a da conta a pagar)
+  category_id?: string | null
+  category_source?: 'system1' | 'occurrence' | null
+  category_suggestion?: { category_id: string; path: string; confidence: number; reason: string; applied: boolean }
   actions: BankImportAction[]
   default_action: BankImportAction
   warning: string | null

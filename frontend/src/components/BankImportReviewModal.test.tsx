@@ -264,7 +264,7 @@ describe('BankImportReviewModal — fornecedor por tipo de linha', () => {
     await waitFor(() => expect(screen.getByTestId('row-r0')).toBeInTheDocument())
     const sel = within(screen.getByTestId('row-r0')).getByLabelText('Fornecedor/Cliente')
     expect(sel).toHaveDisplayValue('nova: Receita Federal')
-    await waitFor(() => expect(within(sel).getAllByRole('option').length).toBe(3))
+    await waitFor(() => expect(within(sel).getAllByRole('option').length).toBe(4))  // + Novo fornecedor…
     await userEvent.selectOptions(sel, 'p:p1')
     await userEvent.click(screen.getByTestId('bank-import-apply'))
     await waitFor(() => expect(confirm).toHaveBeenCalled())
@@ -286,6 +286,95 @@ describe('BankImportReviewModal — valor previsto aprendido', () => {
     expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
     await userEvent.selectOptions(screen.getByTestId('action-r3'), 'import')
     expect(screen.queryByTestId('learns-r3')).not.toBeInTheDocument()
+  })
+})
+
+describe('BankImportReviewModal — 1º import real (2026-11-02)', () => {
+  function confirmSpy() {
+    return vi.spyOn(api, 'confirmExtraction').mockResolvedValue({
+      applied_count: 1, skipped_count: 0, errors: [], bulk_detail: null,
+      bank_import: { created: 1, reconciled: 0, skipped: 0, paid_invoices: 0, settled: 0, new_parties: 0, invoice_id: null },
+    })
+  }
+
+  it('categoria sugerida pelo System 1 vem marcada "sugerida"; baixa confiança é só dica', async () => {
+    mockPreview(preview({ overlaps: [], rows: [
+      row({ row_id: 'r0', category_id: 'sub', category_source: 'system1',
+        category_suggestion: { category_id: 'sub', path: 'Moradia › Aluguel', confidence: 0.9, reason: 'igual ao histórico', applied: true } }),
+      row({ row_id: 'r1', index: 1, category_id: null,
+        category_suggestion: { category_id: 'sub', path: 'Moradia › Aluguel', confidence: 0.4, reason: 'palpite', applied: false } }),
+    ] }))
+    const confirm = confirmSpy()
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('suggested-r0')).toHaveAttribute('title', 'igual ao histórico'))
+    expect(within(screen.getByTestId('row-r0')).getByLabelText('Categoria')).toHaveValue('sub')
+    expect(within(screen.getByTestId('row-r1')).getByLabelText('Categoria')).toHaveValue('')
+    await userEvent.click(screen.getByTestId('hint-r1'))
+    expect(within(screen.getByTestId('row-r1')).getByLabelText('Categoria')).toHaveValue('sub')
+    await userEvent.selectOptions(within(screen.getByTestId('row-r0')).getByLabelText('Categoria'), '')
+    await userEvent.click(screen.getByTestId('bank-import-apply'))
+    await waitFor(() => expect(confirm).toHaveBeenCalled())
+    const dec = confirm.mock.calls[0][1]!.bank_decisions!
+    expect(dec.r0.category_id).toBeNull()        // explicit "Sem categoria" is sent
+    expect(dec.r1.category_id).toBe('sub')
+  })
+
+  it('candidata de conta a pagar aparece como dica quando a linha fica Importar', async () => {
+    const c = ROWS[3].scheduled!.candidates
+    mockPreview(preview({ overlaps: [], rows: [{
+      ...ROWS[3], bucket: 'new', default_action: 'import', actions: ['import', 'settle', 'skip'],
+      scheduled: { occurrence_id: 'occ-a', candidates: [{ ...c[0], signals: ['valor exato', 'próximo dia útil'] }] },
+    }] }))
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    const hint = await screen.findByTestId('candidate-r3')
+    expect(hint).toHaveTextContent('Possível conta: Aluguel · vence 10/10/26')
+    expect(hint).toHaveAttribute('title', 'valor exato · próximo dia útil')
+    await userEvent.selectOptions(screen.getByTestId('action-r3'), 'settle')
+    expect(screen.queryByTestId('candidate-r3')).not.toBeInTheDocument()
+    expect(within(screen.getByTestId('row-r3')).getByLabelText('Conta a pagar/receber')).toHaveValue('occ-a')
+  })
+
+  it('aplicar categoria/fornecedor às outras linhas iguais do arquivo', async () => {
+    mockPreview(preview({ overlaps: [], rows: [
+      row({ row_id: 'r0', description: 'PIX MARIA N 18/09', group_key: 'PIX MARIA N', party: { mode: 'none' } }),
+      row({ row_id: 'r1', index: 1, description: 'PIX MARIA N 25/09', group_key: 'PIX MARIA N', party: { mode: 'none' } }),
+      row({ row_id: 'r2', index: 2, description: 'OUTRA', group_key: 'OUTRA' }),
+    ] }))
+    vi.spyOn(api, 'listParties').mockResolvedValue([{ id: 'maria', name: 'Maria (diarista)', is_active: true } as never])
+    const confirm = confirmSpy()
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    const sel = await within(await screen.findByTestId('row-r0')).findByLabelText('Fornecedor/Cliente')
+    await waitFor(() => expect(within(sel).getByRole('option', { name: 'Maria (diarista)' })).toBeInTheDocument())
+    await userEvent.selectOptions(sel, 'p:maria')
+    await userEvent.selectOptions(within(screen.getByTestId('row-r0')).getByLabelText('Categoria'), 'sub')
+    const btn = screen.getByTestId('apply-mates-r0')
+    expect(btn).toHaveTextContent('aplicar às outras 1 linha igual neste arquivo')
+    await userEvent.click(btn)
+    expect(screen.queryByTestId('apply-mates-r0')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('bank-import-apply'))
+    await waitFor(() => expect(confirm).toHaveBeenCalled())
+    const dec = confirm.mock.calls[0][1]!.bank_decisions!
+    // only the last edit (category) is spread; party was set on r0 only
+    expect(dec.r1).toMatchObject({ category_id: 'sub' })
+    expect(dec.r0).toMatchObject({ party_id: 'maria', category_id: 'sub' })
+    expect(dec.r2.category_id ?? null).toBeNull()
+  })
+
+  it('"Novo fornecedor/cliente…" abre campo editável com o nome sugerido', async () => {
+    mockPreview(preview({ overlaps: [], rows: [row({
+      row_id: 'r0', description: 'UBER *TRIP 1234', party: { mode: 'new', new_party_name: 'UBER *TRIP 1234', alias: 'UBER TRIP' },
+    })] }))
+    const confirm = confirmSpy()
+    render(<BankImportReviewModal job={JOB} accounts={[]} categories={CATS} onApplied={() => {}} onClose={() => {}} />)
+    const sel = await within(await screen.findByTestId('row-r0')).findByLabelText('Fornecedor/Cliente')
+    await userEvent.selectOptions(sel, '__custom__')
+    const input = screen.getByLabelText('Nome do novo fornecedor/cliente')
+    expect(input).toHaveValue('UBER *TRIP 1234')
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Uber')
+    await userEvent.click(screen.getByTestId('bank-import-apply'))
+    await waitFor(() => expect(confirm).toHaveBeenCalled())
+    expect(confirm.mock.calls[0][1]!.bank_decisions!.r0).toMatchObject({ new_party_name: 'Uber', party_id: null })
   })
 })
 

@@ -24,7 +24,7 @@ import {
   type BankImportPreview, type BankImportResult, type BankImportRow, type CategoryOut, type PartyOut,
   type StatementImportOut,
 } from '../lib/api'
-import { ACTION_LABEL, countDecisions, initialDecisions } from '../lib/bankImport'
+import { ACTION_LABEL, countDecisions, groupMates, initialDecisions } from '../lib/bankImport'
 import { useEscapeKey } from '../lib/useEscapeKey'
 import { CategorySelect, fmtMoney } from './TransactionComposers'
 
@@ -71,6 +71,8 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
   const [applying, setApplying] = useState(false)
   const [discarding, setDiscarding] = useState(false)
   const [toast, setToast] = useState('')
+  // última edição de categoria/fornecedor → oferece aplicar às linhas iguais
+  const [lastEdit, setLastEdit] = useState<{ rowId: string; patch: Partial<BankImportDecision> } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -198,7 +200,20 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
                         <tbody>
                           {rows.map(r => (
                             <RowView key={r.row_id} r={r} decision={decisions[r.row_id] ?? { action: r.default_action }}
-                              onChange={patch => setDecision(r.row_id, patch)}
+                              onChange={patch => {
+                                setDecision(r.row_id, patch)
+                                const shared: Partial<BankImportDecision> = {}
+                                for (const k of ['category_id', 'party_id', 'no_party', 'new_party_name'] as const) {
+                                  if (k in patch) (shared as Record<string, unknown>)[k] = patch[k]
+                                }
+                                setLastEdit(Object.keys(shared).length ? { rowId: r.row_id, patch: shared } : null)
+                              }}
+                              mates={lastEdit?.rowId === r.row_id ? groupMates(preview.rows, r) : []}
+                              onApplyToMates={() => {
+                                if (!lastEdit) return
+                                for (const m of groupMates(preview.rows, r)) setDecision(m.row_id, lastEdit.patch)
+                                setLastEdit(null)
+                              }}
                               categories={categories} parties={parties} checking={checking} />
                           ))}
                         </tbody>
@@ -239,23 +254,27 @@ export default function BankImportReviewModal({ job, accounts, categories, onApp
 
 const SELECT_CLS = 'h-7 px-2 rounded-md bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[11px] text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500'
 
-function RowView({ r, decision, onChange, categories, parties, checking }: {
+function RowView({ r, decision, onChange, mates, onApplyToMates, categories, parties, checking }: {
   r: BankImportRow
   decision: BankImportDecision
   onChange: (patch: Partial<BankImportDecision>) => void
+  mates: BankImportRow[]
+  onApplyToMates: () => void
   categories: CategoryOut[]
   parties: PartyOut[]
   checking: AccountOut[]
 }) {
   const amount = Number(r.amount)
   const creates = decision.action === 'import' || decision.action === 'import_anyway' || decision.action === 'settle'
-  const partyValue = decision.no_party ? 'none' : decision.party_id ? `p:${decision.party_id}` : 'suggested'
+  const partyValue = decision.no_party ? 'none' : decision.party_id ? `p:${decision.party_id}`
+    : decision.new_party_name != null ? '__custom__' : 'suggested'
   const chosenOcc = r.scheduled?.candidates.find(c => c.occurrence_id === decision.occurrence_id)
   const suggestedLabel = r.party.from_occurrence
     ? `${chosenOcc?.party_name ?? 'Sem fornecedor/cliente'} (da conta a pagar/receber)`
     : r.party.mode === 'existing' ? r.party.party_name
     : r.party.mode === 'new' ? `nova: ${r.party.new_party_name}` : 'Sem fornecedor/cliente'
   const ip = r.invoice_payment
+  const sug = r.category_suggestion
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800 align-top" data-testid={`row-${r.row_id}`}>
       <td className="px-3 py-2 tnum text-gray-500 whitespace-nowrap">{fmtDay(r.event_date)}</td>
@@ -276,6 +295,13 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
             <span>fatura {ip.card_name} · fecha {fmtDay(ip.close_date)}{ip.status === 'PAID' ? ' · já paga' : ''}</span>
           )}
           {r.warning && <span className="text-amber-600 dark:text-amber-400">{r.warning}</span>}
+          {r.scheduled && decision.action !== 'settle' && r.scheduled.candidates[0] && (
+            <span className="text-indigo-600 dark:text-indigo-300" data-testid={`candidate-${r.row_id}`}
+              title={(r.scheduled.candidates[0].signals ?? []).join(' · ')}>
+              Possível conta: {r.scheduled.candidates[0].description} · vence {fmtDay(r.scheduled.candidates[0].due_date)}
+              {r.scheduled.candidates.length > 1 && ` (+${r.scheduled.candidates.length - 1})`} — escolha "{ACTION_LABEL.settle}" para quitar
+            </span>
+          )}
           {decision.action === 'settle' && chosenOcc?.learns_amount
             && Math.abs(Math.abs(amount) - Number(chosenOcc.amount)) >= 0.005 && (
             <span className="text-indigo-600 dark:text-indigo-300" data-testid={`learns-${r.row_id}`}>
@@ -294,18 +320,41 @@ function RowView({ r, decision, onChange, categories, parties, checking }: {
               <div className="w-40">
                 <CategorySelect categories={categories} value={decision.category_id ?? ''}
                   onChange={v => onChange({ category_id: v || null })} />
+                {sug && decision.category_id === sug.category_id && (
+                  <span className="text-[10px] text-indigo-600 dark:text-indigo-300 cursor-help" title={sug.reason}
+                    data-testid={`suggested-${r.row_id}`}>sugerida</span>
+                )}
+                {sug && !sug.applied && !decision.category_id && (
+                  <button type="button" onClick={() => onChange({ category_id: sug.category_id })} title={sug.reason}
+                    className="text-[10px] text-gray-500 underline decoration-dotted" data-testid={`hint-${r.row_id}`}>
+                    sugestão: {sug.path}
+                  </button>
+                )}
               </div>
               <select value={partyValue} aria-label="Fornecedor/Cliente" className={`${SELECT_CLS} max-w-[170px]`}
                 onChange={e => {
                   const v = e.target.value
-                  if (v === 'suggested') onChange({ party_id: null, no_party: false })
-                  else if (v === 'none') onChange({ party_id: null, no_party: true })
-                  else onChange({ party_id: v.slice(2), no_party: false })
+                  if (v === 'suggested') onChange({ party_id: null, no_party: false, new_party_name: null })
+                  else if (v === 'none') onChange({ party_id: null, no_party: true, new_party_name: null })
+                  else if (v === '__custom__') onChange({ party_id: null, no_party: false, new_party_name: r.party.new_party_name ?? r.counterparty ?? r.description })
+                  else onChange({ party_id: v.slice(2), no_party: false, new_party_name: null })
                 }}>
                 <option value="suggested">{suggestedLabel}</option>
+                <option value="__custom__">Novo fornecedor/cliente…</option>
                 {r.party.mode !== 'none' && <option value="none">Sem fornecedor/cliente</option>}
                 {parties.filter(p => p.id !== r.party.party_id).map(p => <option key={p.id} value={`p:${p.id}`}>{p.name}</option>)}
               </select>
+              {decision.new_party_name != null && (
+                <input type="text" value={decision.new_party_name} aria-label="Nome do novo fornecedor/cliente"
+                  onChange={e => onChange({ new_party_name: e.target.value })}
+                  className={`${SELECT_CLS} w-40`} autoFocus />
+              )}
+              {mates.length > 0 && (
+                <button type="button" onClick={onApplyToMates} data-testid={`apply-mates-${r.row_id}`}
+                  className="text-[10px] text-indigo-600 dark:text-indigo-300 underline">
+                  aplicar às outras {mates.length} {mates.length === 1 ? 'linha igual' : 'linhas iguais'} neste arquivo
+                </button>
+              )}
             </>
           )}
           {decision.action === 'settle' && r.scheduled && (

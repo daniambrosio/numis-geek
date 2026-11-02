@@ -25,11 +25,17 @@ const CREATES: BankImportAction[] = ['import', 'import_anyway', 'settle', 'pay']
 export function initialDecisions(rows: BankImportRow[]): Record<string, BankImportDecision> {
   const out: Record<string, BankImportDecision> = {}
   for (const r of rows) {
-    out[r.row_id] = { action: r.default_action }
+    out[r.row_id] = { action: r.default_action, category_id: r.category_id ?? null }
     if (r.scheduled) out[r.row_id].occurrence_id = r.scheduled.occurrence_id
     if (r.invoice_payment?.payment_account_id) out[r.row_id].payment_account_id = r.invoice_payment.payment_account_id
   }
   return out
+}
+
+/** Mesmo texto (contraparte/descrição sem datas) nas outras linhas do arquivo. */
+export function groupMates(rows: BankImportRow[], row: BankImportRow): BankImportRow[] {
+  if (!row.group_key) return []
+  return rows.filter(o => o.row_id !== row.row_id && o.group_key === row.group_key)
 }
 
 /** "Importar N · Reconciliar M" — N = linhas que criam movimentação. */
