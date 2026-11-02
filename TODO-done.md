@@ -2,6 +2,13 @@
 
 Arquivo de destino dos itens que saíram do `TODO.md`. Registro histórico, não fila.
 
+## Novembro 2026
+
+- [x] **2026-11-02 — Spec 83 (Pagar e receber com ativos) em produção + backfill.**
+  `fc5974c` deployado; Coinbase One (19/05/2026, R$ 239,98) vinculado ao SELL de
+  47,537572 USDC em *Apps e Serviços Online › Loyalty / Clube* / COINBASE BR.
+  Backup `numis_geek.db.bak-before-spec83-backfill-20261102-223248`.
+
 ## Outubro 2026
 
 - [x] **2026-10-31 — Coinbase: recompensas USDC→BTC de ago/set lançadas + julho deduplicado.**

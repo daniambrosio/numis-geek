@@ -105,11 +105,6 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Import / extração
 
-- [ ] `[user]` `[claude]` **Spec 83 — backfill do Coinbase One em prod.** Código pronto
-  (2026-11-02). Falta: deploy + escolher a categoria (não existe "Assinaturas" em
-  prod; candidata *Apps e Serviços Online › Loyalty / Clube*) e vincular o SELL
-  `a4ab9f8c` (47,537572 USDC, R$ 239,98, 19/05/2026) com fornecedor **COINBASE BR** —
-  Lançamentos → Editar → "Foi uma despesa". Depois marcar a spec 83 ✅ Done.
 - [x] ~~**Parcelas faltantes no import + faturas futuras na previsão**~~ FEITO em 6c9febe
   (2026-11-02, em prod): import gera as parcelas futuras como "prevista" (confere antes se
   já existem; a fatura real concilia); forecast inclui faturas não pagas no vencimento.
