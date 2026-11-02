@@ -4,8 +4,9 @@
 - `transaction.asset_movement_id` (FK nullable → asset_movement, RESTRICT;
   coluna compartilhada com a spec 82) + índice único parcial: um movimento
   tem no máximo UMA tx;
-- `ck_transaction_one_source` passa a exigir exatamente uma fonte entre
-  conta corrente, cartão e movimento de ativo.
+- `ck_transaction_one_source` amarra a fonte ao `source_type`: CHECKING →
+  conta (movimento opcional, pra tx de caixa da spec 82), CREDIT_CARD →
+  cartão, ASSET → só o movimento.
 
 SQLite: batch_alter_table (recria a tabela). Sem data ops — nenhuma tx
 existente muda; o backfill do Coinbase One é feito pela API depois do deploy.
@@ -28,9 +29,11 @@ OLD_CHECK = (
     " OR (checking_account_id IS NULL AND credit_card_account_id IS NOT NULL)"
 )
 NEW_CHECK = (
-    "(CASE WHEN checking_account_id IS NOT NULL THEN 1 ELSE 0 END"
-    " + CASE WHEN credit_card_account_id IS NOT NULL THEN 1 ELSE 0 END"
-    " + CASE WHEN asset_movement_id IS NOT NULL THEN 1 ELSE 0 END) = 1"
+    "(source_type = 'CHECKING' AND checking_account_id IS NOT NULL AND credit_card_account_id IS NULL)"
+    " OR (source_type = 'CREDIT_CARD' AND credit_card_account_id IS NOT NULL"
+    " AND checking_account_id IS NULL AND asset_movement_id IS NULL)"
+    " OR (source_type = 'ASSET' AND asset_movement_id IS NOT NULL"
+    " AND checking_account_id IS NULL AND credit_card_account_id IS NULL)"
 )
 OLD_ENUM = sa.Enum("CHECKING", "CREDIT_CARD", name="transactionsourcetype")
 NEW_ENUM = sa.Enum("CHECKING", "CREDIT_CARD", "ASSET", name="transactionsourcetype")

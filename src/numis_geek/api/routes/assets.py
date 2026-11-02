@@ -1382,7 +1382,9 @@ def list_asset_movements(
         AssetMovementFullOut.from_orm(m, asset.name, asset.ticker)
         for m in rows
     ]
-    return AssetMovementListPage(items=items, total=total, page=page, page_size=page_size)
+    # Spec 83 — vínculo com a movimentação (badge, aviso ao desativar, composer).
+    from numis_geek.api.routes.asset_movements import _with_links
+    return AssetMovementListPage(items=_with_links(db, items), total=total, page=page, page_size=page_size)
 
 
 @router.put("/{asset_id}/deactivate", response_model=AssetOut)

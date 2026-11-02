@@ -555,7 +555,9 @@ def update_transaction(
         set_tags(db, tx.id, tag_ids)
     if is_asset:
         from numis_geek.services.asset_payments import sync_movement_from_tx
-        sync_movement_from_tx(db, tx, quantity=asset_quantity, user_id=user_id)
+        sync_movement_from_tx(
+            db, tx, quantity=asset_quantity, amount_changed="amount" in changes, user_id=user_id,
+        )
 
     touched = [tx]
     if tx.transfer_group_id and ({"event_date", "description"} & set(changes)):

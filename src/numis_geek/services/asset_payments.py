@@ -25,7 +25,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy.orm import Session
 
 from numis_geek.models.account import Account
-from numis_geek.models.asset import Asset
+from numis_geek.models.asset import Asset, AssetClass
 from numis_geek.models.asset_movement import AssetMovement, AssetMovementType
 from numis_geek.models.transaction import Transaction, TransactionSourceType
 from numis_geek.services.fx import resolve_fx_rate
@@ -66,6 +66,8 @@ def _get_asset(db: Session, workspace_id: str, asset_id: str) -> Asset:
         raise TransactionError("Ativo não encontrado.")
     if not asset.is_active:
         raise TransactionError("Ativo inativo.")
+    if asset.asset_class == AssetClass.OPTION:
+        raise TransactionError("Opção não paga nem recebe — use o ciclo de abertura/encerramento.")
     linked = db.get(Account, asset.linked_account_id) if asset.linked_account_id else None
     if linked is not None and linked.balance_from_ledger:
         raise TransactionError(
@@ -88,9 +90,17 @@ def _quantity(asset: Asset, quantity) -> Decimal:
     return q
 
 
+def _unit_price(gross: Decimal, quantity: Decimal) -> Decimal:
+    unit = (gross / quantity).quantize(QTY_Q, ROUND_HALF_UP)
+    if unit <= 0:
+        raise TransactionError("Quantidade grande demais para o valor — preço unitário arredonda a zero.")
+    return unit
+
+
 def _set_movement_amounts(m: AssetMovement, quantity: Decimal, gross: Decimal) -> None:
+    """Par novo: sem taxa/imposto, net = gross."""
     m.quantity = quantity
-    m.unit_price = (gross / quantity).quantize(QTY_Q, ROUND_HALF_UP)
+    m.unit_price = _unit_price(gross, quantity)
     m.gross_amount = gross
     m.fee = None
     m.tax = None
@@ -204,10 +214,13 @@ def _attach(db, m, *, description, category_id, party_id, notes, tag_ids, user_i
 # ── edição: um lado puxa o outro ─────────────────────────────────────────────
 
 def sync_movement_from_tx(
-    db: Session, tx: Transaction, *, quantity=None, user_id: str | None = None,
+    db: Session, tx: Transaction, *, quantity=None, amount_changed: bool = False,
+    user_id: str | None = None,
 ) -> AssetMovement:
-    """Depois de editar a tx ASSET: data, valor (e quantidade, se veio)
-    vão pro movimento. Sinal não troca — SELL não vira BUY."""
+    """Depois de editar a tx ASSET: data, valor e quantidade — SÓ os que
+    mudaram — vão pro movimento. Taxa/imposto do lançamento ficam (net
+    recalculado com eles); preço unitário só muda se valor ou qtd mudaram.
+    Sinal não troca — SELL não vira BUY."""
     m = db.get(AssetMovement, tx.asset_movement_id)
     if m is None or not m.is_active:
         raise TransactionConflict("Lançamento do ativo vinculado não existe mais.")
@@ -217,11 +230,24 @@ def sync_movement_from_tx(
             "Pagamento com ativo não troca de direção (despesa ↔ receita) — exclua e recrie."
         )
     asset = db.get(Asset, m.asset_id)
-    qty = _quantity(asset, quantity) if quantity is not None else Decimal(m.quantity or 1)
+    touched = False
     if m.event_date != tx.event_date:
         m.event_date = tx.event_date
         m.fx_rate = resolve_fx_rate(db, tx.event_date)
-    _set_movement_amounts(m, qty, abs(Decimal(tx.amount)))
+        touched = True
+    if amount_changed or quantity is not None:
+        qty = _quantity(asset, quantity) if quantity is not None else Decimal(m.quantity or 1)
+        gross = abs(Decimal(tx.amount))
+        if qty != Decimal(m.quantity or 0) or gross != Decimal(m.gross_amount or 0):
+            fee = Decimal(m.fee or 0)
+            tax = Decimal(m.tax or 0)
+            m.quantity = qty
+            m.unit_price = _unit_price(gross, qty)
+            m.gross_amount = gross
+            m.net_amount = gross - fee - tax if m.type == AssetMovementType.SELL else gross + fee + tax
+            touched = True
+    if not touched:
+        return m
     m.updated_at = datetime.now(timezone.utc)
     m.updated_by = user_id
     db.flush()

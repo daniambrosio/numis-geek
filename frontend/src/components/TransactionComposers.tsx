@@ -573,7 +573,12 @@ export function AssetPaymentComposer({
   onUpdate: (id: string, data: TransactionUpdatePayload) => Promise<TransactionOut[]>
   onClose: () => void
 }) {
-  const options = useMemo(() => payableAssets(assets), [assets])
+  const options = useMemo(() => {
+    const opts = payableAssets(assets)
+    // Editar tx de ativo depois inativado: ele continua na lista (select travado).
+    const current = initial?.asset_id ? assets.find(a => a.id === initial.asset_id) : undefined
+    return current && !opts.includes(current) ? [current, ...opts] : opts
+  }, [assets, initial?.asset_id])
   const [assetIdState, setAssetId] = useState(initial?.asset_id ?? '')
   const assetId = assetIdState || options[0]?.id || ''
   const asset = assets.find(a => a.id === assetId)

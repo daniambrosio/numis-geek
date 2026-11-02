@@ -421,3 +421,101 @@ def test_summary_and_source_filter_count_asset_expense(client, seed):
     assert [i["description"] for i in only_assets["items"]] == ["Relatório"]
     by_cat = client.get(f"/api/transactions?category_id={seed['sub']}&from={d(2)}", headers=h).json()
     assert any(i["description"] == "Relatório" for i in by_cat["items"])
+
+
+# ── regressões do audit adversarial (2026-11-02) ──────────────────────────────
+
+def _sell_with_fee_linked(client, seed, description):
+    r = client.post("/api/asset-movements", json={
+        "asset_id": seed["usdc"], "type": "SELL", "event_date": d(12),
+        "quantity": "10", "unit_price": "5.40", "fee": "1.50",
+        "linked_transaction": {"description": description},
+    }, headers=auth(seed["token"]))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_tx_edit_without_amount_keeps_fee_and_unit_price(client, seed):
+    m = _sell_with_fee_linked(client, seed, "Com taxa")
+    for body in ({"is_reconciled": False}, {"description": "Com taxa (renomeada)"}):
+        r = client.patch(f"/api/transactions/{m['linked_transaction_id']}", json=body, headers=auth(seed["token"]))
+        assert r.status_code == 200, r.text
+    mov = _movement(m["id"])
+    assert mov.fee == Decimal("1.50")
+    assert mov.net_amount == Decimal("52.50")
+    assert mov.unit_price == Decimal("5.40")
+
+
+def test_tx_amount_edit_keeps_fee_in_net(client, seed):
+    m = _sell_with_fee_linked(client, seed, "Taxa no net")
+    r = client.patch(f"/api/transactions/{m['linked_transaction_id']}", json={"amount": "-60.00"}, headers=auth(seed["token"]))
+    assert r.status_code == 200, r.text
+    mov = _movement(m["id"])
+    assert mov.gross_amount == Decimal("60.00")
+    assert mov.fee == Decimal("1.50")
+    assert mov.net_amount == Decimal("58.50")
+    assert mov.unit_price == Decimal("6.00")
+
+
+def test_asset_page_movements_carry_the_link(client, seed):
+    tx = pay(client, seed, description="Na página do ativo").json()
+    items = client.get(f"/api/assets/{seed['usdc']}/asset-movements?page_size=200", headers=auth(seed["token"])).json()["items"]
+    row = next(i for i in items if i["id"] == tx["asset_movement_id"])
+    assert row["linked_transaction_id"] == tx["id"]
+    assert row["linked_transaction_description"] == "Na página do ativo"
+
+
+def test_option_asset_is_refused(client, seed):
+    db = TestSession()
+    try:
+        opt = _asset(db, seed["ws"], seed["invest"], "PETRX40", "PETRX40", cls=AssetClass.OPTION)
+        db.commit()
+        opt_id = opt.id
+    finally:
+        db.close()
+    r = pay(client, seed, asset_id=opt_id)
+    assert r.status_code == 422
+    assert "Opção" in r.json()["detail"]
+
+
+def test_unit_price_rounding_to_zero_is_refused(client, seed):
+    r = pay(client, seed, quantity="123456789", amount="0.01")
+    assert r.status_code == 422
+    assert "preço unitário" in r.json()["detail"]
+
+
+def test_check_ties_source_type_to_fk(seed):
+    db = TestSession()
+    try:
+        m = db.query(AssetMovement).filter(AssetMovement.asset_id == seed["usdc"]).first()
+        db.add(Transaction(
+            id=str(uuid.uuid4()), workspace_id=seed["ws"], source_type=TransactionSourceType.CHECKING,
+            asset_movement_id=m.id, event_date=TODAY, description="x", amount=Decimal("-1"),
+            currency=Currency.BRL, fx_rate=PTAX, fx_source=FxSource.PTAX, amount_brl=Decimal("-1"),
+            amount_usd=Decimal("-0.2"), fingerprint="f" * 40,
+        ))
+        with pytest.raises(IntegrityError):
+            db.flush()
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_deactivating_movement_reverts_settled_payable_with_audit(client, seed):
+    h = auth(seed["token"])
+    tx = pay(client, seed, description="Coinbase One mensal").json()
+    occ = client.post("/api/scheduled-transactions", json={
+        "direction": "PAYABLE", "description": "Coinbase One", "amount": "54.00", "due_date": d(30),
+    }, headers=h)
+    assert occ.status_code == 201, occ.text
+    occ_id = occ.json()["id"]
+    paid = client.post(f"/api/scheduled-transactions/{occ_id}/pay", json={"paid_at": d(30), "transaction_id": tx["id"]}, headers=h)
+    assert paid.status_code == 200, paid.text
+    r = client.put(f"/api/asset-movements/{tx['asset_movement_id']}/deactivate", headers=h)
+    assert r.status_code == 200, r.text
+    db = TestSession()
+    try:
+        actions = [a.action for a in db.query(AuditLog).filter(AuditLog.resource_id == occ_id).all()]
+    finally:
+        db.close()
+    assert "scheduled_transaction.payment_reverted" in actions

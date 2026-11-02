@@ -593,6 +593,35 @@ describe('Pagar e receber com ativos (spec 83)', () => {
     expect(await d.findByText(/não troca de direção/)).toBeInTheDocument()
   })
 
+  it('edita tx de ativo já inativado (lista vem com inativos) e falha de ativos não derruba a página', async () => {
+    const row = tx({
+      id: 'a2', source_type: 'ASSET', checking_account_id: null, account_name: null,
+      description: 'Cashback BTC', amount: 60, asset_movement_id: 'm2', asset_id: 'btc',
+      asset_ticker: 'BTC', asset_quantity: 0.0001,
+    })
+    mockBase([row])
+    const listAssets = vi.spyOn(api, 'listAssets').mockResolvedValue([
+      usdc, assetOut({ id: 'btc', name: 'Bitcoin', ticker: 'BTC', is_active: false }),
+    ])
+    const update = vi.spyOn(api, 'updateTransaction').mockResolvedValue([row])
+    renderPage()
+    fireEvent.click(await (await mainReady()).findByText('Cashback BTC'))
+    const d = within(await screen.findByRole('dialog', { name: 'Editar pagamento com ativo' }))
+    expect(listAssets).toHaveBeenCalledWith({ include_inactive: true })
+    await waitFor(() => expect((d.getByLabelText('Ativo') as HTMLSelectElement).value).toBe('btc'))
+    fireEvent.change(d.getByLabelText('Descrição'), { target: { value: 'Cashback em BTC' } })
+    fireEvent.click(d.getByRole('button', { name: /Salvar alterações/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('a2', expect.objectContaining({ description: 'Cashback em BTC', amount: 60 })))
+  })
+
+  it('falha ao carregar ativos vira toast; a lista continua', async () => {
+    mockBase([tx({ id: 'p1', description: 'Padaria' })])
+    vi.spyOn(api, 'listAssets').mockRejectedValue(new Error('ativos 500'))
+    renderPage()
+    expect(await (await mainReady()).findByText('Padaria')).toBeInTheDocument()
+    expect(await screen.findByText(/Ativos não carregaram: ativos 500/)).toBeInTheDocument()
+  })
+
   it('excluir linha ASSET avisa que o lançamento do ativo também sai', async () => {
     const row = tx({
       id: 'a1', source_type: 'ASSET', checking_account_id: null, account_name: null,

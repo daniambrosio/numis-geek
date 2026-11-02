@@ -124,13 +124,21 @@ export default function Transactions() {
     if (!me) return
     Promise.all([
       api.listAccounts(), api.listCreditCards(), api.listInvoices(),
-      api.listCategories(), api.listParties(), api.listAssets(),
+      api.listCategories(), api.listParties(),
     ])
-      .then(([accs, cs, invs, cats, ps, as]) => {
-        setAccounts(accs); setCards(cs); setInvoices(invs); setCategories(cats); setParties(ps); setAssets(as)
+      .then(([accs, cs, invs, cats, ps]) => {
+        setAccounts(accs); setCards(cs); setInvoices(invs); setCategories(cats); setParties(ps)
         setRefsLoaded(true)
       })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Erro ao carregar cadastros.'))
+  }, [me])
+
+  // Spec 83 — ativos do composer "Pagar com ativo". Separado dos cadastros:
+  // falha aqui não derruba a página; inativos vêm junto pra editar tx antiga.
+  useEffect(() => {
+    if (!me) return
+    api.listAssets({ include_inactive: true }).then(setAssets)
+      .catch(err => setToast(`Ativos não carregaram: ${err instanceof Error ? err.message : 'erro'}`))
   }, [me])
 
   useEffect(() => {

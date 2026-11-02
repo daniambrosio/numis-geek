@@ -610,10 +610,15 @@ def deactivate_asset_movement(
     link = asset_payments.linked_tx(db, m.id)
     if link is not None:
         _audit_tx(db, current_user, "transaction.deleted", link, {"asset_movement_id": m.id, "reason": "linked movement deactivated"})
+        link_id, ws = link.id, link.workspace_id
+        reverted: list = []
         try:
-            tx_svc.delete_transaction(db, link, user_id=current_user.user_id)
+            tx_svc.delete_transaction(db, link, reverted_occurrences=reverted, user_id=current_user.user_id)
         except (tx_svc.TransactionError, tx_svc.TransactionConflict) as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        # Conta a pagar/receber quitada por essa tx volta a PENDING — mesmo audit do DELETE de tx.
+        from numis_geek.api.routes.transactions import _audit_payment_reverted
+        _audit_payment_reverted(db, current_user, reverted, ws, "linked movement deactivated", link_id)
     m.is_active = False
     m.updated_at = datetime.now(timezone.utc)
     m.updated_by = current_user.user_id

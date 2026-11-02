@@ -61,11 +61,14 @@ transaction_tag = Table(
 )
 
 
-# CASE em vez de somar booleanos: portável SQLite ↔ PostgreSQL.
+# A fonte bate com source_type. CHECKING aceita asset_movement_id opcional:
+# é a tx de caixa de resgate/aplicação ligada ao investimento (spec 82).
 ONE_SOURCE_SQL = (
-    "(CASE WHEN checking_account_id IS NOT NULL THEN 1 ELSE 0 END"
-    " + CASE WHEN credit_card_account_id IS NOT NULL THEN 1 ELSE 0 END"
-    " + CASE WHEN asset_movement_id IS NOT NULL THEN 1 ELSE 0 END) = 1"
+    "(source_type = 'CHECKING' AND checking_account_id IS NOT NULL AND credit_card_account_id IS NULL)"
+    " OR (source_type = 'CREDIT_CARD' AND credit_card_account_id IS NOT NULL"
+    " AND checking_account_id IS NULL AND asset_movement_id IS NULL)"
+    " OR (source_type = 'ASSET' AND asset_movement_id IS NOT NULL"
+    " AND checking_account_id IS NULL AND credit_card_account_id IS NULL)"
 )
 
 
@@ -128,9 +131,8 @@ class Transaction(Base):
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     __table_args__ = (
-        # Exatamente uma fonte: conta corrente, cartão ou (spec 83) ativo.
-        # Na 82 a tx de caixa terá checking + asset_movement — o CHECK vai
-        # precisar olhar source_type quando ela chegar.
+        # Exatamente uma fonte, coerente com source_type: conta corrente,
+        # cartão ou (spec 83) ativo.
         CheckConstraint(
             ONE_SOURCE_SQL,
             name="ck_transaction_one_source",
