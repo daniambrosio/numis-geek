@@ -1374,3 +1374,23 @@ def test_long_statement_is_extracted_in_chunks_and_merged(client, seed):
     assert fake.calls == 3
     p = preview(client, seed, r.json()["id"])
     assert len(p["rows"]) == n
+
+
+def test_chunk_that_skipped_lines_is_asked_again():
+    from numis_geek.services.extraction import _call_chunked, _expected_movements
+    from numis_geek.services.extraction_templates import BANK_STATEMENT
+
+    chunk = "Banco\ndata,desc,valor\n01/03/2026,A,-1\n02/03/2026,B,-2\n02/03/2026,SALDO TOTAL,,9\n03/03/2026,C,-3\nlançamentos futuros\n09/03/2026,D,-4"
+    assert _expected_movements(chunk) == 3
+
+    class Flaky:
+        calls = 0
+
+        def call(self, *, system, user_text, model, **kw):
+            Flaky.calls += 1
+            n = 2 if Flaky.calls == 1 else 3
+            txs = [line(date(2026, 3, i + 1), f"L{i}", -1) for i in range(n)]
+            return LLMCall(text=json.dumps({"transactions": txs}), input_tokens=1, output_tokens=1, model=model)
+
+    call, obj = _call_chunked(Flaky(), BANK_STATEMENT, [chunk, chunk.replace("Banco", "Banco 2")])
+    assert len(obj["transactions"]) >= 5 and Flaky.calls >= 3

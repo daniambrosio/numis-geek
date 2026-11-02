@@ -57,6 +57,8 @@ from numis_geek.services.snapshot import (
 )
 from numis_geek.utils.business_day import last_day_of_month
 
+from numis_geek.services.positions import _COTADO_CLASSES  # noqa: E402
+
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
 
@@ -259,6 +261,10 @@ class SnapshotPendencyOut(BaseModel):
     asset_name: str
     asset_currency: str | None
     asset_institution_short_name: str | None
+    # Ativo em modo valor (FUND/RF/Prev/CASH/FGTS): preço informado é o TOTAL
+    # da posição. Modal de extração usa pra sugerir market_value vs unit_price
+    # ao mapear órfã (audit 2026-11-02).
+    asset_value_mode: bool = False
     reason: str
     action_type: str
     detail: str | None
@@ -289,6 +295,10 @@ class SnapshotPendencyOut(BaseModel):
                 asset.currency.value if asset and asset.currency else None
             ),
             asset_institution_short_name=institution_short_name,
+            asset_value_mode=bool(
+                asset is not None and asset.asset_class is not None
+                and asset.asset_class not in _COTADO_CLASSES
+            ),
             reason=p.reason.value,
             action_type=p.action_type.value,
             detail=p.detail,

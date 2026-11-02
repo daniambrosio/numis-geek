@@ -42,6 +42,8 @@ _ROW_MAX_OFF = 2
 _STRUCTURAL_COL_FREQ = 0.75
 # Altura mínima (px, na largura final) da faixa vazia onde se pode cortar.
 _MIN_GAP = 14
+# Sobreposição quando não há faixa vazia pra cortar (conteúdo denso).
+_OVERLAP = 60
 # Proporção a partir da qual a imagem é considerada "alta".
 TALL_RATIO = 2.0
 _HARD_LIMIT = 8000
@@ -88,7 +90,7 @@ def _find_cut(off, start: int, target: int) -> int:
         begin = i + 1
         if end - begin + 1 >= _MIN_GAP:
             return lo + (begin + end + 1) // 2
-    return target
+    return -1  # sem faixa vazia: caller corta no target COM sobreposição
 
 
 def _trim_side_margins(img):
@@ -110,13 +112,25 @@ def _trim_side_margins(img):
     return img.crop((left, 0, right, img.height))
 
 
+def _to_rgb_on_white(img):
+    """RGB sem perder conteúdo transparente: `convert("RGB")` direto pinta o
+    fundo transparente de preto (texto preto some — audit 2026-11-02)."""
+    from PIL import Image
+
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, "white")
+        bg.paste(rgba, mask=rgba.split()[-1])
+        return bg
+    return img if img.mode == "RGB" else img.convert("RGB")
+
+
 def _tile(img) -> list[tuple[bytes, str]]:
     """Reduz largura e fatia verticalmente em cortes limpos. Retorna JPEGs."""
     import numpy as np
     from PIL import Image
 
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    img = _to_rgb_on_white(img)
     img = _trim_side_margins(img)
     w, h = img.size
     if w > TILE_MAX_W:
@@ -127,10 +141,17 @@ def _tile(img) -> list[tuple[bytes, str]]:
     tiles: list[tuple[bytes, str]] = []
     top = 0
     while top < h:
+        next_top = None
         if h - top <= TILE_MAX_H:
             bottom = h
         else:
             bottom = _find_cut(off, top, top + TILE_MAX_H)
+            if bottom < 0:
+                # Conteúdo denso sem respiro: corta no limite e repete
+                # _OVERLAP px na fatia seguinte pra a linha partida aparecer
+                # inteira em uma delas (a nota no prompt avisa da repetição).
+                bottom = top + TILE_MAX_H
+                next_top = bottom - _OVERLAP
         buf = BytesIO()
         img.crop((0, top, w, bottom)).save(buf, format="JPEG", quality=90)
         tiles.append((buf.getvalue(), "image/jpeg"))
@@ -139,7 +160,7 @@ def _tile(img) -> list[tuple[bytes, str]]:
                 f"documento grande demais: mais de {MAX_TILES} fatias — "
                 "divida o arquivo em partes menores"
             )
-        top = bottom
+        top = next_top if next_top is not None else bottom
     return tiles
 
 
@@ -156,7 +177,13 @@ def split_image(blob: bytes, mime_type: str | None) -> list[tuple[bytes, str | N
         return [(blob, mime_type)]
     if not _needs_tiling(w, h):
         return [(blob, mime_type)]
-    return _tile(img)
+    try:
+        return _tile(img)
+    except TooManyTilesError:
+        raise
+    except Exception:
+        # Decode/resize falhou: manda o original (comportamento anterior).
+        return [(blob, mime_type)]
 
 
 def pdf_screenshot_tiles(blob: bytes) -> list[tuple[bytes, str]] | None:
@@ -178,12 +205,29 @@ def pdf_screenshot_tiles(blob: bytes) -> list[tuple[bytes, str]] | None:
         sizes = [doc[i].get_size() for i in range(len(doc))]
         if not sizes or not any(_needs_tiling(int(w), int(h)) for w, h in sizes):
             return None
+        # PDF com camada de texto segue como document block: a API lê o
+        # texto, que é melhor que OCR de bitmap (audit 2026-11-02). Só o
+        # PDF-imagem (export do app Avenue: 0 caracteres) é rasterizado.
+        if any(_page_has_text(doc[i]) for i in range(len(doc))):
+            return None
         widest = max(w for w, _ in sizes)
-        # Renderiza com folga sobre a largura final (o corte de margem ainda
-        # vai estreitar), sem ultrapassar a resolução nativa da página —
-        # evita bitmap gigante em memória (3200×17816 → ~2200×12250).
-        scale = min(1.0, TILE_MAX_W * 1.4 / widest) if widest > TILE_MAX_W else 1.0
-        pages = [doc[i].render(scale=scale).to_pil().convert("RGB") for i in range(len(doc))]
+        # Escala que leva a página mais larga a ~1.4× a largura da fatia (o
+        # corte de margem ainda vai estreitar). Página estreita sobe (até
+        # 4×) em vez de ficar nos 72 dpi nativos do PDF.
+        scale = max(0.05, min(4.0, TILE_MAX_W * 1.4 / widest))
+        # Teto de fatias ANTES de renderizar: evita alocar bitmap gigante só
+        # pra descobrir que o documento passa do limite.
+        final_h = sum(h for _, h in sizes) * scale * min(1.0, TILE_MAX_W / (widest * scale))
+        if final_h / TILE_MAX_H > MAX_TILES * 1.2:
+            raise TooManyTilesError(
+                f"documento grande demais: ~{int(final_h / TILE_MAX_H)} fatias "
+                f"(máx. {MAX_TILES}) — divida o arquivo em partes menores"
+            )
+        pages = [_to_rgb_on_white(doc[i].render(scale=scale).to_pil()) for i in range(len(doc))]
+    except TooManyTilesError:
+        raise
+    except Exception:
+        return None
     finally:
         doc.close()
     total_h = sum(p.height for p in pages)
@@ -194,3 +238,10 @@ def pdf_screenshot_tiles(blob: bytes) -> list[tuple[bytes, str]] | None:
         canvas.paste(p, (0, y))
         y += p.height
     return _tile(canvas)
+
+
+def _page_has_text(page) -> bool:
+    try:
+        return page.get_textpage().count_chars() >= 20
+    except Exception:
+        return False

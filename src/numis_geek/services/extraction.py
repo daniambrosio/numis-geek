@@ -387,12 +387,28 @@ def _statement_text_chunks(text: str, size: int = STATEMENT_CHUNK_LINES) -> list
     return ["\n".join(header + body[i:i + size]) for i in range(0, len(body), size)]
 
 
+_FUTURE_SECTION = re.compile(r"lan[çc]amentos futuros|sa[íi]das futuras|entradas futuras|agendamentos", re.I)
+
+
+def _expected_movements(chunk: str) -> int:
+    """Linhas datadas que parecem movimentação (sem SALDO, antes de uma
+    seção de lançamentos futuros). Piso, não verdade: serve só pra detectar
+    resposta que pulou linhas."""
+    n = 0
+    for l in chunk.splitlines():
+        if _FUTURE_SECTION.search(l):
+            break
+        if _DATE_LINE.match(l) and "SALDO" not in l.upper():
+            n += 1
+    return n
+
+
 def _call_chunked(client: LLMClient, template: Template, chunks: list[str]) -> tuple[LLMCall, dict]:
     from concurrent.futures import ThreadPoolExecutor
 
     n = len(chunks)
 
-    def one(k: int) -> tuple[LLMCall, dict]:
+    def ask(k: int) -> tuple[LLMCall, dict]:
         user = (
             f"{template.user_prefix}\n\nNOTA: este é o TRECHO {k + 1} de {n} do documento "
             "(o cabeçalho se repete em cada trecho). Extraia só as movimentações deste "
@@ -400,6 +416,20 @@ def _call_chunked(client: LLMClient, template: Template, chunks: list[str]) -> t
         )
         c = client.call(system=template.system, user_text=user, model=DEFAULT_MODEL)
         return c, parse_json_block(c.text)
+
+    def one(k: int) -> tuple[LLMCall, dict]:
+        # O modelo às vezes pula linhas (visto no .xls do Itaú: 3 de 201).
+        # Conta as linhas datadas do trecho; veio menos → pede de novo e fica
+        # com a resposta mais completa.
+        expected = _expected_movements(chunks[k])
+        c, obj = ask(k)
+        if len(obj.get("transactions") or []) < expected:
+            c2, obj2 = ask(k)
+            c = LLMCall(text="", input_tokens=c.input_tokens + c2.input_tokens,
+                        output_tokens=c.output_tokens + c2.output_tokens, model=c.model)
+            if len(obj2.get("transactions") or []) > len(obj.get("transactions") or []):
+                obj = obj2
+        return c, obj
 
     with ThreadPoolExecutor(max_workers=min(4, n)) as pool:
         results = list(pool.map(one, range(n)))
@@ -1128,7 +1158,10 @@ def _integrity_issues(payload: dict) -> list[str]:
                 f"mas nenhuma linha dela foi extraída."
             )
             continue
-        tol = max(abs(expected) * 0.01, 1.0)
+        # 0,1%: o total da seção é a soma exata dos valores exibidos. Com 1%
+        # o erro de Out/26 (Total investido no lugar de Valor atual em 4
+        # bonds = 0,53% da Renda fixa) passava batido (audit 2026-11-02).
+        tol = max(abs(expected) * 0.001, 1.0)
         if abs(got - expected) > tol or missing_mv:
             extra = f" ({missing_mv} linha(s) sem valor)" if missing_mv else ""
             issues.append(
