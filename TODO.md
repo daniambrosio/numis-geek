@@ -110,13 +110,6 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   atual" e o código do subtítulo, trava de integridade por seção. Validado offline com o
   PDF de Out/26: 57 linhas, 5 seções batendo com o cabeçalho, 15/15 renda fixa casando.
   Se ainda vier algo errado, mandar o job id.
-- [ ] `[claude]` **Matcher por data empata quando 2 títulos vencem no mesmo dia.** Cupom
-  "JPM 2.95 01/10/26" (CSV Avenue Out/26) ficou órfão: data ambígua DD/MM×MM/DD casa com
-  `JPM 2.95 10/01/26` E com `B O 01/10/26` → 2 candidatos → None. Desempatar pelo prefixo
-  do emissor/ticker antes de desistir (`_resolve_asset_by_ticker_or_name`, step 4).
-  Registrado à mão em 2026-11-02 (INTEREST US$ 73,75).
-- [ ] `[claude]` **"Avenue Cash USD" não casa com o ativo "Saldo em Conta Avenue"** — vira
-  órfã todo mês (mapear à mão). Avaliar alias de ticker por FI em vez de casar por nome.
 - [ ] `[claude]` (LOW, audit 2026-11-02) linha casada com ativo COTADO sem preço e sem
   qty some de todos os buckets do modal (só aparece em `errors`, que a prévia não exibe).
 

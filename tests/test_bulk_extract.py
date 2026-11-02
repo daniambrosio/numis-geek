@@ -1967,3 +1967,80 @@ def test_integrity_skips_section_whose_total_is_in_another_currency():
         "section_totals": [{"section": "Everyday account", "market_value": 7624.54, "currency": "BRL"}],
     })
     assert issues == []
+
+
+# ── matcher por palavras (2026-11-02, Renda+ 2065 Itaú) ──────────────────────
+
+
+def _asset_in_fi(db, w, fi_name, ticker, name, cls=AssetClass.FIXED_INCOME, ccy=Currency.BRL):
+    # Conta do PRÓPRIO cenário (o banco do módulo tem várias FIs "XP").
+    ref = db.get(Asset, w["petr_id"] if fi_name == "XP" else w["aapl_id"])
+    acc = db.get(Account, ref.account_id)
+    fi = db.get(FinancialInstitution, acc.financial_institution_id)
+    now = datetime.now(timezone.utc)
+    a = Asset(
+        id=str(uuid.uuid4()), workspace_id=w["ws_id"], account_id=acc.id,
+        asset_class=cls, country="BR", name=name, ticker=ticker, currency=ccy,
+        current_price=Decimal("1"), price_source=PriceSource.MANUAL,
+        is_active=True, created_at=now, updated_at=now,
+    )
+    db.add(a)
+    db.flush()
+    return a, fi
+
+
+def test_resolve_by_words_ignoring_institution_name(db):
+    w = _world(db)
+    renda, fi = _asset_in_fi(db, w, "XP", "Tesouro Renda+ 2065 XP", "Tesouro Renda+ 2065 XP")
+    cash, _ = _asset_in_fi(db, w, "XP", None, "Saldo em Conta (XP)", cls=AssetClass.CASH)
+    _asset_in_fi(db, w, "XP", "Tesouro IPCA+ 2029", "Tesouro IPCA+ 2029")
+    r = extraction_service._resolve_asset_by_ticker_or_name
+    assert r(db, w["ws_id"], "Tesouro Renda+ Aposentadoria Extra 2065", institution_id=fi.id).id == renda.id
+    assert r(db, w["ws_id"], "Saldo em conta BRL", institution_id=fi.id).id == cash.id
+    # Sem escopo de instituição o passo por palavras não roda.
+    assert r(db, w["ws_id"], "Tesouro Renda+ Aposentadoria Extra 2065") is None
+
+
+def test_resolve_by_words_requires_unique_hit(db):
+    w = _world(db)
+    _, fi = _asset_in_fi(db, w, "XP", "Tesouro Renda+ 2065", "Tesouro Renda+ 2065")
+    _asset_in_fi(db, w, "XP", "Renda+ 2065 Extra", "Renda+ 2065 Extra")
+    assert extraction_service._resolve_asset_by_ticker_or_name(
+        db, w["ws_id"], "Tesouro Renda+ Aposentadoria Extra 2065", institution_id=fi.id,
+    ) is None
+
+
+def test_resolve_date_tie_broken_by_words(db):
+    """CSV Avenue Out/26: 'JPM 2.95 01/10/26' casava por data com
+    'JPM 2.95 10/01/26' E com 'B O 01/10/26' (mesmo vencimento) → None."""
+    w = _world(db)
+    jpm, fi = _asset_in_fi(db, w, "Avenue", "JPM 2.95 10/01/26", "JPMorgan 2.95% 10/01/2026 (Bond)", ccy=Currency.USD)
+    _asset_in_fi(db, w, "Avenue", "B O 01/10/26", "B O 01/10/26", ccy=Currency.USD)
+    assert extraction_service._resolve_asset_by_ticker_or_name(
+        db, w["ws_id"], "JPM 2.95 01/10/26", institution_id=fi.id,
+    ).id == jpm.id
+
+
+def test_two_lines_on_same_asset_are_not_auto_applied(db):
+    """Wise: 'Saldo em conta USD' e 'Saldo em conta BRL' casam com o único
+    'Saldo em Conta (Wise)' (valor = total convertido). Ambíguo → órfãs."""
+    from numis_geek.models.extraction_job import ExtractionJob
+    w = _world(db)
+    cash, fi = _asset_in_fi(db, w, "Avenue", None, "Saldo em Conta (Avenue)", cls=AssetClass.CASH, ccy=Currency.USD)
+    db.add(SnapshotPendency(
+        id=str(uuid.uuid4()), snapshot_id=w["snap_id"], asset_id=cash.id,
+        reason=PendencyReason.MANUAL_SOURCE, action_type=PendencyAction.EDIT_PRICE,
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+    job_id = _make_bulk_job(db, w["ws_id"], w["snap_id"], w["user_id"], {"positions": [
+        {"ticker_raw": "Saldo em conta USD", "quantity": 1, "unit_price": 100.0, "market_value": 100.0, "currency": "USD"},
+        {"ticker_raw": "Saldo em conta BRL", "quantity": 1, "unit_price": 2.5, "market_value": 2.5, "currency": "BRL"},
+    ]})
+    job = db.get(ExtractionJob, job_id)
+    job.institution_id = fi.id
+    db.flush()
+    preview = extraction_service.preview_bulk_extract(db, job_id=job_id)
+    assert preview.bulk_detail.applied == []
+    assert {o["ticker"] for o in preview.bulk_detail.orphan} == {"Saldo em conta USD", "Saldo em conta BRL"}
+    assert any("mesmo ativo" in e for e in preview.errors)

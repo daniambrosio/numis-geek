@@ -599,7 +599,7 @@ BROKER_POSITION_AVENUE = Template(
         "número, não some você mesmo). Subseções de Renda fixa (Tesouro, "
         "Bonds, CDs) usam section='Renda fixa'.\n\n"
         "SALDO EM CONTA / CASH: só se aparecer explicitamente como saldo "
-        "disponível; emita ticker_raw='Avenue Cash USD', quantity=1, "
+        "disponível; emita ticker_raw='Saldo em conta USD', quantity=1, "
         "unit_price=valor, market_value=valor, section=null.\n\n"
         "`summary_total_usd`: o patrimônio total mostrado (ex.: "
         "'Patrimônio nos EUA').\n\n"

@@ -1134,14 +1134,62 @@ def _resolve_asset_by_ticker_or_name(
     # extract='JPMorgan Chase 2033-09-14'). Run only when Step 3 didn't
     # already produce a single hit.
     candidate_dates = _extract_dates(candidate)
-    if not candidate_dates:
+    if candidate_dates:
+        date_matches: list[Asset] = []
+        for a in candidates:
+            asset_dates = _extract_dates(a.ticker) | _extract_dates(a.name)
+            if candidate_dates & asset_dates:
+                date_matches.append(a)
+        if len(date_matches) == 1:
+            return date_matches[0]
+        if len(date_matches) > 1:
+            # Empate de data (ex.: 'JPM 2.95 01/10/26' casa por data com
+            # 'JPM 2.95 10/01/26' E com 'B O 01/10/26' — mesmo vencimento):
+            # desempata pelas palavras do nome antes de desistir.
+            hit = _token_subset_match(db, candidate, date_matches, institution_id)
+            if hit is not None:
+                return hit
+    # Step 5 — palavras. Todas as palavras do ticker/nome do ativo (menos
+    # o nome da instituição) aparecem na linha do extrato, e só UM ativo
+    # da instituição satisfaz isso. Ex.: 'Tesouro Renda+ Aposentadoria
+    # Extra 2065' → 'Tesouro Renda+ 2065 Itaú'; 'Saldo em conta BRL' →
+    # 'Saldo em Conta Itaú' (2026-11-02). Só com escopo de instituição.
+    return _token_subset_match(db, candidate, candidates, institution_id)
+
+
+_TOKEN_STOPWORDS = frozenset({"em", "de", "da", "do", "das", "dos", "e", "the", "of"})
+
+
+def _tokens(s: str | None) -> set[str]:
+    if not s:
+        return set()
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    return {t for t in re.split(r"[^a-z0-9]+", plain) if t and t not in _TOKEN_STOPWORDS}
+
+
+def _token_subset_match(
+    db: Session, candidate: str, pool: list[Asset], institution_id: str | None,
+) -> Asset | None:
+    if institution_id is None:
         return None
-    date_matches: list[Asset] = []
-    for a in candidates:
-        asset_dates = _extract_dates(a.ticker) | _extract_dates(a.name)
-        if candidate_dates & asset_dates:
-            date_matches.append(a)
-    return date_matches[0] if len(date_matches) == 1 else None
+    cand = _tokens(candidate)
+    if not cand:
+        return None
+    fi = db.get(FinancialInstitution, institution_id)
+    fi_tokens = _tokens(fi.short_name) | {
+        t for t in _tokens(fi.long_name) if len(t) >= 3
+    } if fi else set()
+    hits: list[Asset] = []
+    for a in pool:
+        for asset_str in (a.ticker, a.name):
+            need = _tokens(asset_str) - fi_tokens
+            # ≥2 palavras: ticker de 1 palavra ('PETR4') não entra aqui —
+            # já teve a chance nos passos exatos.
+            if len(need) >= 2 and need <= cand:
+                hits.append(a)
+                break
+    return hits[0] if len(hits) == 1 else None
 
 
 def _institution_short_name_for_asset(db: Session, asset: Asset) -> str | None:
@@ -1279,7 +1327,26 @@ def _classify_bulk_extract(
     price_overrides = dict(manual_prices or {})
     mode_overrides = dict(manual_modes or {})
 
-    for pos in positions:
+    # Pré-passe: resolve o ativo de cada linha (sem mapeamento manual) e
+    # conta colisões. Duas+ linhas caindo no MESMO ativo é ambíguo — ex.:
+    # Wise com 'Saldo em conta USD/BRL/ARS/CLP' e um único ativo 'Saldo em
+    # Conta (Wise)' cujo valor é o total convertido. Nenhuma é aplicada
+    # sozinha: todas viram órfãs pro user decidir (2026-11-02).
+    resolved_cache: dict[int, Asset | None] = {}
+    hits_by_asset: Counter = Counter()
+    for idx, pos in enumerate(positions):
+        t = pos.get("ticker_normalized") or pos.get("ticker_raw")
+        k = pos.get("ticker_raw") or ""
+        if not t or overrides.get(k) or overrides.get(t):
+            continue
+        a = _resolve_asset_by_ticker_or_name(
+            db, job.workspace_id, t, institution_id=scoped_fi_id,
+        )
+        resolved_cache[idx] = a
+        if a is not None:
+            hits_by_asset[a.id] += 1
+
+    for idx, pos in enumerate(positions):
         ticker = pos.get("ticker_normalized") or pos.get("ticker_raw")
         ticker_raw_key = pos.get("ticker_raw") or ""
         manual_price = (
@@ -1411,10 +1478,21 @@ def _classify_bulk_extract(
             forced_pen = db.get(SnapshotPendency, manual_pendency_id)
             if forced_pen and forced_pen.snapshot_id == snap.id:
                 asset = db.get(Asset, forced_pen.asset_id)
-        if asset is None:
+        if asset is None and manual_pendency_id:
+            # Mapeamento manual inválido (pendência de outro fechamento):
+            # cai no matcher automático, como antes.
             asset = _resolve_asset_by_ticker_or_name(
                 db, job.workspace_id, ticker, institution_id=scoped_fi_id,
             )
+        elif asset is None:
+            asset = resolved_cache.get(idx)
+            if asset is not None and hits_by_asset[asset.id] > 1:
+                errors.append(
+                    f"{ticker}: {hits_by_asset[asset.id]} linhas do extrato casam com "
+                    f"o mesmo ativo ({asset.name}) — nenhuma aplicada automaticamente; "
+                    "mapeie a certa à mão."
+                )
+                asset = None
         if asset is None:
             # Currency only from LLM payload for orphan (no asset to look up).
             orphan.append({
