@@ -105,6 +105,18 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Import / extração
 
+- [ ] `[claude]` **Implementar a spec 83 (Pagar e receber com ativos).** Draft com
+  entrevista feita em 2026-11-02. Esta sessão implementa model + migration + service
+  de `transaction` (coluna `asset_movement_id` compartilhada com a spec 82 da sessão
+  paralela; enum `ASSET`; CHECK de 3 fontes) — avisar a outra sessão antes de mexer em
+  `compute_fingerprint`/validações de fonte. Backfill: Coinbase One 19/05/2026
+  (R$ 239,98) vinculado ao SELL de 47,537572 USDC já lançado.
+- [ ] `[user]` **Categoria e fornecedor do Coinbase One** (pro backfill da spec 83) —
+  sugestão: Assinaturas / Coinbase.
+- [ ] `[user]` **Wise: CSV (6 meses) + PDF (desde 2023).** Até sair o "possível
+  duplicata entre fontes" (sessão da spec 71), importar o PDF só até o dia anterior ao
+  início do CSV. Depois do deploy dela, pode importar os dois inteiros.
+
 - [ ] `[user]` **Re-testar o import da Avenue (Out/26 ou Nov/26) com o PDF do app.** Fix de
   2026-11-02: PDF-imagem alto é fatiado (`vision_tiles`), prompt `avenue-v3` lê "Valor
   atual" e o código do subtítulo, trava de integridade por seção. Validado offline com o
@@ -134,6 +146,7 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
   Validar os prompts ou bloquear o roteamento; spec está Done escondendo o gap.
 
 ## Segurança / produção
+
 - [user] **VPS vps1 — disco chegou a 100% em 2026-11-02** (deploy falhou no `npm ci`). Liberado só o build cache (9,5G) → 84%. Sobram ~41G de imagens Docker sem container (todos os projetos do servidor) + 8,4G em /opt/infra/backups. Decidir a limpeza (ex.: agente vps-devops: `docker image prune -a` com filtro de idade, rotação dos backups) e um alerta de disco.
 
 - [ ] `[claude]` **Encriptar `IntegrationCredential.secret_value` at rest.** TODO no
