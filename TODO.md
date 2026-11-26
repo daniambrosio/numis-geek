@@ -27,7 +27,7 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 - [ ] `[user]` **Spec 85 (ARCA) — depois do deploy:** abrir `/admin/target-allocation?tab=ARCA`,
   carregar o ponto de partida e ajustar as metas; depois classificar os pendentes em
-  `/decision-support/arca-classification?pending=1` (ETF BR, fundos, previdência e a
+  `/decision-support/arca-classification?pending=1` (ETF BR, fundos, previdência) e conferir a
   subcategoria automática de ações/FIIs). Responder as perguntas em aberto da spec
   se algum default não servir (REIT US em Internacional, conta corrente no Caixa…).
 
