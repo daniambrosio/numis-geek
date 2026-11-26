@@ -12,6 +12,7 @@ from numis_geek.logging_config import configure_logging
 from numis_geek.scheduler import start_scheduler, stop_scheduler
 from numis_geek.version import get_version_info
 from numis_geek.api.routes import (
+    arca,
     accounts,
     asset_movements,
     assets,
@@ -98,6 +99,7 @@ app.include_router(backup.router, prefix="/api")
 app.include_router(extractions.router, prefix="/api")
 app.include_router(sysadmin_logs.router, prefix="/api")
 app.include_router(target_allocation.router, prefix="/api")
+app.include_router(arca.router, prefix="/api")
 app.include_router(valuation.router, prefix="/api")
 app.include_router(portfolio_optimize.router, prefix="/api")
 app.include_router(categories.router, prefix="/api")

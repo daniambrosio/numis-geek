@@ -20,6 +20,8 @@ const emptyTargets: TargetAllocationOut = {
   workspace_id: 'ws1',
   CLASS: { dimension: 'CLASS', entries: [], total: '0', is_valid: false },
   COUNTRY: { dimension: 'COUNTRY', entries: [], total: '0', is_valid: false },
+  ARCA: { dimension: 'ARCA', entries: [], total: '0', is_valid: false },
+  ARCA_SUB: { dimension: 'ARCA_SUB', entries: [], total: '0', is_valid: false },
 }
 
 const populatedTargets: TargetAllocationOut = {
@@ -42,6 +44,8 @@ const populatedTargets: TargetAllocationOut = {
     total: '1',
     is_valid: true,
   },
+  ARCA: { dimension: 'ARCA', entries: [], total: '0', is_valid: false },
+  ARCA_SUB: { dimension: 'ARCA_SUB', entries: [], total: '0', is_valid: false },
 }
 
 function renderPage() {

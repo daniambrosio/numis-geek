@@ -66,6 +66,10 @@ class Asset(Base):
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Spec 85 — override manual da classificação ARCA (valores de
+    # ArcaCategory / ArcaSubcategory). NULL = regra derivada.
+    arca_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    arca_subcategory: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # Spec 80 — ativo CASH "Saldo em Conta" que espelha uma conta corrente. O
     # saldo dessa conta é derivado do ledger (opening_balance + Σ transactions),

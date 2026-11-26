@@ -12,6 +12,8 @@ from numis_geek.db.base import Base
 class TargetAllocationDimension(str, enum.Enum):
     CLASS = "CLASS"
     COUNTRY = "COUNTRY"
+    ARCA = "ARCA"          # spec 85 — letra ARCA; soma 1.0
+    ARCA_SUB = "ARCA_SUB"  # spec 85 — fração DENTRO da letra; soma 1.0 por letra
 
 
 class TargetAllocation(Base):
@@ -40,6 +42,9 @@ class TargetAllocation(Base):
     )
     key: Mapped[str] = mapped_column(String(32), nullable=False)
     target_pct: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False)
+    # Spec 85 — banda de tolerância (só ARCA usa; NULL = default 10%–40%).
+    min_pct: Mapped[Decimal | None] = mapped_column(Numeric(7, 4), nullable=True)
+    max_pct: Mapped[Decimal | None] = mapped_column(Numeric(7, 4), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)

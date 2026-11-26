@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 
 import AppLayout from '../../components/AppLayout'
+import ArcaTargetsEditor from '../../components/ArcaTargetsEditor'
 import { Card, PageHeader } from '../../components/ui'
 import {
   api,
@@ -97,7 +98,10 @@ export default function TargetAllocation() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
-  const [tab, setTab] = useState<TargetDimension>('CLASS')
+  const [tab, setTab] = useState<TargetDimension>(() =>
+    new URLSearchParams(window.location.search).get('tab') === 'ARCA' ? 'ARCA' : 'CLASS',
+  )
+  const [raw, setRaw] = useState<TargetAllocationOut | null>(null)
   const [classDraft, setClassDraft] = useState<DimensionDraft>({
     rows: [],
     dirty: false,
@@ -123,6 +127,7 @@ export default function TargetAllocation() {
     api
       .getTargetAllocation(me.workspace_id)
       .then((data: TargetAllocationOut) => {
+        setRaw(data)
         setClassDraft({ rows: entriesFromApi(data.CLASS.entries), dirty: false })
         setCountryDraft({
           rows: entriesFromApi(data.COUNTRY.entries),
@@ -246,7 +251,7 @@ export default function TargetAllocation() {
 
         <Card padding="p-0">
           <div className="border-b border-gray-200 dark:border-gray-800 flex items-center gap-1 px-2">
-            {(['CLASS', 'COUNTRY'] as const).map((d) => (
+            {(['CLASS', 'COUNTRY', 'ARCA'] as const).map((d) => (
               <button
                 key={d}
                 onClick={() => setTab(d)}
@@ -256,7 +261,7 @@ export default function TargetAllocation() {
                     : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
                 }`}
               >
-                {d === 'CLASS' ? 'Por classe' : 'Por país'}
+                {d === 'CLASS' ? 'Por classe' : d === 'COUNTRY' ? 'Por país' : 'ARCA'}
               </button>
             ))}
           </div>
@@ -265,6 +270,17 @@ export default function TargetAllocation() {
             <div className="p-12 text-center text-sm text-gray-400 dark:text-gray-600">
               Carregando…
             </div>
+          ) : tab === 'ARCA' && me.workspace_id ? (
+            <ArcaTargetsEditor
+              key={JSON.stringify([raw?.ARCA.entries, raw?.ARCA_SUB.entries])}
+              workspaceId={me.workspace_id}
+              data={raw}
+              onSaved={(d) => {
+                setRaw(d)
+                setToast('Metas ARCA salvas.')
+                window.setTimeout(() => setToast(''), 2500)
+              }}
+            />
           ) : (
             <div className="p-5 space-y-4">
               {error && (
