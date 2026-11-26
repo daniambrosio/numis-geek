@@ -34,6 +34,11 @@ from numis_geek.models.asset_fundamentals import AssetFundamentals
 from numis_geek.models.distribution import Distribution
 from numis_geek.models.portfolio_snapshot import PortfolioSnapshot, PortfolioSnapshotItem
 from numis_geek.models.target_allocation import TargetAllocation, TargetAllocationDimension
+from numis_geek.services.arca_rules import (
+    fii_subcategory,
+    sector_hint_from_payload,
+    stock_subcategory,
+)
 from numis_geek.services.audit import AuditService
 from numis_geek.services.portfolio_summary import _net_amount_brl_expr
 from numis_geek.services.target_allocation import DEFAULT_ARCA_MAX, DEFAULT_ARCA_MIN
@@ -53,6 +58,7 @@ class ArcaClass:
     category: ArcaCategory | None
     subcategory: ArcaSubcategory | None
     source: str  # "manual" | "derived" | "unmapped"
+    note: str = ""  # por que a regra automática escolheu isso
 
 
 def _is_usd(asset: Asset) -> bool:
@@ -60,9 +66,28 @@ def _is_usd(asset: Asset) -> bool:
     return cur == "USD"
 
 
-def derive_arca(asset: Asset) -> tuple[ArcaCategory | None, ArcaSubcategory | None]:
+def derive_arca(
+    asset: Asset, sector_hint: str | None = None
+) -> tuple[ArcaCategory | None, ArcaSubcategory | None]:
     """Regra automática (tabela da spec 85). (None, None) = sem regra —
     precisa de classificação manual."""
+    cat, sub, _ = derive_arca_detail(asset, sector_hint)
+    return cat, sub
+
+
+def derive_arca_detail(
+    asset: Asset, sector_hint: str | None = None
+) -> tuple[ArcaCategory | None, ArcaSubcategory | None, str]:
+    cat, sub = _derive_letter(asset)
+    note = "classe/indexador/país" if cat else ""
+    if sub is None and cat == ArcaCategory.EQUITY_BR:
+        sub, note = stock_subcategory(asset.ticker, asset.name, sector_hint)
+    elif sub is None and cat == ArcaCategory.REAL_ESTATE:
+        sub, note = fii_subcategory(asset.ticker, asset.name, sector_hint)
+    return cat, sub, note
+
+
+def _derive_letter(asset: Asset) -> tuple[ArcaCategory | None, ArcaSubcategory | None]:
     cls = asset.asset_class
     country = (asset.country or "").upper()
     ticker = (asset.ticker or "").upper().strip()
@@ -103,15 +128,15 @@ def derive_arca(asset: Asset) -> tuple[ArcaCategory | None, ArcaSubcategory | No
     return None, None
 
 
-def resolve_arca(asset: Asset) -> ArcaClass:
-    d_cat, d_sub = derive_arca(asset)
+def resolve_arca(asset: Asset, sector_hint: str | None = None) -> ArcaClass:
+    d_cat, d_sub, note = derive_arca_detail(asset, sector_hint)
     o_cat = ArcaCategory(asset.arca_category) if asset.arca_category else None
     o_sub = ArcaSubcategory(asset.arca_subcategory) if asset.arca_subcategory else None
 
     if o_cat is None and o_sub is None:
         if d_cat is None:
             return ArcaClass(None, None, "unmapped")
-        return ArcaClass(d_cat, d_sub, "derived")
+        return ArcaClass(d_cat, d_sub, "derived", note)
 
     cat = o_cat or (ARCA_PARENT[o_sub] if o_sub else d_cat)
     if o_sub is not None and ARCA_PARENT[o_sub] == cat:
@@ -122,7 +147,7 @@ def resolve_arca(asset: Asset) -> ArcaClass:
         sub = None
     if cat == ArcaCategory.OUT_OF_SCOPE:
         sub = None
-    return ArcaClass(cat, sub, "manual")
+    return ArcaClass(cat, sub, "manual", note if sub == d_sub and cat == d_cat else "")
 
 
 class ArcaClassificationError(ValueError):
@@ -208,6 +233,34 @@ def income_by_asset_12m(
     return {aid: Decimal(str(v)) for aid, v in rows if v is not None}
 
 
+def _latest_sector_hints(db: Session, workspace_id: str) -> dict[str, str]:
+    """asset_id → 'setor | indústria' do último snapshot de fundamentos."""
+    sub = (
+        db.query(
+            AssetFundamentals.asset_id,
+            func.max(AssetFundamentals.snapshot_date).label("d"),
+        )
+        .filter(AssetFundamentals.workspace_id == workspace_id)
+        .group_by(AssetFundamentals.asset_id)
+        .subquery()
+    )
+    rows = (
+        db.query(AssetFundamentals.asset_id, AssetFundamentals.raw_payload)
+        .join(
+            sub,
+            (AssetFundamentals.asset_id == sub.c.asset_id)
+            & (AssetFundamentals.snapshot_date == sub.c.d),
+        )
+        .all()
+    )
+    out: dict[str, str] = {}
+    for aid, raw in rows:
+        h = sector_hint_from_payload(raw)
+        if h:
+            out[aid] = h
+    return out
+
+
 def _latest_dividend_yield(db: Session, workspace_id: str) -> dict[str, Decimal]:
     sub = (
         db.query(
@@ -278,6 +331,7 @@ class ArcaAssetRow:
     source: str
     value_brl: Decimal
     income_12m_brl: Decimal
+    derived_note: str = ""
 
 
 @dataclass
@@ -356,6 +410,7 @@ def arca_summary(db: Session, workspace_id: str) -> ArcaSummary:
     income = income_by_asset_12m(db, workspace_id, as_of)
     dy = _latest_dividend_yield(db, workspace_id)
     targets = _load_targets(db, workspace_id)
+    hints = _latest_sector_hints(db, workspace_id)
 
     assets = (
         db.query(Asset)
@@ -367,8 +422,9 @@ def arca_summary(db: Session, workspace_id: str) -> ArcaSummary:
         v = values.get(a.id, ZERO)
         if not a.is_active and v == 0:
             continue
-        r = resolve_arca(a)
-        d_cat, d_sub = derive_arca(a)
+        hint = hints.get(a.id)
+        r = resolve_arca(a, hint)
+        d_cat, d_sub, d_note = derive_arca_detail(a, hint)
         rows.append(ArcaAssetRow(
             asset_id=a.id,
             ticker=a.ticker,
@@ -382,6 +438,7 @@ def arca_summary(db: Session, workspace_id: str) -> ArcaSummary:
             source=r.source,
             value_brl=v,
             income_12m_brl=income.get(a.id, ZERO),
+            derived_note=d_note,
         ))
     rows.sort(key=lambda r: (-r.value_brl, r.name))
 

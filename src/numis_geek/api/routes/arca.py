@@ -37,6 +37,7 @@ class ArcaAssetOut(BaseModel):
     source: str
     value_brl: Decimal
     income_12m_brl: Decimal
+    derived_note: str = ""
 
 
 class ArcaSubOut(BaseModel):

@@ -165,10 +165,15 @@ def test_every_sub_has_parent_and_role():
 
 
 @pytest.mark.parametrize("kw,cat,sub", [
-    (dict(ticker="ITUB4"), "EQUITY_BR", None),
+    (dict(ticker="ITUB4"), "EQUITY_BR", "EQ_DEFENSIVE"),
+    (dict(ticker="VALE3"), "EQUITY_BR", "EQ_DOLLAR"),
+    (dict(ticker="ZZZZ3"), "EQUITY_BR", "EQ_ACCELERATOR"),
     (dict(ticker="AAPL34"), "GLOBAL", "GL_EQUITY"),  # BDR
     (dict(ticker="AAPL", country="US", currency=Currency.USD), "GLOBAL", "GL_EQUITY"),
-    (dict(ticker="HGLG11", cls=AssetClass.REIT), "REAL_ESTATE", None),
+    (dict(ticker="HGLG11", cls=AssetClass.REIT), "REAL_ESTATE", "RE_BRICK"),
+    (dict(ticker="KNCR11", cls=AssetClass.REIT), "REAL_ESTATE", "RE_PAPER_CDI"),
+    (dict(ticker="KNIP11", cls=AssetClass.REIT), "REAL_ESTATE", "RE_PAPER_IPCA"),
+    (dict(ticker="BCFF11", cls=AssetClass.REIT), "REAL_ESTATE", "RE_FOF"),
     (dict(ticker="O", cls=AssetClass.REIT, country="US", currency=Currency.USD), "GLOBAL", "GL_REIT"),
     (dict(ticker="TSELIC", cls=AssetClass.FIXED_INCOME, indexer=FixedIncomeIndexer.SELIC), "CASH", "CASH_POST_FIXED"),
     (dict(ticker="CDB", cls=AssetClass.FIXED_INCOME, indexer=FixedIncomeIndexer.CDI), "CASH", "CASH_POST_FIXED"),
@@ -199,7 +204,9 @@ def test_resolve_sources(db, ws):
     assert resolve_arca(a).source == "unmapped"
     b = mk(db, ws, "ITUB4")
     r = resolve_arca(b)
-    assert (r.category, r.subcategory, r.source) == (ArcaCategory.EQUITY_BR, None, "derived")
+    assert (r.category, r.subcategory, r.source) == (
+        ArcaCategory.EQUITY_BR, ArcaSubcategory.EQ_DEFENSIVE, "derived")
+    assert r.note == "lista de tickers"
 
 
 def test_override_wins_and_infers_parent(db, ws):
@@ -226,6 +233,44 @@ def test_override_incompatible_sub_rejected(db, ws):
         set_classification(db, a, "CASH", "EQ_DEFENSIVE", user_email="t", user_id=None)
     with pytest.raises(ArcaClassificationError):
         set_classification(db, a, "OUT_OF_SCOPE", "EQ_DEFENSIVE", user_email="t", user_id=None)
+
+
+# ── Subcategoria automática (ações e FIIs) ──
+
+
+def test_stock_sub_from_fundamentals_sector(db, ws):
+    a = mk(db, ws, "ABCD3")
+    assert derive_arca(a)[1] == ArcaSubcategory.EQ_ACCELERATOR
+    db.add(AssetFundamentals(
+        id=str(uuid.uuid4()), workspace_id=ws["id"], asset_id=a.id,
+        snapshot_date=date(2026, 11, 1), source=list(FundamentalsSource)[0],
+        raw_payload='{"summaryProfile": {"sector": "Utilities", "industry": "Utilities—Regulated Water"}}',
+    ))
+    snap(db, ws, {a.id: D("100")})
+    row = next(r for r in arca_summary(db, ws["id"]).assets if r.asset_id == a.id)
+    assert row.subcategory == "EQ_DEFENSIVE"
+    assert row.derived_note.startswith("setor: Utilities")
+
+
+@pytest.mark.parametrize("name,sub", [
+    ("FII Recebíveis Imobiliários CDI", "RE_PAPER_CDI"),
+    ("Fundo de Recebíveis High Yield", "RE_PAPER_IPCA"),
+    ("XYZ Fundo de Fundos", "RE_FOF"),
+    ("ABC Logística Renda", "RE_BRICK"),
+    ("Qualquer FII", "RE_BRICK"),
+])
+def test_fii_sub_from_name(db, ws, name, sub):
+    a = mk(db, ws, "QWER11", cls=AssetClass.REIT)
+    a.name = name
+    assert derive_arca(a)[1].value == sub
+
+
+def test_sector_hint_parsing():
+    from numis_geek.services.arca_rules import sector_hint_from_payload
+    assert sector_hint_from_payload('{"sector": "Energy", "industry": "Oil"}') == "Energy | Oil"
+    assert sector_hint_from_payload("not json") is None
+    assert sector_hint_from_payload(None) is None
+    assert sector_hint_from_payload("{}") is None
 
 
 # ── Metas ──
@@ -304,11 +349,11 @@ def test_summary_percentages_exclude_out_of_scope_and_unmapped(db, ws):
     assert by["EQUITY_BR"].status == "IN_BAND"
     assert by["GLOBAL"].current_pct == pytest.approx(0.10) and by["GLOBAL"].status == "IN_BAND"
     assert by["CASH"].gap_brl == D("-5000.00")
-    assert by["EQUITY_BR"].unclassified_sub_value_brl == D("40000")
-    # ataque × defesa: BTC ataque (10%), Selic defesa (30%), resto sem sub
-    assert s.attack_pct == pytest.approx(0.10)
-    assert s.defense_pct == pytest.approx(0.30)
-    assert s.unknown_role_pct == pytest.approx(0.60)
+    assert by["EQUITY_BR"].unclassified_sub_value_brl == D("0")
+    # ataque × defesa: BTC + HGLG11 (tijolo) ataque; Selic + ITUB4 defesa
+    assert s.attack_pct == pytest.approx(0.30)
+    assert s.defense_pct == pytest.approx(0.70)
+    assert s.unknown_role_pct == pytest.approx(0.0)
     assert {r.asset_id for r in s.assets} >= {a["itub"].id, a["fundo"].id}
 
 

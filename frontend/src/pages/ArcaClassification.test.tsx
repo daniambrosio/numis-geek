@@ -52,6 +52,16 @@ describe('ArcaClassification', () => {
     expect(screen.getByTestId('arca-row-ITUB4')).toBeInTheDocument() // sem subcategoria
   })
 
+  it('shows why the rule picked a subcategory', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(me)
+    vi.spyOn(api, 'getArcaSummary').mockResolvedValue({
+      ...summary,
+      assets: [asset('VALE3', { subcategory: 'EQ_DOLLAR', derived_subcategory: 'EQ_DOLLAR', derived_note: 'lista de tickers' })],
+    })
+    renderPage()
+    expect((await screen.findByTestId('arca-note-VALE3')).textContent).toBe('lista de tickers')
+  })
+
   it('inline edit sends the override', async () => {
     vi.spyOn(api, 'me').mockResolvedValue(me)
     vi.spyOn(api, 'getArcaSummary').mockResolvedValue(summary)

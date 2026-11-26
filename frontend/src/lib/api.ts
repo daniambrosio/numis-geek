@@ -2050,6 +2050,7 @@ export interface ArcaAssetOut {
   source: ArcaSource
   value_brl: string
   income_12m_brl: string
+  derived_note?: string // por que a regra automática escolheu (spec 85)
 }
 
 export interface ArcaSubOut {

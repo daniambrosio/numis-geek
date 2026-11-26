@@ -106,9 +106,11 @@ export default function ArcaClassification() {
         <PageHeader title="Classificação ARCA" countLabel="ativos" count={rows.length} />
         <p className="text-[13px] text-gray-500 dark:text-gray-400 -mt-2 max-w-3xl">
           Cada ativo vai para uma letra da ARCA e, se possível, para uma
-          subcategoria. "auto" vem da classe, do indexador e do país; o que você
-          escolhe aqui vira "manual" e vale por cima. "Automático" no select
-          volta para a regra.{' '}
+          subcategoria. "auto" vem da classe, do indexador e do país; a
+          subcategoria de ações e FIIs vem de uma lista de tickers conhecidos, do
+          setor nos fundamentos ou do nome do fundo (o motivo aparece ao lado). O
+          que você escolhe aqui vira "manual" e vale por cima; "Automático" no
+          select volta para a regra.{' '}
           <a className="underline" href="/decision-support">Voltar ao Suporte à Decisão</a>
         </p>
 
@@ -232,6 +234,11 @@ export default function ArcaClassification() {
                         </td>
                         <td className="py-1.5">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${badge.cls}`}>{badge.label}</span>
+                          {a.source === 'derived' && a.derived_note && (
+                            <span className="ml-1.5 text-[10px] text-gray-500" data-testid={`arca-note-${a.asset_id}`}>
+                              {a.derived_note}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     )
