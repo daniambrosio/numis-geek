@@ -4,6 +4,7 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
+from numis_geek.models.arca import ARCA_LETTERS, ARCA_PARENT, ArcaSubcategory
 from numis_geek.models.asset import AssetClass
 from numis_geek.models.target_allocation import (
     TargetAllocation,
@@ -15,18 +16,27 @@ from numis_geek.services.audit import AuditService
 SUM_TOLERANCE = Decimal("0.0001")
 ALLOWED_CLASS_KEYS: set[str] = {c.value for c in AssetClass}
 ISO2_LEN = 2
+ALLOWED_ARCA_KEYS: set[str] = {c.value for c in ARCA_LETTERS}
+ALLOWED_ARCA_SUB_KEYS: set[str] = {c.value for c in ArcaSubcategory}
+# Spec 85 — banda default de cada letra ARCA (vídeo: "de 10 a 40%").
+DEFAULT_ARCA_MIN = Decimal("0.10")
+DEFAULT_ARCA_MAX = Decimal("0.40")
 
 
 @dataclass(frozen=True)
 class TargetEntryIn:
     key: str
     target_pct: Decimal
+    min_pct: Decimal | None = None
+    max_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
 class TargetEntryOut:
     key: str
     target_pct: Decimal
+    min_pct: Decimal | None = None
+    max_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -53,12 +63,37 @@ def _norm_class_key(key: str) -> str:
     return key.strip().upper()
 
 
+def _sub_parent(key: str) -> str:
+    return ARCA_PARENT[ArcaSubcategory(key)].value
+
+
+def _sums_ok(
+    dimension: TargetAllocationDimension, entries: list[tuple[str, Decimal]]
+) -> tuple[bool, list[str]]:
+    """Sum rule per dimension. ARCA_SUB sums to 1.0 *per letter* that has
+    at least one entry; every other dimension sums to 1.0 overall."""
+    groups: dict[str, Decimal] = {}
+    for key, pct in entries:
+        g = _sub_parent(key) if dimension == TargetAllocationDimension.ARCA_SUB else ""
+        groups[g] = groups.get(g, Decimal("0")) + pct
+    errors: list[str] = []
+    for g, total in groups.items():
+        if (total - Decimal("1")).copy_abs() > SUM_TOLERANCE:
+            q = total.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            errors.append(
+                f"Targets for {g} must sum to 1.0 (got {q})." if g
+                else f"Targets must sum to 1.0 (got {q})."
+            )
+    return (bool(entries) and not errors), errors
+
+
 def validate_entries(
     entries: Iterable[TargetEntryIn], dimension: TargetAllocationDimension
 ) -> list[str]:
     errors: list[str] = []
     seen_keys: set[str] = set()
     total = Decimal("0")
+    valid_pairs: list[tuple[str, Decimal]] = []
 
     for e in entries:
         norm_key = (
@@ -77,6 +112,14 @@ def validate_entries(
         if dimension == TargetAllocationDimension.CLASS:
             if norm_key not in ALLOWED_CLASS_KEYS:
                 errors.append(f"Invalid CLASS key: {norm_key}.")
+        elif dimension == TargetAllocationDimension.ARCA:
+            if norm_key not in ALLOWED_ARCA_KEYS:
+                errors.append(f"Invalid ARCA key: {norm_key}.")
+                continue
+        elif dimension == TargetAllocationDimension.ARCA_SUB:
+            if norm_key not in ALLOWED_ARCA_SUB_KEYS:
+                errors.append(f"Invalid ARCA_SUB key: {norm_key}.")
+                continue
         else:
             if len(norm_key) != ISO2_LEN or not norm_key.isalpha():
                 errors.append(f"Invalid COUNTRY key (must be ISO-2): {norm_key}.")
@@ -90,14 +133,26 @@ def validate_entries(
         if e.target_pct > 1:
             errors.append(f"target_pct must be ≤ 1.0 (got {e.target_pct} for {norm_key}).")
             continue
+        if dimension == TargetAllocationDimension.ARCA:
+            lo = e.min_pct if e.min_pct is not None else DEFAULT_ARCA_MIN
+            hi = e.max_pct if e.max_pct is not None else DEFAULT_ARCA_MAX
+            if not (Decimal("0") <= lo <= hi <= Decimal("1")):
+                errors.append(f"Invalid band for {norm_key}: need 0 ≤ min ≤ max ≤ 1.")
+                continue
+            if not (lo <= e.target_pct <= hi):
+                errors.append(
+                    f"target_pct of {norm_key} must be within its band [{lo}, {hi}]."
+                )
+                continue
+        elif e.min_pct is not None or e.max_pct is not None:
+            errors.append(f"min_pct/max_pct only allowed for ARCA ({norm_key}).")
+            continue
         total += e.target_pct
+        valid_pairs.append((norm_key, e.target_pct))
 
     if not errors:
-        diff = (total - Decimal("1")).copy_abs()
-        if diff > SUM_TOLERANCE:
-            errors.append(
-                f"Targets must sum to 1.0 (got {total.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)})."
-            )
+        _, sum_errors = _sums_ok(dimension, valid_pairs)
+        errors.extend(sum_errors)
 
     return errors
 
@@ -110,16 +165,17 @@ def get_targets(db: Session, workspace_id: str) -> dict[str, DimensionOut]:
         .all()
     )
     by_dim: dict[TargetAllocationDimension, list[TargetEntryOut]] = {
-        TargetAllocationDimension.CLASS: [],
-        TargetAllocationDimension.COUNTRY: [],
+        d: [] for d in TargetAllocationDimension
     }
     for r in rows:
-        by_dim[r.dimension].append(TargetEntryOut(key=r.key, target_pct=r.target_pct))
+        by_dim[r.dimension].append(TargetEntryOut(
+            key=r.key, target_pct=r.target_pct, min_pct=r.min_pct, max_pct=r.max_pct,
+        ))
 
     out: dict[str, DimensionOut] = {}
     for dim, entries in by_dim.items():
         total = sum((e.target_pct for e in entries), Decimal("0"))
-        is_valid = bool(entries) and (total - Decimal("1")).copy_abs() <= SUM_TOLERANCE
+        is_valid, _ = _sums_ok(dim, [(e.key, e.target_pct) for e in entries])
         out[dim.value] = DimensionOut(
             dimension=dim, entries=entries, total=total, is_valid=is_valid
         )
@@ -145,9 +201,9 @@ def upsert_targets(
         raise TargetAllocationError(errors)
 
     normalize = (
-        _norm_class_key
-        if dimension == TargetAllocationDimension.CLASS
-        else _norm_country_key
+        _norm_country_key
+        if dimension == TargetAllocationDimension.COUNTRY
+        else _norm_class_key
     )
 
     db.query(TargetAllocation).filter(
@@ -163,11 +219,15 @@ def upsert_targets(
             dimension=dimension,
             key=norm_key,
             target_pct=e.target_pct,
+            min_pct=e.min_pct,
+            max_pct=e.max_pct,
             created_by=user_id,
             updated_by=user_id,
         )
         db.add(row)
-        inserted.append(TargetEntryOut(key=norm_key, target_pct=e.target_pct))
+        inserted.append(TargetEntryOut(
+            key=norm_key, target_pct=e.target_pct, min_pct=e.min_pct, max_pct=e.max_pct,
+        ))
 
     db.flush()
 

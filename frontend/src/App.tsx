@@ -10,6 +10,7 @@ import Assets from './pages/admin/Assets'
 import AssetDetail from './pages/AssetDetail'
 import AssetMovements from './pages/AssetMovements'
 import DecisionSupport from './pages/DecisionSupport'
+import ArcaClassification from './pages/ArcaClassification'
 import Portfolio from './pages/Portfolio'
 import Distributions from './pages/Distributions'
 import Snapshots from './pages/Snapshots'
@@ -49,6 +50,7 @@ export default function App() {
         {/* Investimentos */}
         <Route path="/portfolio" element={<PrivateRoute><Portfolio /></PrivateRoute>} />
         <Route path="/decision-support" element={<PrivateRoute><DecisionSupport /></PrivateRoute>} />
+        <Route path="/decision-support/arca-classification" element={<PrivateRoute><ArcaClassification /></PrivateRoute>} />
         <Route path="/assets" element={<PrivateRoute><Assets /></PrivateRoute>} />
         <Route path="/assets/:id" element={<PrivateRoute><AssetDetail /></PrivateRoute>} />
         <Route path="/asset-movements" element={<PrivateRoute><AssetMovements /></PrivateRoute>} />

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, Compass, Sparkles } from 'lucide-react'
 
 import AppLayout from '../components/AppLayout'
+import ArcaCard from '../components/ArcaCard'
 import EfficientFrontierChart from '../components/EfficientFrontierChart'
 import GapVsTargetChart from '../components/GapVsTargetChart'
 import SuggestedTradesTable from '../components/SuggestedTradesTable'
@@ -10,6 +11,7 @@ import VerdictBadge from '../components/VerdictBadge'
 import { Card, ClassBadge, PageHeader } from '../components/ui'
 import {
   api,
+  type ArcaSummaryOut,
   type AssetOut,
   type OptimizeOut,
   type PortfolioOut,
@@ -68,6 +70,7 @@ export default function DecisionSupport() {
   const [me, setMe] = useState<UserOut | null>(null)
   const [portfolio, setPortfolio] = useState<PortfolioOut | null>(null)
   const [targets, setTargets] = useState<TargetAllocationOut | null>(null)
+  const [arca, setArca] = useState<ArcaSummaryOut | null>(null)
   const [assets, setAssets] = useState<AssetOut[]>([])
   const [valuations, setValuations] = useState<ValuationRow[]>([])
   const [opt, setOpt] = useState<OptimizeOut | null>(null)
@@ -94,6 +97,14 @@ export default function DecisionSupport() {
     }).catch((e) => {
       setError(e instanceof Error ? e.message : 'Erro ao carregar.')
     }).finally(() => setLoading(false))
+  }, [me])
+
+  // Spec 85 — ARCA (erro aqui não derruba a página)
+  useEffect(() => {
+    if (!me || !me.workspace_id) return
+    api.getArcaSummary(me.workspace_id)
+      .then(setArca)
+      .catch((e) => { console.warn('arca', e); setArca(null) })
   }, [me])
 
   // Fetch valuation for each owned asset (in parallel; bounded by browser).
@@ -210,6 +221,11 @@ export default function DecisionSupport() {
               </p>
             </div>
           </Card>
+        )}
+
+        {/* ── ARCA (spec 85) ────────────────────────────────────────── */}
+        {hasPortfolio && arca && me.workspace_id && (
+          <ArcaCard workspaceId={me.workspace_id} summary={arca} />
         )}
 
         {/* ── (a) Gap vs Target ─────────────────────────────────────── */}

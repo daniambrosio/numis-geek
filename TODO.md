@@ -25,6 +25,12 @@ item concluído ou dropado sai daqui e vai pro `TODO-done.md` (com data).
 
 ## Specs pausadas / em andamento
 
+- [ ] `[user]` **Spec 85 (ARCA) — depois do deploy:** abrir `/admin/target-allocation?tab=ARCA`,
+  carregar o ponto de partida e ajustar as metas; depois classificar os pendentes em
+  `/decision-support/arca-classification?pending=1` (ETF BR, fundos, previdência) e conferir a
+  subcategoria automática de ações/FIIs. Responder as perguntas em aberto da spec
+  se algum default não servir (REIT US em Internacional, conta corrente no Caixa…).
+
 - [x] ~~**Deploy: migration sem busy_timeout e sem rollback.**~~ Corrigido em 2026-10-30
   junto com a fase 1 da spec 70: `connect_args={"timeout": 30}` no `alembic/env.py` (SQLite)
   e migration que falha no `deploy.sh` cai no rollback (restaura backup do DB + imagem)

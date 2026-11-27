@@ -1909,6 +1909,22 @@ export const api = {
       body: JSON.stringify({ dimension, entries }),
     }),
 
+  // Spec 85 — ARCA
+  getArcaSummary: (workspaceId: string) =>
+    request<ArcaSummaryOut>(`/workspaces/${workspaceId}/arca/summary`),
+
+  arcaContributionPlan: (workspaceId: string, amountBrl: string) =>
+    request<ArcaPlanOut>(`/workspaces/${workspaceId}/arca/contribution-plan`, {
+      method: 'POST',
+      body: JSON.stringify({ amount_brl: amountBrl }),
+    }),
+
+  putArcaClassification: (workspaceId: string, items: ArcaClassificationItem[]) =>
+    request<ArcaSummaryOut>(`/workspaces/${workspaceId}/arca/classification`, {
+      method: 'PUT',
+      body: JSON.stringify({ items }),
+    }),
+
   // Spec 61b — Valuation Engine
   getValuation: (assetId: string) =>
     request<ValuationOut>(`/assets/${assetId}/valuation`),
@@ -1984,16 +2000,20 @@ export interface OptimizeOut {
   warnings: string[]
 }
 
-export type TargetDimension = 'CLASS' | 'COUNTRY'
+export type TargetDimension = 'CLASS' | 'COUNTRY' | 'ARCA' | 'ARCA_SUB'
 
 export interface TargetEntryIn {
   key: string
   target_pct: string // decimal serialized as string for precision
+  min_pct?: string | null // spec 85 — só ARCA
+  max_pct?: string | null
 }
 
 export interface TargetEntryOut {
   key: string
   target_pct: string
+  min_pct?: string | null
+  max_pct?: string | null
 }
 
 export interface TargetDimensionOut {
@@ -2007,6 +2027,98 @@ export interface TargetAllocationOut {
   workspace_id: string
   CLASS: TargetDimensionOut
   COUNTRY: TargetDimensionOut
+  ARCA: TargetDimensionOut
+  ARCA_SUB: TargetDimensionOut
+}
+
+// ── Spec 85 — ARCA ─────────────────────────────────────────────────────
+export type ArcaLetter = 'EQUITY_BR' | 'REAL_ESTATE' | 'CASH' | 'GLOBAL'
+export type ArcaCategory = ArcaLetter | 'OUT_OF_SCOPE'
+export type ArcaSource = 'manual' | 'derived' | 'unmapped'
+export type ArcaStatus = 'IN_BAND' | 'BELOW_BAND' | 'ABOVE_BAND' | 'NO_TARGET'
+
+export interface ArcaAssetOut {
+  asset_id: string
+  ticker: string | null
+  name: string
+  asset_class: string
+  country: string
+  category: ArcaCategory | null
+  subcategory: string | null
+  derived_category: ArcaCategory | null
+  derived_subcategory: string | null
+  source: ArcaSource
+  value_brl: string
+  income_12m_brl: string
+  derived_note?: string // por que a regra automática escolheu (spec 85)
+}
+
+export interface ArcaSubOut {
+  key: string
+  role: 'ATTACK' | 'DEFENSE'
+  value_brl: string
+  pct_of_letter: number
+  pct_of_total: number
+  target_pct_of_letter: string | null
+  target_pct_of_total: string | null
+  gap_brl: string | null
+  income_12m_brl: string
+  yield_12m: number | null
+}
+
+export interface ArcaLetterOut {
+  key: ArcaLetter
+  value_brl: string
+  current_pct: number
+  target_pct: string | null
+  min_pct: string
+  max_pct: string
+  gap_brl: string | null
+  status: ArcaStatus
+  income_12m_brl: string
+  yield_12m: number | null
+  income_share: number
+  income_forward_brl: string
+  unclassified_sub_value_brl: string
+  subcategories: ArcaSubOut[]
+}
+
+export interface ArcaSummaryOut {
+  as_of: string | null
+  total_brl: string
+  out_of_scope_brl: string
+  unmapped_brl: string
+  unmapped_count: number
+  income_12m_total_brl: string
+  attack_pct: number
+  defense_pct: number
+  unknown_role_pct: number
+  targets_configured: boolean
+  letters: ArcaLetterOut[]
+  assets: ArcaAssetOut[]
+}
+
+export interface ArcaPlanLetterOut {
+  key: ArcaLetter
+  current_brl: string
+  amount_brl: string
+  after_brl: string
+  after_pct: number
+  target_pct: string
+  sell_suggestion_brl: string
+  subcategories: { key: string; amount_brl: string }[]
+}
+
+export interface ArcaPlanOut {
+  amount_brl: string
+  total_after_brl: string
+  letters: ArcaPlanLetterOut[]
+}
+
+export interface ArcaClassificationItem {
+  asset_id: string
+  category: ArcaCategory | null
+  subcategory: string | null
 }
 
 // ── Spec 61b — Valuation ───────────────────────────────────────────────

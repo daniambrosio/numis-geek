@@ -23,6 +23,8 @@ router = APIRouter(prefix="/workspaces", tags=["target-allocation"])
 class TargetEntrySchema(BaseModel):
     key: str
     target_pct: Decimal = Field(ge=0, le=1)
+    min_pct: Decimal | None = Field(default=None, ge=0, le=1)
+    max_pct: Decimal | None = Field(default=None, ge=0, le=1)
 
 
 class DimensionSchema(BaseModel):
@@ -35,7 +37,12 @@ class DimensionSchema(BaseModel):
     def from_dataclass(cls, d: DimensionOut) -> "DimensionSchema":
         return cls(
             dimension=d.dimension,
-            entries=[TargetEntrySchema(key=e.key, target_pct=e.target_pct) for e in d.entries],
+            entries=[
+                TargetEntrySchema(
+                    key=e.key, target_pct=e.target_pct, min_pct=e.min_pct, max_pct=e.max_pct,
+                )
+                for e in d.entries
+            ],
             total=d.total,
             is_valid=d.is_valid,
         )
@@ -45,6 +52,8 @@ class TargetAllocationOut(BaseModel):
     workspace_id: str
     CLASS: DimensionSchema
     COUNTRY: DimensionSchema
+    ARCA: DimensionSchema
+    ARCA_SUB: DimensionSchema
 
 
 class UpsertRequest(BaseModel):
@@ -84,6 +93,8 @@ def _build_response(db: Session, workspace_id: str) -> TargetAllocationOut:
         workspace_id=workspace_id,
         CLASS=DimensionSchema.from_dataclass(targets["CLASS"]),
         COUNTRY=DimensionSchema.from_dataclass(targets["COUNTRY"]),
+        ARCA=DimensionSchema.from_dataclass(targets["ARCA"]),
+        ARCA_SUB=DimensionSchema.from_dataclass(targets["ARCA_SUB"]),
     )
 
 
@@ -111,7 +122,10 @@ def put_target_allocation(
     _require_admin(current_user)
     ws_id = _resolve_workspace(db, workspace_id, current_user)
     entries_in = [
-        TargetEntryIn(key=e.key, target_pct=e.target_pct) for e in body.entries
+        TargetEntryIn(
+            key=e.key, target_pct=e.target_pct, min_pct=e.min_pct, max_pct=e.max_pct,
+        )
+        for e in body.entries
     ]
     try:
         upsert_targets(
